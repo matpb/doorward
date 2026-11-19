@@ -227,7 +227,8 @@ to the gateway with `World::start_with(|c| c.mail.smtp_ca_file = Some(M.ca_pem_p
 3. `unreachable_mail_server_does_not_hang_the_panel`: SMTP pointed at a closed local port;
    the invitation answers within 10 seconds with the failure page and `/healthz` is 200.
 4. `failed_reset_mail_reveals_nothing`: with `fail_next(Fail::SmtpReject)`, `/forgot` for
-   bob answers the same body as for an unknown address; the activity has `mail_failed`.
+   bob answers the same body as for an unknown address; within 5 seconds the activity has
+   `mail_failed` (the reset mail is sent after the response).
 5. `the_link_is_shown_only_once`: after the failure page, `GET /admin/invitations` does
    not contain the token part of the link.
 
@@ -240,7 +241,8 @@ to the gateway with `World::start_with(|c| c.mail.smtp_ca_file = Some(M.ca_pem_p
    each path lists only its own tool and each call reaches only its own upstream.
 3. `reserved_paths_cannot_be_taken`: `admin::add_server_page` with each of `-`,
    `.well-known`, `oauth`, `login`, `logout`, `setup`, `invite`, `forgot`, `reset`,
-   `account`, `admin`, `assets`, `healthz`, `mcp`, `favicon.ico`, `robots.txt` is 400.
+   `account`, `admin`, `assets`, `healthz`, `mcp`, `signup`, `register`, `favicon.ico`,
+   `robots.txt` is 400.
 4. `path_syntax_is_enforced`: `Bad`, `a_b`, a 25 character slug, the empty string, `-a`,
    `a/b`, `a.b` are 400; `a`, `a-b-1` and a 24 character slug are 303.
 5. `a_taken_path_is_refused`: the second server with slug `demo` is 400.

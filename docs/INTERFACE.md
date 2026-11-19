@@ -131,7 +131,7 @@ and leaves the link or code usable. A wrong `current_password` answers `400` as 
 | `GET /invite/{token}` | | `200` `data-page="invite"` if usable, else `404` `data-page="link-invalid"`. A GET never consumes the link |
 | `POST /invite/{token}` | `password` | account created, session set, `303 /account`. Unusable link: `404` |
 | `GET /forgot` | | `200` `data-page="forgot"` |
-| `POST /forgot` | `email` | always `200` `data-page="forgot-sent"` with identical body, whether or not the address exists |
+| `POST /forgot` | `email` | always `200` `data-page="forgot-sent"` with identical body, whether or not the address exists. The mail is sent after the response, so the answer takes the same time either way; a failed send is recorded as `mail_failed`. A new request replaces an earlier unused link |
 | `GET /reset/{token}` | | `200` `data-page="reset"` or `404` `data-page="link-invalid"` |
 | `POST /reset/{token}` | `password` | password set, all sessions and token families of the user revoked, `303 /login` |
 | `GET /account` | | `200` `data-page="account"`; connected clients as rows with `data-family`, `data-client-name`, `data-server`; anonymous: `303 /login` |
@@ -175,9 +175,9 @@ Anonymous: `303 /login`. Signed in without the owner or admin role: `403`
 | `GET /admin/users/{id}` | | `data-page="user"`: role, status; one `input[name="server_id"]` checkbox per server, `checked` when assigned; effective tools, one element per tool of each assigned server with `data-server` (slug), `data-tool`, `data-verdict="allow|deny"` |
 | `POST /admin/users/{id}/servers` | `server_id` (repeated) | replaces the user's assignments; the user's token families for each removed server are revoked, combined endpoint families stay valid and lose those servers' tools; `303` |
 | `POST /admin/users/{id}/role` | `role` (`admin` or `user`) | owner only; `303` |
-| `POST /admin/users/{id}/disable`, `/enable`, `/delete` | | disable and delete revoke sessions and families at once; `303`. The owner cannot be disabled or deleted: `400` |
+| `POST /admin/users/{id}/disable`, `/enable`, `/delete` | | disable and delete revoke sessions and families at once; `303`. The owner cannot be disabled or deleted: `400`. An admin may act on accounts with the role `user` only (`403` otherwise); the owner on anyone else |
 | `GET /admin/invitations` | | `data-page="invitations"`; open invitations as rows with `data-invitation-id`, `data-email` |
-| `POST /admin/invitations` | `email`, `role` | invitation stored and mailed; `303`. An address that already has an account: `400`. If mailing fails: `200` `data-page="invitation-created"` with the error and the link once in `data-invite-link` |
+| `POST /admin/invitations` | `email`, `role` | invitation stored and mailed; `303`. An address that already has an account: `400`. Only the owner may invite with the role `admin` (`403` for an admin who asks). A new invitation for an address replaces an open one. If mailing fails: `200` `data-page="invitation-created"` with the error and the link once in `data-invite-link` |
 | `POST /admin/invitations/{id}/revoke` | | `303` |
 | `GET /admin/rules` | | `data-page="rules"`; rows `data-rule-id` |
 | `POST /admin/rules` | `subject` (`everyone` or a user id), `effect` (`allow` or `deny`), `scope` (`all`, `server`, `tool`), `server_id`, `tool` | `303`. `400` for a duplicate subject and target, a `server` or `tool` scope without `server_id`, a `tool` scope without `tool`, or a tool that is not in the server's cached list |

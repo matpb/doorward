@@ -133,11 +133,18 @@ async fn failed_reset_mail_reveals_nothing() {
         known.body, unknown.body,
         "a failed reset mail must answer the same body as an unknown address"
     );
-    let rows = admin::activity(&w.owner, None, None).await;
-    assert!(
-        rows.iter().any(|row| row.kind == "mail_failed"),
-        "the failed reset mail must be in the activity log"
-    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let rows = admin::activity(&w.owner, None, None).await;
+        if rows.iter().any(|row| row.kind == "mail_failed") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the failed reset mail must be in the activity log within 5 seconds"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

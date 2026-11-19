@@ -38,7 +38,7 @@ headers such as `Host` or `X-Forwarded-Host` never influence it.
 A server path (slug) matches `[a-z0-9][a-z0-9-]{0,23}`: no underscore, at most 24
 characters, never a reserved word. Reserved first segments: `-`, `.well-known`, `oauth`,
 `login`, `logout`, `setup`, `invite`, `forgot`, `reset`, `account`, `admin`, `assets`,
-`healthz`, `mcp`, `favicon.ico`, `robots.txt`. Any gateway path added after v1 goes under
+`healthz`, `mcp`, `signup`, `register`, `favicon.ico`, `robots.txt`. Any gateway path added after v1 goes under
 `/-/`.
 
 | Path | What |
