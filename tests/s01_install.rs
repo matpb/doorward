@@ -23,11 +23,24 @@ async fn s01_unknown_path_is_404() {
     let gateway = TestGateway::start().await;
     let response = gateway
         .http
-        .get(gateway.url("/nope"))
+        .get(gateway.url("/no/such/page"))
         .send()
         .await
         .expect("request");
     assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(response.text().await.expect("body"), "");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn s01_a_possible_server_path_never_says_whether_it_exists() {
+    let gateway = TestGateway::start().await;
+    let response = gateway
+        .http
+        .get(gateway.url("/nope"))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
     assert_eq!(response.text().await.expect("body"), "");
 }
 

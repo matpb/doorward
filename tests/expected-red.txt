@@ -1,5 +1,4 @@
 # Test files written before their code. Each must compile and fail; remove a name when its code lands.
-s04_reset
 s05_disable
 s09_routing
 s10_combined

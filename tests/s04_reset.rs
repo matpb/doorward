@@ -42,16 +42,24 @@ async fn forgot(browser: &TestClient, address: &str, headers: &[(&str, &str)]) -
 
 /// The reset mail that reached `address`, waiting up to 5 seconds for it.
 async fn reset_mail(w: &World, address: &str) -> Captured {
-    let message = w
-        .mail
-        .wait_to(address, Duration::from_secs(5))
-        .await
-        .unwrap_or_else(|| panic!("no mail to {address} arrived within 5 seconds"));
-    assert_eq!(
-        message.subject, SUBJECT,
-        "the reset mail must have the reset subject"
-    );
-    message
+    // Other mail to the same address (a new-connection notice) may still be in flight.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let found = w
+            .mail
+            .to(address)
+            .into_iter()
+            .rev()
+            .find(|message| message.subject == SUBJECT);
+        if let Some(message) = found {
+            return message;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no reset mail to {address} arrived within 5 seconds"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// The reset link in the mail, which must start with the gateway's own address.

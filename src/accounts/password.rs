@@ -8,7 +8,10 @@ use rusqlite::{Connection, TransactionBehavior, params};
 use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::crypto::token_hash;
-use crate::web::{VerifiedForm, busy, internal_error, redirect, session_cookie, with_cookie};
+use crate::oauth::connected;
+use crate::web::{
+    VerifiedForm, Viewer, busy, internal_error, redirect, session_cookie, with_cookie,
+};
 
 use super::account::account_page;
 use super::input::valid_password;
@@ -31,17 +34,34 @@ struct Change {
     lifetime: i64,
 }
 
+/// The account page for a refused change, with the viewer's connected clients.
+async fn refused(state: &AppState, viewer: &Viewer, status: StatusCode, message: &str) -> Response {
+    let Some(user) = viewer.user.as_ref() else {
+        return redirect("/login");
+    };
+    let now = state.clock.now().unix_timestamp();
+    match connected::list(&state.db, user.id, now).await {
+        Ok(clients) => account_page(viewer, status, Some(message), &clients),
+        Err(err) => {
+            eprintln!("doorward: cannot list connected clients: {err}");
+            internal_error()
+        }
+    }
+}
+
 pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) -> Response {
     let Some(user) = form.viewer.user.clone() else {
         return redirect("/login");
     };
     let new_password = form.fields.get("new_password").to_owned();
     if !valid_password(&new_password) {
-        return account_page(
+        return refused(
+            &state,
             &form.viewer,
             StatusCode::BAD_REQUEST,
-            Some(PASSWORD_MESSAGE),
-        );
+            PASSWORD_MESSAGE,
+        )
+        .await;
     }
     let Some(first) = state.hasher.try_slot() else {
         return busy();
@@ -61,13 +81,13 @@ pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) ->
         phc,
     } = attempt
     else {
-        return account_page(&form.viewer, StatusCode::TOO_MANY_REQUESTS, Some(BLOCKED));
+        return refused(&state, &form.viewer, StatusCode::TOO_MANY_REQUESTS, BLOCKED).await;
     };
     let current = form.fields.get("current_password").to_owned();
     let matched = state.hasher.verify(first, current, phc).await;
     let (true, Some(user_id)) = (matched, user_id) else {
         login::record_failed(&state, user_id, &user.email).await;
-        return account_page(&form.viewer, StatusCode::BAD_REQUEST, Some(WRONG_CURRENT));
+        return refused(&state, &form.viewer, StatusCode::BAD_REQUEST, WRONG_CURRENT).await;
     };
     let phc = match state.hasher.hash(second, new_password).await {
         Ok(phc) => phc,

@@ -136,6 +136,14 @@ fn routes(state: AppState) -> Router {
             "/oauth/consent",
             get(oauth::consent::get_consent).post(oauth::consent::post_consent),
         )
+        .route(
+            "/account/clients/{public_id}/disconnect",
+            post(oauth::connected::post_client_disconnect),
+        )
+        .route(
+            "/account/disconnect/{token}",
+            get(oauth::connected::get_disconnect_link).post(oauth::connected::post_disconnect_link),
+        )
         .nest("/admin", admin::router(state.clone()))
         .layer(middleware::from_fn(web::security_headers));
     Router::new()
@@ -153,6 +161,18 @@ fn routes(state: AppState) -> Router {
         .route(
             "/oauth/token",
             post(oauth::token::post_token).fallback(oauth::token::not_post),
+        )
+        .route(
+            "/mcp",
+            get(oauth::guard::combined_path)
+                .post(oauth::guard::combined_path)
+                .delete(oauth::guard::combined_path),
+        )
+        .route(
+            "/{slug}",
+            get(oauth::guard::server_path)
+                .post(oauth::guard::server_path)
+                .delete(oauth::guard::server_path),
         )
         .merge(pages)
         .with_state(state)
