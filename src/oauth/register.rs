@@ -186,7 +186,7 @@ fn plain_name(text: &str) -> Result<String, Refusal> {
 }
 
 /// False for control characters and for the invisible and direction characters.
-fn is_plain_text(text: &str) -> bool {
+pub(crate) fn is_plain_text(text: &str) -> bool {
     text.chars().all(|c| !c.is_control() && !is_invisible(c))
 }
 

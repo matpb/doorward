@@ -9,6 +9,7 @@ use serde::Deserialize;
 use crate::app::AppState;
 use crate::audit::{self, OwnedEvent};
 use crate::crypto::token_hash;
+use crate::oauth::authorize::is_request_id;
 use crate::web::{
     SESSION_COOKIE, VerifiedForm, Viewer, busy, clear_cookie, form_page, internal_error, redirect,
     session_cookie, throttle_key, with_cookie,
@@ -72,8 +73,17 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
         lifetime: session::lifetime_seconds(state.config.lifetimes.session_hours),
     };
     match throttle::succeed(&state.db, success).await {
-        Ok(token) => with_cookie(redirect("/account"), &session_cookie(&token)),
+        Ok(token) => with_cookie(redirect(&after_sign_in(&req)), &session_cookie(&token)),
         Err(_) => internal_error(),
+    }
+}
+
+/// The page after a sign-in: consent for a request id of the exact shape, else the account page.
+pub fn after_sign_in(req: &str) -> String {
+    if is_request_id(req) {
+        format!("/oauth/consent?req={req}")
+    } else {
+        "/account".to_owned()
     }
 }
 

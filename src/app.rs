@@ -128,6 +128,11 @@ fn routes(state: AppState) -> Router {
             "/reset/{token}",
             get(reset::get_reset).post(reset::post_reset),
         )
+        .route("/oauth/authorize", get(oauth::authorize::get_authorize))
+        .route(
+            "/oauth/consent",
+            get(oauth::consent::get_consent).post(oauth::consent::post_consent),
+        )
         .nest("/admin", admin::router(state.clone()))
         .layer(middleware::from_fn(web::security_headers));
     Router::new()

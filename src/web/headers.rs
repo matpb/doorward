@@ -8,16 +8,28 @@ use axum::response::{IntoResponse, Response};
 
 const STYLESHEET: &str = include_str!("../../assets/doorward.css");
 
+/// The page policy; `form_target` is one more origin a form may post or be redirected to.
+pub fn content_security_policy(form_target: Option<&str>) -> String {
+    let target = form_target
+        .map(|origin| format!(" {origin}"))
+        .unwrap_or_default();
+    format!(
+        "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'{target}; \
+         frame-ancestors 'none'; base-uri 'none'"
+    )
+}
+
 /// Adds the browser-page headers to every response of an HTML route.
 pub async fn security_headers(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert(
-        CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
-        ),
-    );
+    // A policy a handler set itself (the consent page) is kept.
+    if !headers.contains_key(CONTENT_SECURITY_POLICY) {
+        // The policy text is ASCII, so the fallback is never taken; it is the strictest policy.
+        let policy = HeaderValue::from_str(&content_security_policy(None))
+            .unwrap_or_else(|_| HeaderValue::from_static("default-src 'none'"));
+        headers.insert(CONTENT_SECURITY_POLICY, policy);
+    }
     headers.insert(
         HeaderName::from_static("x-frame-options"),
         HeaderValue::from_static("DENY"),

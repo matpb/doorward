@@ -13,7 +13,7 @@ pub use cookies::{
     with_cookie,
 };
 pub use form::{FormFields, VerifiedForm};
-pub use headers::{security_headers, stylesheet};
+pub use headers::{content_security_policy, security_headers, stylesheet};
 pub use page::{
     MainData, busy, forbidden, form_page, form_page_with, internal_error, not_found,
     not_found_link, page, page_with, redirect,
