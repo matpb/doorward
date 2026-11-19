@@ -1,5 +1,12 @@
 #![allow(dead_code)]
 
+pub mod admin;
+pub mod cimd;
+pub mod client;
+pub mod mail;
+pub mod mcp;
+pub mod upstream;
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
