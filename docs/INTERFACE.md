@@ -11,9 +11,10 @@ what. `PUB` is the configured `public_url`.
   `class="notice"`.
 - Every form has `<input type="hidden" name="csrf" value="...">`. Forms are
   `application/x-www-form-urlencoded`. A successful POST answers `303` with `Location`.
-- A POST with a missing or wrong `csrf`, or with an `Origin` header that is present and not
-  equal to `PUB`, or `Origin: null`, answers `403` with `data-page="forbidden"` and changes
-  nothing.
+- A form POST with a missing or wrong `csrf`, or whose `Origin` header is absent or not
+  equal to `PUB` (`Origin: null` included), answers `403` with `data-page="forbidden"` and
+  changes nothing. The token endpoint and the registration endpoint are not form pages and
+  take neither.
 - Cookies: session `__Host-doorward_session`; pre-session CSRF `__Host-doorward_csrf`. Both
   `Secure; HttpOnly; SameSite=Lax; Path=/`.
 - Times use the injected clock everywhere, including throttling and expiry.
@@ -44,7 +45,36 @@ pub trait CimdFetcher: Send + Sync + 'static {
     fn fetch<'a>(&'a self, client_id: &'a str)
         -> Pin<Box<dyn Future<Output = Result<ClientMetadata, CimdError>> + Send + 'a>>;
 }
+
+// doorward::cimd, the fetcher the binary uses
+pub trait Resolver: Send + Sync + 'static {
+    fn resolve<'a>(&'a self, host: &'a str)
+        -> Pin<Box<dyn Future<Output = std::io::Result<Vec<IpAddr>>> + Send + 'a>>;
+}
+/// False for loopback, private, link-local, carrier-grade NAT, unspecified, multicast,
+/// broadcast, documentation and benchmarking ranges, unique-local and link-local IPv6,
+/// IPv4-mapped and NAT64 forms of any of those.
+pub fn address_allowed(ip: IpAddr) -> bool;
+pub struct FetcherParts {
+    pub resolver: Arc<dyn Resolver>,
+    pub address_allowed: fn(IpAddr) -> bool,
+    pub extra_roots_pem: Option<Vec<u8>>,
+    pub timeout: Duration,      // 5 seconds in `system()`
+    pub max_bytes: usize,       // 65536 in `system()`
+}
+impl HttpCimdFetcher {
+    pub fn system() -> HttpCimdFetcher;                    // system resolver, `address_allowed`
+    pub fn from_parts(parts: FetcherParts) -> HttpCimdFetcher;
+}
 ```
+
+`HttpCimdFetcher::fetch` accepts only `https://host/path` with a host name (no address
+literal), no userinfo, no fragment, and the default port. It resolves the host once, refuses
+when any answer fails `address_allowed` (`NotAllowed`), connects to the resolved address
+itself, sends one GET with `Accept: application/json`, follows no redirect, and refuses a
+status other than 200, a body over `max_bytes`, a body that is not a JSON object, a
+`client_id` different from the URL, missing or empty `redirect_uris`, or an auth method
+other than `none` (`Invalid`). Anything else that goes wrong is `Fetch`.
 
 The binary prints the setup code to standard error as `doorward setup code: <code>`.
 
@@ -86,7 +116,8 @@ dcr_per_hour = 20             # registrations per address
 
 ## Accounts
 
-Passwords: 12 to 256 characters. A shorter or longer one re-renders the form with `400`.
+Passwords: 12 to 256 characters. A shorter or longer one re-renders the form with `400`
+and leaves the link or code usable. A wrong `current_password` answers `400` as well.
 
 | Route | Fields | Outcome |
 |---|---|---|
@@ -101,7 +132,7 @@ Passwords: 12 to 256 characters. A shorter or longer one re-renders the form wit
 | `POST /forgot` | `email` | always `200` `data-page="forgot-sent"` with identical body, whether or not the address exists |
 | `GET /reset/{token}` | | `200` `data-page="reset"` or `404` `data-page="link-invalid"` |
 | `POST /reset/{token}` | `password` | password set, all sessions and token families of the user revoked, `303 /login` |
-| `GET /account` | | `200` `data-page="account"`; anonymous: `303 /login` |
+| `GET /account` | | `200` `data-page="account"`; connected clients as rows with `data-family`, `data-client-name`, `data-server`; anonymous: `303 /login` |
 | `POST /account/password` | `current_password`, `new_password` | as reset, but the current session is replaced by a new one; `303 /account` |
 | `POST /account/clients/{family}/disconnect` | | family revoked, `303 /account` |
 | `GET /account/disconnect/{token}` | | link from the new-connection email: `200` `data-page="disconnect"` |
@@ -119,7 +150,7 @@ Emails (plain text and HTML parts, links built from `PUB`):
 |---|---|---|
 | Invitation | `You are invited to Doorward` | `PUB/invite/{token}` |
 | Reset | `Reset your Doorward password` | `PUB/reset/{token}` |
-| New connection | `A new app was connected to your Doorward account` | `PUB/account/disconnect/{token}` |
+| New connection (first connection of that client for that user) | `A new app was connected to your Doorward account` | `PUB/account/disconnect/{token}` |
 | Test | `Doorward test email` | none |
 
 ## Admin panel
@@ -132,27 +163,28 @@ Anonymous: `303 /login`. Signed in without the owner or admin role: `403`
 | `GET /admin` | | `data-page="admin"` |
 | `GET /admin/servers` | | `data-page="servers"`; each row `data-server-id`, `data-slug` |
 | `POST /admin/servers` | `name`, `slug`, `upstream_url`, `secret_header_name`, `secret_header_value`, `pass_resources`, `pass_prompts` (checkboxes, `on`) | `303 /admin/servers/{id}`. Bad or reserved or taken slug, or a non-HTTP(S) URL: `400` |
-| `GET /admin/servers/{id}` | | `data-page="server"`: settings (secret value never rendered), assigned users, tool list, lock-down result in `data-lockdown="ok|open|unknown"` |
+| `GET /admin/servers/{id}` | | `data-page="server"`: settings (secret value never rendered); one `input[name="user_id"]` checkbox per user, `checked` when assigned; the cached tool list, one element per tool with `data-catalog-tool`; lock-down result in `data-lockdown="ok|open|unknown"` on `<main>` |
+| `POST /admin/servers/{id}/users` | `user_id` (repeated) | replaces the server's assignments; removed users lose their token families for it; `303` |
 | `POST /admin/servers/{id}` | same as create | `303`. A changed `upstream_url` clears the stored secret unless a new `secret_header_value` is sent in the same post |
 | `POST /admin/servers/{id}/delete` | | server, its assignments, rules, and token families gone; `303 /admin/servers` |
 | `POST /admin/servers/{id}/refresh-tools` | | fetches the upstream tool list; `303` |
 | `POST /admin/servers/{id}/check-lockdown` | | sends one request without the secret; `303` |
 | `GET /admin/users` | | `data-page="users"`; rows `data-user-id`, `data-email` |
-| `GET /admin/users/{id}` | | `data-page="user"`: role, status, assigned servers, effective tools (each `data-tool`, `data-verdict="allow|deny"`) |
+| `GET /admin/users/{id}` | | `data-page="user"`: role, status; one `input[name="server_id"]` checkbox per server, `checked` when assigned; effective tools, one element per tool of each assigned server with `data-server` (slug), `data-tool`, `data-verdict="allow|deny"` |
 | `POST /admin/users/{id}/servers` | `server_id` (repeated) | replaces the user's assignments; removed servers lose their token families; `303` |
 | `POST /admin/users/{id}/role` | `role` (`admin` or `user`) | owner only; `303` |
-| `POST /admin/users/{id}/disable`, `/enable`, `/delete` | | disable and delete revoke sessions and families at once; the owner cannot be disabled or deleted; `303` |
-| `GET /admin/invitations` | | `data-page="invitations"` |
-| `POST /admin/invitations` | `email`, `role` | invitation stored and mailed; `303`. If mailing fails: `200` `data-page="invitation-created"` with the error and the link once in `data-invite-link` |
+| `POST /admin/users/{id}/disable`, `/enable`, `/delete` | | disable and delete revoke sessions and families at once; `303`. The owner cannot be disabled or deleted: `400` |
+| `GET /admin/invitations` | | `data-page="invitations"`; open invitations as rows with `data-invitation-id`, `data-email` |
+| `POST /admin/invitations` | `email`, `role` | invitation stored and mailed; `303`. An address that already has an account: `400`. If mailing fails: `200` `data-page="invitation-created"` with the error and the link once in `data-invite-link` |
 | `POST /admin/invitations/{id}/revoke` | | `303` |
 | `GET /admin/rules` | | `data-page="rules"`; rows `data-rule-id` |
-| `POST /admin/rules` | `subject` (`everyone` or a user id), `effect` (`allow` or `deny`), `scope` (`all`, `server`, `tool`), `server_id`, `tool` | `303`. A duplicate subject and target: `400` |
+| `POST /admin/rules` | `subject` (`everyone` or a user id), `effect` (`allow` or `deny`), `scope` (`all`, `server`, `tool`), `server_id`, `tool` | `303`. `400` for a duplicate subject and target, a `server` or `tool` scope without `server_id`, a `tool` scope without `tool`, or a tool that is not in the server's cached list |
 | `POST /admin/rules/{id}/delete` | | `303` |
-| `GET /admin/redirects` | | `data-page="redirects"`: shipped and added entries, blocked attempts |
+| `GET /admin/redirects` | | `data-page="redirects"`: entries as rows with `data-redirect-id`, `data-scheme`, `data-host`, `data-path-prefix`, `data-source="shipped|added"`, `data-enabled="yes|no"`; blocked attempts |
 | `POST /admin/redirects` | `scheme`, `host`, `path_prefix` | `303` |
 | `POST /admin/redirects/{id}/disable`, `/enable` | | `303` |
 | `GET /admin/mail` | | `data-page="mail"`; stored secrets never rendered |
-| `POST /admin/mail` | `provider` (`smtp`, `resend`, `mailgun`), `from`; smtp: `smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`, `smtp_tls` (`on` or absent); resend: `resend_api_key`, `resend_base_url`; mailgun: `mailgun_api_key`, `mailgun_domain`, `mailgun_base_url` | `303`. An empty secret field keeps the stored one |
+| `POST /admin/mail` | `provider` (`smtp`, `resend`, `mailgun`), `from`; smtp: `smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`, `smtp_tls` (`off`, `starttls` or `implicit`); resend: `resend_api_key`, `resend_base_url`; mailgun: `mailgun_api_key`, `mailgun_domain`, `mailgun_base_url` | `303`. An empty secret field keeps the stored one. An empty base URL means the provider's own address. Requests to Resend carry `User-Agent: doorward/<version>` |
 | `POST /admin/mail/test` | `to` | `200` `data-page="mail"` with `class="notice"` "Test email sent." or `class="error"` holding the provider's error |
 | `GET /admin/activity` | query `user`, `server` | `data-page="activity"`; rows `data-kind`, `data-user`, `data-server`, `data-tool`, `data-decision`, `data-outcome` |
 
@@ -215,18 +247,24 @@ plain HTTP on a non-loopback host; `400 {"error": "invalid_client_metadata"}` ot
 |---|---|
 | Unknown `client_id`, URL-shaped id that is not HTTPS with a path, `redirect_uri` not registered for the client, or not allowed by the redirect policy | `400` `data-page="error"`, no `Location`. A blocked redirect also writes a `redirect_blocked` activity row |
 | Any parameter repeated, or `request` or `request_uri` present | `400` `data-page="error"`, no `Location` |
-| Missing or non-`code` `response_type`, missing `code_challenge`, method not `S256`, missing `resource`, `resource` not `PUB/{valid slug}` or `PUB/mcp`, `prompt=none` | `303` to `redirect_uri` with `error=invalid_request` (or `invalid_target` for `resource`, `login_required` for `prompt=none`), plus `state` and `iss` |
+| Missing or non-`code` `response_type`, missing `code_challenge`, method not `S256`, missing `resource`, `resource` not `PUB/{valid slug}` or `PUB/mcp`, `prompt=none` | `303` to `redirect_uri` with `error=invalid_request` (or `invalid_target` for `resource`, `interaction_required` for `prompt=none`), plus `state` and `iss` |
 | Valid, no session | `303 /login?req={id}` |
 | Valid, session | `303 /oauth/consent?req={id}` |
 
 For a URL-shaped `client_id` the metadata document is fetched when the consent page is
 rendered, never before login. A fetch failure renders `400` `data-page="error"`.
 
-`GET /oauth/consent?req={id}`: `200` `data-page="consent"` with `data-redirect-host`,
+`GET /oauth/consent?req={id}`: `200` `data-page="consent"` with `data-redirect-host`
+(host and port of the redirect address, or the scheme for a private-scheme address),
 `data-client-name`, `data-client-verified="yes|no"` (`no` for dynamically registered
 clients), `data-server` (slug, or `all servers` for the combined endpoint) and `data-user`
 (email). Unknown, expired, used, or another session's request: `400` `data-page="error"`.
-A user who is not assigned to the server sees `403` `data-page="no-access"`.
+A user who is not assigned to the server, or a server that does not exist, gives `403`
+`data-page="no-access"`; the owner and admins need an assignment like anyone else. The
+combined endpoint needs no assignment. Anonymous: `303 /login?req={id}`. For a URL-shaped
+client the fetched document must name this `client_id`, declare the auth method `none` or
+none at all, and list the redirect address (loopback port aside), else `400`
+`data-page="error"`.
 
 `POST /oauth/consent`: `req`, `decision` (`approve` or `deny`). `303` to the redirect
 address with `code`, `state`, `iss`; or with `error=access_denied`, `state`, `iss`. The
@@ -318,14 +356,21 @@ Answers that both endpoints share:
 |---|---|
 | Body over `body_bytes` | `413` |
 | `Content-Encoding` present, charset other than UTF-8, byte order mark | `400`, JSON-RPC `-32600` |
-| Not valid JSON, duplicate key at any depth, lone surrogate, trailing data | `400`, JSON-RPC `-32700` |
-| JSON array | `400`, JSON-RPC `-32600` |
+| Not valid JSON, duplicate key at any depth (compared after unescaping), lone surrogate, trailing data, nesting deeper than 64 | `400`, JSON-RPC `-32700` |
+| JSON array, `tools/call` without an `id`, a client-sent response under the stateless rules or without a session of the caller | `400`, JSON-RPC `-32600` |
 | Method outside the allowlist, `tasks/*`, `params.task` present | `200`, JSON-RPC `-32601`, upstream not contacted |
 | `tools/call` for a tool that is not in the server's list or is denied | `200`, JSON-RPC `-32602` with message `Unknown tool: {name}`, upstream not contacted |
 | Header and body disagree (2026-07-28), or a required header is missing or repeated | `400`, JSON-RPC `-32020` |
 | Session id not issued to this user, family and server | `404`, upstream not contacted |
 | Upstream unreachable, timed out, answered 401 or 403, redirected, or sent an unexpected content type | `502`, JSON-RPC `-32000` with message `Upstream {slug} is unavailable` |
 | Deeper path `/{slug}/...` | `404` |
+
+Headers sent upstream: `Content-Type`, `Accept`, `MCP-Protocol-Version`, `Mcp-Session-Id`
+(a recorded one only), `Mcp-Method`, `Mcp-Name`, `Mcp-Param-*`, the gateway's own
+`User-Agent`, and the server's secret header. Nothing else from the client is forwarded.
+Responses to the client carry `X-Content-Type-Options: nosniff` and
+`Content-Security-Policy: sandbox`; of the upstream's headers only `Content-Type` and
+`Mcp-Session-Id` pass.
 
 ## Test harness (`tests/common`)
 

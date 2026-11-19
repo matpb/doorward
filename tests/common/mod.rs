@@ -6,6 +6,7 @@ pub mod client;
 pub mod mail;
 pub mod mcp;
 pub mod upstream;
+pub mod world;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

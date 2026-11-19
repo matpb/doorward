@@ -147,13 +147,15 @@ pub async fn delete_rule(c: &TestClient, rule_id: &str) -> Page {
     .await
 }
 
-pub async fn effective_tools(c: &TestClient, user_id: &str) -> Vec<(String, String)> {
+/// (server, tool, verdict) for each tool row; a missing attribute reads as "".
+pub async fn effective_tools(c: &TestClient, user_id: &str) -> Vec<(String, String, String)> {
     let page = c.get(&format!("/admin/users/{user_id}")).await;
     let doc = Html::parse_document(&page.body);
     let selector = Selector::parse("[data-tool]").expect("static selector");
     doc.select(&selector)
         .map(|tool| {
             (
+                attribute(tool, "data-server"),
                 attribute(tool, "data-tool"),
                 attribute(tool, "data-verdict"),
             )
@@ -174,6 +176,7 @@ pub async fn add_redirect(c: &TestClient, scheme: &str, host: &str, path_prefix:
     .await
 }
 
+/// `security` is one of "off", "starttls" or "implicit", and is always sent as `smtp_tls`.
 pub async fn mail_smtp(
     c: &TestClient,
     from: &str,
@@ -181,20 +184,18 @@ pub async fn mail_smtp(
     port: u16,
     username: &str,
     password: &str,
-    tls: bool,
+    security: &str,
 ) -> Page {
     let port = port.to_string();
-    let mut fields = vec![
+    let fields = [
         ("provider", "smtp"),
         ("from", from),
         ("smtp_host", host),
         ("smtp_port", port.as_str()),
         ("smtp_username", username),
         ("smtp_password", password),
+        ("smtp_tls", security),
     ];
-    if tls {
-        fields.push(("smtp_tls", "on"));
-    }
     c.submit("/admin/mail", "/admin/mail", &fields).await
 }
 
@@ -279,4 +280,61 @@ pub async fn activity(
             outcome: attribute(row, "data-outcome"),
         })
         .collect()
+}
+
+pub async fn invitation_id(c: &TestClient, email: &str) -> Option<String> {
+    let page = c.get("/admin/invitations").await;
+    page.attr(&format!(r#"[data-email="{email}"]"#), "data-invitation-id")
+}
+
+pub async fn revoke_invitation(c: &TestClient, invitation_id: &str) -> Page {
+    c.submit(
+        "/admin/invitations",
+        &format!("/admin/invitations/{invitation_id}/revoke"),
+        &[],
+    )
+    .await
+}
+
+pub async fn assign_users(c: &TestClient, server_id: &str, user_ids: &[&str]) -> Page {
+    let path = server_path(server_id);
+    let fields: Vec<(&str, &str)> = user_ids.iter().map(|id| ("user_id", *id)).collect();
+    c.submit(&path, &format!("{path}/users"), &fields).await
+}
+
+/// The server ids whose checkbox is checked on the user's page.
+pub async fn assigned_server_ids(c: &TestClient, user_id: &str) -> Vec<String> {
+    let page = c.get(&format!("/admin/users/{user_id}")).await;
+    page.attrs(r#"input[name="server_id"][checked]"#, "value")
+}
+
+/// The user ids whose checkbox is checked on the server's page.
+pub async fn assigned_user_ids(c: &TestClient, server_id: &str) -> Vec<String> {
+    let page = c.get(&server_path(server_id)).await;
+    page.attrs(r#"input[name="user_id"][checked]"#, "value")
+}
+
+pub async fn catalog_tools(c: &TestClient, server_id: &str) -> Vec<String> {
+    let page = c.get(&server_path(server_id)).await;
+    page.attrs("[data-catalog-tool]", "data-catalog-tool")
+}
+
+pub async fn lockdown(c: &TestClient, server_id: &str) -> Option<String> {
+    let page = c.get(&server_path(server_id)).await;
+    page.attr("main", "data-lockdown")
+}
+
+pub async fn redirect_id(c: &TestClient, host: &str) -> Option<String> {
+    let page = c.get("/admin/redirects").await;
+    page.attr(&format!(r#"[data-host="{host}"]"#), "data-redirect-id")
+}
+
+/// `action` is "disable" or "enable".
+pub async fn redirect_action(c: &TestClient, redirect_id: &str, action: &str) -> Page {
+    c.submit(
+        "/admin/redirects",
+        &format!("/admin/redirects/{redirect_id}/{action}"),
+        &[],
+    )
+    .await
 }

@@ -60,6 +60,8 @@ pub enum Mode {
     },
     /// tools/call is accepted and never answered; every other method is normal.
     Hang,
+    /// tools/call answers as SSE: first a request to the client, then, 100 ms later, the result.
+    ServerRequest,
     /// Every POST answers 200 application/json with the body `not json at all`.
     Garbage,
     /// Every request answers 307 with this Location.
@@ -291,6 +293,9 @@ enum Reply {
         interval: Duration,
         message: Value,
     },
+    ServerRequest {
+        message: Value,
+    },
     Hang,
 }
 
@@ -319,6 +324,7 @@ async fn handle(State(shared): State<Arc<Shared>>, request: Request) -> Response
             interval,
             message,
         } => progress_response(steps, interval, message),
+        Reply::ServerRequest { message } => server_request_response(message),
         Reply::Hang => std::future::pending().await,
     };
     if set_cookie {
@@ -399,11 +405,16 @@ fn session_post(
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
     let params = message.get("params").cloned().unwrap_or(Value::Null);
     let lenient = matches!(options.mode, Mode::LenientMethods);
-    let Some(id) = message.get("id").cloned() else {
-        return Reply::Now(match check_session(state, rec) {
-            Ok(_) => accepted(),
-            Err(code) => status_only(code),
-        });
+    let client_answer = !message.contains_key("method")
+        && (message.contains_key("result") || message.contains_key("error"));
+    let id = match message.get("id").cloned() {
+        Some(id) if !client_answer => id,
+        _ => {
+            return Reply::Now(match check_session(state, rec) {
+                Ok(_) => accepted(),
+                Err(code) => status_only(code),
+            });
+        }
     };
     if known_method(&SESSION_METHODS, method, lenient) == Some("initialize") {
         return Reply::Now(initialize(state, options, id, &params));
@@ -574,6 +585,11 @@ fn answer(
                 return Reply::Progress {
                     steps: *steps,
                     interval: Duration::from_millis(*interval_ms),
+                    message: dispatch(id, method, params, options, stateless),
+                };
+            }
+            Mode::ServerRequest => {
+                return Reply::ServerRequest {
                     message: dispatch(id, method, params, options, stateless),
                 };
             }
@@ -760,6 +776,23 @@ fn progress_response(steps: u32, interval: Duration, message: Value) -> Response
         .header(header::CONTENT_TYPE, "text/event-stream")
         .body(Body::from_stream(events))
         .expect("progress response")
+}
+
+/// The request the server-request mode sends before the result.
+const SERVER_REQUEST: &str = r#"data: {"jsonrpc":"2.0","id":"srv-1","method":"elicitation/create","params":{"message":"confirm?","requestedSchema":{"type":"object","properties":{}}}}"#;
+
+fn server_request_response(message: Value) -> Response {
+    let request = Ok::<Bytes, io::Error>(Bytes::from(format!("{SERVER_REQUEST}\n\n")));
+    let result = format!("data: {message}\n\n");
+    let events = stream::iter(vec![request]).chain(stream::once(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        Ok::<Bytes, io::Error>(Bytes::from(result))
+    }));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .body(Body::from_stream(events))
+        .expect("server request response")
 }
 
 fn accepted() -> Response {

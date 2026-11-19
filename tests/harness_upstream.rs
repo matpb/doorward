@@ -540,3 +540,51 @@ async fn shutdown_refuses() {
     assert_eq!(refused.status, 0);
     assert!(started.elapsed() < Duration::from_secs(5));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn server_request_then_result() {
+    let fake = FakeUpstream::start(UpstreamOptions::default()).await;
+    let session = initialized(&fake.url()).await;
+    let stateless = McpClient::stateless(&fake.url(), None);
+    fake.set_mode(Mode::ServerRequest);
+    for client in [&session, &stateless] {
+        let reply = client.call_tool("echo", json!({})).await;
+        assert_eq!(reply.status, 200);
+        assert_eq!(reply.events.len(), 2, "events: {}", reply.events.len());
+        let request = &reply.events[0];
+        assert_eq!(request.data["method"], "elicitation/create");
+        assert_eq!(request.data["id"], "srv-1");
+        assert_eq!(reply.text().as_deref(), Some("called: echo"));
+        let gap = reply.events[1].at.saturating_sub(request.at);
+        assert!(gap >= Duration::from_millis(80), "gap: {gap:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn client_answer_is_accepted() {
+    let fake = FakeUpstream::start(UpstreamOptions::default()).await;
+    let client = initialized(&fake.url()).await;
+    let session_id = client.session_id().expect("session id");
+    let accept = br#"{"jsonrpc":"2.0","id":"srv-1","result":{"action":"accept"}}"#;
+    let failed = br#"{"jsonrpc":"2.0","id":"srv-1","error":{"code":-1,"message":"no"}}"#;
+    for mode in [Mode::Normal, Mode::ServerRequest, Mode::LenientMethods] {
+        fake.set_mode(mode);
+        for body in [&accept[..], &failed[..]] {
+            let answered = client
+                .raw(
+                    body,
+                    &[
+                        ("Mcp-Session-Id", session_id.as_str()),
+                        ("MCP-Protocol-Version", "2025-11-25"),
+                    ],
+                )
+                .await;
+            assert_eq!(answered.status, 202);
+            assert_eq!(answered.body, "");
+            let anonymous = client
+                .raw(body, &[("MCP-Protocol-Version", "2025-11-25")])
+                .await;
+            assert_eq!(anonymous.status, 400);
+        }
+    }
+}

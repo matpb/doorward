@@ -28,7 +28,14 @@ const LOGIN_FIELDS: &str =
 const TEST_PAGE: &str = r#"<p class="error">  Wrong   email
  or password. </p><p class="notice">Saved</p><form method="post"><input type="hidden" name="csrf" value="tok-123"><input type="text" name="email" value="owner@example.com"><a class="item" href="/a" data-x="1">First  link</a><a class="item" href="/b">Second</a><a class="item">Third</a></form>"#;
 const ACTIVITY_ROWS: &str = r#"<ul><li data-kind="tool_call" data-user="7" data-server="demo" data-tool="echo" data-decision="allow" data-outcome="ok"></li><li data-kind="login" data-user="7" data-decision="allow" data-outcome="ok"></li></ul>"#;
-const EFFECTIVE_TOOLS: &str = r#"<ul><li data-tool="echo" data-verdict="allow"></li><li data-tool="delete_db" data-verdict="deny"></li></ul>"#;
+const EFFECTIVE_TOOLS: &str = r#"<ul><li data-server="demo" data-tool="echo" data-verdict="allow"></li><li data-server="demo" data-tool="delete_db"></li></ul>"#;
+const USER_SERVER_BOXES: &str = r#"<input type="checkbox" name="server_id" value="srv-1" checked><input type="checkbox" name="server_id" value="srv-2">"#;
+const SERVER_USER_BOXES: &str = r#"<input type="checkbox" name="user_id" value="7" checked><input type="checkbox" name="user_id" value="8">"#;
+const CATALOG_TOOLS: &str =
+    r#"<ul><li data-catalog-tool="echo"></li><li data-catalog-tool="search"></li></ul>"#;
+const INVITATIONS: &str =
+    r#"<ul><li data-invitation-id="inv-1" data-email="bob@example.com"></li></ul>"#;
+const REDIRECTS: &str = r#"<ul><li data-redirect-id="rd-1" data-host="app.example.com"></li></ul>"#;
 
 /// One request as the stub received it.
 #[derive(Clone, Debug)]
@@ -216,13 +223,18 @@ struct Reply {
 
 impl Reply {
     fn html(status: u16, kind: &str, inner: &str) -> Reply {
+        Reply::page(status, kind, "", inner)
+    }
+
+    /// `main_attrs` is written verbatim inside the `<main>` tag, with a leading space when present.
+    fn page(status: u16, kind: &str, main_attrs: &str, inner: &str) -> Reply {
         Reply {
             status,
             location: None,
             cookies: Vec::new(),
             content_type: "text/html; charset=utf-8",
             body: format!(
-                "<!doctype html><html><head><title>stub</title></head><body><main data-page=\"{kind}\">{inner}</main></body></html>"
+                "<!doctype html><html><head><title>stub</title></head><body><main data-page=\"{kind}\"{main_attrs}>{inner}</main></body></html>"
             ),
         }
     }
@@ -269,11 +281,15 @@ impl IntoResponse for Reply {
 }
 
 fn form_page(req: &Recorded, kind: &str, inputs: &str) -> Reply {
+    form_page_with(req, kind, "", inputs)
+}
+
+fn form_page_with(req: &Recorded, kind: &str, main_attrs: &str, inputs: &str) -> Reply {
     let csrf = cookie_value(req, CSRF).unwrap_or_else(random_hex);
     let inner = format!(
         "<form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"{csrf}\">{inputs}</form>"
     );
-    Reply::html(200, kind, &inner).cookie(format!("{CSRF}={csrf}; {COOKIE_ATTRS}"))
+    Reply::page(200, kind, main_attrs, &inner).cookie(format!("{CSRF}={csrf}; {COOKIE_ATTRS}"))
 }
 
 fn hidden_input(name: &str, value: &str) -> String {
@@ -549,10 +565,11 @@ fn route(shared: &Shared, req: &Recorded) -> Reply {
             store.servers.push((id.clone(), slug));
             Reply::redirect(&format!("/admin/servers/{id}"))
         }
-        ("GET", ["admin", "servers", _]) => form_page(
+        ("GET", ["admin", "servers", _]) => form_page_with(
             req,
             "server",
-            "<p data-lockdown=\"unknown\">Not checked.</p>",
+            " data-lockdown=\"open\"",
+            &format!("{CATALOG_TOOLS}{SERVER_USER_BOXES}"),
         ),
         ("POST", ["admin", "servers", id]) => {
             if !csrf_ok {
@@ -575,15 +592,25 @@ fn route(shared: &Shared, req: &Recorded) -> Reply {
             "users",
             "<ul><li data-user-id=\"7\" data-email=\"bob@example.com\"></li></ul>",
         ),
-        ("GET", ["admin", "users", _]) => form_page(req, "user", EFFECTIVE_TOOLS),
+        ("GET", ["admin", "users", _]) => form_page(
+            req,
+            "user",
+            &format!("{EFFECTIVE_TOOLS}{USER_SERVER_BOXES}"),
+        ),
         ("POST", ["admin", "users", id, _]) => {
             if !csrf_ok {
                 return forbidden();
             }
             Reply::redirect(&format!("/admin/users/{id}"))
         }
-        ("GET", ["admin", "invitations"]) => form_page(req, "invitations", ""),
+        ("GET", ["admin", "invitations"]) => form_page(req, "invitations", INVITATIONS),
         ("POST", ["admin", "invitations"]) => {
+            if !csrf_ok {
+                return forbidden();
+            }
+            Reply::redirect("/admin/invitations")
+        }
+        ("POST", ["admin", "invitations", _, "revoke"]) => {
             if !csrf_ok {
                 return forbidden();
             }
@@ -613,8 +640,14 @@ fn route(shared: &Shared, req: &Recorded) -> Reply {
             store.rules.retain(|rule| rule.as_str() != *id);
             Reply::redirect("/admin/rules")
         }
-        ("GET", ["admin", "redirects"]) => form_page(req, "redirects", ""),
+        ("GET", ["admin", "redirects"]) => form_page(req, "redirects", REDIRECTS),
         ("POST", ["admin", "redirects"]) => {
+            if !csrf_ok {
+                return forbidden();
+            }
+            Reply::redirect("/admin/redirects")
+        }
+        ("POST", ["admin", "redirects", _, _]) => {
             if !csrf_ok {
                 return forbidden();
             }
@@ -1292,8 +1325,8 @@ async fn admin_user_and_rule_helpers() {
     assert_eq!(
         admin::effective_tools(&c, "7").await,
         vec![
-            ("echo".to_string(), "allow".to_string()),
-            ("delete_db".to_string(), "deny".to_string()),
+            ("demo".to_string(), "echo".to_string(), "allow".to_string()),
+            ("demo".to_string(), "delete_db".to_string(), String::new()),
         ]
     );
     admin::add_redirect(&c, "https", "callback.example.com", "/cb/").await;
@@ -1312,7 +1345,16 @@ async fn admin_mail_and_activity_helpers() {
     let stub = Stub::start().await;
     let c = signed_in(&stub).await;
     let from = "doorward@example.com";
-    admin::mail_smtp(&c, from, "smtp.example.com", 587, "doorward", "pw-1", true).await;
+    admin::mail_smtp(
+        &c,
+        from,
+        "smtp.example.com",
+        587,
+        "doorward",
+        "pw-1",
+        "starttls",
+    )
+    .await;
     assert_fields(
         &stub.last("POST", "/admin/mail"),
         &[
@@ -1322,10 +1364,32 @@ async fn admin_mail_and_activity_helpers() {
             ("smtp_port", "587"),
             ("smtp_username", "doorward"),
             ("smtp_password", "pw-1"),
-            ("smtp_tls", "on"),
+            ("smtp_tls", "starttls"),
         ],
     );
-    admin::mail_smtp(&c, from, "smtp.example.com", 25, "doorward", "pw-1", false).await;
+    admin::mail_smtp(
+        &c,
+        from,
+        "smtp.example.com",
+        465,
+        "doorward",
+        "pw-1",
+        "implicit",
+    )
+    .await;
+    assert_fields(
+        &stub.last("POST", "/admin/mail"),
+        &[
+            ("provider", "smtp"),
+            ("from", from),
+            ("smtp_host", "smtp.example.com"),
+            ("smtp_port", "465"),
+            ("smtp_username", "doorward"),
+            ("smtp_password", "pw-1"),
+            ("smtp_tls", "implicit"),
+        ],
+    );
+    admin::mail_smtp(&c, from, "smtp.example.com", 25, "doorward", "pw-1", "off").await;
     assert_fields(
         &stub.last("POST", "/admin/mail"),
         &[
@@ -1335,6 +1399,7 @@ async fn admin_mail_and_activity_helpers() {
             ("smtp_port", "25"),
             ("smtp_username", "doorward"),
             ("smtp_password", "pw-1"),
+            ("smtp_tls", "off"),
         ],
     );
     admin::mail_resend(&c, from, "re-key-1", "https://resend.example.com").await;
@@ -1395,4 +1460,46 @@ async fn admin_mail_and_activity_helpers() {
             },
         ]
     );
+}
+
+/// The body of a recorded form holds exactly the csrf field.
+fn assert_only_csrf(recorded: &Recorded) {
+    let pairs = form_pairs(&recorded.body);
+    assert_eq!(pairs.len(), 1, "body: {}", recorded.body);
+    assert_eq!(pairs[0].0, "csrf");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admin_extra_helpers() {
+    let stub = Stub::start().await;
+    let c = signed_in(&stub).await;
+
+    assert_eq!(
+        admin::invitation_id(&c, "bob@example.com").await.as_deref(),
+        Some("inv-1")
+    );
+    assert_eq!(admin::invitation_id(&c, "nobody@example.com").await, None);
+    let revoked = admin::revoke_invitation(&c, "inv-1").await;
+    assert_eq!(revoked.status, 303);
+    assert_only_csrf(&stub.last("POST", "/admin/invitations/inv-1/revoke"));
+
+    admin::assign_users(&c, "srv-1", &["7", "8"]).await;
+    assert_fields(
+        &stub.last("POST", "/admin/servers/srv-1/users"),
+        &[("user_id", "7"), ("user_id", "8")],
+    );
+
+    assert_eq!(admin::assigned_server_ids(&c, "7").await, ["srv-1"]);
+    assert_eq!(admin::assigned_user_ids(&c, "srv-1").await, ["7"]);
+    assert_eq!(admin::catalog_tools(&c, "srv-1").await, ["echo", "search"]);
+    assert_eq!(admin::lockdown(&c, "srv-1").await.as_deref(), Some("open"));
+
+    assert_eq!(
+        admin::redirect_id(&c, "app.example.com").await.as_deref(),
+        Some("rd-1")
+    );
+    assert_eq!(admin::redirect_id(&c, "nobody.example.com").await, None);
+    let disabled = admin::redirect_action(&c, "rd-1", "disable").await;
+    assert_eq!(disabled.status, 303);
+    assert_only_csrf(&stub.last("POST", "/admin/redirects/rd-1/disable"));
 }
