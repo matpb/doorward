@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use axum::http::StatusCode;
 use reqwest::Method;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, ORIGIN, SET_COOKIE};
 use rusqlite::OptionalExtension;
@@ -12,6 +13,7 @@ use tokio::net::TcpListener;
 use url::form_urlencoded::Serializer;
 
 use crate::app::{Deps, assemble, serve};
+use crate::audit::{self, Event};
 use crate::config::Config;
 use crate::crypto::{Keys, PasswordHasher};
 use crate::web::SESSION_COOKIE;
@@ -673,4 +675,606 @@ async fn no_free_hash_slot_answers_503_and_counts_nothing() {
         (2, 2),
         "the checked failure must now be counted"
     );
+}
+
+/// Each element matching `css`, as its attributes.
+fn elements(body: &str, css: &str) -> Vec<BTreeMap<String, String>> {
+    let doc = Html::parse_document(body);
+    let selector = Selector::parse(css).expect("selector");
+    doc.select(&selector)
+        .map(|element| {
+            element
+                .value()
+                .attrs()
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect()
+        })
+        .collect()
+}
+
+fn open_db(dir: &Path) -> rusqlite::Connection {
+    rusqlite::Connection::open(dir.join("doorward.db")).expect("open")
+}
+
+/// Starts a gateway and makes the owner, who is then signed in.
+async fn owner_gateway(dir: &Path) -> (String, Browser) {
+    let (base, code) = start(dir).await;
+    let mut owner = Browser::new(&base);
+    let setup = owner
+        .submit(
+            "/setup",
+            "/setup",
+            &[
+                ("setup_code", &code),
+                ("email", OWNER),
+                ("password", PASSWORD),
+            ],
+        )
+        .await;
+    assert_eq!(setup.status, 303, "the owner must be created");
+    (base, owner)
+}
+
+/// (user id, user email, detail) of each row of `kind`, oldest first.
+fn rows_of(dir: &Path, kind: &str) -> Vec<(Option<i64>, String, String)> {
+    let conn = open_db(dir);
+    let mut statement = conn
+        .prepare("SELECT user_id, user_email, detail FROM activity WHERE kind = ?1 ORDER BY id")
+        .expect("prepare");
+    statement
+        .query_map([kind], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .expect("query")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("rows")
+}
+
+const AT: i64 = 1_800_000_000;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recorded_row_shows_every_attribute_on_the_activity_page() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    let event = Event {
+        kind: "tool_call",
+        user_id: Some(7),
+        user_email: "bob@example.com",
+        server_id: Some(3),
+        server_slug: "demo",
+        tool: "echo",
+        client: "claude-code",
+        decision: "allow",
+        outcome: "ok",
+        detail: "hello",
+        duration_ms: Some(42),
+    };
+    audit::record(&open_db(dir.path()), AT, &event).expect("record");
+
+    let mut owner = sign_in(&base, OWNER).await;
+    let page = owner.get("/admin/activity").await;
+    assert_eq!(page.status, 200);
+    assert_eq!(page.kind().as_deref(), Some("activity"));
+    let rows = elements(&page.body, r#"[data-kind="tool_call"]"#);
+    assert_eq!(rows.len(), 1, "one row must be shown");
+    let row = &rows[0];
+    assert_eq!(row["data-kind"], "tool_call");
+    assert_eq!(row["data-user"], "bob@example.com");
+    assert_eq!(row["data-server"], "demo");
+    assert_eq!(row["data-tool"], "echo");
+    assert_eq!(row["data-decision"], "allow");
+    assert_eq!(row["data-outcome"], "ok");
+    assert_eq!(row["data-time"], "2027-01-15T08:00:00Z");
+    assert_eq!(row["data-duration-ms"], "42");
+    assert!(page.body.contains("hello"), "the detail must be shown");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_without_a_duration_has_no_duration_attribute() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    let event = Event {
+        kind: "admin_change",
+        ..Default::default()
+    };
+    audit::record(&open_db(dir.path()), AT, &event).expect("record");
+    let mut owner = sign_in(&base, OWNER).await;
+    let rows = elements(
+        &owner.get("/admin/activity").await.body,
+        r#"[data-kind="admin_change"]"#,
+    );
+    assert_eq!(rows.len(), 1);
+    assert!(!rows[0].contains_key("data-duration-ms"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_activity_page_filters_by_user_and_by_server() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    let conn = open_db(dir.path());
+    let rows = [
+        (Some(1), "alice@example.com", Some(10), "alpha"),
+        (Some(2), "bob@example.com", Some(10), "alpha"),
+        (Some(1), "alice@example.com", Some(20), "beta"),
+    ];
+    for (offset, (user_id, user_email, server_id, server_slug)) in rows.iter().enumerate() {
+        let event = Event {
+            kind: "tool_call",
+            user_id: *user_id,
+            user_email,
+            server_id: *server_id,
+            server_slug,
+            ..Default::default()
+        };
+        audit::record(&conn, AT + offset as i64, &event).expect("record");
+    }
+    let mut owner = sign_in(&base, OWNER).await;
+
+    let tool_calls = r#"[data-kind="tool_call"]"#;
+    let all = elements(&owner.get("/admin/activity").await.body, tool_calls);
+    assert_eq!(all.len(), 3, "no filter shows every row");
+    let by_user = elements(&owner.get("/admin/activity?user=1").await.body, tool_calls);
+    assert_eq!(by_user.len(), 2, "user 1 has two rows");
+    assert!(
+        by_user
+            .iter()
+            .all(|row| row["data-user"] == "alice@example.com")
+    );
+    let by_server = elements(
+        &owner.get("/admin/activity?server=20").await.body,
+        tool_calls,
+    );
+    assert_eq!(by_server.len(), 1, "server 20 has one row");
+    assert_eq!(by_server[0]["data-server"], "beta");
+    let both = elements(
+        &owner.get("/admin/activity?user=1&server=10").await.body,
+        tool_calls,
+    );
+    assert_eq!(both.len(), 1, "user 1 on server 10 has one row");
+    let not_a_number = elements(
+        &owner.get("/admin/activity?user=alice").await.body,
+        tool_calls,
+    );
+    assert!(
+        not_a_number.is_empty(),
+        "a value that is not a number means no rows"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_newest_row_comes_first() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    let conn = open_db(dir.path());
+    for (at, detail) in [(AT, "older"), (AT + 60, "newer")] {
+        let event = Event {
+            kind: "admin_change",
+            detail,
+            ..Default::default()
+        };
+        audit::record(&conn, at, &event).expect("record");
+    }
+    let mut owner = sign_in(&base, OWNER).await;
+    let rows = elements(
+        &owner.get("/admin/activity").await.body,
+        r#"[data-kind="admin_change"]"#,
+    );
+    let times: Vec<&str> = rows.iter().map(|row| row["data-time"].as_str()).collect();
+    assert_eq!(times, ["2027-01-15T08:01:00Z", "2027-01-15T08:00:00Z"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_detail_is_stored_cut_to_500_characters() {
+    let dir = tempfile::tempdir().expect("dir");
+    let _ = start(dir.path()).await;
+    let conn = open_db(dir.path());
+    let long = "é".repeat(600);
+    let event = Event {
+        kind: "login",
+        detail: &long,
+        ..Default::default()
+    };
+    audit::record(&conn, AT, &event).expect("record");
+    let stored: String = conn
+        .query_row("SELECT detail FROM activity", [], |row| row.get(0))
+        .expect("stored detail");
+    assert_eq!(stored.chars().count(), 500);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_detail_with_markup_is_escaped_on_the_page() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    let event = Event {
+        kind: "login",
+        detail: "<b>x</b>",
+        ..Default::default()
+    };
+    audit::record(&open_db(dir.path()), AT, &event).expect("record");
+    let mut owner = sign_in(&base, OWNER).await;
+    let page = owner.get("/admin/activity").await;
+    assert!(
+        page.body.contains("&lt;b&gt;x&lt;/b&gt;"),
+        "the detail must be escaped"
+    );
+    assert!(
+        !page.body.contains("<b>x</b>"),
+        "no raw markup may be shown"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_activity_page_is_for_the_owner_and_admins_only() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    add_user(dir.path(), PLAIN, "user").await;
+    add_user(dir.path(), ADMIN, "admin").await;
+
+    let page = Browser::new(&base).get("/admin/activity").await;
+    assert_eq!(page.status, 303, "anonymous visitors are sent to sign in");
+    assert_eq!(page.location(), Some("/login"));
+
+    let mut plain = sign_in(&base, PLAIN).await;
+    let page = plain.get("/admin/activity").await;
+    assert_eq!(page.status, 403, "a plain user is refused");
+    assert_eq!(page.kind().as_deref(), Some("forbidden"));
+
+    let mut admin = sign_in(&base, ADMIN).await;
+    let page = admin.get("/admin/activity").await;
+    assert_eq!(page.status, 200, "an admin reads the activity page");
+    assert_eq!(page.kind().as_deref(), Some("activity"));
+    let panel = admin.get("/admin").await;
+    assert!(
+        panel.body.contains(r#"href="/admin/activity""#),
+        "the panel links to the activity page"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_successful_sign_in_writes_one_login_row() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    let signed = login(&base, OWNER, PASSWORD).await;
+    assert_eq!(signed.status, 303, "the right password must sign in");
+    let rows = rows_of(dir.path(), "login");
+    assert_eq!(rows.len(), 1, "one login row must be written");
+    assert_eq!(rows[0].1, OWNER);
+    assert!(rows[0].0.is_some(), "the login row must carry the user id");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wrong_password_writes_one_login_failed_row_with_the_email() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    let refused = login(&base, OWNER, "wrong password entirely").await;
+    assert_eq!(refused.status, 401);
+    let rows = rows_of(dir.path(), "login_failed");
+    assert_eq!(rows.len(), 1, "one failed row must be written");
+    assert!(rows[0].0.is_some(), "an existing account keeps its user id");
+    assert_eq!(rows[0].1, OWNER);
+    assert_eq!(rows[0].2, "", "the detail is empty for an existing account");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_address_writes_a_login_failed_row_without_the_email() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    let typed = "nobody-typed-this-password";
+    let refused = login(&base, "nobody@example.com", typed).await;
+    assert_eq!(refused.status, 401);
+    let rows = rows_of(dir.path(), "login_failed");
+    assert_eq!(rows.len(), 1, "one failed row must be written");
+    assert_eq!(rows[0].0, None, "no account, no user id");
+    assert_eq!(rows[0].1, "", "the typed address is never stored");
+    assert_eq!(rows[0].2, "unknown address");
+    let stored: String = open_db(dir.path())
+        .query_row(
+            "SELECT group_concat(user_email || detail) FROM activity",
+            [],
+            |row| row.get(0),
+        )
+        .expect("activity text");
+    assert!(
+        !stored.contains(typed),
+        "the typed password is never stored"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blocked_sign_in_writes_no_row() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    let mut browser = Browser::new(&base);
+    for _ in 0..5 {
+        let refused = browser
+            .submit(
+                "/login",
+                "/login",
+                &[("email", OWNER), ("password", "wrong password entirely")],
+            )
+            .await;
+        assert_eq!(refused.status, 401);
+    }
+    let blocked = browser
+        .submit(
+            "/login",
+            "/login",
+            &[("email", OWNER), ("password", PASSWORD)],
+        )
+        .await;
+    assert_eq!(blocked.status, 429, "the account is blocked");
+    assert_eq!(
+        rows_of(dir.path(), "login_failed").len(),
+        5,
+        "the five counted failures are logged and the blocked attempt is not"
+    );
+    assert!(
+        rows_of(dir.path(), "login").is_empty(),
+        "no sign-in was made"
+    );
+}
+
+/// Posts the sign-in form from a fresh browser.
+async fn login(base: &str, email: &str, password: &str) -> Answer {
+    let mut browser = Browser::new(base);
+    browser
+        .submit(
+            "/login",
+            "/login",
+            &[("email", email), ("password", password)],
+        )
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_send_with_no_provider_is_shown_and_logged() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail/test",
+            &[("to", "probe@example.com")],
+        )
+        .await;
+    assert_eq!(page.status, 200);
+    assert_eq!(page.kind().as_deref(), Some("mail"));
+    assert_eq!(page.error().as_deref(), Some("Mail is not set up."));
+    let rows = rows_of(dir.path(), "mail_failed");
+    assert_eq!(rows.len(), 1, "one mail_failed row must be written");
+    assert_eq!(rows[0].2, "Mail is not set up.");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bad_test_address_is_refused_with_the_mail_page() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail/test",
+            &[("to", "not-an-address")],
+        )
+        .await;
+    assert_eq!(page.status, 400);
+    assert_eq!(page.kind().as_deref(), Some("mail"));
+    assert_eq!(
+        page.error().as_deref(),
+        Some("Enter a valid email address.")
+    );
+    assert!(
+        rows_of(dir.path(), "mail_failed").is_empty(),
+        "nothing was sent"
+    );
+}
+
+/// A local listener that answers every request with 500 and an empty body.
+async fn failing_provider() -> String {
+    let app = axum::Router::new().fallback(|| async { StatusCode::INTERNAL_SERVER_ERROR });
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let base = format!("http://{}", listener.local_addr().expect("address"));
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    base
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_http_send_never_shows_the_key() {
+    const KEY: &str = "re_key_must_not_leak_8d1f";
+    let dir = tempfile::tempdir().expect("dir");
+    let (_, mut owner) = owner_gateway(dir.path()).await;
+    let provider = failing_provider().await;
+    let saved = owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail",
+            &[
+                ("provider", "resend"),
+                ("from", "gateway@example.com"),
+                ("resend_api_key", KEY),
+                ("resend_base_url", provider.as_str()),
+            ],
+        )
+        .await;
+    assert_eq!(saved.status, 303);
+    let page = owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail/test",
+            &[("to", "probe@example.com")],
+        )
+        .await;
+    assert_eq!(page.status, 200);
+    let error = page.error().expect("the failure must be shown");
+    assert_eq!(error, "Resend answered 500");
+    assert!(!page.body.contains(KEY), "the page must not show the key");
+    let logged = rows_of(dir.path(), "mail_failed");
+    assert_eq!(logged.len(), 1);
+    assert!(!logged[0].2.contains(KEY), "the log must not hold the key");
+}
+
+/// A listener that accepts connections and never answers them.
+async fn silent_provider() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let base = format!("http://{}", listener.local_addr().expect("address"));
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            held.push(stream);
+        }
+    });
+    base
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_that_never_answers_is_timed_out() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_, mut owner) = owner_gateway(dir.path()).await;
+    let silent = silent_provider().await;
+    let saved = owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail",
+            &[
+                ("provider", "resend"),
+                ("from", "gateway@example.com"),
+                ("resend_api_key", "re_key"),
+                ("resend_base_url", silent.as_str()),
+            ],
+        )
+        .await;
+    assert_eq!(saved.status, 303);
+    let page = owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail/test",
+            &[("to", "probe@example.com")],
+        )
+        .await;
+    assert_eq!(page.status, 200);
+    assert_eq!(
+        page.error().as_deref(),
+        Some("The mail server did not answer in time.")
+    );
+    let logged = rows_of(dir.path(), "mail_failed");
+    assert_eq!(logged.len(), 1, "the timed out send must be logged");
+    assert_eq!(logged[0].2, "The mail server did not answer in time.");
+}
+
+/// A local listener that answers every request with 500 and a 1 MiB body.
+async fn oversized_provider() -> String {
+    let body = "x".repeat(1024 * 1024);
+    let app = axum::Router::new().fallback(move || {
+        let body = body.clone();
+        async move { (StatusCode::INTERNAL_SERVER_ERROR, body) }
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let base = format!("http://{}", listener.local_addr().expect("address"));
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    base
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_provider_answer_of_one_mebibyte_is_shown_within_300_characters() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_, mut owner) = owner_gateway(dir.path()).await;
+    let provider = oversized_provider().await;
+    let saved = owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail",
+            &[
+                ("provider", "mailgun"),
+                ("from", "gateway@example.com"),
+                ("mailgun_api_key", "key-test"),
+                ("mailgun_domain", "mg.example.com"),
+                ("mailgun_base_url", provider.as_str()),
+            ],
+        )
+        .await;
+    assert_eq!(saved.status, 303);
+    let page = owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail/test",
+            &[("to", "probe@example.com")],
+        )
+        .await;
+    assert_eq!(page.status, 200);
+    let error = page.error().expect("the failure must be shown");
+    assert!(!error.is_empty());
+    assert!(
+        error.chars().count() <= 300,
+        "the shown error is {} characters",
+        error.chars().count()
+    );
+    let logged = rows_of(dir.path(), "mail_failed");
+    assert_eq!(logged.len(), 1);
+    assert!(logged[0].2.chars().count() <= 300);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_base_address_with_credentials_is_never_shown_or_logged() {
+    const CREDENTIAL: &str = "hunter2secret";
+    let dir = tempfile::tempdir().expect("dir");
+    let (_, mut owner) = owner_gateway(dir.path()).await;
+    let base = format!("http://user:{CREDENTIAL}@127.0.0.1:9");
+    let saved = owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail",
+            &[
+                ("provider", "resend"),
+                ("from", "gateway@example.com"),
+                ("resend_api_key", "re_key"),
+                ("resend_base_url", base.as_str()),
+            ],
+        )
+        .await;
+    assert_eq!(saved.status, 303);
+    let page = owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail/test",
+            &[("to", "probe@example.com")],
+        )
+        .await;
+    assert_eq!(page.status, 200);
+    let error = page.error().expect("the failure must be shown");
+    assert!(!error.is_empty());
+    assert!(
+        !error.contains(CREDENTIAL),
+        "the error must not show the credential"
+    );
+    let logged = rows_of(dir.path(), "mail_failed");
+    assert_eq!(logged.len(), 1, "the failed send must be logged");
+    assert!(
+        !logged[0].2.contains(CREDENTIAL),
+        "the log must not hold the credential"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn saving_mail_settings_writes_one_admin_change_row() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_, mut owner) = owner_gateway(dir.path()).await;
+    let saved = owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail",
+            &smtp_fields("smtp.example.com", SECRET),
+        )
+        .await;
+    assert_eq!(saved.status, 303);
+    let rows = rows_of(dir.path(), "admin_change");
+    assert_eq!(rows.len(), 1, "one admin_change row must be written");
+    assert_eq!(rows[0].1, OWNER);
+    assert_eq!(rows[0].2, "mail settings");
 }

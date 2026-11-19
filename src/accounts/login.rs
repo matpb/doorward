@@ -5,6 +5,7 @@ use maud::{Markup, html};
 use serde::Deserialize;
 
 use crate::app::AppState;
+use crate::audit::{self, OwnedEvent};
 use crate::crypto::token_hash;
 use crate::web::{
     SESSION_COOKIE, VerifiedForm, Viewer, busy, clear_cookie, form_page, internal_error, redirect,
@@ -17,6 +18,7 @@ use super::throttle::{self, Attempt, Reserve, Success};
 
 const WRONG_CREDENTIALS: &str = "Wrong email or password.";
 const BLOCKED: &str = "Too many sign-in attempts. Try again later.";
+const UNKNOWN_ADDRESS: &str = "unknown address";
 
 #[derive(Deserialize)]
 pub struct LoginQuery {
@@ -44,7 +46,7 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
     let reserve = Reserve {
         account: account.clone(),
         address: throttle_key(form.viewer.address),
-        email,
+        email: email.clone(),
         now,
         block_seconds: to_i64(limits.block_minutes).saturating_mul(60),
         account_failures: to_i64(limits.account_failures),
@@ -64,12 +66,14 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
     };
     let matched = state.hasher.verify(slot, password, phc).await;
     let (true, Some(user_id)) = (matched, user_id) else {
+        record_failed(&state, user_id, &email).await;
         return login_page(&form, StatusCode::UNAUTHORIZED, WRONG_CREDENTIALS, &req);
     };
     let success = Success {
         account,
         failure_id,
         user_id,
+        email,
         previous: form.viewer.presented_session().map(str::to_owned),
         now,
         lifetime: session::lifetime_seconds(state.config.lifetimes.session_hours),
@@ -77,6 +81,26 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
     match throttle::succeed(&state.db, success).await {
         Ok(token) => with_cookie(redirect("/account"), &session_cookie(&token)),
         Err(_) => internal_error(),
+    }
+}
+
+/// Writes the `login_failed` row. A failed write is reported and never changes the answer.
+async fn record_failed(state: &AppState, user_id: Option<i64>, email: &str) {
+    let event = match user_id {
+        Some(id) => OwnedEvent {
+            kind: "login_failed".to_owned(),
+            user_id: Some(id),
+            user_email: email.to_owned(),
+            ..Default::default()
+        },
+        None => OwnedEvent {
+            kind: "login_failed".to_owned(),
+            detail: UNKNOWN_ADDRESS.to_owned(),
+            ..Default::default()
+        },
+    };
+    if let Err(err) = audit::record_now(state, event).await {
+        eprintln!("doorward: cannot record a failed sign-in: {err}");
     }
 }
 

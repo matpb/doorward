@@ -4,12 +4,17 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use maud::{Markup, html};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, TransactionBehavior, params};
 
+use crate::accounts::input::{normalize_email, valid_new_email};
 use crate::app::AppState;
+use crate::audit::{self, Event};
 use crate::crypto::Keys;
-use crate::db::{Db, DbError};
-use crate::web::{FormFields, VerifiedForm, Viewer, form_page, internal_error, redirect};
+use crate::db::{self, Db, DbError};
+use crate::mail::{self, Message};
+use crate::web::{
+    FormFields, SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, redirect,
+};
 
 const PLAIN_KEYS: [&str; 9] = [
     "mail.provider",
@@ -26,6 +31,11 @@ const CONTROL_MESSAGE: &str = "A field contains a control character.";
 const PROVIDER_MESSAGE: &str = "Choose a provider: smtp, resend or mailgun.";
 const PORT_MESSAGE: &str = "The SMTP port must be a number from 1 to 65535.";
 const TLS_MESSAGE: &str = "Choose a TLS mode: off, starttls or implicit.";
+const TEST_TO_MESSAGE: &str = "Enter a valid email address.";
+const TEST_SENT: &str = "Test email sent.";
+const TEST_SUBJECT: &str = "Doorward test email";
+const TEST_TEXT: &str = "This is a test email from Doorward.";
+const TEST_HTML: &str = "<p>This is a test email from Doorward.</p>";
 
 /// The plain settings as stored. Secrets are never loaded for display.
 type View = BTreeMap<String, String>;
@@ -46,7 +56,7 @@ enum PlanError {
 
 pub async fn get_mail(viewer: Viewer, State(state): State<AppState>) -> Response {
     match load_view(&state.db).await {
-        Ok(view) => mail_page(&viewer, StatusCode::OK, &view, None),
+        Ok(view) => mail_page(&viewer, StatusCode::OK, &view, None, None),
         Err(_) => internal_error(),
     }
 }
@@ -56,15 +66,76 @@ pub async fn post_mail(State(state): State<AppState>, form: VerifiedForm) -> Res
         Ok(plan) => plan,
         Err(PlanError::Invalid(message)) => {
             return match load_view(&state.db).await {
-                Ok(view) => mail_page(&form.viewer, StatusCode::BAD_REQUEST, &view, Some(message)),
+                Ok(view) => mail_page(
+                    &form.viewer,
+                    StatusCode::BAD_REQUEST,
+                    &view,
+                    Some(message),
+                    None,
+                ),
                 Err(_) => internal_error(),
             };
         }
         Err(PlanError::Seal) => return internal_error(),
     };
-    let saved = state.db.call(move |conn| save_in(conn, &plan)).await;
+    let Some(actor) = form.viewer.user.clone() else {
+        return forbidden();
+    };
+    let at = state.clock.now().unix_timestamp();
+    let saved = state
+        .db
+        .call(move |conn| save_in(conn, &plan, &actor, at))
+        .await;
     match saved {
         Ok(()) => redirect("/admin/mail"),
+        Err(_) => internal_error(),
+    }
+}
+
+/// Sends the owner's test email. A bad address answers 400; a send answers 200 with its outcome.
+pub async fn post_test(State(state): State<AppState>, form: VerifiedForm) -> Response {
+    let to = normalize_email(form.fields.get("to"));
+    if !valid_new_email(&to) {
+        return test_answer(
+            &state,
+            &form.viewer,
+            StatusCode::BAD_REQUEST,
+            None,
+            Some(TEST_TO_MESSAGE),
+        )
+        .await;
+    }
+    let message = Message {
+        to,
+        subject: TEST_SUBJECT.to_owned(),
+        text: TEST_TEXT.to_owned(),
+        html: TEST_HTML.to_owned(),
+    };
+    match mail::send(&state, message).await {
+        Ok(()) => test_answer(&state, &form.viewer, StatusCode::OK, Some(TEST_SENT), None).await,
+        Err(error) => {
+            test_answer(
+                &state,
+                &form.viewer,
+                StatusCode::OK,
+                None,
+                Some(error.0.as_str()),
+            )
+            .await
+        }
+    }
+}
+
+/// The mail page carrying the outcome of a test send.
+async fn test_answer(
+    state: &AppState,
+    viewer: &Viewer,
+    status: StatusCode,
+    notice: Option<&str>,
+    error: Option<&str>,
+) -> Response {
+    match load_view(&state.db).await {
+        Ok(view) => mail_page(viewer, status, &view, error, notice),
         Err(_) => internal_error(),
     }
 }
@@ -73,7 +144,7 @@ async fn load_view(db: &Db) -> Result<View, DbError> {
     db.call(|conn| {
         let mut view = View::new();
         for key in PLAIN_KEYS {
-            if let Some(value) = stored_text(conn, key)? {
+            if let Some(value) = db::setting_text(conn, key)? {
                 view.insert(key.to_owned(), value);
             }
         }
@@ -188,8 +259,14 @@ fn has_control(text: &str) -> bool {
     text.chars().any(char::is_control)
 }
 
-/// One transaction. A secret left empty is kept only when every connection field is unchanged.
-fn save_in(conn: &mut Connection, plan: &Plan) -> rusqlite::Result<()> {
+/// One transaction: the settings, the `admin_change` row, and the rule for an empty secret.
+/// A secret left empty is kept only when every connection field is unchanged.
+fn save_in(
+    conn: &mut Connection,
+    plan: &Plan,
+    actor: &SessionUser,
+    at: i64,
+) -> rusqlite::Result<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let keep_secret = plan.sealed.is_none() && connection_unchanged(&tx, &plan.connection)?;
     for (key, value) in &plan.plain {
@@ -203,6 +280,14 @@ fn save_in(conn: &mut Connection, plan: &Plan) -> rusqlite::Result<()> {
             params![plan.secret_key],
         )?;
     }
+    let change = Event {
+        kind: "admin_change",
+        user_id: Some(actor.id),
+        user_email: &actor.email,
+        detail: "mail settings",
+        ..Default::default()
+    };
+    audit::record(&tx, at, &change)?;
     tx.commit()
 }
 
@@ -211,7 +296,7 @@ fn connection_unchanged(
     connection: &[(&str, String)],
 ) -> rusqlite::Result<bool> {
     for (key, posted) in connection {
-        if stored_text(conn, key)?.as_deref() != Some(posted.as_str()) {
+        if db::setting_text(conn, key)?.as_deref() != Some(posted.as_str()) {
             return Ok(false);
         }
     }
@@ -226,30 +311,15 @@ fn upsert(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<usize> 
     )
 }
 
-fn stored_text(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
-    let bytes: Option<Vec<u8>> = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            params![key],
-            |row| row.get(0),
-        )
-        .optional()?;
-    bytes
-        .map(|bytes| {
-            String::from_utf8(bytes).map_err(|err| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Blob,
-                    Box::new(err),
-                )
-            })
-        })
-        .transpose()
-}
-
-fn mail_page(viewer: &Viewer, status: StatusCode, view: &View, error: Option<&str>) -> Response {
+fn mail_page(
+    viewer: &Viewer,
+    status: StatusCode,
+    view: &View,
+    error: Option<&str>,
+    notice: Option<&str>,
+) -> Response {
     form_page(viewer, status, "mail", "Mail settings", |csrf| {
-        mail_forms(csrf, view, error)
+        mail_forms(csrf, view, error, notice)
     })
 }
 
@@ -257,12 +327,15 @@ fn shown<'a>(view: &'a View, key: &str) -> &'a str {
     view.get(key).map_or("", String::as_str)
 }
 
-fn mail_forms(csrf: &str, view: &View, error: Option<&str>) -> Markup {
+fn mail_forms(csrf: &str, view: &View, error: Option<&str>, notice: Option<&str>) -> Markup {
     let provider = shown(view, "mail.provider");
     let tls = shown(view, "mail.smtp_tls");
     html! {
         h1 { "Mail settings" }
         p { "Current provider: " (if provider.is_empty() { "none" } else { provider }) }
+        @if let Some(message) = notice {
+            p.notice { (message) }
+        }
         @if let Some(message) = error {
             p.error { (message) }
         }
@@ -282,7 +355,7 @@ fn mail_forms(csrf: &str, view: &View, error: Option<&str>) -> Markup {
             input id="smtp-password" name="smtp_password" type="password" autocomplete="new-password";
             label for="smtp-tls" { "TLS" }
             select id="smtp-tls" name="smtp_tls" {
-                option value="off" selected[tls == "off"] { "Off" }
+                option value="off" selected[tls == "off"] { "Off (password and mail are sent unencrypted)" }
                 option value="starttls" selected[tls == "starttls"] { "STARTTLS" }
                 option value="implicit" selected[tls == "implicit"] { "Implicit TLS" }
             }
@@ -313,6 +386,13 @@ fn mail_forms(csrf: &str, view: &View, error: Option<&str>) -> Markup {
             label for="mailgun-base" { "Base address (empty means the provider's own)" }
             input id="mailgun-base" name="mailgun_base_url" type="text" value=(shown(view, "mail.mailgun_base_url"));
             button type="submit" { "Save Mailgun settings" }
+        }
+        h2 { "Test email" }
+        form method="post" action="/admin/mail/test" {
+            input type="hidden" name="csrf" value=(csrf);
+            label for="test-to" { "Send the test email to" }
+            input id="test-to" name="to" type="email" required;
+            button type="submit" { "Send test email" }
         }
     }
 }

@@ -5,11 +5,12 @@ use std::sync::{Arc, Mutex};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-const MIGRATIONS: [(i64, &str); 2] = [
+const MIGRATIONS: [(i64, &str); 3] = [
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_accounts.sql")),
+    (3, include_str!("../migrations/0003_activity.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +66,28 @@ impl Db {
         )?;
         Ok(version)
     }
+}
+
+/// The UTF-8 text of one row of the settings table, or None when the key is absent.
+pub fn setting_text(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    let bytes: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    bytes
+        .map(|bytes| {
+            String::from_utf8(bytes).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Blob,
+                    Box::new(err),
+                )
+            })
+        })
+        .transpose()
 }
 
 /// Creates the file with mode 0600 if missing; an existing file keeps its mode.

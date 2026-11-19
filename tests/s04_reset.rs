@@ -10,6 +10,7 @@ use common::world::{PASSWORD, World};
 
 const BOB: &str = "bob@example.com";
 const NOBODY: &str = "nobody@example.com";
+const WRONG: &str = "definitely wrong";
 const NEW_PASSWORD: &str = "a brand new passphrase";
 const SESSION: &str = "__Host-doorward_session";
 const SUBJECT: &str = "Reset your Doorward password";
@@ -420,5 +421,80 @@ async fn a_scanner_get_does_not_use_up_the_reset_link() {
     assert_eq!(
         page.status, 303,
         "the password set through the link must sign in"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_request_within_five_minutes_sends_nothing() {
+    let w = World::start().await;
+    w.user(BOB).await;
+    let anonymous = w.client();
+    let first = request_reset(&w, &anonymous, BOB).await;
+    w.mail.clear();
+    let page = forgot(&anonymous, BOB, &[]).await;
+    assert_eq!(
+        page.status, 200,
+        "a second reset request must be answered 200"
+    );
+    assert_eq!(
+        page.kind().as_deref(),
+        Some("forgot-sent"),
+        "a second reset request must show data-page forgot-sent"
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        w.mail.to(BOB).is_empty(),
+        "a reset request within five minutes of the last mail must send no mail"
+    );
+    let page = anonymous.get(&first).await;
+    assert_eq!(
+        page.status, 200,
+        "the first reset link must still open after a second request"
+    );
+    assert_eq!(
+        page.kind().as_deref(),
+        Some("reset"),
+        "the first reset link must show data-page reset"
+    );
+    w.gw.clock
+        .advance(time::Duration::minutes(5) + time::Duration::seconds(1));
+    let third = request_reset(&w, &anonymous, BOB).await;
+    assert_ne!(
+        third, first,
+        "a reset request after five minutes must send a link that differs from the first"
+    );
+    let page = anonymous.get(&first).await;
+    assert_eq!(
+        page.status, 404,
+        "the first reset link must be refused once a newer link exists"
+    );
+    assert_eq!(
+        page.kind().as_deref(),
+        Some("link-invalid"),
+        "the first reset link must show data-page link-invalid"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reset_lifts_the_login_block() {
+    let w = World::start().await;
+    w.user(BOB).await;
+    for attempt in 1..=5 {
+        let page = w.client().login(BOB, WRONG).await;
+        assert_eq!(page.status, 401, "wrong guess {attempt} must answer 401");
+    }
+    let blocked = w.client().login(BOB, PASSWORD).await;
+    assert_eq!(
+        blocked.status, 429,
+        "the right password must be refused while the account is blocked"
+    );
+    let anonymous = w.client();
+    let link = request_reset(&w, &anonymous, BOB).await;
+    let page = anonymous.reset_password(&link, NEW_PASSWORD).await;
+    assert_eq!(page.status, 303, "a valid reset must answer 303");
+    let page = w.client().login(BOB, NEW_PASSWORD).await;
+    assert_eq!(
+        page.status, 303,
+        "the new password must sign in at once, without waiting out the block"
     );
 }

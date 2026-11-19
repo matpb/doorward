@@ -7,8 +7,10 @@ use common::client::{Page, TestClient};
 use common::mail::{Captured, link_with_prefix};
 use common::world::{OWNER_EMAIL, PASSWORD, World};
 
+const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
 const CAROL: &str = "carol@example.com";
+const DAVE: &str = "dave@example.com";
 const ELEVEN: &str = "abcdefghijk";
 const TWELVE: &str = "abcdefghijkl";
 const SUBJECT: &str = "You are invited to Doorward";
@@ -370,5 +372,29 @@ async fn mail_has_text_and_html_parts() {
     assert!(
         message.html.contains(&link),
         "the html part must contain the invitation link"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_admin_cannot_invite_an_admin() {
+    let w = World::start().await;
+    let alice = w.admin(ALICE).await;
+    w.mail.clear();
+    let page = admin::invite(&alice, CAROL, "admin").await;
+    assert_forbidden(&page, "an admin must not invite with the role admin");
+    assert!(
+        w.mail.messages().is_empty(),
+        "a refused admin invitation must send no mail"
+    );
+    let page = admin::invite(&alice, CAROL, "user").await;
+    assert_eq!(
+        page.status, 303,
+        "an admin must be able to invite with the role user"
+    );
+    invitation_mail(&w, CAROL).await;
+    let page = admin::invite(&w.owner, DAVE, "admin").await;
+    assert_eq!(
+        page.status, 303,
+        "the owner must be able to invite with the role admin"
     );
 }

@@ -1,5 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
+use crate::audit::{self, Event};
 use crate::db::{Db, DbError};
 
 use super::session;
@@ -32,6 +33,7 @@ pub struct Success {
     pub account: String,
     pub failure_id: i64,
     pub user_id: i64,
+    pub email: String,
     pub previous: Option<String>,
     pub now: i64,
     pub lifetime: i64,
@@ -127,6 +129,13 @@ fn succeed_in(conn: &mut Connection, success: &Success) -> rusqlite::Result<Stri
         session::delete(&tx, previous)?;
     }
     let token = session::insert(&tx, success.user_id, success.now, success.lifetime)?;
+    let login = Event {
+        kind: "login",
+        user_id: Some(success.user_id),
+        user_email: &success.email,
+        ..Default::default()
+    };
+    audit::record(&tx, success.now, &login)?;
     tx.commit()?;
     Ok(token)
 }

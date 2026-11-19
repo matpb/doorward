@@ -83,6 +83,9 @@ Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
     then accepts a 12 character password with 303.
 12. `mail_has_text_and_html_parts`: both `text` and `html` of the invitation contain the
     link.
+13. `an_admin_cannot_invite_an_admin`: alice is an admin. Her invitation for carol with the
+    role `admin` is 403 forbidden and sends no mail; with the role `user` it is 303 and the
+    mail arrives. The owner's invitation for dave with the role `admin` is 303.
 
 ## s04_reset.rs (statement 4)
 
@@ -111,6 +114,13 @@ Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
 10. `reset_token_is_not_stored`: the token part of the link is absent from
     `W.stored_bytes()`.
 11. `a_scanner_get_does_not_use_up_the_reset_link`: three GETs, then the reset works.
+12. `a_second_request_within_five_minutes_sends_nothing`: bob asks for a reset and the mail
+    arrives; `W.mail.clear()`. He asks again at once: 200 `forgot-sent`, and one second
+    later there is no mail to bob; the first link still renders (200 `reset`). After 5
+    minutes and 1 second a third request sends a mail whose link differs from the first,
+    and the first link is 404.
+13. `a_reset_lifts_the_login_block`: five wrong passwords block bob (his right password
+    answers 429). After a reset by mail, the new password answers 303 without waiting.
 
 ## s05_disable.rs (statement 5)
 
@@ -130,6 +140,9 @@ Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
    progress events.
 6. `admin_cannot_disable_an_admin_of_higher_rank`: a plain user's post to
    `/admin/users/{id}/disable` is 403 forbidden and changes nothing.
+7. `an_admin_cannot_disable_or_delete_another_admin`: alice and carol are admins. alice's
+   `disable` and `delete` on carol are 403 forbidden and carol's `/admin` is still 200.
+   alice's `disable` on the plain user bob is 303.
 
 ## s06_passwords.rs (statement 6)
 
@@ -182,6 +195,10 @@ Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
     cookie. B posts it with a made-up value of the same length: 403 forbidden. B posts it
     with its own value: 303 (control). The value B read before signing in is then refused
     on `/logout` (403 forbidden), and B's `/account` still answers 200.
+21. `wrong_current_passwords_count_toward_the_block`: bob is signed in. Five
+    `change_password` attempts with a wrong current password are each 400. The sixth, with
+    the right current password, is 429, and a fresh browser's login with bob's right
+    password is 429.
 
 ## s07_mail.rs (statement 7)
 

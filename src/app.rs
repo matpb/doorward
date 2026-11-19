@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::middleware;
 use axum::routing::{get, post};
@@ -48,6 +49,8 @@ pub enum StartError {
     Key(#[from] KeyError),
     #[error(transparent)]
     Crypto(#[from] CryptoError),
+    #[error("cannot build the HTTP client: {0}")]
+    Http(#[from] reqwest::Error),
 }
 
 #[derive(Clone)]
@@ -59,6 +62,8 @@ pub struct AppState {
     pub keys: Arc<Keys>,
     pub hasher: Arc<PasswordHasher>,
     pub setup_code: Option<String>,
+    /// Shared client for the HTTP mail providers.
+    pub http: reqwest::Client,
 }
 
 /// Validates the config, opens the database and returns the gateway.
@@ -81,6 +86,7 @@ pub(crate) async fn assemble(
     } else {
         Some(random_token(""))
     };
+    let http = http_client()?;
     let state = AppState {
         config,
         db,
@@ -88,6 +94,7 @@ pub(crate) async fn assemble(
         cimd: deps.cimd,
         keys: Arc::new(keys),
         hasher,
+        http,
         setup_code: setup_code.clone(),
     };
     Ok(Gateway {
@@ -110,6 +117,15 @@ fn routes(state: AppState) -> Router {
         .route("/assets/doorward.css", get(web::stylesheet))
         .merge(pages)
         .with_state(state)
+}
+
+/// No redirects, no cookies, no proxy from the environment, and a 5 second connect timeout.
+fn http_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .no_proxy()
+        .build()
 }
 
 /// Loads the key in one immediate transaction and records its id when none was stored.

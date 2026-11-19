@@ -191,6 +191,13 @@ pub fn random_token(prefix: &str) -> String {
     format!("{prefix}{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
+/// 32 lower-case hexadecimal characters from 16 random bytes.
+pub fn random_id() -> String {
+    let mut bytes = [0u8; 16];
+    fill_random(&mut bytes);
+    hex::encode(bytes)
+}
+
 /// Lower-case hex SHA-256 of the token text. The only form in which tokens are stored.
 pub fn token_hash(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
@@ -511,6 +518,20 @@ mod tests {
             body.bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
         );
+    }
+
+    #[test]
+    fn random_ids_are_32_lower_case_hex_and_differ() {
+        let first = random_id();
+        let second = random_id();
+        assert_ne!(first, second);
+        for id in [&first, &second] {
+            assert_eq!(id.len(), 32);
+            assert!(
+                id.bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+            );
+        }
     }
 
     #[test]

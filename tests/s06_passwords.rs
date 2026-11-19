@@ -16,6 +16,7 @@ use futures_util::future::join_all;
 const BOB: &str = "bob@example.com";
 const CAROL: &str = "carol@example.com";
 const WRONG: &str = "definitely wrong";
+const NEW_PASSWORD: &str = "a brand new passphrase";
 const SESSION: &str = "__Host-doorward_session";
 
 /// True when `needle` occurs in `haystack`.
@@ -701,5 +702,28 @@ async fn a_wrong_or_foreign_csrf_token_is_refused() {
         b.get("/account").await.status,
         200,
         "a refused logout must leave the browser signed in"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wrong_current_passwords_count_toward_the_block() {
+    let w = World::start().await;
+    let bob = w.user(BOB).await;
+    for attempt in 1..=5 {
+        let page = bob.change_password(WRONG, NEW_PASSWORD).await;
+        assert_eq!(
+            page.status, 400,
+            "a password change with wrong current password {attempt} must answer 400"
+        );
+    }
+    let blocked = bob.change_password(PASSWORD, NEW_PASSWORD).await;
+    assert_eq!(
+        blocked.status, 429,
+        "the right current password must be refused once wrong ones have blocked the account"
+    );
+    let login = w.client().login(BOB, PASSWORD).await;
+    assert_eq!(
+        login.status, 429,
+        "a fresh browser's login with bob's right password must be refused while blocked"
     );
 }

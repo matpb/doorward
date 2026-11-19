@@ -135,11 +135,11 @@ and leaves the link or code usable. A wrong `current_password` answers `400` as 
 | `GET /invite/{token}` | | `200` `data-page="invite"` if usable, else `404` `data-page="link-invalid"`. A GET never consumes the link |
 | `POST /invite/{token}` | `password` | account created, session set, `303 /account`. Unusable link: `404` |
 | `GET /forgot` | | `200` `data-page="forgot"` |
-| `POST /forgot` | `email` | always `200` `data-page="forgot-sent"` with identical body, whether or not the address exists. The mail is sent after the response, so the answer takes the same time either way; a failed send is recorded as `mail_failed`. A new request replaces an earlier unused link |
+| `POST /forgot` | `email` | always `200` `data-page="forgot-sent"` with identical body, whether or not the address exists. The mail is sent after the response, so the answer takes the same time either way; a failed send is recorded as `mail_failed`. A new request replaces an earlier unused link, but at most one reset mail goes to an account per 5 minutes: a request inside that time is ignored silently |
 | `GET /reset/{token}` | | `200` `data-page="reset"` or `404` `data-page="link-invalid"` |
-| `POST /reset/{token}` | `password` | password set, all sessions and token families of the user revoked, `303 /login` |
+| `POST /reset/{token}` | `password` | password set, all sessions and token families of the user revoked, the account's login block lifted, `303 /login` |
 | `GET /account` | | `200` `data-page="account"`; connected clients as rows with `data-family`, `data-client-name`, `data-server`; anonymous: `303 /login` |
-| `POST /account/password` | `current_password`, `new_password` | as reset, but the current session is replaced by a new one; `303 /account` |
+| `POST /account/password` | `current_password`, `new_password` | as reset, but the current session is replaced by a new one; `303 /account`. A wrong current password counts as a failed sign-in for the account: `400`, and `429` once the account is blocked |
 | `POST /account/clients/{family}/disconnect` | | family revoked, `303 /account` |
 | `GET /account/disconnect/{token}` | | link from the new-connection email: `200` `data-page="disconnect"` |
 | `POST /account/disconnect/{token}` | | family revoked, `200` `data-page="disconnected"` |

@@ -9,6 +9,7 @@ use common::upstream::{FakeUpstream, Mode, UpstreamOptions};
 use common::world::{OWNER_EMAIL, PASSWORD, World};
 use serde_json::{Value, json};
 
+const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
 const CAROL: &str = "carol@example.com";
 
@@ -262,5 +263,45 @@ async fn admin_cannot_disable_an_admin_of_higher_rank() {
     assert_eq!(
         panel.status, 200,
         "the admin must stay signed in and reach /admin"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_admin_cannot_disable_or_delete_another_admin() {
+    let w = World::start().await;
+    let alice = w.admin(ALICE).await;
+    let carol = w.admin(CAROL).await;
+    let _bob = w.user(BOB).await;
+    let carol_id = w.user_id(CAROL).await;
+    let disable = admin::user_action(&alice, &carol_id, "disable").await;
+    assert_eq!(
+        disable.status, 403,
+        "an admin disabling another admin must answer 403"
+    );
+    assert_eq!(
+        disable.kind().as_deref(),
+        Some("forbidden"),
+        "an admin disabling another admin must show the forbidden page"
+    );
+    let delete = admin::user_action(&alice, &carol_id, "delete").await;
+    assert_eq!(
+        delete.status, 403,
+        "an admin deleting another admin must answer 403"
+    );
+    assert_eq!(
+        delete.kind().as_deref(),
+        Some("forbidden"),
+        "an admin deleting another admin must show the forbidden page"
+    );
+    let panel = carol.get("/admin").await;
+    assert_eq!(
+        panel.status, 200,
+        "the targeted admin must still reach /admin"
+    );
+    let bob_id = w.user_id(BOB).await;
+    let page = admin::user_action(&alice, &bob_id, "disable").await;
+    assert_eq!(
+        page.status, 303,
+        "an admin disabling a plain user must answer 303"
     );
 }

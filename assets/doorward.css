@@ -102,3 +102,16 @@ button {
 .notice {
   color: var(--muted);
 }
+
+.activity {
+  padding-left: 1.25rem;
+}
+
+.activity li {
+  margin: 0 0 1rem;
+  overflow-wrap: anywhere;
+}
+
+.activity p {
+  margin: 0;
+}
