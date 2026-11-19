@@ -2566,3 +2566,207 @@ async fn an_upper_case_address_is_stored_canonically_and_reposted_it_keeps_the_s
         "the address did not change, so the secret is kept"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_redirects_page_refuses_anonymous_and_plain_users() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), PLAIN, "user").await;
+
+    let mut anon = Browser::new(&base);
+    let page = anon.get("/admin/redirects").await;
+    assert_eq!(page.status, 303, "anonymous visitors are sent to sign in");
+    assert_eq!(page.location(), Some("/login"));
+    let page = anon.post("/admin/redirects", &[]).await;
+    assert_eq!(page.status, 303, "an anonymous add is sent to sign in");
+
+    let mut plain = sign_in(&base, PLAIN).await;
+    let page = plain.get("/admin/redirects").await;
+    assert_eq!(page.status, 403, "a plain user is refused the page");
+    assert_eq!(page.kind().as_deref(), Some("forbidden"));
+    let page = plain.post("/admin/redirects/1/disable", &[]).await;
+    assert_eq!(page.status, 403, "a plain user is refused a change");
+
+    let page = owner.get("/admin/redirects").await;
+    assert_eq!(page.status, 200, "the owner reaches the page");
+    assert_eq!(page.kind().as_deref(), Some("redirects"));
+    let panel = owner.get("/admin").await;
+    assert!(
+        panel.body.contains(r#"href="/admin/redirects""#),
+        "the panel links to the redirects page"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shipped_addresses_are_listed_enabled() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner.get("/admin/redirects").await;
+    let rows = elements(&page.body, "li[data-redirect-id]");
+    assert_eq!(rows.len(), 5, "the five shipped addresses are listed");
+    for (host, listed) in [
+        ("claude.ai", 1),
+        ("chatgpt.com", 2),
+        ("www.cursor.com", 1),
+        ("anysphere.cursor-mcp", 1),
+    ] {
+        let row = elements(&page.body, &format!(r#"li[data-host="{host}"]"#));
+        assert_eq!(row.len(), listed, "{host} is listed {listed} time(s)");
+        for entry in &row {
+            assert_eq!(entry["data-source"], "shipped");
+            assert_eq!(entry["data-enabled"], "yes");
+        }
+    }
+    let cursor = elements(&page.body, r#"li[data-scheme="cursor"]"#);
+    assert_eq!(cursor[0]["data-source"], "shipped");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_admin_address_is_added_disabled_enabled_again_and_recorded() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let fields = [
+        ("scheme", "https"),
+        ("host", "app.example.com"),
+        ("path_prefix", "/oauth/"),
+    ];
+    let added = owner
+        .submit("/admin/redirects", "/admin/redirects", &fields)
+        .await;
+    assert_eq!(added.status, 303, "adding an address answers 303");
+    assert_eq!(added.location(), Some("/admin/redirects"));
+    let page = owner.get("/admin/redirects").await;
+    let row = elements(&page.body, r#"li[data-host="app.example.com"]"#);
+    assert_eq!(row.len(), 1, "the added address is listed once");
+    assert_eq!(row[0]["data-source"], "added");
+    assert_eq!(row[0]["data-enabled"], "yes");
+    assert_eq!(row[0]["data-path-prefix"], "/oauth/");
+    let id = row[0]["data-redirect-id"].clone();
+
+    let disabled = owner
+        .submit(
+            "/admin/redirects",
+            &format!("/admin/redirects/{id}/disable"),
+            &[],
+        )
+        .await;
+    assert_eq!(disabled.status, 303, "disabling answers 303");
+    let page = owner.get("/admin/redirects").await;
+    let row = elements(&page.body, r#"li[data-host="app.example.com"]"#);
+    assert_eq!(row[0]["data-enabled"], "no", "the flag is off");
+
+    let again = owner
+        .submit("/admin/redirects", "/admin/redirects", &fields)
+        .await;
+    assert_eq!(again.status, 303);
+    let page = owner.get("/admin/redirects").await;
+    let row = elements(&page.body, r#"li[data-host="app.example.com"]"#);
+    assert_eq!(
+        row.len(),
+        1,
+        "the identical address is enabled, not repeated"
+    );
+    assert_eq!(row[0]["data-enabled"], "yes");
+    assert_eq!(row[0]["data-redirect-id"], id);
+
+    let changes = rows_of(dir.path(), "admin_change");
+    assert_eq!(
+        changes.len(),
+        3,
+        "the add, the disable and the add again are recorded"
+    );
+    assert_eq!(changes[0].1, OWNER);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_address_answers_400_and_stores_nothing() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    for fields in [
+        [
+            ("scheme", "http"),
+            ("host", "app.example.com"),
+            ("path_prefix", "/x"),
+        ],
+        [
+            ("scheme", "https"),
+            ("host", "app.example.com"),
+            ("path_prefix", ""),
+        ],
+        [
+            ("scheme", "https"),
+            ("host", "127.0.0.1"),
+            ("path_prefix", "/x"),
+        ],
+        [
+            ("scheme", "https"),
+            ("host", "app.example.com"),
+            ("path_prefix", "/a?b"),
+        ],
+    ] {
+        let page = owner
+            .submit("/admin/redirects", "/admin/redirects", &fields)
+            .await;
+        assert_eq!(page.status, 400, "{fields:?} must be refused");
+        assert_eq!(page.kind().as_deref(), Some("redirects"));
+        assert!(page.error().is_some(), "the refusal is shown on the page");
+    }
+    let page = owner.get("/admin/redirects").await;
+    assert_eq!(
+        elements(&page.body, "li[data-redirect-id]").len(),
+        5,
+        "no refused address is stored"
+    );
+    assert!(rows_of(dir.path(), "admin_change").is_empty());
+}
+
+/// For each blocked attempt, newest first: whether its row offers a one-click allow form.
+fn one_click_offers(body: &str) -> Vec<bool> {
+    let doc = Html::parse_document(body);
+    let rows = Selector::parse("li[data-blocked]").expect("selector");
+    let field = Selector::parse(r#"input[name="path_prefix"]"#).expect("selector");
+    doc.select(&rows)
+        .map(|row| row.select(&field).next().is_some())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blocked_attempt_offers_one_click_allow_only_when_it_may() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let long = format!("https://app.example.com/{}", "a".repeat(600));
+    let conn = open_db(dir.path());
+    for (client, detail) in [
+        ("Good client", "https://app.example.com/oauth/cb"),
+        ("Subtree client", "https://app.example.com/oauth/"),
+        ("Long client", long.as_str()),
+        ("Private client", "evilapp://callback"),
+    ] {
+        let event = Event {
+            kind: "redirect_blocked",
+            client,
+            detail,
+            ..Default::default()
+        };
+        audit::record(&conn, AT, &event).expect("record");
+    }
+    let page = owner.get("/admin/redirects").await;
+    assert_eq!(
+        elements(&page.body, "li[data-blocked]").len(),
+        4,
+        "every blocked attempt is listed"
+    );
+    assert!(
+        elements(&page.body, "li[data-blocked][data-host]").is_empty(),
+        "a blocked row never carries data-host"
+    );
+    assert!(
+        elements(&page.body, "li[data-blocked][data-redirect-id]").is_empty(),
+        "a blocked row never carries data-redirect-id"
+    );
+    assert_eq!(
+        one_click_offers(&page.body),
+        vec![true, false, false, true],
+        "newest first: the private scheme and the plain address are offered; a subtree and a 600 character one are not"
+    );
+}

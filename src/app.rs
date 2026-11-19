@@ -18,6 +18,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::config::{Config, ConfigError};
 use crate::crypto::{CryptoError, KeyError, Keys, PasswordHasher, random_token};
 use crate::db::{Db, DbError};
+use crate::oauth;
 use crate::web;
 
 /// Password reset requests that may run their mail task at once.
@@ -86,6 +87,7 @@ pub(crate) async fn assemble(
 ) -> Result<Gateway, StartError> {
     config.validate()?;
     let db = Db::open(&config.database)?;
+    db.call(oauth::policy::sync_shipped).await?;
     let keys = load_keys(&db, &config).await?;
     let setup_code = if accounts::setup::owner_exists(&db).await? {
         None
@@ -131,6 +133,15 @@ fn routes(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/assets/doorward.css", get(web::stylesheet))
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(oauth::metadata::authorization_server),
+        )
+        .route(
+            "/.well-known/oauth-protected-resource/{slug}",
+            get(oauth::metadata::protected_resource),
+        )
+        .route("/oauth/register", post(oauth::register::post_register))
         .merge(pages)
         .with_state(state)
 }

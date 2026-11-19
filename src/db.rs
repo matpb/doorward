@@ -7,12 +7,13 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-const MIGRATIONS: [(i64, &str); 5] = [
+const MIGRATIONS: [(i64, &str); 6] = [
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_accounts.sql")),
     (3, include_str!("../migrations/0003_activity.sql")),
     (4, include_str!("../migrations/0004_invitations.sql")),
     (5, include_str!("../migrations/0005_servers.sql")),
+    (6, include_str!("../migrations/0006_oauth.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -36,7 +37,8 @@ impl Db {
         create_private_file(path)?;
         let mut conn = Connection::open(path)?;
         conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; \
+             PRAGMA secure_delete=ON;",
         )?;
         migrate(&mut conn)?;
         Ok(Db {

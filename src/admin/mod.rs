@@ -3,6 +3,7 @@
 mod activity;
 mod invitations;
 mod mail;
+mod redirects;
 mod servers;
 #[cfg(test)]
 mod tests;
@@ -29,6 +30,12 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/", get(panel))
         .nest("/mail", owner_only)
         .route("/activity", get(activity::get_activity))
+        .route(
+            "/redirects",
+            get(redirects::get_redirects).post(redirects::post_add),
+        )
+        .route("/redirects/{id}/disable", post(redirects::post_disable))
+        .route("/redirects/{id}/enable", post(redirects::post_enable))
         .route(
             "/invitations",
             get(invitations::get_invitations).post(invitations::post_invitation),
@@ -71,6 +78,7 @@ async fn panel(viewer: Viewer) -> Response {
                     li { a href="/admin/users" { "Users" } }
                     li { a href="/admin/invitations" { "Invitations" } }
                     li { a href="/admin/servers" { "Servers" } }
+                    li { a href="/admin/redirects" { "Redirects" } }
                     li { a href="/admin/activity" { "Activity" } }
                     @if viewer.is_owner() {
                         li { a href="/admin/mail" { "Mail" } }
