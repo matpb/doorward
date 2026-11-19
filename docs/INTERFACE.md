@@ -59,6 +59,7 @@ pub struct FetcherParts {
     pub resolver: Arc<dyn Resolver>,
     pub address_allowed: fn(IpAddr) -> bool,
     pub extra_roots_pem: Option<Vec<u8>>,
+    pub port: u16,              // the port fetches connect to; 443 in `system()`
     pub timeout: Duration,      // 5 seconds in `system()`
     pub max_bytes: usize,       // 65536 in `system()`
 }
@@ -69,7 +70,8 @@ impl HttpCimdFetcher {
 ```
 
 `HttpCimdFetcher::fetch` accepts only `https://host/path` with a host name (no address
-literal), no userinfo, no fragment, and the default port. It resolves the host once, refuses
+literal), no userinfo, no fragment, and no port in the address; any other shape is
+`NotAllowed`, decided before any name lookup. It resolves the host once, refuses
 when any answer fails `address_allowed` (`NotAllowed`), connects to the resolved address
 itself, sends one GET with `Accept: application/json`, follows no redirect, and refuses a
 status other than 200, a body over `max_bytes`, a body that is not a JSON object, a
@@ -164,14 +166,14 @@ Anonymous: `303 /login`. Signed in without the owner or admin role: `403`
 | `GET /admin/servers` | | `data-page="servers"`; each row `data-server-id`, `data-slug` |
 | `POST /admin/servers` | `name`, `slug`, `upstream_url`, `secret_header_name`, `secret_header_value`, `pass_resources`, `pass_prompts` (checkboxes, `on`) | `303 /admin/servers/{id}`. Bad or reserved or taken slug, or a non-HTTP(S) URL: `400` |
 | `GET /admin/servers/{id}` | | `data-page="server"`: settings (secret value never rendered); one `input[name="user_id"]` checkbox per user, `checked` when assigned; the cached tool list, one element per tool with `data-catalog-tool`; lock-down result in `data-lockdown="ok|open|unknown"` on `<main>` |
-| `POST /admin/servers/{id}/users` | `user_id` (repeated) | replaces the server's assignments; removed users lose their token families for it; `303` |
+| `POST /admin/servers/{id}/users` | `user_id` (repeated) | replaces the server's assignments; a removed user's token families for this server are revoked, combined endpoint families stay valid and lose the server's tools; `303` |
 | `POST /admin/servers/{id}` | same as create | `303`. A changed `upstream_url` clears the stored secret unless a new `secret_header_value` is sent in the same post |
 | `POST /admin/servers/{id}/delete` | | server, its assignments, rules, and token families gone; `303 /admin/servers` |
-| `POST /admin/servers/{id}/refresh-tools` | | fetches the upstream tool list; `303` |
+| `POST /admin/servers/{id}/refresh-tools` | | fetches the upstream tool list; always `303` to the server page. A failed fetch keeps the previous list, and the server page shows the failure as its error until the next successful refresh |
 | `POST /admin/servers/{id}/check-lockdown` | | sends one request without the secret; `303` |
 | `GET /admin/users` | | `data-page="users"`; rows `data-user-id`, `data-email` |
 | `GET /admin/users/{id}` | | `data-page="user"`: role, status; one `input[name="server_id"]` checkbox per server, `checked` when assigned; effective tools, one element per tool of each assigned server with `data-server` (slug), `data-tool`, `data-verdict="allow|deny"` |
-| `POST /admin/users/{id}/servers` | `server_id` (repeated) | replaces the user's assignments; removed servers lose their token families; `303` |
+| `POST /admin/users/{id}/servers` | `server_id` (repeated) | replaces the user's assignments; the user's token families for each removed server are revoked, combined endpoint families stay valid and lose those servers' tools; `303` |
 | `POST /admin/users/{id}/role` | `role` (`admin` or `user`) | owner only; `303` |
 | `POST /admin/users/{id}/disable`, `/enable`, `/delete` | | disable and delete revoke sessions and families at once; `303`. The owner cannot be disabled or deleted: `400` |
 | `GET /admin/invitations` | | `data-page="invitations"`; open invitations as rows with `data-invitation-id`, `data-email` |

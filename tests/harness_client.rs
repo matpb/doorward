@@ -917,6 +917,13 @@ async fn post_with_overrides_and_omits() {
         stub.last("POST", "/test/form").headers_named("x-dup"),
         ["one", "two"]
     );
+    c.post_with("/test/form", &[("x", "1")], &[("Host", "evil.example.com")])
+        .await;
+    assert_eq!(
+        stub.last("POST", "/test/form").headers_named("host"),
+        ["evil.example.com"],
+        "a caller-set Host must reach the server unchanged"
+    );
     c.post_json("/test/json", &json!({"a": 1})).await;
     let sent = stub.last("POST", "/test/json");
     assert!(sent.headers_named("origin").is_empty());

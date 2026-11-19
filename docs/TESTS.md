@@ -531,7 +531,7 @@ loopback through. `system()` behaviour is tested without any server.
 2. `a_private_answer_is_refused_before_any_connection`: a resolver answering `127.0.0.1`
    with the real `address_allowed`: `Err(CimdError::NotAllowed(_))`, and a listener on
    that address accepted nothing.
-3. `a_mixed_answer_is_refused`: one public and one private address:
+3. `a_mixed_answer_is_refused`: one public and one private address, in either order:
    `Err(NotAllowed)`.
 4. `only_https_host_names_on_the_default_port`: `http://client.example.com/a`,
    `https://127.0.0.1/a`, `https://client.example.com:8443/a`,
@@ -547,7 +547,8 @@ loopback through. `system()` behaviour is tested without any server.
 10. `a_confidential_document_is_refused`: auth method `client_secret_basic`:
     `Err(Invalid)`.
 11. `a_document_without_redirects_is_refused`: `Err(Invalid)`.
-12. `a_body_that_is_not_json_is_refused`: `Err(Invalid)`.
+12. `a_body_that_is_not_json_is_refused`: plain text, and JSON that is not an object:
+    `Err(Invalid)`.
 13. `an_untrusted_certificate_is_refused`: `from_parts` without the test CA: `Err(Fetch)`.
 
 ## s23_upstream_isolation.rs (statement 23)
@@ -600,7 +601,7 @@ stateless `tools/call` body for that tool, sent with `raw` and explicit headers.
 4. `the_decision_is_made_from_the_body`: header and body both `delete_db`: `-32602`
    `Unknown tool: delete_db`; upstream records no `tools/call`.
 5. `duplicate_keys_are_refused`: `"name":"echo","name":"delete_db"` in `params`; a
-   duplicate inside `arguments`; a duplicate written with an escape (`"name"`): each
+   duplicate inside `arguments`; a duplicate written with an escape (`"\u006eame"`): each
    400 `-32700`, upstream untouched, under both generations.
 6. `batches_are_refused`: a JSON array of two calls: 400 `-32600`, under the stateless
    rules, the session rules, and a session that negotiated `2025-03-26`.
@@ -816,7 +817,8 @@ bob is assigned to demo and signed in. `A` is `W.app()`.
 15. `a_token_works_only_on_its_server`: bob assigned to `a` and `b`: the `a` token is 401
     on `/b` and on `/mcp`, both upstreams untouched.
 16. `a_deleted_server_does_not_revive_tokens`: delete `demo`, create `demo` again with the
-    same upstream: the old access token is 401 and the old refresh token `invalid_grant`.
+    same upstream and assign bob to it: a new token works, the old access token is 401 and
+    the old refresh token `invalid_grant`.
 17. `renaming_a_path_revokes_its_tokens`: `admin::update_server` with slug `demo2`: 401 on
     both paths.
 18. `token_response_shape`: `cache-control` contains `no-store`; `token_type` is `Bearer`;
@@ -849,7 +851,8 @@ bob on demo; `T1` is the first token pair, `R1` its refresh token.
    at day 100, is `invalid_grant`.
 10. `refresh_rechecks_the_user_and_the_assignment`: after unassignment, and separately
     after disabling, `token_refresh` is `invalid_grant`.
-11. `refresh_needs_the_same_client`: another client's id is `invalid_grant`.
+11. `refresh_needs_the_same_client`: another client's id is `invalid_grant`; the right
+    client refreshes a second pair with 200.
 12. `refresh_needs_the_same_resource_when_given`: another resource is `invalid_target`.
 13. `an_access_token_lasts_an_hour`: at 59 minutes it works; at 61 minutes it is 401.
 14. `the_old_access_token_stays_valid_until_it_expires`: after a refresh, the access token
