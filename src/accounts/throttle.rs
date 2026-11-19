@@ -1,8 +1,10 @@
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::audit::{self, Event};
+use crate::crypto::token_hash;
 use crate::db::{Db, DbError};
 
+use super::input::normalize_email;
 use super::session;
 
 /// The result of reserving one sign-in attempt.
@@ -47,6 +49,28 @@ pub async fn reserve(db: &Db, input: Reserve) -> Result<Attempt, DbError> {
 /// Transaction T2: clears the account and the reservation, and signs the browser in.
 pub async fn succeed(db: &Db, success: Success) -> Result<String, DbError> {
     db.call(move |conn| succeed_in(conn, &success)).await
+}
+
+/// Deletes the login block of an account (the hash of its normalised email).
+pub fn lift_block(conn: &Connection, email: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM login_blocks WHERE account_hash = ?1",
+        params![token_hash(&normalize_email(email))],
+    )?;
+    Ok(())
+}
+
+/// Clears the account's block and its reserved failure, as a successful sign-in does.
+pub fn clear_attempt(conn: &Connection, account: &str, failure_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM login_blocks WHERE account_hash = ?1",
+        params![account],
+    )?;
+    conn.execute(
+        "DELETE FROM login_failures WHERE id = ?1",
+        params![failure_id],
+    )?;
+    Ok(())
 }
 
 fn reserve_in(conn: &mut Connection, input: &Reserve) -> rusqlite::Result<Attempt> {
@@ -117,14 +141,7 @@ fn reserve_in(conn: &mut Connection, input: &Reserve) -> rusqlite::Result<Attemp
 
 fn succeed_in(conn: &mut Connection, success: &Success) -> rusqlite::Result<String> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    tx.execute(
-        "DELETE FROM login_blocks WHERE account_hash = ?1",
-        params![success.account],
-    )?;
-    tx.execute(
-        "DELETE FROM login_failures WHERE id = ?1",
-        params![success.failure_id],
-    )?;
+    clear_attempt(&tx, &success.account, success.failure_id)?;
     if let Some(previous) = &success.previous {
         session::delete(&tx, previous)?;
     }

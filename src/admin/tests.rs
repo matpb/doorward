@@ -15,7 +15,7 @@ use url::form_urlencoded::Serializer;
 use crate::app::{Deps, assemble, serve};
 use crate::audit::{self, Event};
 use crate::config::Config;
-use crate::crypto::{Keys, PasswordHasher};
+use crate::crypto::{Keys, PasswordHasher, token_hash};
 use crate::web::SESSION_COOKIE;
 
 const PASSWORD: &str = "correct horse battery staple";
@@ -24,6 +24,8 @@ const PLAIN: &str = "plain@example.com";
 const ADMIN: &str = "admin@example.com";
 const SECRET: &str = "s3cret-value";
 const SECRET_CONTEXT: &str = "settings.value:mail.smtp_password";
+const BOB: &str = "bob@example.com";
+const NOBODY: &str = "nobody@example.com";
 
 struct Browser {
     http: reqwest::Client,
@@ -1277,4 +1279,492 @@ async fn saving_mail_settings_writes_one_admin_change_row() {
     assert_eq!(rows.len(), 1, "one admin_change row must be written");
     assert_eq!(rows[0].1, OWNER);
     assert_eq!(rows[0].2, "mail settings");
+}
+
+fn count(dir: &Path, sql: &str) -> i64 {
+    open_db(dir)
+        .query_row(sql, [], |row| row.get(0))
+        .expect("count query")
+}
+
+fn user_id_of(dir: &Path, email: &str) -> i64 {
+    open_db(dir)
+        .query_row("SELECT id FROM users WHERE email = ?1", [email], |row| {
+            row.get(0)
+        })
+        .expect("the user exists")
+}
+
+/// Stores an open reset row for `email` with a known token, as a mailed link would have.
+fn insert_reset(dir: &Path, email: &str, token: &str) {
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    open_db(dir)
+        .execute(
+            "INSERT INTO password_resets (user_id, token_hash, created_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![user_id_of(dir, email), token_hash(token), now, now + 3600],
+        )
+        .expect("insert reset");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_invitation_token_never_reaches_the_invitations_or_activity_pages() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner
+        .submit(
+            "/admin/invitations",
+            "/admin/invitations",
+            &[("email", BOB), ("role", "user")],
+        )
+        .await;
+    assert_eq!(page.kind().as_deref(), Some("invitation-created"));
+    let link = attr_of(&page.body, "[data-invite-link]", "data-invite-link")
+        .expect("the failed send must show the link");
+    assert!(
+        link.contains("/invite/dw_iv_"),
+        "the link must hold a token"
+    );
+    let invitations = owner.get("/admin/invitations").await;
+    assert_eq!(invitations.status, 200);
+    assert!(
+        !invitations.body.contains("dw_iv_"),
+        "the invitations page must not show a token"
+    );
+    let activity = owner.get("/admin/activity").await;
+    assert!(
+        !activity.body.contains("dw_iv_"),
+        "the activity page must not show a token"
+    );
+    assert_eq!(count(dir.path(), "SELECT COUNT(*) FROM invitations"), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_owner_is_offered_the_admin_role_in_the_invitation_form() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), ADMIN, "admin").await;
+    let mut admin = sign_in(&base, ADMIN).await;
+    let values = |page: &Answer| -> Vec<String> {
+        elements(&page.body, r#"select[name="role"] option"#)
+            .iter()
+            .map(|option| option["value"].clone())
+            .collect()
+    };
+    assert_eq!(
+        values(&owner.get("/admin/invitations").await),
+        ["user", "admin"],
+        "the owner must be offered both roles"
+    );
+    assert_eq!(
+        values(&admin.get("/admin/invitations").await),
+        ["user"],
+        "an admin must not be offered the admin role"
+    );
+}
+
+/// The status each (viewer, target, action) must answer. Only the owner changes roles; the owner
+/// is never a target; an admin acts on plain users only.
+fn expected_status(viewer_is_owner: bool, target: &str, action: &str) -> u16 {
+    if action == "role" {
+        return match (viewer_is_owner, target) {
+            (false, _) => 403,
+            (true, "owner") => 400,
+            _ => 303,
+        };
+    }
+    match (viewer_is_owner, target) {
+        (_, "owner") => 400,
+        (false, "admin") => 403,
+        _ => 303,
+    }
+}
+
+fn action_fields(action: &str) -> Vec<(&str, &str)> {
+    if action == "role" {
+        vec![("role", "user")]
+    } else {
+        Vec::new()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_role_and_status_rules_answer_the_table() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), ADMIN, "admin").await;
+    let mut admin = sign_in(&base, ADMIN).await;
+    let owner_id = user_id_of(dir.path(), OWNER).to_string();
+    let mut cell = 0;
+    for (viewer_is_owner, target, action) in rule_cells() {
+        cell += 1;
+        let target_id = match target {
+            "owner" => owner_id.clone(),
+            kind => {
+                let email = format!("cell{cell}-{kind}@example.com");
+                add_user(dir.path(), &email, kind).await;
+                user_id_of(dir.path(), &email).to_string()
+            }
+        };
+        let browser = if viewer_is_owner {
+            &mut owner
+        } else {
+            &mut admin
+        };
+        let page = browser
+            .submit(
+                "/account",
+                &format!("/admin/users/{target_id}/{action}"),
+                &action_fields(action),
+            )
+            .await;
+        assert_eq!(
+            page.status,
+            expected_status(viewer_is_owner, target, action),
+            "viewer owner={viewer_is_owner}, target {target}, action {action}"
+        );
+    }
+    for (viewer_is_owner, action, want) in [
+        (true, "role", 404),
+        (false, "role", 403),
+        (true, "disable", 404),
+        (false, "disable", 404),
+        (true, "delete", 404),
+        (false, "delete", 404),
+    ] {
+        let browser = if viewer_is_owner {
+            &mut owner
+        } else {
+            &mut admin
+        };
+        let page = browser
+            .submit(
+                "/account",
+                &format!("/admin/users/999999/{action}"),
+                &action_fields(action),
+            )
+            .await;
+        assert_eq!(
+            page.status, want,
+            "an unknown id, viewer owner={viewer_is_owner}, action {action}"
+        );
+    }
+}
+
+/// Every (viewer is owner, target role, action) of the rules, in a fixed order.
+fn rule_cells() -> Vec<(bool, &'static str, &'static str)> {
+    let mut cells = Vec::new();
+    for viewer_is_owner in [true, false] {
+        for target in ["owner", "admin", "user"] {
+            for action in ["role", "disable", "enable", "delete"] {
+                cells.push((viewer_is_owner, target, action));
+            }
+        }
+    }
+    cells
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn accepting_after_the_address_got_an_account_creates_nothing() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner
+        .submit(
+            "/admin/invitations",
+            "/admin/invitations",
+            &[("email", BOB), ("role", "user")],
+        )
+        .await;
+    let link =
+        attr_of(&page.body, "[data-invite-link]", "data-invite-link").expect("the invitation link");
+    add_user(dir.path(), BOB, "user").await;
+    let users = count(dir.path(), "SELECT COUNT(*) FROM users");
+    let sessions = count(dir.path(), "SELECT COUNT(*) FROM sessions");
+    let path = link
+        .strip_prefix(base.as_str())
+        .expect("the link is under the base");
+    let mut browser = Browser::new(&base);
+    let page = browser.submit(path, path, &[("password", PASSWORD)]).await;
+    assert_eq!(page.status, 404, "the taken address must refuse the link");
+    assert_eq!(page.kind().as_deref(), Some("link-invalid"));
+    assert_eq!(count(dir.path(), "SELECT COUNT(*) FROM users"), users);
+    assert_eq!(count(dir.path(), "SELECT COUNT(*) FROM sessions"), sessions);
+    assert_eq!(
+        rows_of(dir.path(), "invitation").len(),
+        1,
+        "only the invitation row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_concurrent_accepts_of_one_invitation_make_one_user() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner
+        .submit(
+            "/admin/invitations",
+            "/admin/invitations",
+            &[("email", BOB), ("role", "user")],
+        )
+        .await;
+    let link =
+        attr_of(&page.body, "[data-invite-link]", "data-invite-link").expect("the invitation link");
+    let path = link
+        .strip_prefix(base.as_str())
+        .expect("the link is under the base")
+        .to_owned();
+    let mut first = Browser::new(&base);
+    let mut second = Browser::new(&base);
+    let form_a = first.get(&path).await;
+    let form_b = second.get(&path).await;
+    let csrf_a = attr_of(&form_a.body, r#"input[name="csrf"]"#, "value").expect("csrf");
+    let csrf_b = attr_of(&form_b.body, r#"input[name="csrf"]"#, "value").expect("csrf");
+    let fields_a = [("csrf", csrf_a.as_str()), ("password", PASSWORD)];
+    let fields_b = [("csrf", csrf_b.as_str()), ("password", PASSWORD)];
+    let (a, b) = tokio::join!(first.post(&path, &fields_a), second.post(&path, &fields_b));
+    let mut statuses = [a.status, b.status];
+    statuses.sort_unstable();
+    assert_eq!(
+        statuses,
+        [303, 404],
+        "one accept wins, the other sees no link"
+    );
+    assert_eq!(
+        count(
+            dir.path(),
+            "SELECT COUNT(*) FROM users WHERE email = 'bob@example.com'"
+        ),
+        1,
+        "exactly one user is made"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_concurrent_resets_with_one_link_make_exactly_one_303() {
+    const TOKEN: &str = "dw_rs_concurrent-reset-test-token-0123456789";
+    const NEW: &str = "a second passphrase here";
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    insert_reset(dir.path(), BOB, TOKEN);
+    let path = format!("/reset/{TOKEN}");
+    let mut first = Browser::new(&base);
+    let mut second = Browser::new(&base);
+    let form_a = first.get(&path).await;
+    let form_b = second.get(&path).await;
+    let csrf_a = attr_of(&form_a.body, r#"input[name="csrf"]"#, "value").expect("csrf");
+    let csrf_b = attr_of(&form_b.body, r#"input[name="csrf"]"#, "value").expect("csrf");
+    let fields_a = [("csrf", csrf_a.as_str()), ("password", NEW)];
+    let fields_b = [("csrf", csrf_b.as_str()), ("password", NEW)];
+    let (a, b) = tokio::join!(first.post(&path, &fields_a), second.post(&path, &fields_b));
+    let mut statuses = [a.status, b.status];
+    statuses.sort_unstable();
+    assert_eq!(
+        statuses,
+        [303, 404],
+        "one reset wins, the other sees no link"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forgot_writes_nothing_for_an_unknown_address_and_one_row_of_each_for_a_known_one() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    let mut browser = Browser::new(&base);
+    let known_form = browser
+        .submit("/forgot", "/forgot", &[("email", NOBODY)])
+        .await;
+    assert_eq!(known_form.status, 200);
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(count(dir.path(), "SELECT COUNT(*) FROM password_resets"), 0);
+    assert!(
+        rows_of(dir.path(), "reset").is_empty(),
+        "no reset activity row"
+    );
+
+    let known = browser
+        .submit("/forgot", "/forgot", &[("email", BOB)])
+        .await;
+    assert_eq!(known.status, 200);
+    assert_eq!(
+        known.body, known_form.body,
+        "the same answer for both addresses"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while count(dir.path(), "SELECT COUNT(*) FROM password_resets") == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no reset row within 2 seconds"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(count(dir.path(), "SELECT COUNT(*) FROM password_resets"), 1);
+    assert_eq!(
+        rows_of(dir.path(), "reset").len(),
+        1,
+        "one reset activity row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_owner_role_change_is_saved_and_recorded() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    let bob_path = format!("/admin/users/{}", user_id_of(dir.path(), BOB));
+    let page = owner
+        .submit(
+            "/account",
+            &format!("{bob_path}/role"),
+            &[("role", "admin")],
+        )
+        .await;
+    assert_eq!(page.status, 303, "the owner's role change must answer 303");
+    assert_eq!(page.location(), Some(bob_path.as_str()));
+    assert_eq!(
+        count(
+            dir.path(),
+            "SELECT COUNT(*) FROM users WHERE email = 'bob@example.com' AND role = 'admin'"
+        ),
+        1,
+        "the role must be stored"
+    );
+    assert_eq!(rows_of(dir.path(), "admin_change").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reset_link_of_a_disabled_user_is_refused() {
+    const TOKEN: &str = "dw_rs_disabled-user-reset-token-0123456789";
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    insert_reset(dir.path(), BOB, TOKEN);
+    let bob_path = format!("/admin/users/{}", user_id_of(dir.path(), BOB));
+    let page = owner
+        .submit("/account", &format!("{bob_path}/disable"), &[])
+        .await;
+    assert_eq!(page.status, 303);
+    let page = Browser::new(&base).get(&format!("/reset/{TOKEN}")).await;
+    assert_eq!(
+        page.status, 404,
+        "a disabled user's reset link must be refused"
+    );
+    assert_eq!(page.kind().as_deref(), Some("link-invalid"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_password_change_ends_the_other_sessions_and_keeps_this_one() {
+    const NEW: &str = "a second passphrase here";
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    let mut changing = sign_in(&base, BOB).await;
+    let mut other = sign_in(&base, BOB).await;
+    let old_cookie = changing
+        .cookies
+        .get(SESSION_COOKIE)
+        .cloned()
+        .expect("the signed-in browser holds a session cookie");
+
+    let changed = changing
+        .submit(
+            "/account",
+            "/account/password",
+            &[("current_password", PASSWORD), ("new_password", NEW)],
+        )
+        .await;
+    assert_eq!(changed.status, 303, "the correct change must answer 303");
+    assert_eq!(changed.location(), Some("/account"));
+    assert_eq!(
+        changing.get("/account").await.status,
+        200,
+        "the browser that changed the password must stay signed in"
+    );
+    let other_account = other.get("/account").await;
+    assert_eq!(other_account.status, 303, "the other session must end");
+    assert_eq!(other_account.location(), Some("/login"));
+
+    let mut old = Browser::new(&base);
+    old.cookies.insert(SESSION_COOKIE.to_owned(), old_cookie);
+    let old_account = old.get("/account").await;
+    assert_eq!(old_account.status, 303, "the old session cookie must end");
+    assert_eq!(old_account.location(), Some("/login"));
+
+    assert_eq!(
+        login(&base, BOB, PASSWORD).await.status,
+        401,
+        "the old password must no longer sign in"
+    );
+    assert_eq!(
+        login(&base, BOB, NEW).await.status,
+        303,
+        "the new password must sign in"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reset_ends_every_session_of_the_user() {
+    const TOKEN: &str = "dw_rs_every-session-reset-token-0123456789";
+    const NEW: &str = "a second passphrase here";
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    let mut signed_in = sign_in(&base, BOB).await;
+    insert_reset(dir.path(), BOB, TOKEN);
+
+    let path = format!("/reset/{TOKEN}");
+    let mut anonymous = Browser::new(&base);
+    let done = anonymous.submit(&path, &path, &[("password", NEW)]).await;
+    assert_eq!(done.status, 303, "the reset must complete");
+    assert_eq!(done.location(), Some("/login"));
+
+    let account = signed_in.get("/account").await;
+    assert_eq!(
+        account.status, 303,
+        "the reset must end the signed-in session"
+    );
+    assert_eq!(account.location(), Some("/login"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_accepted_invitation_is_gone() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner
+        .submit(
+            "/admin/invitations",
+            "/admin/invitations",
+            &[("email", BOB), ("role", "user")],
+        )
+        .await;
+    let link =
+        attr_of(&page.body, "[data-invite-link]", "data-invite-link").expect("the invitation link");
+    let path = link
+        .strip_prefix(base.as_str())
+        .expect("the link is under the base")
+        .to_owned();
+    let listed = owner.get("/admin/invitations").await;
+    assert_eq!(
+        elements(&listed.body, "[data-invitation-id]").len(),
+        1,
+        "the invitation must be listed before it is accepted"
+    );
+
+    let mut invitee = Browser::new(&base);
+    let accepted = invitee
+        .submit(&path, &path, &[("password", PASSWORD)])
+        .await;
+    assert_eq!(accepted.status, 303, "the invitation must be accepted");
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM invitations"),
+        0,
+        "the accepted invitation row must be gone"
+    );
+    let after = owner.get("/admin/invitations").await;
+    assert_eq!(after.status, 200);
+    assert!(
+        elements(&after.body, "[data-invitation-id]").is_empty(),
+        "the accepted invitation must not be listed"
+    );
 }

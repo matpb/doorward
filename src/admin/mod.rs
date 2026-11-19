@@ -1,9 +1,11 @@
 //! The admin panel. One nested router behind the admin check; the mail routes add the owner check.
 
 mod activity;
+mod invitations;
 mod mail;
 #[cfg(test)]
 mod tests;
+mod users;
 
 use axum::Router;
 use axum::extract::{Request, State};
@@ -26,6 +28,17 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/", get(panel))
         .nest("/mail", owner_only)
         .route("/activity", get(activity::get_activity))
+        .route(
+            "/invitations",
+            get(invitations::get_invitations).post(invitations::post_invitation),
+        )
+        .route("/invitations/{id}/revoke", post(invitations::post_revoke))
+        .route("/users", get(users::get_users))
+        .route("/users/{id}", get(users::get_user))
+        .route("/users/{id}/role", post(users::post_role))
+        .route("/users/{id}/disable", post(users::post_disable))
+        .route("/users/{id}/enable", post(users::post_enable))
+        .route("/users/{id}/delete", post(users::post_delete))
         // Routes are added above this line: route_layer covers only routes that already exist.
         .route_layer(middleware::from_fn_with_state(state, require_admin))
 }
@@ -39,6 +52,8 @@ async fn panel(viewer: Viewer) -> Response {
             h1 { "Admin" }
             nav {
                 ul {
+                    li { a href="/admin/users" { "Users" } }
+                    li { a href="/admin/invitations" { "Invitations" } }
                     li { a href="/admin/activity" { "Activity" } }
                     @if viewer.is_owner() {
                         li { a href="/admin/mail" { "Mail" } }

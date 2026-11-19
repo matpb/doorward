@@ -10,6 +10,6 @@ pub mod db;
 pub mod mail;
 pub mod web;
 
-pub use app::{Deps, Gateway, StartError, build, serve};
+pub use app::{Deps, Gateway, StartError, build, serve, unlock};
 pub use cimd::{CimdError, CimdFetcher, ClientMetadata};
 pub use config::{Config, ConfigError};

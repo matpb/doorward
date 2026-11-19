@@ -9,8 +9,9 @@ use axum::{Json, Router};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde_json::json;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
-use crate::accounts::{self, account, login, setup};
+use crate::accounts::{self, account, invite, login, password, reset, setup, throttle};
 use crate::admin;
 use crate::cimd::{CimdFetcher, UnavailableCimd};
 use crate::clock::{Clock, SystemClock};
@@ -18,6 +19,9 @@ use crate::config::{Config, ConfigError};
 use crate::crypto::{CryptoError, KeyError, Keys, PasswordHasher, random_token};
 use crate::db::{Db, DbError};
 use crate::web;
+
+/// Password reset requests that may run their mail task at once.
+const RESET_REQUEST_PERMITS: usize = 16;
 
 pub struct Deps {
     pub clock: Arc<dyn Clock>,
@@ -64,6 +68,8 @@ pub struct AppState {
     pub setup_code: Option<String>,
     /// Shared client for the HTTP mail providers.
     pub http: reqwest::Client,
+    /// Permits for the background tasks of `POST /forgot`.
+    pub reset_requests: Arc<Semaphore>,
 }
 
 /// Validates the config, opens the database and returns the gateway.
@@ -96,6 +102,7 @@ pub(crate) async fn assemble(
         hasher,
         http,
         setup_code: setup_code.clone(),
+        reset_requests: Arc::new(Semaphore::new(RESET_REQUEST_PERMITS)),
     };
     Ok(Gateway {
         router: routes(state),
@@ -109,7 +116,16 @@ fn routes(state: AppState) -> Router {
         .route("/login", get(login::get_login).post(login::post_login))
         .route("/logout", post(login::post_logout))
         .route("/account", get(account::get_account))
-        .route("/invite/{token}", get(accounts::invite_unavailable))
+        .route("/account/password", post(password::post_password))
+        .route(
+            "/invite/{token}",
+            get(invite::get_invite).post(invite::post_invite),
+        )
+        .route("/forgot", get(reset::get_forgot).post(reset::post_forgot))
+        .route(
+            "/reset/{token}",
+            get(reset::get_reset).post(reset::post_reset),
+        )
         .nest("/admin", admin::router(state.clone()))
         .layer(middleware::from_fn(web::security_headers));
     Router::new()
@@ -174,6 +190,14 @@ fn stored_key_id(conn: &Connection) -> rusqlite::Result<Option<String>> {
             })
         })
         .transpose()
+}
+
+/// Clears the login block of one account, whether or not one existed.
+pub async fn unlock(config: &Config, email: &str) -> Result<(), DbError> {
+    let db = Db::open(&config.database)?;
+    let email = email.to_owned();
+    db.call(move |conn| throttle::lift_block(conn, &email))
+        .await
 }
 
 /// Serves `router` until `shutdown` resolves; handlers can read the peer address.

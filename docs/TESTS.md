@@ -97,8 +97,8 @@ Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
    address and for `nobody@example.com` are equal byte for byte; no mail goes to the
    unknown address.
 3. `reset_link_works_once`: second use is 404 on GET and POST.
-4. `reset_link_expires_after_an_hour`: after 61 minutes the link is 404; a fresh one at
-   59 minutes works.
+4. `reset_link_expires_after_an_hour`: one link opens at 59 minutes and is 404 on GET and
+   POST at 61 minutes; a link requested after that works.
 5. `reset_kills_sessions_and_tokens`: bob on demo, with a signed-in browser. After the
    reset: that browser's `GET /account` is 303 `/login`; `list_tools` with the old access
    token is 401; `token_refresh` is 400 `invalid_grant`.

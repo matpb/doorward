@@ -1,0 +1,85 @@
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use doorward::crypto::token_hash;
+use doorward::db::Db;
+
+const EMAIL: &str = "bob@example.com";
+
+/// A config file in `dir` whose database is `dir/doorward.db`; returns the config path.
+fn write_config(dir: &Path) -> PathBuf {
+    let path = dir.join("doorward.toml");
+    let text = format!(
+        "public_url = \"http://127.0.0.1:8717\"\ndatabase = '{}'\n",
+        dir.join("doorward.db").display()
+    );
+    std::fs::write(&path, text).expect("write config");
+    path
+}
+
+/// How many login blocks the database holds for `EMAIL`.
+fn block_count(database: &Path) -> i64 {
+    let conn = rusqlite::Connection::open(database).expect("open database");
+    conn.query_row(
+        "SELECT COUNT(*) FROM login_blocks WHERE account_hash = ?1",
+        [token_hash(EMAIL)],
+        |row| row.get(0),
+    )
+    .expect("count blocks")
+}
+
+fn insert_block(database: &Path) {
+    let conn = rusqlite::Connection::open(database).expect("open database");
+    conn.execute(
+        "INSERT INTO login_blocks (account_hash, failures, last_failed_at) VALUES (?1, 5, 1800000000)",
+        [token_hash(EMAIL)],
+    )
+    .expect("insert block");
+}
+
+fn unlock(config: &Path, email: &str) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_doorward"))
+        .arg("unlock")
+        .arg("--config")
+        .arg(config)
+        .arg(email)
+        .output()
+        .expect("run doorward unlock")
+}
+
+#[test]
+fn unlock_removes_the_block_and_prints_the_line() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path());
+    let database = dir.path().join("doorward.db");
+    Db::open(&database).expect("create the database");
+    insert_block(&database);
+    assert_eq!(
+        block_count(&database),
+        1,
+        "the block must be in place first"
+    );
+
+    let output = unlock(&config, EMAIL);
+    assert_eq!(output.status.code(), Some(0), "stderr: {:?}", output.stderr);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("unlocked {EMAIL}\n")
+    );
+    assert_eq!(block_count(&database), 0, "the block row must be gone");
+}
+
+#[test]
+fn unlock_succeeds_when_no_block_exists() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path());
+    let database = dir.path().join("doorward.db");
+    Db::open(&database).expect("create the database");
+
+    let output = unlock(&config, EMAIL);
+    assert_eq!(output.status.code(), Some(0), "stderr: {:?}", output.stderr);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("unlocked {EMAIL}\n")
+    );
+}

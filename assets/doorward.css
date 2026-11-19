@@ -115,3 +115,25 @@ button {
 .activity p {
   margin: 0;
 }
+
+.users,
+.invitations {
+  padding-left: 1.25rem;
+}
+
+.users li,
+.invitations li {
+  margin: 0 0 1rem;
+  overflow-wrap: anywhere;
+}
+
+.users p,
+.invitations p {
+  margin: 0;
+}
+
+code {
+  display: block;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}

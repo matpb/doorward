@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -41,17 +43,8 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
     let Some(slot) = state.hasher.try_slot() else {
         return busy();
     };
-    let limits = &state.config.limits;
     let now = state.clock.now().unix_timestamp();
-    let reserve = Reserve {
-        account: account.clone(),
-        address: throttle_key(form.viewer.address),
-        email: email.clone(),
-        now,
-        block_seconds: to_i64(limits.block_minutes).saturating_mul(60),
-        account_failures: to_i64(limits.account_failures),
-        address_failures: to_i64(limits.address_failures),
-    };
+    let reserve = reservation(&state, &email, form.viewer.address, now);
     let attempt = match throttle::reserve(&state.db, reserve).await {
         Ok(attempt) => attempt,
         Err(_) => return internal_error(),
@@ -84,8 +77,22 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
     }
 }
 
+/// The reservation of one attempt: `email` is normalised, `address` is the client address.
+pub(super) fn reservation(state: &AppState, email: &str, address: IpAddr, now: i64) -> Reserve {
+    let limits = &state.config.limits;
+    Reserve {
+        account: token_hash(email),
+        address: throttle_key(address),
+        email: email.to_owned(),
+        now,
+        block_seconds: to_i64(limits.block_minutes).saturating_mul(60),
+        account_failures: to_i64(limits.account_failures),
+        address_failures: to_i64(limits.address_failures),
+    }
+}
+
 /// Writes the `login_failed` row. A failed write is reported and never changes the answer.
-async fn record_failed(state: &AppState, user_id: Option<i64>, email: &str) {
+pub(super) async fn record_failed(state: &AppState, user_id: Option<i64>, email: &str) {
     let event = match user_id {
         Some(id) => OwnedEvent {
             kind: "login_failed".to_owned(),

@@ -2,8 +2,8 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::Parser;
-use doorward::{Config, Deps, build, serve};
+use clap::{Parser, Subcommand};
+use doorward::{Config, Deps, build, serve, unlock};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -12,13 +12,27 @@ use tokio::signal::unix::{SignalKind, signal};
 struct Cli {
     /// Path to the TOML config file.
     #[arg(long, value_name = "PATH")]
-    config: PathBuf,
+    config: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Clears the login block of one account.
+    Unlock {
+        /// Path to the TOML config file.
+        #[arg(long, value_name = "PATH")]
+        config: PathBuf,
+        /// The account's email address.
+        email: String,
+    },
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    match run(&cli.config).await {
+    match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("doorward: {err}");
@@ -27,7 +41,22 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
+async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
+    match cli.command {
+        Some(Command::Unlock { config, email }) => {
+            let config = Config::load(&config)?;
+            unlock(&config, &email).await?;
+            println!("unlocked {email}");
+            Ok(())
+        }
+        None => match cli.config {
+            Some(path) => start(&path).await,
+            None => Err("--config is required".into()),
+        },
+    }
+}
+
+async fn start(config_path: &Path) -> Result<(), Box<dyn Error>> {
     let config = Config::load(config_path)?;
     let listen = config.listen;
     let https_without_proxy =

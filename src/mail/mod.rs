@@ -3,6 +3,7 @@
 mod mailgun;
 mod resend;
 mod smtp;
+pub mod templates;
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -123,6 +123,7 @@ async fn reset_by_email_sets_a_new_password() {
 async fn answer_is_identical_for_an_unknown_address() {
     let w = World::start().await;
     w.user(BOB).await;
+    w.mail.clear();
     let anonymous = w.client();
     let known = forgot(&anonymous, BOB, &[]).await;
     let unknown = forgot(&anonymous, NOBODY, &[]).await;
@@ -183,7 +184,11 @@ async fn reset_link_expires_after_an_hour() {
     let anonymous = w.client();
     let old = request_reset(&w, &anonymous, BOB).await;
     w.gw.clock.advance(time::Duration::minutes(59));
-    let fresh = request_reset(&w, &anonymous, BOB).await;
+    let page = anonymous.get(&old).await;
+    assert_eq!(
+        page.status, 200,
+        "a reset link must still open 59 minutes after it was requested"
+    );
     w.gw.clock.advance(time::Duration::minutes(2));
     let page = anonymous.get(&old).await;
     assert_eq!(
@@ -198,15 +203,11 @@ async fn reset_link_expires_after_an_hour() {
         page.status, 404,
         "a reset link older than an hour must be refused on POST"
     );
-    let page = anonymous.get(&fresh).await;
-    assert_eq!(
-        page.status, 200,
-        "a reset link requested at 59 minutes must still open"
-    );
+    let fresh = request_reset(&w, &anonymous, BOB).await;
     let page = anonymous.reset_password(&fresh, NEW_PASSWORD).await;
     assert_eq!(
         page.status, 303,
-        "a reset link requested at 59 minutes must still work"
+        "a reset link requested after the old one expired must work"
     );
 }
 

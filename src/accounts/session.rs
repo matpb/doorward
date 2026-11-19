@@ -66,11 +66,68 @@ pub fn delete(conn: &Connection, token: &str) -> rusqlite::Result<usize> {
     )
 }
 
+/// Ends every session of the user at once: increments users.auth_epoch and deletes the rows.
+pub fn revoke_all(conn: &Connection, user_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE users SET auth_epoch = auth_epoch + 1 WHERE id = ?1",
+        params![user_id],
+    )?;
+    conn.execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id])?;
+    Ok(())
+}
+
 /// The database holds only the CHECK-constrained roles, so anything unknown gets the least rights.
 fn role_of(text: &str) -> Role {
     match text {
         "owner" => Role::Owner,
         "admin" => Role::Admin,
         _ => Role::User,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Db;
+
+    const NOW: i64 = 1_000;
+    const LIFETIME: i64 = 100;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_session_made_before_revoke_all_stops_resolving_and_one_after_resolves() {
+        let dir = tempfile::tempdir().expect("dir");
+        let db = Db::open(&dir.path().join("doorward.db")).expect("open");
+        let (user_id, before) = db
+            .call(|conn| {
+                conn.execute(
+                    "INSERT INTO users (email, password_hash, role, created_at) \
+                     VALUES ('bob@example.com', 'hash', 'user', 0)",
+                    [],
+                )?;
+                let user_id = conn.last_insert_rowid();
+                let before = insert(conn, user_id, NOW, LIFETIME)?;
+                Ok((user_id, before))
+            })
+            .await
+            .expect("setup");
+        assert!(
+            find(&db, &before, NOW).await.expect("find").is_some(),
+            "a fresh session must resolve"
+        );
+        db.call(move |conn| revoke_all(conn, user_id))
+            .await
+            .expect("revoke");
+        assert!(
+            find(&db, &before, NOW).await.expect("find").is_none(),
+            "a session made before revoke_all must no longer resolve"
+        );
+        let after = db
+            .call(move |conn| insert(conn, user_id, NOW, LIFETIME))
+            .await
+            .expect("insert");
+        assert!(
+            find(&db, &after, NOW).await.expect("find").is_some(),
+            "a session made after revoke_all must resolve"
+        );
     }
 }
