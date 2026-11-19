@@ -249,8 +249,56 @@ in the query string is never read.
 
 ## MCP paths
 
-Filled in from the protocol capture: the exact per-generation method allowlists, header
-rules and error bodies. Fixed already:
+A request is handled by the stateless rules (revision 2026-07-28 and later) when its
+`MCP-Protocol-Version` header is `2026-07-28` or a later date, or when its body carries
+`params._meta["io.modelcontextprotocol/protocolVersion"]`. Otherwise the session rules
+(revisions up to 2025-11-25) apply.
+
+Forwarded methods on `/{slug}`; everything else is refused:
+
+| Group | Session rules | Stateless rules |
+|---|---|---|
+| Always | `initialize`, `ping`, `tools/list`, `tools/call`, `logging/setLevel`, notifications `notifications/initialized`, `notifications/cancelled`, `notifications/progress`, `notifications/roots/list_changed` | `server/discover`, `tools/list`, `tools/call`, `subscriptions/listen`, notification `notifications/cancelled` |
+| `pass_resources` on | `resources/list`, `resources/templates/list`, `resources/read`, `resources/subscribe`, `resources/unsubscribe` | `resources/list`, `resources/templates/list`, `resources/read` |
+| `pass_prompts` on | `prompts/list`, `prompts/get` | `prompts/list`, `prompts/get` |
+| Either switch on | `completion/complete` | `completion/complete` |
+
+With a switch off, the gateway answers the group's list methods itself with empty lists
+(`resources`, `resourceTemplates`, `prompts`), answers the other methods of the group with
+`-32601`, and removes `resources` or `prompts` from the capabilities in the relayed
+`initialize` and `server/discover` results. Under the stateless rules its own answers carry
+`"resultType": "complete"`, and list answers `"ttlMs": 60000, "cacheScope": "private"`.
+
+Stateless header rules: `MCP-Protocol-Version` must be present once and equal the body's
+`_meta` version; `Mcp-Method` must be present once and equal the body's `method`;
+`Mcp-Name` must be present once for `tools/call` and `prompts/get` (equal to
+`params.name`) and for `resources/read` (equal to `params.uri`). A value of the form
+`=?base64?...?=` is decoded before comparing. Any failure: `400`, `-32020`, message
+starting `Header mismatch:`. GET and DELETE under the stateless rules: `405`.
+
+Relayed `tools/list` results keep the upstream's fields, minus denied tools, and under the
+stateless rules always carry `"cacheScope": "private"`, because the list is per user.
+
+Session rules: an `Mcp-Session-Id` from a relayed `initialize` response is recorded for
+(user, token family, server). GET with a recorded session is relayed as a stream; GET
+without one: `405`. DELETE with a recorded session is relayed and forgets it.
+
+The combined endpoint `/mcp` is its own MCP server:
+
+- Session rules: `initialize` (answers the requested revision when it is one of
+  `2025-11-25`, `2025-06-18`, `2025-03-26`, else `2025-11-25`; capabilities
+  `{"tools": {"listChanged": false}}`; `serverInfo.name` `doorward`; no session id),
+  `ping`, `tools/list`, `tools/call`, notifications accepted with `202`. GET and DELETE:
+  `405`.
+- Stateless rules: `server/discover` (`supportedVersions` `["2026-07-28", "2025-11-25",
+  "2025-06-18", "2025-03-26"]`, capabilities `{"tools": {}}`, `cacheScope` `private`),
+  `tools/list` (`ttlMs` 60000, `cacheScope` `private`), `tools/call`. An unsupported
+  version: `400`, `-32022`, with `data.supported` and `data.requested`.
+- Tool names are `{slug}__{tool}`. A merged name longer than 128 characters is left out
+  and logged. Tools are ordered by slug, then by the upstream's order.
+- Every other method: `-32601`.
+
+Answers that both endpoints share:
 
 | Case | Answer |
 |---|---|
