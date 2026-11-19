@@ -11,7 +11,6 @@ s16_tool_list
 s17_activity
 s18_unauthorized
 s20_cimd_fetcher
-s20_registration
 s23_upstream_isolation
 s24_trick_requests
 s26_panel

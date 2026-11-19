@@ -10,6 +10,7 @@ use crate::accounts::session;
 use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::db::DbError;
+use crate::oauth::families;
 use crate::servers::{self, Scope, ServerChoice};
 use crate::web::{
     Role, SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, not_found, page,
@@ -359,7 +360,9 @@ fn assign_servers_in(
     }
     ids.sort_unstable();
     ids.dedup();
-    servers::set_assignments(&tx, Scope::User(id), &ids)?;
+    for (user_id, server_id) in servers::set_assignments(&tx, Scope::User(id), &ids)? {
+        families::revoke_pair(&tx, user_id, server_id, now)?;
+    }
     let detail = format!(
         "assignments of {} set to {} servers",
         target.email,

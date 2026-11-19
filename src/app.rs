@@ -23,6 +23,8 @@ use crate::web;
 
 /// Password reset requests that may run their mail task at once.
 const RESET_REQUEST_PERMITS: usize = 16;
+/// How often the token housekeeping runs.
+const SWEEP_EVERY: Duration = Duration::from_secs(600);
 
 pub struct Deps {
     pub clock: Arc<dyn Clock>,
@@ -106,6 +108,7 @@ pub(crate) async fn assemble(
         setup_code: setup_code.clone(),
         reset_requests: Arc::new(Semaphore::new(RESET_REQUEST_PERMITS)),
     };
+    spawn_sweeps(&state);
     Ok(Gateway {
         router: routes(state),
         setup_code,
@@ -147,8 +150,39 @@ fn routes(state: AppState) -> Router {
             get(oauth::metadata::protected_resource),
         )
         .route("/oauth/register", post(oauth::register::post_register))
+        .route(
+            "/oauth/token",
+            post(oauth::token::post_token).fallback(oauth::token::not_post),
+        )
         .merge(pages)
         .with_state(state)
+}
+
+/// Runs the housekeeping at once and then every ten minutes. A failure goes to standard error.
+fn spawn_sweeps(state: &AppState) {
+    let db = state.db.clone();
+    let clock = Arc::clone(&state.clock);
+    let replay_seconds = oauth::families::replay_window(&state.config.lifetimes);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(SWEEP_EVERY);
+        loop {
+            ticker.tick().await;
+            let now = clock.now().unix_timestamp();
+            let swept = db
+                .call(move |conn| sweep_in(conn, now, replay_seconds))
+                .await;
+            if let Err(err) = swept {
+                eprintln!("doorward: housekeeping failed: {err}");
+            }
+        }
+    });
+}
+
+/// One immediate transaction for one housekeeping run.
+fn sweep_in(conn: &mut Connection, now: i64, replay_seconds: i64) -> rusqlite::Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    oauth::families::sweep(&tx, now, replay_seconds)?;
+    tx.commit()
 }
 
 /// No redirects, no cookies, no proxy from the environment, and a 5 second connect timeout.

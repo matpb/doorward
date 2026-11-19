@@ -24,6 +24,10 @@ use crate::config::Config;
 const KEY_ENV: &str = "DOORWARD_KEY";
 const SEAL_INFO: &[u8] = b"doorward seal v1";
 const CSRF_INFO: &[u8] = b"doorward csrf v1";
+const TOKEN_SEAL_INFO: &[u8] = b"doorward token seal v1";
+const TOKEN_SEAL_VERSION: &str = "t1";
+const TOKEN_PREFIX_LEN: usize = 6;
+const TOKEN_BODY_LEN: usize = 43;
 const NONCE_LEN: usize = 24;
 const SALT_LEN: usize = 16;
 const TOKEN_BYTES: usize = 32;
@@ -205,6 +209,114 @@ pub fn token_hash(token: &str) -> String {
 
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     bool::from(a.ct_eq(b))
+}
+
+/// Seals `plaintext` under a key derived from `token`, so only a presenter of the token opens it.
+/// Output text: "t1.<nonce>.<ciphertext>", both base64url without padding.
+pub fn seal_with_token(
+    token: &str,
+    context: &str,
+    plaintext: &[u8],
+) -> Result<String, CryptoError> {
+    let mut nonce = [0u8; NONCE_LEN];
+    fill_random(&mut nonce);
+    seal_with_token_nonce(token, context, plaintext, &nonce)
+}
+
+/// The inverse of `seal_with_token`. A wrong token, context or byte is `CryptoError::Open`.
+pub fn open_with_token(token: &str, context: &str, sealed: &str) -> Result<Vec<u8>, CryptoError> {
+    if !is_sealing_token(token) {
+        return Err(CryptoError::Open);
+    }
+    let parts: Vec<&str> = sealed.split('.').collect();
+    let [version, nonce_text, body_text] = parts.as_slice() else {
+        return Err(CryptoError::Open);
+    };
+    if *version != TOKEN_SEAL_VERSION {
+        return Err(CryptoError::Open);
+    }
+    let nonce = URL_SAFE_NO_PAD
+        .decode(nonce_text)
+        .map_err(|_| CryptoError::Open)?;
+    let nonce = XNonce::try_from(nonce.as_slice()).map_err(|_| CryptoError::Open)?;
+    let body = URL_SAFE_NO_PAD
+        .decode(body_text)
+        .map_err(|_| CryptoError::Open)?;
+    let key = token_key(token).ok_or(CryptoError::Open)?;
+    let cipher = XChaCha20Poly1305::new(&(*key).into());
+    let aad = token_associated_data(context);
+    cipher
+        .decrypt(
+            &nonce,
+            Payload {
+                msg: &body,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| CryptoError::Open)
+}
+
+/// `seal_with_token` with the nonce given, so the known-answer test can fix it.
+fn seal_with_token_nonce(
+    token: &str,
+    context: &str,
+    plaintext: &[u8],
+    nonce: &[u8; NONCE_LEN],
+) -> Result<String, CryptoError> {
+    if !is_sealing_token(token) {
+        return Err(CryptoError::Seal);
+    }
+    let key = token_key(token).ok_or(CryptoError::Seal)?;
+    let cipher = XChaCha20Poly1305::new(&(*key).into());
+    let aad = token_associated_data(context);
+    let body = cipher
+        .encrypt(
+            &XNonce::from(*nonce),
+            Payload {
+                msg: plaintext,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| CryptoError::Seal)?;
+    Ok(format!(
+        "{TOKEN_SEAL_VERSION}.{}.{}",
+        URL_SAFE_NO_PAD.encode(nonce),
+        URL_SAFE_NO_PAD.encode(body)
+    ))
+}
+
+/// True only for `dw_` plus two lower-case letters and `_`, then 43 base64url characters.
+fn is_sealing_token(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    if bytes.len() != TOKEN_PREFIX_LEN + TOKEN_BODY_LEN {
+        return false;
+    }
+    let (prefix, body) = bytes.split_at(TOKEN_PREFIX_LEN);
+    let prefix_ok = matches!(
+        prefix,
+        [b'd', b'w', b'_', first, second, b'_'] if first.is_ascii_lowercase() && second.is_ascii_lowercase()
+    );
+    prefix_ok
+        && body
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-' || *byte == b'_')
+}
+
+/// HKDF-SHA256 of the token's bytes, no salt. None only if the expansion fails,
+/// which a 32 byte output never does.
+fn token_key(token: &str) -> Option<Zeroizing<[u8; 32]>> {
+    let hkdf = Hkdf::<Sha256>::new(None, token.as_bytes());
+    let mut out = Zeroizing::new([0u8; 32]);
+    hkdf.expand(TOKEN_SEAL_INFO, &mut out[..]).ok()?;
+    Some(out)
+}
+
+/// The version tag, one NUL byte, then the context.
+fn token_associated_data(context: &str) -> Vec<u8> {
+    let mut aad = TOKEN_SEAL_VERSION.as_bytes().to_vec();
+    aad.push(0);
+    aad.extend_from_slice(context.as_bytes());
+    aad
 }
 
 /// An owned permit of the waiting queue; dropped only when its hashing has finished.
@@ -540,6 +652,122 @@ mod tests {
             token_hash("abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    const TOKEN: &str = "dw_rt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const TOKEN_CONTEXT: &str =
+        "refresh_tokens.replay:a910352b5c238b177293bfc2ea3e1a7f86d611e489c87833b02be9eca4315650";
+    const TOKEN_SEALED: &str =
+        "t1.AAECAwQFBgcICQoLDA0ODxAREhMUFRYX.O0Z97sfkxe-Tvl2Drh0PDGamzn207N5y0n098ZAuNDo";
+    const TOKEN_PLAINTEXT: &[u8] = br#"{"example":true}"#;
+
+    fn other_token() -> String {
+        format!("dw_rt_{}", "B".repeat(43))
+    }
+
+    /// Splits a sealed text at its dots into its three parts; the body is the last one.
+    fn body_of(sealed: &str) -> Vec<u8> {
+        let body = sealed.rsplit('.').next().expect("a body");
+        URL_SAFE_NO_PAD.decode(body).expect("base64url body")
+    }
+
+    #[test]
+    fn the_token_seal_known_answer() {
+        let nonce: [u8; 24] = std::array::from_fn(|index| index as u8);
+        let sealed =
+            seal_with_token_nonce(TOKEN, TOKEN_CONTEXT, TOKEN_PLAINTEXT, &nonce).expect("seal");
+        assert_eq!(sealed, TOKEN_SEALED);
+        assert_eq!(
+            open_with_token(TOKEN, TOKEN_CONTEXT, TOKEN_SEALED).expect("open"),
+            TOKEN_PLAINTEXT
+        );
+    }
+
+    #[test]
+    fn a_token_seal_round_trips() {
+        let sealed = seal_with_token(TOKEN, TOKEN_CONTEXT, b"hello").expect("seal");
+        assert_eq!(
+            open_with_token(TOKEN, TOKEN_CONTEXT, &sealed).expect("open"),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn two_token_seals_of_the_same_text_differ() {
+        assert_ne!(
+            seal_with_token(TOKEN, TOKEN_CONTEXT, b"hello").expect("seal"),
+            seal_with_token(TOKEN, TOKEN_CONTEXT, b"hello").expect("seal")
+        );
+    }
+
+    #[test]
+    fn a_token_seal_opens_only_with_its_token_context_and_bytes() {
+        let sealed = seal_with_token(TOKEN, TOKEN_CONTEXT, b"hello").expect("seal");
+        assert!(matches!(
+            open_with_token(&other_token(), TOKEN_CONTEXT, &sealed),
+            Err(CryptoError::Open)
+        ));
+        assert!(matches!(
+            open_with_token(TOKEN, "refresh_tokens.replay:other", &sealed),
+            Err(CryptoError::Open)
+        ));
+        let mut body = body_of(&sealed);
+        body[0] ^= 1;
+        let nonce = sealed.split('.').nth(1).expect("nonce");
+        let flipped = format!("t1.{nonce}.{}", URL_SAFE_NO_PAD.encode(&body));
+        assert!(matches!(
+            open_with_token(TOKEN, TOKEN_CONTEXT, &flipped),
+            Err(CryptoError::Open)
+        ));
+    }
+
+    #[test]
+    fn a_token_seal_with_the_wrong_number_of_parts_is_refused() {
+        let sealed = seal_with_token(TOKEN, TOKEN_CONTEXT, b"hello").expect("seal");
+        let nonce = sealed.split('.').nth(1).expect("nonce");
+        assert!(matches!(
+            open_with_token(TOKEN, TOKEN_CONTEXT, &format!("t1.{nonce}")),
+            Err(CryptoError::Open)
+        ));
+        assert!(matches!(
+            open_with_token(TOKEN, TOKEN_CONTEXT, &format!("{sealed}.extra")),
+            Err(CryptoError::Open)
+        ));
+    }
+
+    #[test]
+    fn a_token_seal_with_a_23_byte_nonce_is_refused() {
+        let body = URL_SAFE_NO_PAD.encode(body_of(TOKEN_SEALED));
+        let short = URL_SAFE_NO_PAD.encode([0u8; 23]);
+        assert!(matches!(
+            open_with_token(TOKEN, TOKEN_CONTEXT, &format!("t1.{short}.{body}")),
+            Err(CryptoError::Open)
+        ));
+    }
+
+    #[test]
+    fn a_token_of_the_wrong_shape_is_refused_without_a_panic() {
+        let short = format!("dw_rt_{}", "A".repeat(42));
+        let long = format!("dw_rt_{}", "A".repeat(44));
+        let symbol = format!("dw_rt_{}+", "A".repeat(42));
+        let upper = format!("dw_RT_{}", "A".repeat(43));
+        let unprefixed = "x".repeat(49);
+        for token in [short, long, symbol, upper, unprefixed] {
+            assert!(
+                matches!(
+                    seal_with_token(&token, TOKEN_CONTEXT, b"hello"),
+                    Err(CryptoError::Seal)
+                ),
+                "{token} is refused by seal"
+            );
+            assert!(
+                matches!(
+                    open_with_token(&token, TOKEN_CONTEXT, TOKEN_SEALED),
+                    Err(CryptoError::Open)
+                ),
+                "{token} is refused by open"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

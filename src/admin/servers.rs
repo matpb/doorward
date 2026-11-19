@@ -12,6 +12,7 @@ use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::crypto::{CryptoError, Keys};
 use crate::db::DbError;
+use crate::oauth::families;
 use crate::servers::{
     self, Draft, Refusal, Scope, SecretChange, Server, ServerRef, Settings, UserChoice,
 };
@@ -296,6 +297,9 @@ fn update_in(
     if !servers::update(&tx, id, settings, &lockdown)? {
         return Ok(Ok(Changed::Taken));
     }
+    if stored.slug != settings.slug {
+        families::revoke_server(&tx, id, at)?;
+    }
     match servers::secret_change(&stored.upstream_url, settings, remove) {
         SecretChange::Keep => {}
         SecretChange::Drop => servers::set_secret(&tx, id, "", None)?,
@@ -353,7 +357,9 @@ fn assign_users_in(
     }
     ids.sort_unstable();
     ids.dedup();
-    servers::set_assignments(&tx, Scope::Server(id), &ids)?;
+    for (user_id, server_id) in servers::set_assignments(&tx, Scope::Server(id), &ids)? {
+        families::revoke_pair(&tx, user_id, server_id, at)?;
+    }
     let detail = format!("assignments of {} set to {} users", server.slug, ids.len());
     record(&tx, at, actor, Some(id), &server.slug, &detail)?;
     tx.commit()?;
