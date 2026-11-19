@@ -7,6 +7,7 @@ use common::mail::{Captured, Fail, MailCatcher, Via, link_with_prefix};
 use common::world::{FROM, World};
 
 const PROBE: &str = "probe@example.com";
+const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
 const WAIT: Duration = Duration::from_secs(5);
 const CANARIES: [&str; 3] = [
@@ -469,5 +470,82 @@ async fn mail_settings_survive_a_restart() {
         message.via,
         Via::Smtp,
         "the saved SMTP settings must still send after a restart"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_admin_cannot_touch_mail_settings() {
+    let w = World::start().await;
+    let alice = w.admin(ALICE).await;
+    let page = alice.get("/admin/mail").await;
+    assert_eq!(page.status, 403, "an admin's mail page must answer 403");
+    assert_eq!(
+        page.kind().as_deref(),
+        Some("forbidden"),
+        "an admin's mail page must show the forbidden page"
+    );
+    let page = alice
+        .submit("/account", "/admin/mail", PLAIN_USER_SETTINGS)
+        .await;
+    assert_eq!(page.status, 403, "an admin's settings post must be refused");
+    assert_eq!(
+        page.kind().as_deref(),
+        Some("forbidden"),
+        "an admin's settings post must show the forbidden page"
+    );
+    let page = alice
+        .submit("/account", "/admin/mail/test", &[("to", PROBE)])
+        .await;
+    assert_eq!(
+        page.status, 403,
+        "an admin's test mail post must be refused"
+    );
+    assert_eq!(
+        page.kind().as_deref(),
+        Some("forbidden"),
+        "an admin's test mail post must show the forbidden page"
+    );
+    send_test_mail(&w).await;
+    let message = mail_to(&w.mail, PROBE).await;
+    assert_eq!(
+        message.auth_secret.as_deref(),
+        Some("mail-password"),
+        "the owner's test mail must still use the stored password"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_server_address_drops_the_stored_password() {
+    let w = World::start().await;
+    send_test_mail(&w).await;
+    let control = mail_to(&w.mail, PROBE).await;
+    assert_eq!(
+        control.auth_secret.as_deref(),
+        Some("mail-password"),
+        "the control test mail must use the stored password"
+    );
+    w.mail.clear();
+    let page = admin::mail_smtp(
+        &w.owner,
+        FROM,
+        "localhost",
+        w.mail.smtp_plain_port(),
+        "mailer",
+        "",
+        "off",
+    )
+    .await;
+    assert_eq!(
+        page.status, 303,
+        "saving a new server address with an empty password must answer 303"
+    );
+    let page = admin::mail_test(&w.owner, PROBE).await;
+    assert_eq!(page.status, 200, "the test mail must be answered with 200");
+    assert!(
+        !w.mail
+            .messages()
+            .iter()
+            .any(|message| message.auth_secret.as_deref() == Some("mail-password")),
+        "a changed server address must not send the stored password"
     );
 }

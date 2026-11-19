@@ -11,12 +11,14 @@ what. `PUB` is the configured `public_url`.
   `class="notice"`.
 - Every form has `<input type="hidden" name="csrf" value="...">`. Forms are
   `application/x-www-form-urlencoded`. A successful POST answers `303` with `Location`.
-- A form POST with a missing or wrong `csrf`, or whose `Origin` header is absent or not
-  equal to `PUB` (`Origin: null` included), answers `403` with `data-page="forbidden"` and
-  changes nothing. The token endpoint and the registration endpoint are not form pages and
+- A form POST with a missing, repeated or wrong `csrf`, or whose `Origin` header is absent,
+  repeated or not equal to `PUB` (`Origin: null` included), or whose body is over 64 KiB or
+  cannot be parsed, answers `403` with `data-page="forbidden"` and changes nothing. The token endpoint and the registration endpoint are not form pages and
   take neither.
 - Cookies: session `__Host-doorward_session`; pre-session CSRF `__Host-doorward_csrf`. Both
-  `Secure; HttpOnly; SameSite=Lax; Path=/`.
+  `Secure; HttpOnly; SameSite=Lax; Path=/`, whatever the scheme of the request. A cookie that
+  is cleared repeats those attributes with `Max-Age=0`. The CSRF token is bound to the
+  session, or to the pre-session cookie for a browser that is not signed in.
 - Times use the injected clock everywhere, including throttling and expiry.
 - User-supplied and upstream-supplied text is HTML-escaped wherever it is shown.
 
@@ -84,7 +86,9 @@ Encryption key: 32 random bytes written as 64 hexadecimal characters. It is take
 environment variable `DOORWARD_KEY`, else from the file named by `key_file`, else from
 `<database>.key`. A key file that does not exist is created at start with mode 0600. A key
 file that group or others can read, or that is malformed, refuses the start. The database
-file is created with mode 0600 as well.
+file is created with mode 0600 as well. The database remembers the id of its key: once it
+does, a start without a key never makes a new one, and a start with a different key is
+refused, both with a message that asks for the original key.
 `doorward unlock --config <path> <email>` clears login blocks for one account.
 
 ## Config additions
@@ -126,7 +130,7 @@ and leaves the link or code usable. A wrong `current_password` answers `400` as 
 | `GET /setup` | | `200` `data-page="setup"` while no owner exists, else `404` |
 | `POST /setup` | `setup_code`, `email`, `password` | owner created, session set, `303 /admin`. Wrong code: `403`, nothing created. Owner exists: `404`. Two concurrent valid posts create one owner |
 | `GET /login` | | `200` `data-page="login"`; optional `?req=<auth request id>` is carried in a hidden `req` field |
-| `POST /login` | `email`, `password`, `req` | `303 /account`, or `303 /oauth/consent?req=...`. Wrong credentials or unknown address: `401`, same page, error "Wrong email or password." Blocked: `429` |
+| `POST /login` | `email`, `password`, `req` | `303 /account`, or `303 /oauth/consent?req=...`. Wrong credentials or unknown address: `401`, same page, error "Wrong email or password." Blocked: `429`. More than 64 password checks in flight: `503` |
 | `POST /logout` | | session ended, `303 /login` |
 | `GET /invite/{token}` | | `200` `data-page="invite"` if usable, else `404` `data-page="link-invalid"`. A GET never consumes the link |
 | `POST /invite/{token}` | `password` | account created, session set, `303 /account`. Unusable link: `404` |
@@ -142,9 +146,16 @@ and leaves the link or code usable. A wrong `current_password` answers `400` as 
 
 Throttling: after `account_failures` consecutive failures an account answers `429` to every
 login attempt, right password included, until `block_minutes` have passed since the last
-failure. An address with more than `address_failures` failures inside `block_minutes`
-answers `429`. The address is the socket peer, or the last `X-Forwarded-For` entry when the
-peer is in `trusted_proxies`.
+failure; the count then starts again from zero. An address with more than
+`address_failures` failures inside `block_minutes` answers `429`. An attempt is counted
+before its password is checked and uncounted when the password is right, so attempts made
+at the same moment cannot exceed the limit. A blocked attempt is neither checked nor
+counted.
+
+The address is the socket peer. When the peer is in `trusted_proxies`, it is the last
+`X-Forwarded-For` entry that is not itself a trusted proxy; an entry that is not an address
+means the peer is used. IPv4-mapped addresses count as IPv4, and an IPv6 address counts as
+its /64 network.
 
 Emails (plain text and HTML parts, links built from `PUB`):
 
@@ -158,7 +169,9 @@ Emails (plain text and HTML parts, links built from `PUB`):
 ## Admin panel
 
 Anonymous: `303 /login`. Signed in without the owner or admin role: `403`
-`data-page="forbidden"`. Roles: `owner`, `admin`, `user`.
+`data-page="forbidden"`. Roles: `owner`, `admin`, `user`. The mail routes (`/admin/mail`,
+`/admin/mail/test`) are for the owner alone and answer an admin `403` as well: whoever
+controls outgoing mail can read every password reset link.
 
 | Route | Fields | Outcome |
 |---|---|---|
@@ -186,7 +199,7 @@ Anonymous: `303 /login`. Signed in without the owner or admin role: `403`
 | `POST /admin/redirects` | `scheme`, `host`, `path_prefix` | `303` |
 | `POST /admin/redirects/{id}/disable`, `/enable` | | `303` |
 | `GET /admin/mail` | | `data-page="mail"`; stored secrets never rendered |
-| `POST /admin/mail` | `provider` (`smtp`, `resend`, `mailgun`), `from`; smtp: `smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`, `smtp_tls` (`off`, `starttls` or `implicit`); resend: `resend_api_key`, `resend_base_url`; mailgun: `mailgun_api_key`, `mailgun_domain`, `mailgun_base_url` | `303`. An empty secret field keeps the stored one. An empty base URL means the provider's own address. Requests to Resend carry `User-Agent: doorward/<version>` |
+| `POST /admin/mail` | `provider` (`smtp`, `resend`, `mailgun`), `from`; smtp: `smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`, `smtp_tls` (`off`, `starttls` or `implicit`); resend: `resend_api_key`, `resend_base_url`; mailgun: `mailgun_api_key`, `mailgun_domain`, `mailgun_base_url` | `303`. An empty secret field keeps the stored one, unless the server it is sent to changed in the same post (SMTP host, port, username or TLS mode; Resend base URL; Mailgun domain or base URL): then the stored secret is deleted. An empty base URL means the provider's own address. A field with a control character: `400`. Requests to Resend carry `User-Agent: doorward/<version>` |
 | `POST /admin/mail/test` | `to` | `200` `data-page="mail"` with `class="notice"` "Test email sent." or `class="error"` holding the provider's error |
 | `GET /admin/activity` | query `user`, `server` | `data-page="activity"`; rows `data-kind`, `data-user`, `data-server`, `data-tool`, `data-decision`, `data-outcome` |
 

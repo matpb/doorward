@@ -565,3 +565,39 @@ async fn session_id_is_not_stored() {
         "the session cookie value must not be stored"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn parallel_guesses_cannot_outrun_the_block() {
+    let w = World::start_with(|c| c.limits.address_failures = 1000).await;
+    let guesses = (0..20).map(|_| {
+        let browser = w.client();
+        async move { browser.login(OWNER_EMAIL, WRONG).await.status }
+    });
+    let statuses = join_all(guesses).await;
+    assert_eq!(
+        statuses.len(),
+        20,
+        "all twenty parallel guesses must finish"
+    );
+    for (n, status) in statuses.iter().enumerate() {
+        assert!(
+            *status == 401 || *status == 429,
+            "parallel guess {n} must answer 401 or 429, got {status}"
+        );
+    }
+    let unauthorized = statuses.iter().filter(|status| **status == 401).count();
+    let blocked = statuses.iter().filter(|status| **status == 429).count();
+    assert_eq!(
+        unauthorized, 5,
+        "exactly five parallel guesses must answer 401, statuses were {statuses:?}"
+    );
+    assert_eq!(
+        blocked, 15,
+        "exactly fifteen parallel guesses must answer 429, statuses were {statuses:?}"
+    );
+    let right = w.client().login(OWNER_EMAIL, PASSWORD).await;
+    assert_eq!(
+        right.status, 429,
+        "the owner's right password must be refused once the account is blocked"
+    );
+}

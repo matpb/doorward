@@ -174,6 +174,9 @@ Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
     a file of mode `0644` returns `Err`.
 18. `session_id_is_not_stored`: the session cookie value is absent from
     `W.stored_bytes()`.
+19. `parallel_guesses_cannot_outrun_the_block`: `address_failures = 1000`. Twenty browsers
+    post a wrong password for the owner at once: exactly five answer 401 and fifteen answer
+    429. The owner's right password then answers 429.
 
 ## s07_mail.rs (statement 7)
 
@@ -216,6 +219,14 @@ to the gateway with `World::start_with(|c| c.mail.smtp_ca_file = Some(M.ca_pem_p
 14. `only_admins_change_mail_settings`: a plain user's post is 403 forbidden; anonymous is
     303 `/login`.
 15. `mail_settings_survive_a_restart`: after `W.gw.restart()`, a test mail still arrives.
+16. `an_admin_cannot_touch_mail_settings`: alice is an admin. Her `GET /admin/mail` is 403
+    forbidden; her settings post and her test-mail post (csrf read from `/account`) are 403
+    forbidden; the owner's test mail then still arrives with `auth_secret` `mail-password`.
+17. `a_new_server_address_drops_the_stored_password`: a test mail arrives with
+    `auth_secret` `mail-password` (control), then `W.mail.clear()`. Saving the SMTP form
+    with the host `localhost` instead of `127.0.0.1` and an empty password answers 303.
+    `mail_test` then answers 200, and no captured message has `auth_secret`
+    `mail-password`.
 
 ## s08_mail_failure.rs (statement 8)
 

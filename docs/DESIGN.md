@@ -103,7 +103,8 @@ Tokens: `dw_at_`, `dw_rt_`, `dw_ac_` prefixes plus 32 random bytes, base64url; o
 is stored. A family is bound to the server's id (or to the combined endpoint), the client
 and the user, and has an absolute lifetime. Access 1 hour, refresh 30 days. Server delete,
 slug rename, unassignment, password change, reset, disable and delete revoke families; a
-per-user `tokens_valid_after` gives mass revocation. Refresh rechecks user and assignment.
+per-user `auth_epoch` counter, copied into each session and token family and compared on
+use, gives mass revocation. Refresh rechecks user and assignment.
 
 Refresh replay (S35): each refresh replaces the refresh token. On rotation the used row
 keeps, for 30 seconds (configurable, 0 = strict), the successor pair encrypted with a key
@@ -123,8 +124,12 @@ Browser pages:
 - Invitation and reset links render on GET and are consumed on POST, so mail scanners
   cannot use them up.
 - Login compares against a dummy hash for unknown addresses. Throttling per account and per
-  client address; the address comes from the socket unless `trusted_proxies` is set. A local
-  command unlocks the owner.
+  client address; the address comes from the socket unless `trusted_proxies` is set. A
+  failure is reserved before the password is checked, so parallel guesses cannot outrun the
+  limit. Password hashing holds its permit until the hashing thread ends, and at most 64
+  checks wait at once. A local command unlocks the owner.
+- Mail settings belong to the owner alone, and a stored mail secret is dropped when the
+  server it would be sent to changes.
 
 ## Pass-through (`/{slug}`)
 
