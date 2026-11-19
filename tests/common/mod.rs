@@ -131,6 +131,11 @@ impl TestGateway {
         &self.config
     }
 
+    /// A scripted browser with an empty cookie jar.
+    pub fn client(&self) -> client::TestClient {
+        client::TestClient::new(&self.base)
+    }
+
     /// Stops serving, then serves again on the same database file and port.
     pub async fn restart(&mut self) {
         if let Some(stop) = self.stop.take() {

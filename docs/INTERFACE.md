@@ -47,6 +47,12 @@ pub trait CimdFetcher: Send + Sync + 'static {
 ```
 
 The binary prints the setup code to standard error as `doorward setup code: <code>`.
+
+Encryption key: 32 random bytes written as 64 hexadecimal characters. It is taken from the
+environment variable `DOORWARD_KEY`, else from the file named by `key_file`, else from
+`<database>.key`. A key file that does not exist is created at start with mode 0600. A key
+file that group or others can read, or that is malformed, refuses the start. The database
+file is created with mode 0600 as well.
 `doorward unlock --config <path> <email>` clears login blocks for one account.
 
 ## Config additions
@@ -149,6 +155,14 @@ Anonymous: `303 /login`. Signed in without the owner or admin role: `403`
 | `POST /admin/mail` | `provider` (`smtp`, `resend`, `mailgun`), `from`; smtp: `smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`, `smtp_tls` (`on` or absent); resend: `resend_api_key`, `resend_base_url`; mailgun: `mailgun_api_key`, `mailgun_domain`, `mailgun_base_url` | `303`. An empty secret field keeps the stored one |
 | `POST /admin/mail/test` | `to` | `200` `data-page="mail"` with `class="notice"` "Test email sent." or `class="error"` holding the provider's error |
 | `GET /admin/activity` | query `user`, `server` | `data-page="activity"`; rows `data-kind`, `data-user`, `data-server`, `data-tool`, `data-decision`, `data-outcome` |
+
+Activity rows: `data-user` is the user's email (empty when there is none), `data-server`
+the server's slug, `data-tool` the tool's name on its server. For `tool_call` rows,
+`data-decision` is `allow` or `deny` and `data-outcome` is `ok`, `error` (the upstream
+answered an error), `unavailable` (the upstream could not be reached or answered
+garbage) or `refused` (denied, or stopped by the gateway before the upstream). Each row
+also carries `data-time` (RFC 3339) and, for tool calls, `data-duration-ms`. The `user`
+and `server` filters take ids. Newest rows come first.
 
 Activity kinds: `tool_call`, `login`, `login_failed`, `invitation`, `reset`, `admin_change`,
 `client_connected`, `client_disconnected`, `redirect_blocked`, `mail_failed`,
