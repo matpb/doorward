@@ -16,6 +16,7 @@ use crate::app::{Deps, assemble, serve};
 use crate::audit::{self, Event};
 use crate::config::Config;
 use crate::crypto::{Keys, PasswordHasher, token_hash};
+use crate::servers::{Scope, set_assignments};
 use crate::web::SESSION_COOKIE;
 
 const PASSWORD: &str = "correct horse battery staple";
@@ -1766,5 +1767,802 @@ async fn an_accepted_invitation_is_gone() {
     assert!(
         elements(&after.body, "[data-invitation-id]").is_empty(),
         "the accepted invitation must not be listed"
+    );
+}
+
+const SERVER_URL: &str = "http://127.0.0.1:9/mcp";
+const NEW_URL: &str = "https://mcp.example.com/mcp";
+const SECRET_VALUE: &str = "tok-VALUE-7731";
+
+/// A server create case: slug, upstream address, and the optional secret (name, value).
+type Case<'a> = (&'a str, &'a str, Option<(&'a str, &'a str)>);
+/// An assignment step: the scope, the ids, the pairs it removes and the pairs left after it.
+type Step<'a> = (Scope, &'a [i64], Vec<(i64, i64)>, Vec<(i64, i64)>);
+
+/// The fields of a server form named after its slug; the secret pair only when given.
+fn server_form<'a>(
+    slug: &'a str,
+    url: &'a str,
+    secret: Option<(&'a str, &'a str)>,
+) -> Vec<(&'a str, &'a str)> {
+    let mut fields = vec![("name", slug), ("slug", slug), ("upstream_url", url)];
+    if let Some((name, value)) = secret {
+        fields.push(("secret_header_name", name));
+        fields.push(("secret_header_value", value));
+    }
+    fields
+}
+
+/// Posts the create form as the browser.
+async fn add(browser: &mut Browser, slug: &str, url: &str, secret: Option<(&str, &str)>) -> Answer {
+    browser
+        .submit(
+            "/admin/servers",
+            "/admin/servers",
+            &server_form(slug, url, secret),
+        )
+        .await
+}
+
+fn server_id_of(dir: &Path, slug: &str) -> i64 {
+    open_db(dir)
+        .query_row("SELECT id FROM servers WHERE slug = ?1", [slug], |row| {
+            row.get(0)
+        })
+        .expect("the server exists")
+}
+
+/// (secret header name, sealed value) of one server row.
+fn secret_row(dir: &Path, id: i64) -> (String, Option<String>) {
+    open_db(dir)
+        .query_row(
+            "SELECT secret_header_name, secret_header_value FROM servers WHERE id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the server row")
+}
+
+fn lockdown_of(dir: &Path, id: i64) -> String {
+    open_db(dir)
+        .query_row("SELECT lockdown FROM servers WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .expect("the server row")
+}
+
+fn keys_of(dir: &Path, base: &str) -> Keys {
+    Keys::load(&config_in(dir, base), None).expect("keys")
+}
+
+/// The plain value that `sealed` holds for row `id`, or None when it does not open for that row.
+fn opened(keys: &Keys, id: i64, sealed: &str) -> Option<String> {
+    let context = format!("servers.secret_header_value:{id}");
+    keys.open(&context, sealed)
+        .ok()
+        .map(|bytes| String::from_utf8(bytes).expect("utf-8"))
+}
+
+/// The bytes of a file in the directory as text; empty when the file does not exist.
+fn file_text(dir: &Path, name: &str) -> String {
+    std::fs::read(dir.join(name))
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default()
+}
+
+/// The values of the checked inputs that match `css` on the page.
+fn checked_values(body: &str, css: &str) -> Vec<String> {
+    elements(body, css)
+        .iter()
+        .filter_map(|element| element.get("value").cloned())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_server_route_refuses_anonymous_and_plain_users() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    assert_eq!(add(&mut owner, "demo", SERVER_URL, None).await.status, 303);
+    add_user(dir.path(), PLAIN, "user").await;
+    let server = server_id_of(dir.path(), "demo");
+    let plain_id = user_id_of(dir.path(), PLAIN);
+    let routes = [
+        (false, "/admin/servers".to_string()),
+        (true, "/admin/servers".to_string()),
+        (false, format!("/admin/servers/{server}")),
+        (true, format!("/admin/servers/{server}")),
+        (true, format!("/admin/servers/{server}/delete")),
+        (true, format!("/admin/servers/{server}/users")),
+        (true, format!("/admin/servers/{server}/refresh-tools")),
+        (true, format!("/admin/users/{plain_id}/servers")),
+    ];
+    let mut anonymous = Browser::new(&base);
+    let mut plain = sign_in(&base, PLAIN).await;
+    for (post, path) in &routes {
+        let answer = if *post {
+            anonymous.post(path, &[]).await
+        } else {
+            anonymous.get(path).await
+        };
+        assert_eq!(answer.status, 303, "anonymous {path} must redirect");
+        assert_eq!(
+            answer.location(),
+            Some("/login"),
+            "anonymous {path} goes to /login"
+        );
+        let answer = if *post {
+            plain.post(path, &[]).await
+        } else {
+            plain.get(path).await
+        };
+        assert_eq!(answer.status, 403, "a plain user must be refused {path}");
+        assert_eq!(answer.kind().as_deref(), Some("forbidden"));
+    }
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM servers"),
+        1,
+        "the refused posts must change nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_is_added_listed_and_recorded() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let page = add(&mut owner, "demo", SERVER_URL, None).await;
+    assert_eq!(page.status, 303, "a valid server must be stored");
+    let id = server_id_of(dir.path(), "demo");
+    assert_eq!(
+        page.location(),
+        Some(format!("/admin/servers/{id}").as_str())
+    );
+    let list = owner.get("/admin/servers").await;
+    assert_eq!(list.kind().as_deref(), Some("servers"));
+    assert_eq!(
+        attr_of(&list.body, r#"[data-slug="demo"]"#, "data-server-id"),
+        Some(id.to_string())
+    );
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!(
+                "SELECT COUNT(*) FROM activity WHERE kind = 'admin_change' \
+                 AND detail = 'added server demo' AND server_id = {id} AND server_slug = 'demo'"
+            )
+        ),
+        1,
+        "adding a server writes one admin_change row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_create_form_refuses_each_bad_field_and_stores_nothing() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let control = "x\u{1}";
+    let cases: [Case; 9] = [
+        ("Bad", SERVER_URL, None),
+        ("admin", SERVER_URL, None),
+        ("demo", "ftp://example.com/", None),
+        ("demo", "https://example.com/mcp#x", None),
+        ("demo", SERVER_URL, Some(("", "v"))),
+        ("demo", SERVER_URL, Some(("x y", "v"))),
+        ("demo", SERVER_URL, Some(("host", "v"))),
+        ("demo", SERVER_URL, Some(("x-key", "tab\there"))),
+        ("demo", SERVER_URL, Some(("x-key", control))),
+    ];
+    for (slug, url, secret) in cases {
+        let page = add(&mut owner, slug, url, secret).await;
+        assert_eq!(page.status, 400, "{slug} {url} {secret:?} must be refused");
+        assert_eq!(page.kind().as_deref(), Some("servers"));
+        assert!(page.error().is_some(), "the refusal must name the field");
+    }
+    assert_eq!(count(dir.path(), "SELECT COUNT(*) FROM servers"), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_taken_slug_is_refused_by_the_unique_rule() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    assert_eq!(add(&mut owner, "demo", SERVER_URL, None).await.status, 303);
+    let again = add(&mut owner, "demo", NEW_URL, None).await;
+    assert_eq!(again.status, 400, "a second server on demo must be refused");
+    assert_eq!(again.kind().as_deref(), Some("servers"));
+    assert_eq!(
+        count(
+            dir.path(),
+            "SELECT COUNT(*) FROM servers WHERE slug = 'demo'"
+        ),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_concurrent_creates_with_one_slug_make_one_row() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _owner) = owner_gateway(dir.path()).await;
+    let mut first = sign_in(&base, OWNER).await;
+    let mut second = sign_in(&base, OWNER).await;
+    let (a, b) = tokio::join!(
+        add(&mut first, "twin", SERVER_URL, None),
+        add(&mut second, "twin", SERVER_URL, None)
+    );
+    let mut statuses = [a.status, b.status];
+    statuses.sort_unstable();
+    assert_eq!(
+        statuses,
+        [303, 400],
+        "one create wins, the other is refused"
+    );
+    assert_eq!(
+        count(
+            dir.path(),
+            "SELECT COUNT(*) FROM servers WHERE slug = 'twin'"
+        ),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_secret_value_is_never_shown_and_never_stored_in_clear() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let secret = ("x-upstream-secret", SECRET_VALUE);
+    assert_eq!(
+        add(&mut owner, "demo", SERVER_URL, Some(secret))
+            .await
+            .status,
+        303
+    );
+    let id = server_id_of(dir.path(), "demo");
+    let page = owner.get(&format!("/admin/servers/{id}")).await;
+    assert_eq!(page.status, 200);
+    assert_eq!(page.kind().as_deref(), Some("server"));
+    assert!(
+        page.body.contains("A secret is stored"),
+        "a stored secret is noted"
+    );
+    assert!(
+        !page.body.contains(SECRET_VALUE),
+        "the server page holds no value"
+    );
+    let list = owner.get("/admin/servers").await;
+    assert!(!list.body.contains(SECRET_VALUE), "the list holds no value");
+    let activity = owner.get("/admin/activity").await;
+    assert!(
+        !activity.body.contains(SECRET_VALUE),
+        "the activity page holds no value"
+    );
+    for name in ["doorward.db", "doorward.db-wal"] {
+        assert!(
+            !file_text(dir.path(), name).contains(SECRET_VALUE),
+            "{name} must not hold the value in clear"
+        );
+    }
+    let (_, sealed) = secret_row(dir.path(), id);
+    assert!(
+        sealed.is_some_and(|text| text.starts_with("v1.")),
+        "the value is sealed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sealed_secret_opens_only_for_its_own_row() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add(
+        &mut owner,
+        "alpha",
+        SERVER_URL,
+        Some(("x-key", "alpha-VALUE")),
+    )
+    .await;
+    add(
+        &mut owner,
+        "beta",
+        SERVER_URL,
+        Some(("x-key", "beta-VALUE")),
+    )
+    .await;
+    let alpha = server_id_of(dir.path(), "alpha");
+    let beta = server_id_of(dir.path(), "beta");
+    let (_, sealed) = secret_row(dir.path(), alpha);
+    let sealed = sealed.expect("alpha holds a secret");
+    let keys = keys_of(dir.path(), &base);
+    assert_eq!(
+        opened(&keys, alpha, &sealed).as_deref(),
+        Some("alpha-VALUE")
+    );
+    assert_eq!(
+        opened(&keys, beta, &sealed),
+        None,
+        "a copy under another row id must not open"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_zero_value_is_a_secret_and_a_header_name_is_stored_in_lower_case() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "demo", SERVER_URL, Some(("Authorization", "0"))).await;
+    let id = server_id_of(dir.path(), "demo");
+    let (name, sealed) = secret_row(dir.path(), id);
+    assert_eq!(name, "authorization");
+    let sealed = sealed.expect("a value of 0 is stored");
+    assert_eq!(
+        opened(&keys_of(dir.path(), &base), id, &sealed).as_deref(),
+        Some("0")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn changing_the_address_with_an_empty_value_deletes_the_stored_secret() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "demo", SERVER_URL, Some(("x-key", "old-VALUE"))).await;
+    let id = server_id_of(dir.path(), "demo");
+    let path = format!("/admin/servers/{id}");
+    let page = owner
+        .submit(&path, &path, &server_form("demo", NEW_URL, None))
+        .await;
+    assert_eq!(page.status, 303);
+    assert_eq!(secret_row(dir.path(), id), (String::new(), None));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn changing_the_address_with_a_new_value_keeps_the_new_one() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "demo", SERVER_URL, Some(("x-key", "old-VALUE"))).await;
+    let id = server_id_of(dir.path(), "demo");
+    let path = format!("/admin/servers/{id}");
+    let page = owner
+        .submit(
+            &path,
+            &path,
+            &server_form("demo", NEW_URL, Some(("X-Other", "new-VALUE"))),
+        )
+        .await;
+    assert_eq!(page.status, 303);
+    let (name, sealed) = secret_row(dir.path(), id);
+    assert_eq!(name, "x-other");
+    let sealed = sealed.expect("the new value is stored");
+    assert_eq!(
+        opened(&keys_of(dir.path(), &base), id, &sealed).as_deref(),
+        Some("new-VALUE")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unchanged_address_keeps_the_old_secret_whatever_the_posted_name() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add(
+        &mut owner,
+        "demo",
+        SERVER_URL,
+        Some(("Authorization", "old-VALUE")),
+    )
+    .await;
+    let id = server_id_of(dir.path(), "demo");
+    let before = secret_row(dir.path(), id);
+    let path = format!("/admin/servers/{id}");
+    let missing = owner
+        .submit(&path, &path, &server_form("demo", SERVER_URL, None))
+        .await;
+    assert_eq!(
+        missing.status, 303,
+        "no secret fields posted keeps the secret"
+    );
+    let refused_name = owner
+        .submit(
+            &path,
+            &path,
+            &server_form("demo", SERVER_URL, Some(("x y", ""))),
+        )
+        .await;
+    assert_eq!(
+        refused_name.status, 303,
+        "an empty value keeps it whatever the name"
+    );
+    assert_eq!(
+        secret_row(dir.path(), id),
+        before,
+        "the stored row is unchanged"
+    );
+    let sealed = before.1.expect("a secret is stored");
+    assert_eq!(
+        opened(&keys_of(dir.path(), &base), id, &sealed).as_deref(),
+        Some("old-VALUE")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remove_secret_deletes_the_stored_secret() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "demo", SERVER_URL, Some(("x-key", "old-VALUE"))).await;
+    let id = server_id_of(dir.path(), "demo");
+    let path = format!("/admin/servers/{id}");
+    let mut fields = server_form("demo", SERVER_URL, None);
+    fields.push(("remove_secret", "on"));
+    assert_eq!(owner.submit(&path, &path, &fields).await.status, 303);
+    assert_eq!(secret_row(dir.path(), id), (String::new(), None));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_address_sets_the_lockdown_back_to_unknown() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let id = server_id_of(dir.path(), "demo");
+    open_db(dir.path())
+        .execute("UPDATE servers SET lockdown = 'ok' WHERE id = ?1", [id])
+        .expect("set lockdown");
+    let path = format!("/admin/servers/{id}");
+    owner
+        .submit(&path, &path, &server_form("demo", SERVER_URL, None))
+        .await;
+    assert_eq!(
+        lockdown_of(dir.path(), id),
+        "ok",
+        "an unchanged address keeps it"
+    );
+    owner
+        .submit(&path, &path, &server_form("demo", NEW_URL, None))
+        .await;
+    assert_eq!(
+        lockdown_of(dir.path(), id),
+        "unknown",
+        "a changed address resets it"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_update_to_a_taken_slug_is_refused_and_changes_nothing() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "alpha", SERVER_URL, None).await;
+    add(&mut owner, "beta", NEW_URL, None).await;
+    let beta = server_id_of(dir.path(), "beta");
+    let path = format!("/admin/servers/{beta}");
+    let page = owner
+        .submit(&path, &path, &server_form("alpha", NEW_URL, None))
+        .await;
+    assert_eq!(page.status, 400);
+    assert_eq!(page.kind().as_deref(), Some("server"));
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM servers WHERE id = {beta} AND slug = 'beta'")
+        ),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unknown_server_and_user_ids_answer_404() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let plain = owner.get("/admin/servers/999").await;
+    assert_eq!(plain.status, 404);
+    assert_eq!(plain.kind(), None, "an unknown server is a plain 404");
+    assert_eq!(owner.get("/admin/servers/abc").await.status, 404);
+    let update = owner
+        .submit(
+            "/admin/servers",
+            "/admin/servers/999",
+            &server_form("x", SERVER_URL, None),
+        )
+        .await;
+    assert_eq!(update.status, 404);
+    let delete = owner
+        .submit("/admin/servers", "/admin/servers/999/delete", &[])
+        .await;
+    assert_eq!(delete.status, 404);
+    let users = owner
+        .submit("/admin/servers", "/admin/servers/999/users", &[])
+        .await;
+    assert_eq!(users.status, 404);
+    let servers = owner
+        .submit("/admin/servers", "/admin/users/999/servers", &[])
+        .await;
+    assert_eq!(servers.status, 404);
+    let refresh = owner
+        .submit("/admin/servers", "/admin/servers/999/refresh-tools", &[])
+        .await;
+    assert_eq!(refresh.status, 404);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refresh_tools_answers_303_and_changes_nothing() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "demo", SERVER_URL, Some(("x-key", "v1"))).await;
+    let id = server_id_of(dir.path(), "demo");
+    let before = secret_row(dir.path(), id);
+    let rows_before = count(dir.path(), "SELECT COUNT(*) FROM activity");
+    let path = format!("/admin/servers/{id}");
+    let page = owner
+        .submit(&path, &format!("{path}/refresh-tools"), &[])
+        .await;
+    assert_eq!(page.status, 303, "refresh-tools answers 303");
+    assert_eq!(page.location(), Some(path.as_str()));
+    assert_eq!(secret_row(dir.path(), id), before, "nothing is changed");
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM activity"),
+        rows_before,
+        "no activity row is written"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_server_drops_its_assignments_and_its_id_is_never_reused() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), PLAIN, "user").await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let first = server_id_of(dir.path(), "demo");
+    let plain_id = user_id_of(dir.path(), PLAIN).to_string();
+    let path = format!("/admin/servers/{first}");
+    let assigned = owner
+        .submit(
+            &path,
+            &format!("{path}/users"),
+            &[("user_id", plain_id.as_str())],
+        )
+        .await;
+    assert_eq!(assigned.status, 303);
+    let deleted = owner.submit(&path, &format!("{path}/delete"), &[]).await;
+    assert_eq!(deleted.status, 303);
+    assert_eq!(deleted.location(), Some("/admin/servers"));
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM user_servers WHERE server_id = {first}")
+        ),
+        0,
+        "the assignments go with the server"
+    );
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let second = server_id_of(dir.path(), "demo");
+    assert!(second > first, "a deleted server id is never reused");
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!(
+                "SELECT COUNT(*) FROM activity WHERE kind = 'admin_change' \
+                 AND detail = 'deleted server demo' AND server_id = {first}"
+            )
+        ),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn assignments_from_both_pages_refuse_unknown_ids_and_replace_the_set() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), PLAIN, "user").await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let server = server_id_of(dir.path(), "demo");
+    let plain = user_id_of(dir.path(), PLAIN);
+    let server_path = format!("/admin/servers/{server}/users");
+    let user_path = format!("/admin/users/{plain}/servers");
+    let unknown_user = owner
+        .submit(
+            &format!("/admin/servers/{server}"),
+            &server_path,
+            &[("user_id", "999")],
+        )
+        .await;
+    assert_eq!(unknown_user.status, 400, "an unknown user id is refused");
+    assert_eq!(unknown_user.kind().as_deref(), Some("server"));
+    let zero = owner
+        .submit(
+            &format!("/admin/servers/{server}"),
+            &server_path,
+            &[("user_id", "0")],
+        )
+        .await;
+    assert_eq!(zero.status, 400, "the id 0 is no user");
+    assert_eq!(count(dir.path(), "SELECT COUNT(*) FROM user_servers"), 0);
+
+    let assigned = owner
+        .submit(
+            &format!("/admin/servers/{server}"),
+            &server_path,
+            &[("user_id", &plain.to_string())],
+        )
+        .await;
+    assert_eq!(assigned.status, 303);
+    let server_page = owner.get(&format!("/admin/servers/{server}")).await;
+    assert_eq!(
+        checked_values(&server_page.body, r#"input[name="user_id"][checked]"#),
+        vec![plain.to_string()],
+        "the server page shows the user checked"
+    );
+    let user_page = owner.get(&format!("/admin/users/{plain}")).await;
+    assert_eq!(
+        checked_values(&user_page.body, r#"input[name="server_id"][checked]"#),
+        vec![server.to_string()],
+        "the user page shows the server checked"
+    );
+
+    let unknown_server = owner
+        .submit(
+            &format!("/admin/users/{plain}"),
+            &user_path,
+            &[("server_id", "999")],
+        )
+        .await;
+    assert_eq!(
+        unknown_server.status, 400,
+        "an unknown server id is refused"
+    );
+    assert_eq!(unknown_server.kind().as_deref(), Some("user"));
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM user_servers"),
+        1,
+        "a refused choice changes nothing"
+    );
+
+    let cleared = owner
+        .submit(&format!("/admin/users/{plain}"), &user_path, &[])
+        .await;
+    assert_eq!(cleared.status, 303);
+    assert_eq!(count(dir.path(), "SELECT COUNT(*) FROM user_servers"), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn set_assignments_replaces_the_set_and_returns_the_removed_pairs_for_both_scopes() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, _owner) = owner_gateway(dir.path()).await;
+    for email in [
+        "u1@example.com",
+        "u2@example.com",
+        "u3@example.com",
+        "u4@example.com",
+    ] {
+        add_user(dir.path(), email, "user").await;
+    }
+    for slug in ["a", "b"] {
+        open_db(dir.path())
+            .execute(
+                "INSERT INTO servers (name, slug, upstream_url, created_at) VALUES (?1, ?1, ?2, 0)",
+                [slug, SERVER_URL],
+            )
+            .expect("insert server");
+    }
+    let mut conn = open_db(dir.path());
+    let pairs = |conn: &rusqlite::Connection| -> Vec<(i64, i64)> {
+        let mut statement = conn
+            .prepare("SELECT user_id, server_id FROM user_servers ORDER BY user_id, server_id")
+            .expect("prepare");
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows")
+    };
+    let steps: [Step; 6] = [
+        (Scope::Server(1), &[2, 3], vec![], vec![(2, 1), (3, 1)]),
+        (
+            Scope::Server(1),
+            &[3, 4, 4],
+            vec![(2, 1)],
+            vec![(3, 1), (4, 1)],
+        ),
+        (Scope::User(3), &[2], vec![(3, 1)], vec![(3, 2), (4, 1)]),
+        (Scope::User(3), &[], vec![(3, 2)], vec![(4, 1)]),
+        (Scope::User(4), &[1, 1], vec![], vec![(4, 1)]),
+        (Scope::Server(1), &[], vec![(4, 1)], vec![]),
+    ];
+    for (scope, ids, removed, after) in steps {
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("transaction");
+        let got = set_assignments(&tx, scope, ids).expect("replace");
+        tx.commit().expect("commit");
+        assert_eq!(got, removed, "removed pairs for {scope:?} {ids:?}");
+        assert_eq!(pairs(&conn), after, "pairs after {scope:?} {ids:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_name_with_markup_is_escaped_on_the_list_the_server_page_and_the_activity_page() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let fields = [
+        ("name", "<b>Bold</b>"),
+        ("slug", "bold"),
+        ("upstream_url", SERVER_URL),
+    ];
+    let page = owner
+        .submit("/admin/servers", "/admin/servers", &fields)
+        .await;
+    assert_eq!(page.status, 303);
+    let id = server_id_of(dir.path(), "bold");
+    for body in [
+        owner.get("/admin/servers").await.body,
+        owner.get(&format!("/admin/servers/{id}")).await.body,
+    ] {
+        assert!(
+            !body.contains("<b>Bold</b>"),
+            "the name must not be raw markup"
+        );
+        assert!(
+            body.contains("&lt;b&gt;Bold&lt;/b&gt;"),
+            "the name is escaped"
+        );
+    }
+    let activity = owner.get("/admin/activity").await;
+    assert!(
+        !activity.body.contains("<b>"),
+        "the activity page shows no raw markup"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_page_carries_the_shared_identity_sentence_and_the_panel_links_to_servers() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let id = server_id_of(dir.path(), "demo");
+    let page = owner.get(&format!("/admin/servers/{id}")).await;
+    assert_eq!(page.kind().as_deref(), Some("server"));
+    assert_eq!(
+        attr_of(&page.body, "main", "data-lockdown"),
+        Some("unknown".to_string()),
+        "the stored lock-down value is on main"
+    );
+    assert!(page.body.contains(
+        "Every user reaches this server under the same identity, so anything the server caches or remembers per caller is shared."
+    ));
+    let panel = owner.get("/admin").await;
+    assert_eq!(
+        attr_of(&panel.body, r#"a[href="/admin/servers"]"#, "href"),
+        Some("/admin/servers".to_string())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upper_case_address_is_stored_canonically_and_reposted_it_keeps_the_secret() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let created = add(
+        &mut owner,
+        "demo",
+        "https://MCP.Example.com/mcp",
+        Some(("x-key", "old-VALUE")),
+    )
+    .await;
+    assert_eq!(created.status, 303);
+    let id = server_id_of(dir.path(), "demo");
+    let stored: String = open_db(dir.path())
+        .query_row(
+            "SELECT upstream_url FROM servers WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .expect("the server row");
+    assert_eq!(
+        stored, "https://mcp.example.com/mcp",
+        "the stored text is canonical"
+    );
+    let before = secret_row(dir.path(), id);
+    let path = format!("/admin/servers/{id}");
+    let page = owner
+        .submit(
+            &path,
+            &path,
+            &server_form("demo", "https://MCP.Example.com/mcp", None),
+        )
+        .await;
+    assert_eq!(page.status, 303);
+    assert_eq!(
+        secret_row(dir.path(), id),
+        before,
+        "the address did not change, so the secret is kept"
     );
 }

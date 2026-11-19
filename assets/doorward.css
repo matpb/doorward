@@ -137,3 +137,22 @@ code {
   overflow-wrap: anywhere;
   word-break: break-all;
 }
+
+.servers {
+  padding-left: 1.25rem;
+}
+
+.servers li {
+  margin: 0 0 1rem;
+  overflow-wrap: anywhere;
+}
+
+.servers p {
+  margin: 0;
+}
+
+input[type="checkbox"] {
+  display: inline-block;
+  width: auto;
+  margin: 0 0.5rem 0 0;
+}

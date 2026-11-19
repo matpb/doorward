@@ -272,7 +272,8 @@ rendered, never before login. A fetch failure renders `400` `data-page="error"`.
 `GET /oauth/consent?req={id}`: `200` `data-page="consent"` with `data-redirect-host`
 (host and port of the redirect address, or the scheme for a private-scheme address),
 `data-client-name`, `data-client-verified="yes|no"` (`no` for dynamically registered
-clients), `data-server` (slug, or `all servers` for the combined endpoint) and `data-user`
+clients), `data-client-host` (the host of a URL-shaped `client_id`, absent otherwise),
+`data-server` (slug, or `all servers` for the combined endpoint) and `data-user`
 (email). Unknown, expired, used, or another session's request: `400` `data-page="error"`.
 A user who is not assigned to the server, or a server that does not exist, gives `403`
 `data-page="no-access"`; the owner and admins need an assignment like anyone else. The
@@ -287,8 +288,9 @@ request id is consumed either way.
 
 `POST /oauth/token` (form), always `Cache-Control: no-store`:
 
-- `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `code_verifier`,
-  `resource` (optional here; if present it must equal the code's).
+- `grant_type=authorization_code`, `code`, `client_id`, `code_verifier`, `redirect_uri`
+  (optional; if present it must equal the one used at authorize), `resource` (optional
+  here; if present it must equal the code's).
 - `grant_type=refresh_token`, `refresh_token`, `client_id`, `resource` (optional, same
   rule).
 

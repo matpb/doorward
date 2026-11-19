@@ -8,6 +8,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod mail;
+pub mod servers;
 pub mod web;
 
 pub use app::{Deps, Gateway, StartError, build, serve, unlock};

@@ -3,6 +3,7 @@
 mod activity;
 mod invitations;
 mod mail;
+mod servers;
 #[cfg(test)]
 mod tests;
 mod users;
@@ -39,6 +40,21 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/users/{id}/disable", post(users::post_disable))
         .route("/users/{id}/enable", post(users::post_enable))
         .route("/users/{id}/delete", post(users::post_delete))
+        .route("/users/{id}/servers", post(users::post_servers))
+        .route(
+            "/servers",
+            get(servers::get_servers).post(servers::post_server),
+        )
+        .route(
+            "/servers/{id}",
+            get(servers::get_server).post(servers::post_update),
+        )
+        .route("/servers/{id}/delete", post(servers::post_delete))
+        .route("/servers/{id}/users", post(servers::post_users))
+        .route(
+            "/servers/{id}/refresh-tools",
+            post(servers::post_refresh_tools),
+        )
         // Routes are added above this line: route_layer covers only routes that already exist.
         .route_layer(middleware::from_fn_with_state(state, require_admin))
 }
@@ -54,6 +70,7 @@ async fn panel(viewer: Viewer) -> Response {
                 ul {
                     li { a href="/admin/users" { "Users" } }
                     li { a href="/admin/invitations" { "Invitations" } }
+                    li { a href="/admin/servers" { "Servers" } }
                     li { a href="/admin/activity" { "Activity" } }
                     @if viewer.is_owner() {
                         li { a href="/admin/mail" { "Mail" } }

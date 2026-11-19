@@ -67,8 +67,11 @@ Authorize flow:
 
 1. Validate `client_id` shape and `redirect_uri` against the redirect policy first. On
    failure show an error page naming the host; never redirect.
-2. Store the request server-side (`auth_requests`, random id, 10 minutes, single use, bound
-   to the browser session that renders consent). Only that id travels through login.
+2. Store the request server-side (`auth_requests`, random id, 10 minutes, single use). A
+   request started by a signed-in browser belongs to that browser from the start; one
+   started signed out belongs to the first signed-in browser that opens it. Only a request
+   whose consent page was rendered can be approved or denied. Only the id travels through
+   login.
 3. No browser session: `/login`, then back.
 4. For a CIMD client the metadata document is fetched only now, after login.
 5. Consent page (S33): shown every time. Headline is the
@@ -78,8 +81,10 @@ Authorize flow:
    the client.
 6. The user must be assigned to the requested server, or no code is issued.
 7. Code: random, stored hashed, single use, 60 seconds, bound to client, redirect address,
-   server, user and code challenge. Concurrent redemption yields one success. A second use
-   revokes the family it produced.
+   server, user, code challenge and the user's sign-in generation at approval, so a code
+   approved before a password reset dies with the reset. Concurrent redemption yields one
+   success. A second use by a caller who holds the code verifier revokes the family it
+   produced; a caller without the verifier changes nothing.
 8. A new connection sends the user an email with a disconnect link.
 
 Client registration:

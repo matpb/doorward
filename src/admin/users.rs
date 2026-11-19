@@ -10,6 +10,7 @@ use crate::accounts::session;
 use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::db::DbError;
+use crate::servers::{self, Scope, ServerChoice};
 use crate::web::{
     Role, SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, not_found, page,
     redirect,
@@ -18,6 +19,7 @@ use crate::web::{
 const OWNER: &str = "owner";
 const OWNER_MESSAGE: &str = "The owner account cannot be changed this way.";
 const ROLE_MESSAGE: &str = "Choose the role admin or user.";
+const SERVER_MESSAGE: &str = "Choose only servers that exist.";
 
 /// One user as the pages show it.
 struct User {
@@ -47,6 +49,13 @@ enum RoleVerdict {
     Missing,
     Owner,
     BadRole,
+    Done,
+}
+
+/// The decision of a server assignment, taken inside its transaction.
+enum AssignVerdict {
+    Missing,
+    BadValue,
     Done,
 }
 
@@ -115,6 +124,46 @@ pub async fn post_role(
     }
 }
 
+/// Replaces the user's servers with the posted set. An unknown server id is refused with 400.
+pub async fn post_servers(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    form: VerifiedForm,
+) -> Response {
+    let Some(actor) = form.viewer.user.clone() else {
+        return forbidden();
+    };
+    let Some(id) = parse_id(&id) else {
+        return not_found();
+    };
+    let ids = form
+        .fields
+        .all("server_id")
+        .iter()
+        .map(|value| parse_id(value))
+        .collect::<Option<Vec<i64>>>();
+    let now = state.clock.now().unix_timestamp();
+    let verdict = state
+        .db
+        .call(move |conn| assign_servers_in(conn, id, ids, &actor, now))
+        .await;
+    match verdict {
+        Ok(AssignVerdict::Done) => redirect(&format!("/admin/users/{id}")),
+        Ok(AssignVerdict::Missing) => not_found(),
+        Ok(AssignVerdict::BadValue) => {
+            user_page(
+                &state,
+                &form.viewer,
+                id,
+                StatusCode::BAD_REQUEST,
+                Some(SERVER_MESSAGE),
+            )
+            .await
+        }
+        Err(_) => internal_error(),
+    }
+}
+
 pub async fn post_disable(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -172,7 +221,7 @@ async fn change(state: AppState, id: &str, form: VerifiedForm, action: Action) -
 }
 
 /// An id from the path. Anything that is not a number is no user.
-fn parse_id(text: &str) -> Option<i64> {
+pub(super) fn parse_id(text: &str) -> Option<i64> {
     text.parse::<i64>().ok()
 }
 
@@ -287,6 +336,47 @@ fn change_in(
     Ok(Verdict::Done)
 }
 
+/// One transaction: the user must exist and every posted server must exist; the user's servers
+/// become exactly the posted set and the activity row is written with them.
+fn assign_servers_in(
+    conn: &mut Connection,
+    id: i64,
+    ids: Option<Vec<i64>>,
+    actor: &SessionUser,
+    now: i64,
+) -> rusqlite::Result<AssignVerdict> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let Some(target) = load_in(&tx, id)? else {
+        return Ok(AssignVerdict::Missing);
+    };
+    let Some(mut ids) = ids else {
+        return Ok(AssignVerdict::BadValue);
+    };
+    for server_id in &ids {
+        if !servers::server_exists(&tx, *server_id)? {
+            return Ok(AssignVerdict::BadValue);
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    servers::set_assignments(&tx, Scope::User(id), &ids)?;
+    let detail = format!(
+        "assignments of {} set to {} servers",
+        target.email,
+        ids.len()
+    );
+    let changed = Event {
+        kind: "admin_change",
+        user_id: Some(actor.id),
+        user_email: &actor.email,
+        detail: &detail,
+        ..Default::default()
+    };
+    audit::record(&tx, now, &changed)?;
+    tx.commit()?;
+    Ok(AssignVerdict::Done)
+}
+
 /// The user page. An error is shown with the status it is answered with.
 async fn user_page(
     state: &AppState,
@@ -295,18 +385,32 @@ async fn user_page(
     status: StatusCode,
     error: Option<&str>,
 ) -> Response {
-    match load(state, id).await {
-        Ok(Some(user)) => form_page(viewer, status, "user", "User", |csrf| {
-            user_body(csrf, viewer, &user, error)
+    let user = match load(state, id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => return not_found(),
+        Err(_) => return internal_error(),
+    };
+    match state
+        .db
+        .call(move |conn| servers::server_choices(conn, id))
+        .await
+    {
+        Ok(choices) => form_page(viewer, status, "user", "User", |csrf| {
+            user_body(csrf, viewer, &user, &choices, error)
         }),
-        Ok(None) => not_found(),
         Err(_) => internal_error(),
     }
 }
 
 /// The role form and the action forms appear only where the viewer may use them. The csrf
 /// field is always on the page, so every form action can be posted from it.
-fn user_body(csrf: &str, viewer: &Viewer, user: &User, error: Option<&str>) -> Markup {
+fn user_body(
+    csrf: &str,
+    viewer: &Viewer,
+    user: &User,
+    choices: &[ServerChoice],
+    error: Option<&str>,
+) -> Markup {
     let owner_target = user.role == OWNER;
     let may_set_role = viewer.is_owner() && !owner_target;
     let may_act = !owner_target && (viewer.is_owner() || user.role == "user");
@@ -320,6 +424,17 @@ fn user_body(csrf: &str, viewer: &Viewer, user: &User, error: Option<&str>) -> M
         }
         p { "Role: " (user.role) }
         p { "Status: " (status) }
+        h2 { "Servers" }
+        form method="post" action=(format!("{path}/servers")) {
+            input type="hidden" name="csrf" value=(csrf);
+            @for choice in choices {
+                label {
+                    input type="checkbox" name="server_id" value=(choice.id) checked[choice.assigned];
+                    " " (choice.name) " (" (choice.slug) ")"
+                }
+            }
+            button type="submit" { "Save servers" }
+        }
         @if may_set_role {
             form method="post" action=(format!("{path}/role")) {
                 input type="hidden" name="csrf" value=(csrf);
