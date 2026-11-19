@@ -298,7 +298,7 @@ fn update_in(
         return Ok(Ok(Changed::Taken));
     }
     if stored.slug != settings.slug {
-        families::revoke_server(&tx, id, at)?;
+        families::revoke_server(&tx, id, &stored.slug, at)?;
     }
     match servers::secret_change(&stored.upstream_url, settings, remove) {
         SecretChange::Keep => {}

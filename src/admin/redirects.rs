@@ -223,7 +223,7 @@ fn redirects_body(
         ol.blocked {
             @for row in blocked {
                 li data-blocked="yes" {
-                    p { (row.client) }
+                    p { "Asked by a client that calls itself " q { (row.client) } }
                     p { (row.detail) }
                     @if let Some(allow) = one_click(&row.detail) {
                         form method="post" action="/admin/redirects" {

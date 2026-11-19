@@ -2,6 +2,7 @@
 //! invitation, reset and password change flows.
 
 pub mod account;
+pub mod housekeeping;
 pub mod input;
 pub mod invite;
 pub mod login;
@@ -10,3 +11,6 @@ pub mod reset;
 pub mod session;
 pub mod setup;
 pub mod throttle;
+
+#[cfg(test)]
+mod tests_races;

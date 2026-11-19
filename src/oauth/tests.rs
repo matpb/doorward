@@ -60,6 +60,24 @@ fn metadata(text: &str) -> Map<String, Value> {
     }
 }
 
+// ---- The schema ----
+
+#[test]
+fn a_new_database_has_the_activity_and_request_indexes() {
+    let (_dir, conn) = open();
+    let mut statement = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+        .expect("statement");
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("query")
+        .collect::<rusqlite::Result<Vec<String>>>()
+        .expect("names");
+    for index in ["activity_kind_at", "auth_requests_expires"] {
+        assert!(names.iter().any(|name| name == index), "{index} must exist");
+    }
+}
+
 // ---- The redirect grammar ----
 
 #[test]

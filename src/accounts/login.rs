@@ -54,12 +54,14 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
         failure_id,
         user_id,
         phc,
+        epoch,
     } = attempt
     else {
         return login_page(&form, StatusCode::TOO_MANY_REQUESTS, BLOCKED, &req);
     };
+    let verified = phc.clone();
     let matched = state.hasher.verify(slot, password, phc).await;
-    let (true, Some(user_id)) = (matched, user_id) else {
+    let (true, Some(user_id), Some(epoch), Some(phc)) = (matched, user_id, epoch, verified) else {
         record_failed(&state, user_id, &email).await;
         return login_page(&form, StatusCode::UNAUTHORIZED, WRONG_CREDENTIALS, &req);
     };
@@ -67,13 +69,19 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
         account,
         failure_id,
         user_id,
-        email,
+        email: email.clone(),
         previous: form.viewer.presented_session().map(str::to_owned),
         now,
         lifetime: session::lifetime_seconds(state.config.lifetimes.session_hours),
+        phc,
+        epoch,
     };
     match throttle::succeed(&state.db, success).await {
-        Ok(token) => with_cookie(redirect(&after_sign_in(&req)), &session_cookie(&token)),
+        Ok(Some(token)) => with_cookie(redirect(&after_sign_in(&req)), &session_cookie(&token)),
+        Ok(None) => {
+            record_failed(&state, Some(user_id), &email).await;
+            login_page(&form, StatusCode::UNAUTHORIZED, WRONG_CREDENTIALS, &req)
+        }
         Err(_) => internal_error(),
     }
 }

@@ -101,8 +101,10 @@ Client registration:
   address must be allowed. Loopback hosts `localhost`, `127.0.0.1` and `[::1]` (compared as
   strings, never resolved) are always allowed on any port. Anything else must match an
   allowlist entry (scheme, host, optional path prefix). Defaults for the known clients ship
-  in code; admin additions and disables live in the database. A blocked attempt appears in
-  the activity log with a one-click allow.
+  in code; admin additions and disables live in the database. A blocked attempt of a
+  registered client appears in the activity log with a one-click allow; the rows are capped
+  per hour, and an unverified client address never writes one, so a stranger cannot fill the
+  log or the admin's list.
 
 Tokens: `dw_at_`, `dw_rt_`, `dw_ac_` prefixes plus 32 random bytes, base64url; only SHA-256
 is stored. A family is bound to the server's id (or to the combined endpoint), the client

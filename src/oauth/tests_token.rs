@@ -666,6 +666,62 @@ async fn with_no_window_the_second_use_revokes_at_once() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_refresh_with_an_unknown_token_clears_no_other_familys_copy() {
+    let s = scene().await;
+    let http = s.gw.http();
+    let other = register(&http, "Other", OTHER_REDIRECT).await;
+    let issued = issue(&s.bob, &other, OTHER_REDIRECT, &s.resource()).await;
+    let (_, other_refresh) =
+        tokens_of(&redeem(&http, &other, &issued, Some(OTHER_REDIRECT), None).await);
+    tokens_of(&refresh(&http, &other, &other_refresh, None).await);
+    let copy = token_hash(&other_refresh);
+    assert_eq!(
+        copy_rows(&s.gw, &copy),
+        1,
+        "the copy exists inside the window"
+    );
+    s.gw.clock.advance(time::Duration::seconds(31));
+    let unknown = random_token("dw_rt_");
+    let stranger = refresh(&http, &s.client, &unknown, None).await;
+    assert_refused(&stranger, "invalid_grant", "an unknown refresh token");
+    assert_eq!(
+        copy_rows(&s.gw, &copy),
+        1,
+        "a stranger's refresh leaves the other family's old copy"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refresh_after_the_window_clears_its_own_familys_old_copy() {
+    let s = scene().await;
+    let http = s.gw.http();
+    let (_, refresh_token) = connect(&s).await;
+    let (_, successor) = tokens_of(&refresh(&http, &s.client, &refresh_token, None).await);
+    let copy = token_hash(&refresh_token);
+    assert_eq!(
+        copy_rows(&s.gw, &copy),
+        1,
+        "the copy exists inside the window"
+    );
+    s.gw.clock.advance(time::Duration::seconds(31));
+    tokens_of(&refresh(&http, &s.client, &successor, None).await);
+    assert_eq!(
+        copy_rows(&s.gw, &copy),
+        0,
+        "the family's own refresh clears its old copy"
+    );
+}
+
+/// 1 when the refresh row of `hash` still holds its replay copy, else 0.
+fn copy_rows(gw: &Gateway, hash: &str) -> i64 {
+    scalar(
+        gw,
+        "SELECT COUNT(*) FROM refresh_tokens WHERE token_hash = ?1 AND replay IS NOT NULL",
+        params![hash],
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_stored_replay_opens_only_with_the_token_and_no_token_text_is_stored() {
     let s = scene().await;
     let http = s.gw.http();
@@ -1202,6 +1258,95 @@ async fn changing_a_slug_revokes_that_server_only() {
     );
 }
 
+/// Starts an authorization as the signed-in browser and returns its request id, without consent.
+async fn start_request(browser: &Session, client: &str, redirect: &str, resource: &str) -> String {
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(b"a pending request"));
+    let mut query = Serializer::new(String::new());
+    query.extend_pairs([
+        ("response_type", "code"),
+        ("client_id", client),
+        ("redirect_uri", redirect),
+        ("code_challenge", challenge.as_str()),
+        ("code_challenge_method", "S256"),
+        ("resource", resource),
+        ("state", "s1"),
+    ]);
+    let started = browser
+        .get(&format!("/oauth/authorize?{}", query.finish()))
+        .await;
+    assert_eq!(started.status, 303, "authorize must answer 303");
+    query_of(started.location.as_deref(), "req")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_drops_the_codes_and_requests_of_that_path_only() {
+    let gw = Gateway::start().await;
+    let owner = sign_in(&gw, add_user(&gw, OWNER, "owner"));
+    let bob_id = add_user(&gw, BOB, "user");
+    let bob = sign_in(&gw, bob_id);
+    let demo = add_server(&gw, "demo");
+    let other = add_server(&gw, "other");
+    assign(&gw, bob_id, demo);
+    assign(&gw, bob_id, other);
+    let http = gw.http();
+    let client = register(&http, "Cursor", REDIRECT).await;
+    let demo_resource = format!("{}/demo", gw.base);
+    let other_resource = format!("{}/other", gw.base);
+    let early = issue(&bob, &client, REDIRECT, &demo_resource).await;
+    let other_code = issue(&bob, &client, REDIRECT, &other_resource).await;
+    let old_request = start_request(&bob, &client, REDIRECT, &demo_resource).await;
+    let other_request = start_request(&bob, &client, REDIRECT, &other_resource).await;
+
+    let page = owner.get(&format!("/admin/servers/{demo}")).await;
+    let csrf = csrf_in(&page.body);
+    let renamed = owner
+        .post(
+            &format!("/admin/servers/{demo}"),
+            &[
+                ("csrf", csrf.as_str()),
+                ("name", "Demo"),
+                ("slug", "demo2"),
+                ("upstream_url", "http://127.0.0.1:9"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        renamed.status, 303,
+        "the rename must answer 303: {}",
+        renamed.body
+    );
+
+    let early_reply = redeem(&http, &client, &early, Some(REDIRECT), None).await;
+    assert_refused(
+        &early_reply,
+        "invalid_grant",
+        "a code issued before the rename",
+    );
+    assert_eq!(
+        scalar(&gw, "SELECT COUNT(*) FROM token_families", []),
+        0,
+        "the refused code makes no family"
+    );
+
+    let gone = bob.get(&format!("/oauth/consent?req={old_request}")).await;
+    let unknown = bob
+        .get(&format!("/oauth/consent?req={}", random_token("dw_rq_")))
+        .await;
+    assert_eq!(
+        (gone.status, gone.body.as_str()),
+        (unknown.status, unknown.body.as_str()),
+        "a pending request of the old path answers as an unknown one"
+    );
+    let kept = bob
+        .get(&format!("/oauth/consent?req={other_request}"))
+        .await;
+    assert_eq!(
+        kept.status, 200,
+        "a pending request of another server is kept"
+    );
+    tokens_of(&redeem(&http, &client, &other_code, Some(REDIRECT), None).await);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn saving_without_a_slug_change_revokes_nothing() {
     let gw = Gateway::start().await;
@@ -1678,6 +1823,51 @@ async fn the_sweep_runs_on_start_and_leaves_the_live_family() {
         "the live family must remain"
     );
     assert_eq!(refresh_rows(&gw, family), 1, "the live refresh row remains");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sweep_on_start_deletes_expired_sessions_and_keeps_live_ones() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let db = dir.path().join("doorward.db");
+    Db::open(&db).expect("database with its schema");
+    let conn = open(&db);
+    conn.execute(
+        "INSERT INTO users (email, password_hash, role, created_at) VALUES (?1, 'hash', 'user', 0)",
+        params![BOB],
+    )
+    .expect("user");
+    let bob = conn.last_insert_rowid();
+    for (id_hash, expires_at) in [("expired_session", NOW - 1), ("live_session", NOW + DAY)] {
+        conn.execute(
+            "INSERT INTO sessions (id_hash, user_id, auth_epoch, created_at, expires_at) \
+             VALUES (?1, ?2, 0, 0, ?3)",
+            params![id_hash, bob, expires_at],
+        )
+        .expect("session");
+    }
+    drop(conn);
+
+    fn rows(gw: &Gateway, id_hash: &str) -> i64 {
+        scalar(
+            gw,
+            "SELECT COUNT(*) FROM sessions WHERE id_hash = ?1",
+            params![id_hash],
+        )
+    }
+
+    let gw = Gateway::start_on(dir, db, |_| {}).await;
+    for _ in 0..30 {
+        if rows(&gw, "expired_session") == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        rows(&gw, "expired_session"),
+        0,
+        "the expired session must be swept within 3 seconds"
+    );
+    assert_eq!(rows(&gw, "live_session"), 1, "the live session remains");
 }
 
 #[tokio::test(flavor = "multi_thread")]

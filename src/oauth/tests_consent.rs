@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use form_urlencoded::Serializer;
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 use scraper::{Html, Selector};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -770,6 +770,98 @@ async fn a_second_identical_blocked_redirect_writes_no_second_row() {
         ),
         1,
         "the recorded detail is the address"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_url_shaped_client_writes_no_blocked_row() {
+    let gw = start(fixed(Ok(document(None)))).await;
+    let browser = anonymous(&gw);
+    let combined = format!("{}/mcp", gw.base);
+    for index in 0..60 {
+        let redirect = format!("https://n{index}.attacker.example.com/cb");
+        let reply = browser
+            .authorize("https://any.example.com/x", &redirect, &combined)
+            .await;
+        assert!(reply.is_error(), "request {index} is an error page");
+        assert!(
+            reply.body.contains(&format!(
+                "Doorward will not send you to n{index}.attacker.example.com."
+            )),
+            "request {index} names its redirect host as before"
+        );
+    }
+    assert_eq!(
+        count(
+            &gw.db,
+            "SELECT COUNT(*) FROM activity WHERE kind = 'redirect_blocked'"
+        ),
+        0,
+        "a document client that is not fetched yet writes no row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_registered_client_blocked_twice_writes_one_row() {
+    let gw = start(fixed(Ok(document(None)))).await;
+    let browser = anonymous(&gw);
+    let client_id = browser.register("Attacker", BLOCKED).await;
+    let combined = format!("{}/mcp", gw.base);
+    for _ in 0..2 {
+        let refused = browser.authorize(&client_id, BLOCKED, &combined).await;
+        assert!(refused.is_error(), "a blocked redirect is an error page");
+    }
+    assert_eq!(
+        count(
+            &gw.db,
+            "SELECT COUNT(*) FROM activity WHERE kind = 'redirect_blocked' AND client = 'Attacker'"
+        ),
+        1,
+        "a registered client's blocked redirect writes one row, and not a second"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn blocked_rows_stop_at_fifty_an_hour_and_resume_after_it() {
+    let gw = start(fixed(Ok(document(None)))).await;
+    let browser = anonymous(&gw);
+    let combined = format!("{}/mcp", gw.base);
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let conn = open(&gw.db);
+    for index in 0..50 {
+        conn.execute(
+            "INSERT INTO activity (at, kind, client, detail) \
+             VALUES (?1, 'redirect_blocked', 'Seed', ?2)",
+            params![now, format!("https://seed{index}.attacker.example.com/cb")],
+        )
+        .expect("seed row");
+    }
+    let late = "https://n51.attacker.example.com/cb";
+    let client_id = browser.register("Attacker", late).await;
+    let refused = browser.authorize(&client_id, late, &combined).await;
+    assert!(refused.is_error(), "the 51st address is refused");
+    assert_eq!(
+        count(
+            &gw.db,
+            "SELECT COUNT(*) FROM activity WHERE kind = 'redirect_blocked'"
+        ),
+        50,
+        "a 51st distinct address writes nothing while 50 rows are inside the hour"
+    );
+    conn.execute(
+        "UPDATE activity SET at = at - 3601 WHERE kind = 'redirect_blocked'",
+        [],
+    )
+    .expect("the rows age past the hour");
+    let again = browser.authorize(&client_id, late, &combined).await;
+    assert!(again.is_error(), "the 51st address is still refused");
+    assert_eq!(
+        count(
+            &gw.db,
+            &format!("SELECT COUNT(*) FROM activity WHERE detail = '{late}'")
+        ),
+        1,
+        "once the rows are older than an hour, the address is written"
     );
 }
 

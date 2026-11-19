@@ -11,7 +11,10 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
-use crate::accounts::{self, account, invite, login, password, reset, setup, throttle};
+use crate::accounts::input::to_i64;
+use crate::accounts::{
+    self, account, housekeeping, invite, login, password, reset, setup, throttle,
+};
 use crate::admin;
 use crate::cimd::{CimdFetcher, UnavailableCimd};
 use crate::clock::{Clock, SystemClock};
@@ -183,13 +186,14 @@ fn spawn_sweeps(state: &AppState) {
     let db = state.db.clone();
     let clock = Arc::clone(&state.clock);
     let replay_seconds = oauth::families::replay_window(&state.config.lifetimes);
+    let block_seconds = to_i64(state.config.limits.block_minutes).saturating_mul(60);
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(SWEEP_EVERY);
         loop {
             ticker.tick().await;
             let now = clock.now().unix_timestamp();
             let swept = db
-                .call(move |conn| sweep_in(conn, now, replay_seconds))
+                .call(move |conn| sweep_in(conn, now, replay_seconds, block_seconds))
                 .await;
             if let Err(err) = swept {
                 eprintln!("doorward: housekeeping failed: {err}");
@@ -199,9 +203,15 @@ fn spawn_sweeps(state: &AppState) {
 }
 
 /// One immediate transaction for one housekeeping run.
-fn sweep_in(conn: &mut Connection, now: i64, replay_seconds: i64) -> rusqlite::Result<()> {
+fn sweep_in(
+    conn: &mut Connection,
+    now: i64,
+    replay_seconds: i64,
+    block_seconds: i64,
+) -> rusqlite::Result<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     oauth::families::sweep(&tx, now, replay_seconds)?;
+    housekeeping::sweep(&tx, now, block_seconds)?;
     tx.commit()
 }
 

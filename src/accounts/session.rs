@@ -58,6 +58,15 @@ pub fn insert(
     Ok(token)
 }
 
+/// True when the cookie value has a session row.
+pub fn exists(conn: &Connection, token: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sessions WHERE id_hash = ?1)",
+        params![token_hash(token)],
+        |row| row.get(0),
+    )
+}
+
 /// Deletes the session row of a cookie value, if it has one.
 pub fn delete(conn: &Connection, token: &str) -> rusqlite::Result<usize> {
     conn.execute(
@@ -66,13 +75,18 @@ pub fn delete(conn: &Connection, token: &str) -> rusqlite::Result<usize> {
     )
 }
 
-/// Ends every session of the user at once: increments users.auth_epoch and deletes the rows.
+/// Ends every session of the user at once: increments users.auth_epoch, deletes the session rows
+/// and the user's unused reset link.
 pub fn revoke_all(conn: &Connection, user_id: i64) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE users SET auth_epoch = auth_epoch + 1 WHERE id = ?1",
         params![user_id],
     )?;
     conn.execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id])?;
+    conn.execute(
+        "DELETE FROM password_resets WHERE user_id = ?1",
+        params![user_id],
+    )?;
     Ok(())
 }
 

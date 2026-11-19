@@ -260,7 +260,7 @@ plain HTTP on a non-loopback host; `400 {"error": "invalid_client_metadata"}` ot
 
 | Case | Answer |
 |---|---|
-| Unknown `client_id`, URL-shaped id that is not HTTPS with a path, `redirect_uri` not registered for the client, or not allowed by the redirect policy | `400` `data-page="error"`, no `Location`. A blocked redirect also writes a `redirect_blocked` activity row |
+| Unknown `client_id`, URL-shaped id that is not HTTPS with a path, `redirect_uri` not registered for the client, or not allowed by the redirect policy | `400` `data-page="error"`, no `Location`. A blocked redirect of a registered client also writes a `redirect_blocked` activity row: one per address per hour, and at most 50 per hour for the instance. A URL-shaped client id writes none before its document was fetched |
 | Any parameter repeated, or `request` or `request_uri` present | `400` `data-page="error"`, no `Location` |
 | Missing or non-`code` `response_type`, missing `code_challenge`, method not `S256`, missing `resource`, `resource` not `PUB/{valid slug}` or `PUB/mcp`, `prompt=none` | `303` to `redirect_uri` with `error=invalid_request` (or `invalid_target` for `resource`, `interaction_required` for `prompt=none`), plus `state` and `iss` |
 | Valid, no session | `303 /login?req={id}` |

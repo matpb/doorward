@@ -3,13 +3,20 @@ pub fn normalize_email(raw: &str) -> String {
     raw.trim().to_ascii_lowercase()
 }
 
-/// 3 to 254 characters, exactly one `@` with text on both sides, no whitespace or control characters.
+/// Characters that address syntax gives a meaning: a mailbox parser reads them as structure.
+const ADDRESS_SYNTAX: [char; 11] = ['<', '>', ',', ';', ':', '"', '(', ')', '[', ']', '\\'];
+
+/// 3 to 254 characters, exactly one `@` with text on both sides, no whitespace, control characters
+/// or address-syntax characters.
 pub fn valid_new_email(email: &str) -> bool {
     let length = email.chars().count();
     if !(3..=254).contains(&length) {
         return false;
     }
-    if email.chars().any(|c| c.is_whitespace() || c.is_control()) {
+    if email
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || ADDRESS_SYNTAX.contains(&c))
+    {
         return false;
     }
     match email.split_once('@') {
@@ -51,6 +58,38 @@ mod tests {
         assert!(!valid_new_email("a b@c"));
         assert!(!valid_new_email("a\tb@c"));
         assert!(!valid_new_email("a\u{7}b@c"));
+    }
+
+    #[test]
+    fn a_new_email_refuses_address_syntax_characters() {
+        for email in [
+            "x<y@example.com>",
+            "\"x\"<y@example.com>",
+            "<a@example.com>",
+            "a,b@example.com",
+            "a;b@example.com",
+            "a:b@example.com",
+            "a(c)@example.com",
+            "a@[127.0.0.1]",
+            "a\\b@example.com",
+        ] {
+            assert!(!valid_new_email(email), "{email} must be refused");
+        }
+        for c in ['<', '>', ',', ';', ':', '"', '(', ')', '[', ']', '\\'] {
+            let email = format!("a{c}b@example.com");
+            assert!(!valid_new_email(&email), "{email} must be refused");
+        }
+    }
+
+    #[test]
+    fn a_new_email_keeps_ordinary_addresses() {
+        for email in [
+            "bob@example.com",
+            "first.last+tag@sub.example.com",
+            "o'neil@example.com",
+        ] {
+            assert!(valid_new_email(email), "{email} must be accepted");
+        }
     }
 
     #[test]

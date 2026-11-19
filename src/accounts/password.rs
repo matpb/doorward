@@ -23,15 +23,19 @@ pub const PASSWORD_MESSAGE: &str = "The password must be 12 to 256 characters.";
 const WRONG_CURRENT: &str = "The current password is wrong.";
 const BLOCKED: &str = "Too many sign-in attempts. Try again later.";
 
-/// What the change writes: the signed-in user, the reserved failure and the new password hash.
-struct Change {
-    user_id: i64,
-    email: String,
-    account: String,
-    failure_id: i64,
-    phc: String,
-    now: i64,
-    lifetime: i64,
+/// What the change writes: the signed-in user, the reserved failure, the verified old hash and its
+/// epoch, the presented session cookie value and the new hash.
+pub(super) struct Change {
+    pub(super) user_id: i64,
+    pub(super) email: String,
+    pub(super) account: String,
+    pub(super) failure_id: i64,
+    pub(super) old_phc: String,
+    pub(super) epoch: i64,
+    pub(super) session: Option<String>,
+    pub(super) new_phc: String,
+    pub(super) now: i64,
+    pub(super) lifetime: i64,
 }
 
 /// The account page for a refused change, with the viewer's connected clients.
@@ -79,17 +83,20 @@ pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) ->
         failure_id,
         user_id,
         phc,
+        epoch,
     } = attempt
     else {
         return refused(&state, &form.viewer, StatusCode::TOO_MANY_REQUESTS, BLOCKED).await;
     };
     let current = form.fields.get("current_password").to_owned();
+    let verified = phc.clone();
     let matched = state.hasher.verify(first, current, phc).await;
-    let (true, Some(user_id)) = (matched, user_id) else {
+    let (true, Some(user_id), Some(epoch), Some(old_phc)) = (matched, user_id, epoch, verified)
+    else {
         login::record_failed(&state, user_id, &user.email).await;
         return refused(&state, &form.viewer, StatusCode::BAD_REQUEST, WRONG_CURRENT).await;
     };
-    let phc = match state.hasher.hash(second, new_password).await {
+    let new_phc = match state.hasher.hash(second, new_password).await {
         Ok(phc) => phc,
         Err(_) => return internal_error(),
     };
@@ -98,25 +105,35 @@ pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) ->
         account: token_hash(&user.email),
         email: user.email,
         failure_id,
-        phc,
+        old_phc,
+        epoch,
+        session: form.viewer.presented_session().map(str::to_owned),
+        new_phc,
         now,
         lifetime: session::lifetime_seconds(state.config.lifetimes.session_hours),
     };
     match state.db.call(move |conn| change_in(conn, &change)).await {
         Ok(Some(token)) => with_cookie(redirect("/account"), &session_cookie(&token)),
-        Ok(None) => internal_error(),
+        Ok(None) => redirect("/login"),
         Err(_) => internal_error(),
     }
 }
 
-/// One transaction: the sign-in clean-up, the new hash, every session ended, a new session and
-/// the activity row. None when the user row is gone.
-fn change_in(conn: &mut Connection, change: &Change) -> rusqlite::Result<Option<String>> {
+/// One transaction: None, with nothing changed, unless the session exists and the verified hash
+/// and epoch still match an enabled user.
+pub(super) fn change_in(
+    conn: &mut Connection,
+    change: &Change,
+) -> rusqlite::Result<Option<String>> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if !presented_session_exists(&tx, change.session.as_deref())? {
+        return Ok(None);
+    }
     throttle::clear_attempt(&tx, &change.account, change.failure_id)?;
     let updated = tx.execute(
-        "UPDATE users SET password_hash = ?1 WHERE id = ?2",
-        params![change.phc, change.user_id],
+        "UPDATE users SET password_hash = ?1 WHERE id = ?2 AND password_hash = ?3 \
+         AND auth_epoch = ?4 AND disabled = 0",
+        params![change.new_phc, change.user_id, change.old_phc, change.epoch],
     )?;
     if updated == 0 {
         return Ok(None);
@@ -133,4 +150,12 @@ fn change_in(conn: &mut Connection, change: &Change) -> rusqlite::Result<Option<
     audit::record(&tx, change.now, &changed)?;
     tx.commit()?;
     Ok(Some(token))
+}
+
+/// True when the presented cookie has a session row. Without a cookie there is none.
+fn presented_session_exists(conn: &Connection, cookie: Option<&str>) -> rusqlite::Result<bool> {
+    match cookie {
+        Some(token) => session::exists(conn, token),
+        None => Ok(false),
+    }
 }

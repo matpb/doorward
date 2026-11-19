@@ -136,14 +136,28 @@ pub fn revoke_pair(
     revoke_each(conn, &ids, now)
 }
 
-/// Revokes every family of one server. Called when the server's path changes.
-pub fn revoke_server(conn: &Connection, server_id: i64, now: i64) -> rusqlite::Result<()> {
+/// Revokes every family of one server and drops its unredeemed codes and pending requests.
+pub fn revoke_server(
+    conn: &Connection,
+    server_id: i64,
+    old_slug: &str,
+    now: i64,
+) -> rusqlite::Result<()> {
     let ids = family_ids(
         conn,
         "SELECT id FROM token_families WHERE server_id = ?1",
         params![server_id],
     )?;
-    revoke_each(conn, &ids, now)
+    revoke_each(conn, &ids, now)?;
+    conn.execute(
+        "DELETE FROM auth_codes WHERE server_id = ?1",
+        params![server_id],
+    )?;
+    conn.execute(
+        "DELETE FROM auth_requests WHERE target_slug = ?1",
+        params![old_slug],
+    )?;
+    Ok(())
 }
 
 fn family_ids(
@@ -168,6 +182,21 @@ pub fn clear_old_replays(conn: &Connection, now: i64, replay_seconds: i64) -> ru
     conn.execute(
         "UPDATE refresh_tokens SET replay = NULL WHERE replay IS NOT NULL AND used_at + ?2 < ?1",
         params![now, replay_seconds],
+    )?;
+    Ok(())
+}
+
+/// Nulls the family's replay copies whose refresh token was used more than `replay_seconds` ago.
+pub fn clear_old_replays_of(
+    conn: &Connection,
+    family_id: i64,
+    now: i64,
+    replay_seconds: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE refresh_tokens SET replay = NULL WHERE family_id = ?1 AND replay IS NOT NULL \
+         AND used_at + ?3 < ?2",
+        params![family_id, now, replay_seconds],
     )?;
     Ok(())
 }

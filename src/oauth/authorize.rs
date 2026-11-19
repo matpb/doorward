@@ -24,6 +24,7 @@ const BODY_LEN: usize = 43;
 const LIVE_PER_ADDRESS: i64 = 200;
 const STATE_LIMIT: usize = 1024;
 const HOUR_SECONDS: i64 = 3600;
+const BLOCKED_ROWS_PER_HOUR: i64 = 50;
 const CLIENT_TEXT_LIMIT: usize = 100;
 const DETAIL_LIMIT: usize = 500;
 const INVALID_REQUEST: &str = "invalid_request";
@@ -294,7 +295,10 @@ fn check_within(
         return Ok(Checked::Refused(host));
     }
     if policy::decide(tx, &parsed)? == Verdict::Blocked {
-        record_blocked(tx, &client, &parsed, now)?;
+        // A document is not fetched yet, so only a registered client is named in the log.
+        if matches!(client, Client::Registered { .. }) {
+            record_blocked(tx, &client, &parsed, now)?;
+        }
         return Ok(Checked::Refused(host));
     }
     Ok(Checked::Allowed)
@@ -310,7 +314,7 @@ fn listed_for(client: &Client, redirect_uri: &str) -> bool {
     }
 }
 
-/// Writes one `redirect_blocked` row, unless one with the same address was written in the hour.
+/// Writes one `redirect_blocked` row, unless its address or the hourly cap already holds it back.
 fn record_blocked(
     tx: &Transaction<'_>,
     client: &Client,
@@ -319,6 +323,9 @@ fn record_blocked(
 ) -> rusqlite::Result<()> {
     let detail = cut(&uri::redirect_key(parsed), DETAIL_LIMIT);
     if recorded_since(tx, &detail, now - HOUR_SECONDS)? {
+        return Ok(());
+    }
+    if blocked_rows_since(tx, now - HOUR_SECONDS)? >= BLOCKED_ROWS_PER_HOUR {
         return Ok(());
     }
     let client_text = cut(client_label(client), CLIENT_TEXT_LIMIT);
@@ -339,6 +346,15 @@ fn recorded_since(conn: &Connection, detail: &str, since: i64) -> rusqlite::Resu
         "SELECT EXISTS (SELECT 1 FROM activity WHERE kind = 'redirect_blocked' \
          AND detail = ?1 AND at > ?2)",
         params![detail, since],
+        |row| row.get(0),
+    )
+}
+
+/// The `redirect_blocked` rows of any address written after `since`.
+fn blocked_rows_since(conn: &Connection, since: i64) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM activity WHERE kind = 'redirect_blocked' AND at > ?1",
+        params![since],
         |row| row.get(0),
     )
 }

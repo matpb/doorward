@@ -7,7 +7,7 @@ use lettre::message::{Mailbox, MultiPart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Certificate, Tls, TlsParameters};
 use lettre::transport::smtp::extension::ClientId;
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message as Email, Tokio1Executor};
+use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Message as Email, Tokio1Executor};
 
 use super::{MailError, Message, SmtpSettings, TlsMode};
 use crate::crypto::random_id;
@@ -29,10 +29,13 @@ pub async fn send(
     let sender: Mailbox = from
         .parse()
         .map_err(|_| MailError(FROM_INVALID.to_owned()))?;
-    let recipient: Mailbox = message
-        .to
-        .parse()
-        .map_err(|_| MailError(TO_INVALID.to_owned()))?;
+    let recipient = Mailbox::new(
+        None,
+        message
+            .to
+            .parse::<Address>()
+            .map_err(|_| MailError(TO_INVALID.to_owned()))?,
+    );
     let domain = sender.email.domain().to_owned();
     let email = build_message(sender, recipient, message, message_id(&domain))?;
     let tls = match settings.tls {
@@ -214,6 +217,23 @@ mod tests {
             .expect("greeting");
         let mut lines = BufReader::new(read).lines();
         lines.next_line().await.expect("read").unwrap_or_default()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_recipient_with_address_syntax_is_refused_before_any_connection() {
+        let settings = SmtpSettings {
+            host: "127.0.0.1".to_owned(),
+            port: 9,
+            username: String::new(),
+            password: None,
+            tls: TlsMode::Off,
+        };
+        let mut bad = sample();
+        bad.to = "x<y@example.com>".to_owned();
+        let refused = send(None, FROM, &settings, &bad)
+            .await
+            .expect_err("the recipient must be refused");
+        assert_eq!(refused.0, TO_INVALID);
     }
 
     #[tokio::test(flavor = "multi_thread")]

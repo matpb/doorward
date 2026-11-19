@@ -2770,3 +2770,31 @@ async fn a_blocked_attempt_offers_one_click_allow_only_when_it_may() {
         "newest first: the private scheme and the plain address are offered; a subtree and a 600 character one are not"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blocked_client_name_is_shown_as_a_claim_and_escaped() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let event = Event {
+        kind: "redirect_blocked",
+        client: "<b>Claude</b>",
+        detail: "https://app.example.com/oauth/cb",
+        ..Default::default()
+    };
+    audit::record(&open_db(dir.path()), AT, &event).expect("record");
+    let page = owner.get("/admin/redirects").await;
+    assert_eq!(
+        text_of(&page.body, "li[data-blocked] p q").as_deref(),
+        Some("<b>Claude</b>"),
+        "the client name is text inside the q element"
+    );
+    assert_eq!(
+        text_of(&page.body, "li[data-blocked] p").as_deref(),
+        Some("Asked by a client that calls itself <b>Claude</b>"),
+        "the first line says the name is a claim"
+    );
+    assert!(
+        !page.body.contains("<b>Claude</b>"),
+        "the markup of the name is escaped"
+    );
+}

@@ -441,13 +441,18 @@ fn refresh(tx: &Transaction<'_>, job: &Job) -> rusqlite::Result<Outcome> {
     let Some(token) = job.form.get("refresh_token") else {
         return Ok(Outcome::Refused(INVALID_REQUEST));
     };
-    families::clear_old_replays(tx, job.now, families::replay_window(&job.lifetimes))?;
     let Some(row) = load_refresh(tx, &token_hash(token))? else {
         return Ok(Outcome::Refused(INVALID_GRANT));
     };
     let Some(family) = load_family(tx, row.family_id)? else {
         return Ok(Outcome::Refused(INVALID_GRANT));
     };
+    families::clear_old_replays_of(
+        tx,
+        family.id,
+        job.now,
+        families::replay_window(&job.lifetimes),
+    )?;
     if job.form.get("client_id") != Some(family.client_id.as_str()) {
         return Ok(Outcome::Refused(INVALID_GRANT));
     }

@@ -7,13 +7,14 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-const MIGRATIONS: [(i64, &str); 6] = [
+const MIGRATIONS: [(i64, &str); 7] = [
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_accounts.sql")),
     (3, include_str!("../migrations/0003_activity.sql")),
     (4, include_str!("../migrations/0004_invitations.sql")),
     (5, include_str!("../migrations/0005_servers.sql")),
     (6, include_str!("../migrations/0006_oauth.sql")),
+    (7, include_str!("../migrations/0007_indexes.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -54,7 +55,10 @@ impl Db {
     {
         let conn = Arc::clone(&self.conn);
         tokio::task::spawn_blocking(move || {
-            let mut guard = conn.lock().expect("lock");
+            // A panic cannot break the connection: an open transaction rolls back on drop.
+            let mut guard = conn
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             f(&mut guard).map_err(DbError::from)
         })
         .await?
@@ -62,7 +66,10 @@ impl Db {
 
     /// Returns the highest applied migration version, or 0 when none.
     pub fn schema_version(&self) -> Result<i64, DbError> {
-        let conn = self.conn.lock().expect("lock");
+        let conn = self
+            .conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let version = conn.query_row(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
             [],
@@ -127,4 +134,36 @@ fn migrate(conn: &mut Connection) -> Result<(), DbError> {
         tx.commit()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_connection_still_works_after_a_closure_panics() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let db = Db::open(&dir.path().join("doorward.db")).expect("database");
+        let panicked = db
+            .call(|_conn| -> Result<(), rusqlite::Error> { panic!("a closure that panics") })
+            .await;
+        assert!(panicked.is_err(), "the panic surfaces as a failed task");
+        let applied = db
+            .call(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+            })
+            .await
+            .expect("the next call still works");
+        assert_eq!(
+            applied,
+            MIGRATIONS.len() as i64,
+            "every migration is counted"
+        );
+        assert_eq!(
+            db.schema_version().expect("the version"),
+            MIGRATIONS.len() as i64
+        );
+    }
 }

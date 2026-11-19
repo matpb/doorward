@@ -12,10 +12,12 @@ pub enum Attempt {
     /// Refused before any password check, and not counted.
     Blocked,
     /// A failure is reserved. `phc` is the hash of an enabled account, else None.
+    /// `epoch` is the account's auth epoch.
     Counted {
         failure_id: i64,
         user_id: Option<i64>,
         phc: Option<String>,
+        epoch: Option<i64>,
     },
 }
 
@@ -30,7 +32,8 @@ pub struct Reserve {
     pub address_failures: i64,
 }
 
-/// What a successful sign-in needs. `previous` is the cookie value the browser sent.
+/// What a successful sign-in needs. `previous` is the cookie value the browser sent. `phc` and
+/// `epoch` are the hash that was verified and the auth epoch read with it.
 pub struct Success {
     pub account: String,
     pub failure_id: i64,
@@ -39,6 +42,8 @@ pub struct Success {
     pub previous: Option<String>,
     pub now: i64,
     pub lifetime: i64,
+    pub phc: String,
+    pub epoch: i64,
 }
 
 /// Transaction T1: prunes old failures, checks both limits, reserves one failure and reads the user.
@@ -46,8 +51,9 @@ pub async fn reserve(db: &Db, input: Reserve) -> Result<Attempt, DbError> {
     db.call(move |conn| reserve_in(conn, &input)).await
 }
 
-/// Transaction T2: clears the account and the reservation, and signs the browser in.
-pub async fn succeed(db: &Db, success: Success) -> Result<String, DbError> {
+/// Transaction T2: clears the account and the reservation, and signs the browser in. None, with
+/// nothing changed, when the user no longer matches the verified hash and epoch, or is disabled.
+pub async fn succeed(db: &Db, success: Success) -> Result<Option<String>, DbError> {
     db.call(move |conn| succeed_in(conn, &success)).await
 }
 
@@ -119,28 +125,32 @@ fn reserve_in(conn: &mut Connection, input: &Reserve) -> rusqlite::Result<Attemp
         params![input.address, input.now],
     )?;
     let failure_id = tx.last_insert_rowid();
-    let user: Option<(i64, String, i64)> = tx
+    let user: Option<(i64, String, i64, i64)> = tx
         .query_row(
-            "SELECT id, password_hash, disabled FROM users WHERE email = ?1",
+            "SELECT id, password_hash, disabled, auth_epoch FROM users WHERE email = ?1",
             params![input.email],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()?;
     tx.commit()?;
-    let (user_id, phc) = match user {
-        Some((id, hash, 0)) => (Some(id), Some(hash)),
-        Some((id, _, _)) => (Some(id), None),
-        None => (None, None),
+    let (user_id, phc, epoch) = match user {
+        Some((id, hash, 0, epoch)) => (Some(id), Some(hash), Some(epoch)),
+        Some((id, _, _, epoch)) => (Some(id), None, Some(epoch)),
+        None => (None, None, None),
     };
     Ok(Attempt::Counted {
         failure_id,
         user_id,
         phc,
+        epoch,
     })
 }
 
-fn succeed_in(conn: &mut Connection, success: &Success) -> rusqlite::Result<String> {
+fn succeed_in(conn: &mut Connection, success: &Success) -> rusqlite::Result<Option<String>> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if !still_current(&tx, success)? {
+        return Ok(None);
+    }
     clear_attempt(&tx, &success.account, success.failure_id)?;
     if let Some(previous) = &success.previous {
         session::delete(&tx, previous)?;
@@ -154,5 +164,15 @@ fn succeed_in(conn: &mut Connection, success: &Success) -> rusqlite::Result<Stri
     };
     audit::record(&tx, success.now, &login)?;
     tx.commit()?;
-    Ok(token)
+    Ok(Some(token))
+}
+
+/// True when the user is enabled and still has the verified hash and auth epoch.
+fn still_current(conn: &Connection, success: &Success) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE id = ?1 AND password_hash = ?2 \
+         AND auth_epoch = ?3 AND disabled = 0)",
+        params![success.user_id, success.phc, success.epoch],
+        |row| row.get(0),
+    )
 }
