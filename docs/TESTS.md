@@ -177,6 +177,11 @@ Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
 19. `parallel_guesses_cannot_outrun_the_block`: `address_failures = 1000`. Twenty browsers
     post a wrong password for the owner at once: exactly five answer 401 and fifteen answer
     429. The owner's right password then answers 429.
+20. `a_wrong_or_foreign_csrf_token_is_refused`: browsers A and B each load `/login`. B
+    posts the owner's right password with A's csrf value: 403 forbidden and no session
+    cookie. B posts it with a made-up value of the same length: 403 forbidden. B posts it
+    with its own value: 303 (control). The value B read before signing in is then refused
+    on `/logout` (403 forbidden), and B's `/account` still answers 200.
 
 ## s07_mail.rs (statement 7)
 

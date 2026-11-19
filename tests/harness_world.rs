@@ -1,9 +1,9 @@
 mod common;
 
 #[tokio::test(flavor = "multi_thread")]
-#[should_panic(expected = "World: the gateway printed no setup code")]
-async fn world_needs_the_setup_code() {
-    common::world::World::start().await;
+async fn world_starts_with_an_owner() {
+    let w = common::world::World::start().await;
+    assert_eq!(w.owner.get("/admin").await.status, 200);
 }
 
 #[test]

@@ -601,3 +601,105 @@ async fn parallel_guesses_cannot_outrun_the_block() {
         "the owner's right password must be refused once the account is blocked"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wrong_or_foreign_csrf_token_is_refused() {
+    let w = World::start().await;
+    let a = w.client();
+    let b = w.client();
+    let a_csrf = a
+        .get("/login")
+        .await
+        .csrf()
+        .expect("A's login form carries a csrf token");
+    let b_csrf = b
+        .get("/login")
+        .await
+        .csrf()
+        .expect("B's login form carries a csrf token");
+    let made_up = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
+    assert_eq!(
+        made_up.len(),
+        b_csrf.len(),
+        "the made-up value must have the length of a real token"
+    );
+
+    let foreign = b
+        .post(
+            "/login",
+            &[
+                ("csrf", a_csrf.as_str()),
+                ("email", OWNER_EMAIL),
+                ("password", PASSWORD),
+            ],
+        )
+        .await;
+    assert_eq!(
+        foreign.status, 403,
+        "a login with another browser's csrf value must answer 403"
+    );
+    assert_eq!(
+        foreign.kind().as_deref(),
+        Some("forbidden"),
+        "a login with another browser's csrf value must show the forbidden page"
+    );
+    assert!(
+        b.cookie(SESSION).is_none(),
+        "a refused login must not set a session cookie"
+    );
+
+    let invented = b
+        .post(
+            "/login",
+            &[
+                ("csrf", made_up),
+                ("email", OWNER_EMAIL),
+                ("password", PASSWORD),
+            ],
+        )
+        .await;
+    assert_eq!(
+        invented.status, 403,
+        "a login with a made-up csrf value must answer 403"
+    );
+    assert_eq!(
+        invented.kind().as_deref(),
+        Some("forbidden"),
+        "a login with a made-up csrf value must show the forbidden page"
+    );
+    assert!(
+        b.cookie(SESSION).is_none(),
+        "a refused login must not set a session cookie"
+    );
+
+    let signed_in = b
+        .post(
+            "/login",
+            &[
+                ("csrf", b_csrf.as_str()),
+                ("email", OWNER_EMAIL),
+                ("password", PASSWORD),
+            ],
+        )
+        .await;
+    assert_eq!(
+        signed_in.status, 303,
+        "a login with its own csrf value must sign in"
+    );
+
+    let stale = b.post("/logout", &[("csrf", b_csrf.as_str())]).await;
+    assert_eq!(
+        stale.status, 403,
+        "the csrf value read before signing in must be refused on logout"
+    );
+    assert_eq!(
+        stale.kind().as_deref(),
+        Some("forbidden"),
+        "the refused logout must show the forbidden page"
+    );
+    assert_eq!(
+        b.get("/account").await.status,
+        200,
+        "a refused logout must leave the browser signed in"
+    );
+}

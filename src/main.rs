@@ -30,7 +30,14 @@ async fn main() -> ExitCode {
 async fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
     let config = Config::load(config_path)?;
     let listen = config.listen;
+    let https_without_proxy =
+        config.public_url.starts_with("https://") && config.trusted_proxies.is_empty();
     let gateway = build(config, Deps::system()).await?;
+    if https_without_proxy {
+        eprintln!(
+            "doorward: public_url is https but trusted_proxies is empty: if a proxy or tunnel is in front, every visitor shares one address for login throttling"
+        );
+    }
     let listener = TcpListener::bind(listen).await?;
     if let Some(code) = &gateway.setup_code {
         eprintln!("doorward setup code: {code}");

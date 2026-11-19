@@ -49,8 +49,13 @@ async fn s29_restart_keeps_data() {
 async fn s29_migrations_apply_once() {
     let mut gateway = TestGateway::start().await;
     let after_start = migration_rows(&gateway.db_path());
-    assert_eq!(after_start.len(), 1);
-    assert_eq!(after_start[0].0, 1);
+    assert!(
+        !after_start.is_empty(),
+        "a first start must apply migrations"
+    );
+    for (index, row) in after_start.iter().enumerate() {
+        assert_eq!(row.0, index as i64 + 1, "versions must run from 1 upward");
+    }
     gateway.restart().await;
     let after_restart = migration_rows(&gateway.db_path());
     assert_eq!(after_restart, after_start);

@@ -7,7 +7,10 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use rusqlite::{Connection, TransactionBehavior, params};
 
-const MIGRATIONS: [(i64, &str); 1] = [(1, include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: [(i64, &str); 2] = [
+    (1, include_str!("../migrations/0001_init.sql")),
+    (2, include_str!("../migrations/0002_accounts.sql")),
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
