@@ -75,7 +75,7 @@ block_minutes = 15
 dcr_per_hour = 20             # registrations per address
 
 [mail]
-smtp_ca_file = ""             # extra trusted roots for SMTP over TLS, PEM
+# smtp_ca_file = "roots.pem"  # optional: extra trusted roots for SMTP over TLS, PEM
 ```
 
 ## Accounts
@@ -325,5 +325,9 @@ impl TestGateway {
 }
 ```
 
-`FakeUpstream`, `MailCatcher` and `TestClient` are specified in their own sections of the
-harness source; tests reach every feature through real HTTP on the gateway.
+`FakeUpstream`, `MailCatcher`, `McpClient` and `TestClient` live in `tests/common`; tests
+reach every feature through real HTTP on the gateway.
+
+The anti-forgery value is the same on every page of one browser session, so a test may
+read it from any form page before posting. `TestClient` sends `Origin: PUB` on every POST,
+as a browser would.

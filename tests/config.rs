@@ -1,5 +1,7 @@
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 
+use doorward::config::{Lifetimes, Limits};
 use doorward::{Config, ConfigError};
 
 fn config_with_url(url: &str) -> Config {
@@ -9,6 +11,9 @@ fn config_with_url(url: &str) -> Config {
         database: "doorward.db".into(),
         key_file: None,
         trusted_proxies: Vec::new(),
+        lifetimes: Default::default(),
+        limits: Default::default(),
+        mail: Default::default(),
     }
 }
 
@@ -136,4 +141,110 @@ fn missing_file_is_read_error() {
         matches!(err, ConfigError::Read(_, _)),
         "wrong error: {err:?}"
     );
+}
+
+const BASE: &str = "public_url = \"https://gateway.example.com\"\ndatabase = \"doorward.db\"\n";
+
+fn load_text(text: &str) -> Result<Config, ConfigError> {
+    let dir = tempfile::tempdir().expect("temp dir");
+    Config::load(&write_config(&dir, text))
+}
+
+fn refused_with(err: ConfigError, message: &str) {
+    assert!(
+        matches!(&err, ConfigError::Invalid(found) if found == message),
+        "wrong error: {err:?}"
+    );
+    assert_eq!(err.to_string(), format!("invalid config: {message}"));
+}
+
+#[test]
+fn sections_default_when_absent() {
+    let config = load_text(BASE).expect("config loads");
+    assert_eq!(
+        config.lifetimes,
+        Lifetimes {
+            invitation_days: 7,
+            reset_minutes: 60,
+            session_hours: 12,
+            auth_request_minutes: 10,
+            auth_code_seconds: 60,
+            access_token_minutes: 60,
+            refresh_token_days: 30,
+            family_days: 90,
+            refresh_replay_seconds: 30,
+        }
+    );
+    assert_eq!(
+        config.limits,
+        Limits {
+            body_bytes: 1_048_576,
+            tools_list_bytes: 4_194_304,
+            upstream_timeout_seconds: 300,
+            account_failures: 5,
+            address_failures: 30,
+            block_minutes: 15,
+            dcr_per_hour: 20,
+        }
+    );
+    assert_eq!(config.mail.smtp_ca_file, None);
+}
+
+#[test]
+fn replay_window_zero_is_valid() {
+    let config = load_text(&format!("{BASE}[lifetimes]\nrefresh_replay_seconds = 0\n"))
+        .expect("zero replay window is valid");
+    assert_eq!(
+        config.lifetimes,
+        Lifetimes {
+            refresh_replay_seconds: 0,
+            ..Lifetimes::default()
+        }
+    );
+}
+
+#[test]
+fn replay_window_300_is_valid() {
+    let config = load_text(&format!(
+        "{BASE}[lifetimes]\nrefresh_replay_seconds = 300\n"
+    ))
+    .expect("replay window of 300 is valid");
+    assert_eq!(config.lifetimes.refresh_replay_seconds, 300);
+}
+
+#[test]
+fn zero_lifetime_is_rejected() {
+    let err = load_text(&format!("{BASE}[lifetimes]\nauth_code_seconds = 0\n"))
+        .expect_err("zero lifetime refused");
+    refused_with(err, "lifetimes.auth_code_seconds must be at least 1");
+}
+
+#[test]
+fn zero_limit_is_rejected() {
+    let err =
+        load_text(&format!("{BASE}[limits]\nbody_bytes = 0\n")).expect_err("zero limit refused");
+    refused_with(err, "limits.body_bytes must be at least 1");
+}
+
+#[test]
+fn replay_window_over_300_is_rejected() {
+    let err = load_text(&format!(
+        "{BASE}[lifetimes]\nrefresh_replay_seconds = 301\n"
+    ))
+    .expect_err("replay window over 300 refused");
+    refused_with(err, "lifetimes.refresh_replay_seconds must be at most 300");
+}
+
+#[test]
+fn unknown_section_key_is_parse_error() {
+    let err =
+        load_text(&format!("{BASE}[limits]\nunknown = 1\n")).expect_err("unknown key refused");
+    assert!(matches!(err, ConfigError::Parse(_)), "wrong error: {err:?}");
+}
+
+#[test]
+fn mail_ca_file_is_read() {
+    let config =
+        load_text(&format!("{BASE}[mail]\nsmtp_ca_file = \"roots.pem\"\n")).expect("config loads");
+    assert_eq!(config.mail.smtp_ca_file, Some(PathBuf::from("roots.pem")));
 }

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use doorward::{Config, Deps, build};
+use doorward::{Config, Deps, build, serve};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -30,18 +30,20 @@ async fn main() -> ExitCode {
 async fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
     let config = Config::load(config_path)?;
     let listen = config.listen;
-    let router = build(config, Deps::system()).await?;
+    let gateway = build(config, Deps::system()).await?;
     let listener = TcpListener::bind(listen).await?;
+    if let Some(code) = &gateway.setup_code {
+        eprintln!("doorward setup code: {code}");
+    }
     eprintln!("doorward listening on http://{}", listener.local_addr()?);
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            tokio::select! {
-                _ = interrupt.recv() => {}
-                _ = terminate.recv() => {}
-            }
-        })
-        .await?;
+    serve(listener, gateway.router, async move {
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = terminate.recv() => {}
+        }
+    })
+    .await?;
     Ok(())
 }

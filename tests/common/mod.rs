@@ -13,8 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::Router;
+use cimd::FakeCimd;
 use doorward::clock::Clock;
-use doorward::{Config, Deps, build};
+use doorward::{Config, Deps, Gateway, build, serve};
 use tempfile::TempDir;
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
@@ -53,6 +54,8 @@ pub struct TestGateway {
     pub http: reqwest::Client,
     config: Config,
     addr: SocketAddr,
+    cimd: Arc<FakeCimd>,
+    setup_code: Option<String>,
     stop: Option<oneshot::Sender<()>>,
     server: JoinHandle<()>,
     _dir: TempDir,
@@ -60,16 +63,25 @@ pub struct TestGateway {
 
 impl TestGateway {
     pub async fn start() -> TestGateway {
+        TestGateway::start_with(|_| {}).await
+    }
+
+    /// Starts a gateway; `edit` changes the default config before it is built.
+    pub async fn start_with(edit: impl FnOnce(&mut Config)) -> TestGateway {
         let dir = tempfile::tempdir().expect("temp dir");
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
-        let config = Config {
+        let mut config = Config {
             public_url: format!("http://127.0.0.1:{}", addr.port()),
             listen: addr,
             database: dir.path().join("doorward.db"),
             key_file: None,
             trusted_proxies: Vec::new(),
+            lifetimes: Default::default(),
+            limits: Default::default(),
+            mail: Default::default(),
         };
+        edit(&mut config);
         let clock = ManualClock::new(
             OffsetDateTime::parse(
                 "2030-01-01T00:00:00Z",
@@ -77,8 +89,9 @@ impl TestGateway {
             )
             .expect("start time"),
         );
-        let router = build_router(&config, &clock).await;
-        let (stop, server) = spawn_server(listener, router);
+        let cimd = FakeCimd::new();
+        let gateway = build_gateway(&config, &clock, &cimd).await;
+        let (stop, server) = spawn_server(listener, gateway.router);
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -89,6 +102,8 @@ impl TestGateway {
             http,
             config,
             addr,
+            cimd,
+            setup_code: gateway.setup_code,
             stop: Some(stop),
             server,
             _dir: dir,
@@ -103,6 +118,19 @@ impl TestGateway {
         self.config.database.clone()
     }
 
+    /// The setup code of the latest build, present only while the instance has no owner.
+    pub fn setup_code(&self) -> Option<String> {
+        self.setup_code.clone()
+    }
+
+    pub fn cimd(&self) -> &FakeCimd {
+        &self.cimd
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
     /// Stops serving, then serves again on the same database file and port.
     pub async fn restart(&mut self) {
         if let Some(stop) = self.stop.take() {
@@ -110,8 +138,9 @@ impl TestGateway {
         }
         (&mut self.server).await.expect("server task");
         let listener = bind_with_retry(self.addr).await;
-        let router = build_router(&self.config, &self.clock).await;
-        let (stop, server) = spawn_server(listener, router);
+        let gateway = build_gateway(&self.config, &self.clock, &self.cimd).await;
+        let (stop, server) = spawn_server(listener, gateway.router);
+        self.setup_code = gateway.setup_code;
         self.stop = Some(stop);
         self.server = server;
     }
@@ -123,9 +152,10 @@ impl Drop for TestGateway {
     }
 }
 
-async fn build_router(config: &Config, clock: &Arc<ManualClock>) -> Router {
+async fn build_gateway(config: &Config, clock: &Arc<ManualClock>, cimd: &Arc<FakeCimd>) -> Gateway {
     let deps = Deps {
         clock: clock.clone(),
+        cimd: cimd.clone(),
     };
     build(config.clone(), deps).await.expect("build gateway")
 }
@@ -133,12 +163,11 @@ async fn build_router(config: &Config, clock: &Arc<ManualClock>) -> Router {
 fn spawn_server(listener: TcpListener, router: Router) -> (oneshot::Sender<()>, JoinHandle<()>) {
     let (stop, stopped) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async {
-                let _ = stopped.await;
-            })
-            .await
-            .expect("serve");
+        serve(listener, router, async {
+            let _ = stopped.await;
+        })
+        .await
+        .expect("serve");
     });
     (stop, server)
 }

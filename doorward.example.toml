@@ -2,3 +2,29 @@
 public_url = "https://gateway.example.com"
 listen = "127.0.0.1:8717"
 database = "doorward.db"
+
+# Lifetimes of invitations, links, sessions and tokens.
+[lifetimes]
+# invitation_days = 7
+# reset_minutes = 60
+# session_hours = 12
+# auth_request_minutes = 10
+# auth_code_seconds = 60
+# access_token_minutes = 60
+# refresh_token_days = 30
+# family_days = 90
+# refresh_replay_seconds = 30
+
+# Request size, upstream time and attempt limits.
+[limits]
+# body_bytes = 1048576
+# tools_list_bytes = 4194304
+# upstream_timeout_seconds = 300
+# account_failures = 5
+# address_failures = 30
+# block_minutes = 15
+# dcr_per_hour = 20
+
+# Outgoing mail.
+[mail]
+# smtp_ca_file = "roots.pem"
