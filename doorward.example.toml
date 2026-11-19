@@ -1,0 +1,4 @@
+# Public address of the gateway: scheme and host only.
+public_url = "https://gateway.example.com"
+listen = "127.0.0.1:8717"
+database = "doorward.db"
