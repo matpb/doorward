@@ -1,9 +1,7 @@
 # Doorward design (v1)
 
-Status: revised after the first adversarial review. Statement numbers (S1 to S31) refer to
-`CLAUDE.md`. Four points marked "pending" change approved statements and wait for the
-owner: consent (S19), rule semantics (S15), redirect policy (S21), refresh replay (S22),
-plus the resources and prompts switch.
+Status: revised after the first adversarial review. Statement numbers refer to `CLAUDE.md`;
+S32 to S36 replace S15, S19, S21 and S22 and add the resources and prompts switch.
 
 ## Shape
 
@@ -73,7 +71,7 @@ Authorize flow:
    to the browser session that renders consent). Only that id travels through login.
 3. No browser session: `/login`, then back.
 4. For a CIMD client the metadata document is fetched only now, after login.
-5. Consent page (pending, replaces remembered consent): shown every time. Headline is the
+5. Consent page (S33): shown every time. Headline is the
    redirect target; then the client name (marked unverified for dynamically registered
    clients, with its real host), the server, and "signed in as <email>". No client-supplied
    links or images. Approve and Deny are CSRF-protected POSTs answering 303 straight to
@@ -94,7 +92,7 @@ Client registration:
 - DCR: `/oauth/register`, public clients only, rate limited per address, unused
   registrations expire. Issued ids are never URL-shaped. A registration may carry several
   redirect addresses of mixed kinds; each is judged when used.
-- Redirect policy (pending): exact match against the client's registered addresses, and the
+- Redirect policy (S34): exact match against the client's registered addresses, and the
   address must be allowed. Loopback hosts `localhost`, `127.0.0.1` and `[::1]` (compared as
   strings, never resolved) are always allowed on any port. Anything else must match an
   allowlist entry (scheme, host, optional path prefix). Defaults for the known clients ship
@@ -107,7 +105,7 @@ and the user, and has an absolute lifetime. Access 1 hour, refresh 30 days. Serv
 slug rename, unassignment, password change, reset, disable and delete revoke families; a
 per-user `tokens_valid_after` gives mass revocation. Refresh rechecks user and assignment.
 
-Refresh replay (pending): each refresh replaces the refresh token. On rotation the used row
+Refresh replay (S35): each refresh replaces the refresh token. On rotation the used row
 keeps, for 30 seconds (configurable, 0 = strict), the successor pair encrypted with a key
 derived from the presented token. A replay inside the window returns the identical pair;
 any other reuse revokes the family.
@@ -147,7 +145,7 @@ it and allows it.
 5. `tools/call` is forwarded only if `params.name` is byte-equal to a name in this server's
    cached tool list (refreshed once on a miss) and policy allows it. Otherwise -32602
    "unknown tool", no upstream contact, logged as denied. Denied and nonexistent look alike.
-6. Resources and prompts (pending): forwarded only when the server's `pass_resources` or
+6. Resources and prompts (S36): forwarded only when the server's `pass_resources` or
    `pass_prompts` switch is on; otherwise the gateway answers with empty lists.
 7. Forward the original bytes. `upstream` applies the request header allowlist, drops
    `Authorization`, `Cookie`, `Last-Event-ID` and forwarding headers, and adds the server's
@@ -184,7 +182,7 @@ omitted and logged. A failing upstream is left out and logged; the others still 
 Requests initiated by an upstream are not relayed, and an `input_required` result becomes
 a tool error. A call is retried only after an explicit session 404.
 
-## Policy (pending)
+## Policy (S32)
 
 A rule is (subject: everyone or one user) x (effect) x (scope: all tools, one server, one
 exact tool), keyed by server id, unique per subject and target. For a call by user U to

@@ -67,7 +67,7 @@ E. Who may use what
 14. Servers are assigned to users from the user page and from the server page, and both show
     the same thing. A user without a server is refused on its path and does not see it on the
     combined endpoint.
-15. Tool rules say allow or deny, for all tools, one server, or one exact tool, for everyone
+15. (replaced by 32) Tool rules say allow or deny, for all tools, one server, or one exact tool, for everyone
     or for one user. The most specific rule wins, a user's rule beats an everyone rule, deny
     wins a tie, and with no rule a tool on an assigned server is allowed. A denied tool is
     absent from the tool list, and a call to it is refused without the upstream seeing it.
@@ -82,7 +82,7 @@ F. Security core
     authorization metadata, on every server path and the combined endpoint. The gateway's
     public address comes from its config file, never from the request, including in the
     links it emails.
-19. Signing in happens on the gateway's own page with email and password, followed by a
+19. (replaced by 33) Signing in happens on the gateway's own page with email and password, followed by a
     consent page that names the client, its redirect address and the server it wants. An
     authorization code is issued only after the user approves. Consent is remembered for that
     user, client and redirect address together, and asked again when any of them changes.
@@ -90,10 +90,10 @@ F. Security core
 20. Both client registration methods work: Client ID Metadata Documents and Dynamic Client
     Registration. Fetching a metadata document cannot be turned against private addresses,
     and dynamic registration is rate limited.
-21. The redirect address must match exactly what the client registered; only the port of a
+21. (replaced by 34) The redirect address must match exactly what the client registered; only the port of a
     loopback address may vary. PKCE with S256 is mandatory. An authorization code works once
     and for 60 seconds. A token works only on the path it was issued for.
-22. Tokens are random 256-bit opaque strings. The database holds only their SHA-256. Access
+22. (replaced by 35) Tokens are random 256-bit opaque strings. The database holds only their SHA-256. Access
     tokens last an hour. Refresh tokens are replaced on every use, and presenting an already
     used one revokes that whole chain.
 23. The client's token never reaches an upstream; the gateway sends its own secret for that
@@ -135,6 +135,35 @@ I. Keeps working
     diffs with the abuse tests mapped to each rule; every finding from the adversarial
     reviews is fixed or listed. v1 is not called done before that sign-off.
 
+J. Added after the first security review
+
+32. Tool rules say allow or deny, for all tools, one server, or one exact tool, for everyone
+    or for one user. With no matching deny, a tool on an assigned server is allowed. A
+    matching deny stands unless a matching allow is at least as specific as it in both scope
+    and subject, and more specific in one of them. A denied tool is absent from the tool
+    list, and a call to it is refused without the upstream seeing it.
+33. Signing in happens on the gateway's own page with email and password, followed every
+    time by a consent page that names the redirect address, the client, the server and the
+    signed-in user. An authorization code is issued only after the user approves; an earlier
+    approval never skips the page. Pages refuse to load in a frame and every form carries an
+    anti-forgery token. The user is emailed when a new client connects, with a link to
+    disconnect it.
+34. The redirect address must match exactly what the client registered, and must be
+    allowed: loopback addresses always are, on any port; any other address must be on an
+    allowlist that ships with the known clients' addresses, private-scheme ones included,
+    and that an admin can extend. A blocked attempt shows in the activity log. PKCE with
+    S256 is mandatory. An authorization code works once and for 60 seconds. A token works
+    only on the server it was issued for.
+35. Tokens are random 256-bit opaque strings. The database holds only their SHA-256 and,
+    during the replay window, the successor pair encrypted under a key derived from the
+    token it replaces. Access tokens last an hour. Refresh tokens are replaced on every use.
+    A used refresh token presented again inside the replay window (30 seconds by default,
+    0 disables it) receives the identical successor pair; presented later, it revokes the
+    whole chain.
+36. Each server has two switches, pass resources and pass prompts, both off by default.
+    While a switch is off the gateway answers those requests itself with empty lists and
+    the upstream does not see them.
+
 ### Proof
 
 Each statement is proven by an automated test that `./check.sh` runs, named after its number
@@ -144,7 +173,7 @@ into the test harness. In addition:
 
 - 7: one real email per provider (raw SMTP, Resend, Mailgun), by `scripts/prove-mail.sh`.
 - 11: the official MCP conformance suite in its server role, by `scripts/prove-conformance.sh`.
-- 14, 16, 19, 26: a walk-through in a real browser at 390 px and desktop width, screenshots
+- 14, 16, 26, 33: a walk-through in a real browser at 390 px and desktop width, screenshots
   kept under `proof/` (not tracked).
 - 25: `scripts/prove-tests-first.sh` prints, per abuse test, its first commit and the first
   commit of the code it covers, with the saved failing run.
@@ -157,8 +186,8 @@ into the test harness. In addition:
 - Rust, one binary with the panel's pages compiled in, SQLite as the only storage.
 - The gateway listens on plain HTTP on a local port and expects a reverse proxy or tunnel in
   front of it for HTTPS. Built-in certificates are not in v1.
-- Per-server paths pass traffic through untouched; only the combined endpoint rewrites tool
-  names.
+- Per-server paths forward the original request bytes of what they allow; only the combined
+  endpoint rewrites tool names.
 - Roles: one owner, admins, users. No groups.
 - Defaults, all in the config file: invitation 7 days, reset link 1 hour, access token
   1 hour, refresh token 30 days, authorization code 60 seconds.
