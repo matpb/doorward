@@ -136,6 +136,66 @@ pub const SETTINGS: &[Setting] = &[
         kind: Kind::Whole,
     },
     Setting {
+        variable: "DOORWARD_LIMITS_GENERAL_BURST",
+        path: "limits.general_burst",
+        kind: Kind::Whole,
+    },
+    Setting {
+        variable: "DOORWARD_LIMITS_GENERAL_PER_MINUTE",
+        path: "limits.general_per_minute",
+        kind: Kind::Whole,
+    },
+    Setting {
+        variable: "DOORWARD_LIMITS_OAUTH_BURST",
+        path: "limits.oauth_burst",
+        kind: Kind::Whole,
+    },
+    Setting {
+        variable: "DOORWARD_LIMITS_OAUTH_PER_MINUTE",
+        path: "limits.oauth_per_minute",
+        kind: Kind::Whole,
+    },
+    Setting {
+        variable: "DOORWARD_LIMITS_CREDENTIALS_BURST",
+        path: "limits.credentials_burst",
+        kind: Kind::Whole,
+    },
+    Setting {
+        variable: "DOORWARD_LIMITS_CREDENTIALS_PER_MINUTE",
+        path: "limits.credentials_per_minute",
+        kind: Kind::Whole,
+    },
+    Setting {
+        variable: "DOORWARD_LIMITS_MCP_BURST",
+        path: "limits.mcp_burst",
+        kind: Kind::Whole,
+    },
+    Setting {
+        variable: "DOORWARD_LIMITS_MCP_PER_MINUTE",
+        path: "limits.mcp_per_minute",
+        kind: Kind::Whole,
+    },
+    Setting {
+        variable: "DOORWARD_LIMITS_MCP_OPEN",
+        path: "limits.mcp_open",
+        kind: Kind::Whole,
+    },
+    Setting {
+        variable: "DOORWARD_LIMITS_RATE_TABLE_KEYS",
+        path: "limits.rate_table_keys",
+        kind: Kind::Whole,
+    },
+    Setting {
+        variable: "DOORWARD_LIMITS_AUTH_REQUESTS_MAX",
+        path: "limits.auth_requests_max",
+        kind: Kind::Whole,
+    },
+    Setting {
+        variable: "DOORWARD_LIMITS_DCR_TOTAL_PER_HOUR",
+        path: "limits.dcr_total_per_hour",
+        kind: Kind::Whole,
+    },
+    Setting {
         variable: "DOORWARD_MAIL_SMTP_CA_FILE",
         path: "mail.smtp_ca_file",
         kind: Kind::Path,
@@ -192,6 +252,18 @@ pub struct Limits {
     pub address_failures: u64,
     pub block_minutes: u64,
     pub dcr_per_hour: u64,
+    pub general_burst: u64,
+    pub general_per_minute: u64,
+    pub oauth_burst: u64,
+    pub oauth_per_minute: u64,
+    pub credentials_burst: u64,
+    pub credentials_per_minute: u64,
+    pub mcp_burst: u64,
+    pub mcp_per_minute: u64,
+    pub mcp_open: u64,
+    pub rate_table_keys: u64,
+    pub auth_requests_max: u64,
+    pub dcr_total_per_hour: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,7 +297,19 @@ impl Default for Limits {
             account_failures: 5,
             address_failures: 30,
             block_minutes: 15,
-            dcr_per_hour: 20,
+            dcr_per_hour: 60,
+            general_burst: 240,
+            general_per_minute: 600,
+            oauth_burst: 60,
+            oauth_per_minute: 120,
+            credentials_burst: 20,
+            credentials_per_minute: 20,
+            mcp_burst: 240,
+            mcp_per_minute: 600,
+            mcp_open: 64,
+            rate_table_keys: 100_000,
+            auth_requests_max: 10_000,
+            dcr_total_per_hour: 600,
         }
     }
 }
@@ -584,6 +668,18 @@ impl Limits {
                 ("address_failures", self.address_failures),
                 ("block_minutes", self.block_minutes),
                 ("dcr_per_hour", self.dcr_per_hour),
+                ("general_burst", self.general_burst),
+                ("general_per_minute", self.general_per_minute),
+                ("oauth_burst", self.oauth_burst),
+                ("oauth_per_minute", self.oauth_per_minute),
+                ("credentials_burst", self.credentials_burst),
+                ("credentials_per_minute", self.credentials_per_minute),
+                ("mcp_burst", self.mcp_burst),
+                ("mcp_per_minute", self.mcp_per_minute),
+                ("mcp_open", self.mcp_open),
+                ("rate_table_keys", self.rate_table_keys),
+                ("auth_requests_max", self.auth_requests_max),
+                ("dcr_total_per_hour", self.dcr_total_per_hour),
             ],
         )
     }

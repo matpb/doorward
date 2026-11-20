@@ -157,6 +157,25 @@ impl McpClient {
         self.request("tools/list", json!({})).await
     }
 
+    /// A stateless tools/list sent with extra headers, such as X-Forwarded-For.
+    /// Unused by harness_upstream, which includes this file by path.
+    #[allow(dead_code)]
+    pub async fn list_tools_with(&self, headers: &[(&str, &str)]) -> McpReply {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/list",
+            "params": with_meta(json!({})),
+        });
+        let mut all = vec![
+            ("MCP-Protocol-Version", STATELESS_VERSION),
+            ("Mcp-Method", "tools/list"),
+        ];
+        all.extend_from_slice(headers);
+        self.raw(body.to_string().as_bytes(), &all).await
+    }
+
     pub async fn call_tool(&self, name: &str, arguments: Value) -> McpReply {
         self.request("tools/call", json!({"name": name, "arguments": arguments}))
             .await

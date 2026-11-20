@@ -29,6 +29,8 @@ ip_is_flagged() {
     done
     case "$ip" in
         127.0.0.1|0.0.0.0|192.0.2.*|198.51.100.*|203.0.113.*) return 1 ;;
+        # The fixed container subnets of the shipped Compose files.
+        10.213.87.*) return 1 ;;
     esac
     return 0
 }

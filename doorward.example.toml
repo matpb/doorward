@@ -23,7 +23,7 @@ database = "doorward.db"
 # account_failures = 5
 # address_failures = 30
 # block_minutes = 15
-# dcr_per_hour = 20
+# dcr_per_hour = 60
 
 # Outgoing mail.
 [mail]

@@ -60,6 +60,11 @@ impl World {
         &self.gw.base
     }
 
+    /// Restarts the gateway on the same database with `edit` applied to its configuration.
+    pub async fn tighten(&mut self, edit: impl FnOnce(&mut Config)) {
+        self.gw.restart_with(edit).await;
+    }
+
     /// An anonymous browser.
     pub fn client(&self) -> TestClient {
         self.gw.client()

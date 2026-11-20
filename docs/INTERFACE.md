@@ -114,7 +114,7 @@ upstream_timeout_seconds = 300
 account_failures = 5          # consecutive wrong passwords before the account is blocked
 address_failures = 30         # wrong passwords per address inside the window
 block_minutes = 15
-dcr_per_hour = 20             # registrations per address
+dcr_per_hour = 60             # registrations per address
 
 [mail]
 # smtp_ca_file = "roots.pem"  # optional: extra trusted roots for SMTP over TLS, PEM

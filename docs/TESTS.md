@@ -999,8 +999,9 @@ Real binary, as in s37.
 
 ## s43_rate_limits.rs (statement 43)
 
-`W` is started with `trusted_proxies = ["127.0.0.1"]` and every burst set to 2 unless a
-test says otherwise. A caller "from A" sends `X-Forwarded-For: A`; addresses come from the
+`W` is prepared under the default limits (owner, users, servers, tokens), then restarted
+on the same database with `trusted_proxies = ["127.0.0.1"]` and every burst set to 2
+unless a test says otherwise; a restart empties the limiter. A caller "from A" sends `X-Forwarded-For: A`; addresses come from the
 documentation ranges. "Limited" is status `429` with an integer `Retry-After` of at least
 1, `Cache-Control: no-store` and no `WWW-Authenticate`. Waiting is `W.gw.clock.advance`.
 

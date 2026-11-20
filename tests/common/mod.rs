@@ -152,6 +152,12 @@ impl TestGateway {
         self.stop = Some(stop);
         self.server = server;
     }
+
+    /// As `restart`, with `edit` applied to the configuration first.
+    pub async fn restart_with(&mut self, edit: impl FnOnce(&mut Config)) {
+        edit(&mut self.config);
+        self.restart().await;
+    }
 }
 
 impl Drop for TestGateway {

@@ -185,7 +185,19 @@ fn sections_default_when_absent() {
             account_failures: 5,
             address_failures: 30,
             block_minutes: 15,
-            dcr_per_hour: 20,
+            dcr_per_hour: 60,
+            general_burst: 240,
+            general_per_minute: 600,
+            oauth_burst: 60,
+            oauth_per_minute: 120,
+            credentials_burst: 20,
+            credentials_per_minute: 20,
+            mcp_burst: 240,
+            mcp_per_minute: 600,
+            mcp_open: 64,
+            rate_table_keys: 100_000,
+            auth_requests_max: 10_000,
+            dcr_total_per_hour: 600,
         }
     );
     assert_eq!(config.mail.smtp_ca_file, None);
