@@ -8,6 +8,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod mail;
+pub mod mcp;
 pub mod oauth;
 pub mod servers;
 pub mod web;

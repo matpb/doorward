@@ -156,7 +156,7 @@ it and allows it.
    400, -32020. Decisions are always made from the body.
 5. `tools/call` is forwarded only if `params.name` is byte-equal to a name in this server's
    cached tool list (refreshed once on a miss) and policy allows it. Otherwise -32602
-   "unknown tool", no upstream contact, logged as denied. Denied and nonexistent look alike.
+   `Unknown tool: {name}`, no upstream contact, logged as denied. Denied and nonexistent look alike.
 6. Resources and prompts (S36): forwarded only when the server's `pass_resources` or
    `pass_prompts` switch is on; otherwise the gateway answers with empty lists.
 7. Forward the original bytes. `upstream` applies the request header allowlist, drops
