@@ -403,8 +403,10 @@ in the query string is never read. A database error during the check answers `50
 `401`.
 
 The token's expiry and its family's expiry are compared with the admission time of the request,
-so a POST answer keeps the access it was admitted with for the whole call. A GET stream compares
-with the clock as it runs.
+so a POST answer keeps the access it was admitted with for the whole call. That answer may outlive
+its token by at most one hour: the housekeeping run removes an access token once it has been
+expired for an hour, and a call still running then is ended. A GET stream compares with the clock
+as it runs.
 
 ## MCP paths
 
@@ -608,7 +610,8 @@ on standard error: `doorward: stopping, waiting up to 10 seconds for open reques
 connection has closed, it exits 0. If requests are still open 10 seconds after the signal, it
 writes `doorward: stopped with requests still open` and exits 0. A second `SIGINT` or
 `SIGTERM` during the wait ends it at once, with the same second line and exit 0. The 10
-seconds is fixed, not a setting. Nothing changes while the gateway runs.
+seconds is fixed, not a setting. A streamed call that is cut at the 10 seconds leaves no row
+in the activity log.
 
 ## Rate limits
 

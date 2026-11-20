@@ -625,21 +625,21 @@ def cmd_limits(args, state):
 def cmd_caller(args):
     caller = Browser(args.port, args.ca, connect_host=args.connect)
     if args.role == 1:
-        for number in (1, 2, 3):
+        for number in range(1, args.burst + 1):
             page = caller.get(NOT_FOUND_PATH, cookies=False)
             expect(page, 404, "A12", f"caller one request {number}")
         limited = caller.get(NOT_FOUND_PATH, cookies=False)
-        expect(limited, 429, "A12", "caller one's fourth request")
+        expect(limited, 429, "A12", f"caller one's request {args.burst + 1}")
         retry = limited.header("Retry-After") or ""
         need(retry.isdigit() and int(retry) >= 1, "A12", "the 429 has an integer Retry-After of at least 1", f"value {retry!r}")
         need(limited.header("Cache-Control") == "no-store", "A12", "the 429 is Cache-Control no-store", "header differs")
         forged = caller.get(NOT_FOUND_PATH, cookies=False, headers={"X-Forwarded-For": "203.0.113.50"})
         expect(forged, 429, "A12", "caller one with a forged X-Forwarded-For")
         health = caller.get("/healthz", cookies=False)
-        expect(health, 200, "A12", "GET /healthz for the limited caller")
+        expect(health, 429, "A12", "GET /healthz for the limited caller, which is not the host itself")
         emit(
-            f"PASS A12 caller one: three answers 404, fourth 429 with Retry-After {retry} and "
-            "Cache-Control no-store, forged X-Forwarded-For still 429, /healthz 200"
+            f"PASS A12 caller one: {args.burst} answers 404, the next 429 with Retry-After {retry} and "
+            "Cache-Control no-store, forged X-Forwarded-For still 429, /healthz counted too (429)"
         )
     else:
         first = caller.get(NOT_FOUND_PATH, cookies=False)
@@ -820,6 +820,7 @@ def build_parser():
     p.add_argument("--ca", required=True)
     p.add_argument("--connect", required=True)
     p.add_argument("--role", type=int, choices=[1, 2], required=True)
+    p.add_argument("--burst", type=int, default=3)
 
     p = sub.add_parser("forward")
     p.add_argument("--port", type=int, required=True)

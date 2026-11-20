@@ -1388,7 +1388,8 @@ async fn the_housekeeping_deletes_what_is_dead_and_keeps_the_rest() {
     let bob = add_user(&gw, BOB, "user");
     let conn = gw.conn();
     let live = family_row(&conn, bob, NOW + DAY, None);
-    let expired = family_row(&conn, bob, NOW - 1, None);
+    let expired = family_row(&conn, bob, NOW - 3601, None);
+    let grace_family = family_row(&conn, bob, NOW - 1800, None);
     let revoked_long = family_row(&conn, bob, NOW + DAY, Some(NOW - 25 * 3600));
     let revoked_short = family_row(&conn, bob, NOW + DAY, Some(NOW - 3600));
     for family in [expired, revoked_long] {
@@ -1408,8 +1409,13 @@ async fn the_housekeeping_deletes_what_is_dead_and_keeps_the_rest() {
         .expect("refresh row");
     }
     let live_access = token_hash(&random_token("dw_at_"));
+    let grace_access = token_hash(&random_token("dw_at_"));
     let dead_access = token_hash(&random_token("dw_at_"));
-    for (hash, expires) in [(&live_access, NOW + 3600), (&dead_access, NOW - 1)] {
+    for (hash, expires) in [
+        (&live_access, NOW + 3600),
+        (&grace_access, NOW - 1800),
+        (&dead_access, NOW - 3601),
+    ] {
         conn.execute(
             "INSERT INTO access_tokens (token_hash, family_id, expires_at) VALUES (?1, ?2, ?3)",
             params![hash, live, expires],
@@ -1454,9 +1460,14 @@ async fn the_housekeeping_deletes_what_is_dead_and_keeps_the_rest() {
         "a family revoked an hour ago is kept"
     );
     assert_eq!(
+        count_family(&conn, grace_family),
+        1,
+        "a family expired 30 minutes ago is kept"
+    );
+    assert_eq!(
         count_family(&conn, expired),
         0,
-        "a family past its expiry is deleted"
+        "a family expired more than an hour ago is deleted"
     );
     assert_eq!(
         count_family(&conn, revoked_long),
@@ -1488,7 +1499,16 @@ async fn the_housekeeping_deletes_what_is_dead_and_keeps_the_rest() {
             params![dead_access]
         ),
         0,
-        "an expired access row is deleted"
+        "an access row expired more than an hour ago is deleted"
+    );
+    assert_eq!(
+        scalar(
+            &gw,
+            "SELECT COUNT(*) FROM access_tokens WHERE token_hash = ?1",
+            params![grace_access]
+        ),
+        1,
+        "an access row expired 30 minutes ago is kept"
     );
     assert_eq!(
         scalar(
@@ -1803,7 +1823,7 @@ async fn the_sweep_runs_on_start_and_leaves_the_live_family() {
     .expect("user");
     let bob = conn.last_insert_rowid();
     let family = family_row(&conn, bob, NOW + DAY, None);
-    add_pair_rows(&conn, family, NOW - 1, NOW + DAY);
+    add_pair_rows(&conn, family, NOW - 3601, NOW + DAY);
     drop(conn);
 
     let gw = Gateway::start_on(dir, db, |_| {}).await;
@@ -1816,7 +1836,7 @@ async fn the_sweep_runs_on_start_and_leaves_the_live_family() {
     assert_eq!(
         access_rows(&gw, family),
         0,
-        "the expired access row must be swept within 3 seconds"
+        "the access row expired more than an hour ago must be swept within 3 seconds"
     );
     assert!(!is_revoked(&gw, family), "the live family is not revoked");
     assert_eq!(

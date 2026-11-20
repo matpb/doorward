@@ -142,6 +142,7 @@ A stop signal, such as `docker compose stop`, starts the gateway's own stop: it 
 connections and waits up to 10 seconds for open requests, such as a stream that is still
 running. Then it exits 0, writing `doorward: stopped with requests still open` if any remain.
 Docker's `stop_grace_period` of 15 seconds is therefore longer than the gateway's own wait.
+A streamed call that is cut at the 10 seconds leaves no row in the activity log.
 
 ## Data: database, key file and backups
 
@@ -247,7 +248,7 @@ Counters live in memory and reset on restart. Password guessing stays covered by
 database throttle, which survives restarts. A flood of failing requests from one shared
 address can block that address for everyone behind it.
 
-The registration limit counts an address's attempts; registration attempts are kept for one hour, so it counts only the last hour.
+The registration limit counts an address's attempts; registration attempts are kept for one hour, so it counts only the last hour. The table holds at most the registrations per address limit (`DOORWARD_LIMITS_DCR_PER_HOUR`) rows for each address that registered in that hour.
 
 ## Client addresses
 
@@ -276,7 +277,10 @@ The image's health check runs `doorward health` every 30 seconds. It asks `/heal
 listen address, which reads the database: the check passes only while the database answers.
 A failing check exits 1 with one line on standard error, and the gateway's own line
 `doorward: health check failed: <error>` names the cause. The check comes from the loopback
-address, so it never uses up a rate limit budget.
+address, so it never uses up a rate limit budget. A request counts as
+the host's own only when its client address is loopback and it carries no
+`X-Forwarded-For` header. Behind a proxy on the same host that sends no `X-Forwarded-For`,
+the gateway cannot tell visitors from the host, and `/healthz` is not limited for anyone.
 
 ## Logs
 

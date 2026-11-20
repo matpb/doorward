@@ -929,6 +929,35 @@ async fn health_is_counted_for_a_caller_that_is_not_local() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn health_with_a_forwarded_header_from_the_host_is_counted() {
+    let mut w = World::start().await;
+    w.tighten(|c| c.limits.general_burst = 2).await;
+    let browser = w.client();
+    let from = "192.0.2.60";
+    for n in 1..=2 {
+        let page = get_from(&browser, from, "/healthz").await;
+        assert_eq!(
+            page.status, 200,
+            "health request {n} with a forwarded header from the host must be answered"
+        );
+    }
+    let page = get_from(&browser, from, "/healthz").await;
+    assert_limited(
+        page.status,
+        &page.headers,
+        "the third health request with a forwarded header from the host",
+    );
+    assert_eq!(
+        page.json(),
+        Some(json!({
+            "error": "too_many_requests",
+            "error_description": "Too many requests. Try again later.",
+        })),
+        "a limited health request with a forwarded header must answer the too_many_requests JSON"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn health_from_the_host_itself_is_never_limited() {
     let mut w = World::start().await;
     tight(&mut w, |_| {}).await;

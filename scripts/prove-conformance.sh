@@ -237,7 +237,8 @@ start_forwarder() {
 wait_for_gateway() {
     local body="" deadline=$((SECONDS + 20))
     while (( SECONDS < deadline )); do
-        kill -0 "$GW_PID" 2>/dev/null || fail "doorward exited before answering"
+        kill -0 "$GW_PID" 2>/dev/null \
+            || fail "doorward exited before answering: $(tail -n 1 "$WORK/gateway.err" 2>/dev/null)"
         body="$(curl -fsS --max-time 1 "http://127.0.0.1:$FWD_PORT/healthz" 2>/dev/null || true)"
         if [[ "$body" == '{"status":"ok"}' ]]; then
             return 0

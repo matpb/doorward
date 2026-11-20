@@ -12,6 +12,8 @@ UPSTREAM_SCRIPT="$ROOT/scripts/prove/fake_upstream.py"
 CADDY_FILES=(-f "$ROOT/compose.caddy.yaml" -f "$ROOT/scripts/prove/compose.caddy.proof.yaml")
 PLAIN_FILES=(-f "$ROOT/compose.yaml" -f "$ROOT/scripts/prove/compose.proof.yaml")
 CALLERS=(doorward-proof-caller-1 doorward-proof-caller-2)
+# The tight general limit of A12: room for the health probe, the sign-in and the MCP calls of A13 and A14.
+LIMITED_BURST=10
 
 WORK=""
 RUN_LOG=""
@@ -258,7 +260,7 @@ stage_a() {
             python:3.13-alpine sleep 900 >/dev/null || die "A12 callers: cannot start $name"
     done
     docker exec "${CALLERS[0]}" python -I /opt/driver.py caller \
-        --port "$HTTPS_PORT" --ca /ca/root.crt --connect "$caller_ip" --role 1 2>&1 | tee -a "$RUN_LOG"
+        --port "$HTTPS_PORT" --ca /ca/root.crt --connect "$caller_ip" --role 1 --burst "$LIMITED_BURST" 2>&1 | tee -a "$RUN_LOG"
     docker exec "${CALLERS[1]}" python -I /opt/driver.py caller \
         --port "$HTTPS_PORT" --ca /ca/root.crt --connect "$caller_ip" --role 2 2>&1 | tee -a "$RUN_LOG"
     for name in "${CALLERS[@]}"; do
@@ -373,7 +375,7 @@ for s in socks:
     UPSTREAM_SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
     export PROOF_UPSTREAM_SECRET="$UPSTREAM_SECRET"
     write_env "$WORK/caddy.env" "https://localhost:$HTTPS_PORT" "" ""
-    write_env "$WORK/limited.env" "https://localhost:$HTTPS_PORT" 3 1
+    write_env "$WORK/limited.env" "https://localhost:$HTTPS_PORT" "$LIMITED_BURST" 1
     write_plain_env "$WORK/plain.env"
 
     preflight

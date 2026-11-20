@@ -1,3 +1,2 @@
 # Test files written before their code. Each must compile and fail; remove a name when its code lands.
-s05_disable
-s45_retention
+s43_rate_limits

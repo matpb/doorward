@@ -12,6 +12,9 @@ const HOUR_SECONDS: i64 = 3_600;
 const CODE_GRACE_SECONDS: i64 = 600;
 /// A revoked family is kept this long, so its disconnect links and rows stay readable.
 const REVOKED_KEEP_SECONDS: i64 = DAY_SECONDS;
+/// An expired access token or family stays this long, so a call admitted before its expiry
+/// is still answered.
+const EXPIRED_GRACE_SECONDS: i64 = 3600;
 
 /// What a new family belongs to.
 pub struct NewFamily<'a> {
@@ -212,17 +215,17 @@ pub fn sweep(conn: &Connection, now: i64, replay_seconds: i64) -> rusqlite::Resu
         params![now, CODE_GRACE_SECONDS],
     )?;
     conn.execute(
-        "DELETE FROM access_tokens WHERE expires_at <= ?1",
-        params![now],
+        "DELETE FROM access_tokens WHERE expires_at + ?2 <= ?1",
+        params![now, EXPIRED_GRACE_SECONDS],
     )?;
     conn.execute(
         "DELETE FROM dcr_attempts WHERE at < ?1",
         params![now - HOUR_SECONDS],
     )?;
     conn.execute(
-        "DELETE FROM token_families WHERE expires_at <= ?1 \
+        "DELETE FROM token_families WHERE expires_at + ?3 <= ?1 \
          OR (revoked_at IS NOT NULL AND revoked_at < ?2)",
-        params![now, now - REVOKED_KEEP_SECONDS],
+        params![now, now - REVOKED_KEEP_SECONDS, EXPIRED_GRACE_SECONDS],
     )?;
     clear_old_replays(conn, now, replay_seconds)
 }

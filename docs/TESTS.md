@@ -1352,6 +1352,10 @@ documentation ranges. "Limited" is status `429` with an integer `Retry-After` of
     limited answer reads no database. B's first request is `200`.
 17. `health_from_the_host_itself_is_never_limited`: six `GET /healthz` with no forwarded
     address (the loopback peer) are all `200`, with a burst of 2.
+18. `health_with_a_forwarded_header_from_the_host_is_counted`: with no trusted proxy, the
+    loopback peer sends `GET /healthz` with `X-Forwarded-For: 192.0.2.60`. The first two are
+    `200`; the third is limited with the JSON `too_many_requests` answer. A header from a
+    loopback peer is not a reason to skip the count.
 
 ## s44_lockout.rs (statement 44)
 
