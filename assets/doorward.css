@@ -90,6 +90,11 @@ summary:focus-visible {
   color: var(--muted);
 }
 
+.strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
 .small {
   font-size: 0.8125rem;
 }
@@ -245,7 +250,12 @@ body[data-layout="panel"] main {
   margin-top: 0;
 }
 
-.card > form:last-child {
+body[data-layout="card"] main > :last-child,
+.card > :last-child,
+.notice > :last-child,
+.confirm-body > :last-child,
+.side > :last-child,
+details.provider > form:last-child {
   margin-bottom: 0;
 }
 
@@ -281,7 +291,7 @@ nav[data-nav="panel"] a {
   border-bottom: 2px solid transparent;
 }
 
-a[aria-current="page"] {
+nav[data-nav="panel"] a[aria-current="page"] {
   color: var(--ink);
   font-weight: 600;
   border-bottom-color: var(--accent);
@@ -306,8 +316,17 @@ a[aria-current="page"] {
   border-top: 1px solid var(--line);
 }
 
-.rows form {
+.rows form,
+.rows p {
   margin: 0;
+}
+
+.card .rows > li:first-child {
+  padding-top: 0;
+}
+
+.card .rows > li:last-child {
+  padding-bottom: 0;
 }
 
 .row-main {
@@ -316,6 +335,7 @@ a[aria-current="page"] {
 }
 
 .row-title {
+  display: block;
   font-weight: 600;
 }
 
@@ -546,12 +566,13 @@ label.check {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
   gap: 0 1rem;
+  align-items: end;
 }
 
 fieldset {
   min-width: 0;
   margin: 1rem 0 0;
-  padding: 1rem 0 0;
+  padding: 0.25rem 0 0;
   border: 0;
   border-top: 1px solid var(--line);
 }
@@ -643,6 +664,16 @@ summary a.button {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.actions form {
+  margin: 0;
+}
+
+.actions button,
+.actions a.button {
+  margin-top: 0;
 }
 
 body[data-layout="card"] main[data-page="consent"] .actions {
@@ -704,9 +735,17 @@ details.provider {
   border-radius: 0.75rem;
 }
 
+details.provider + details.provider {
+  margin-top: -1.75rem;
+}
+
 details.provider > summary {
   justify-content: space-between;
   padding: 0.75rem 0;
+}
+
+details.provider > summary::after {
+  margin-left: 0.75rem;
 }
 
 details.provider.in-use {
@@ -741,8 +780,19 @@ details.provider > form {
   }
 
   body[data-layout="card"] main {
-    margin-top: 1rem;
+    margin: 1rem;
     padding: 1.25rem;
+  }
+
+  .filters > label,
+  .filters > button {
+    max-width: none;
+    flex: 1 1 100%;
+  }
+
+  .filters input:not([type="checkbox"]):not([type="hidden"]),
+  .filters select {
+    max-width: none;
   }
 
   body[data-layout="card"] button,

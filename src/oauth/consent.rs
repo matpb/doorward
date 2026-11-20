@@ -427,7 +427,7 @@ fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
         @if let Some(sentence) = consent.local_sentence {
             (ui::notice("warning", html! { p.local-app { (sentence) } }))
         }
-        p.muted data-consent-notice { "Approve only if you started this sign-in yourself." }
+        p.strong data-consent-notice { "Approve only if you started this sign-in yourself." }
         div.actions {
             form method="post" action="/oauth/consent" {
                 input type="hidden" name="csrf" value=(csrf);
@@ -799,12 +799,12 @@ mod tests {
     }
 
     #[test]
-    fn the_notice_sentence_is_muted_text_and_keeps_its_attribute() {
+    fn the_notice_sentence_is_strong_text_and_keeps_its_attribute() {
         let doc = Html::parse_fragment(
             &consent_body("token", "req", &consent(false, None)).into_string(),
         );
         assert_eq!(
-            text(&doc, "p.muted[data-consent-notice]"),
+            text(&doc, "p.strong[data-consent-notice]"),
             "Approve only if you started this sign-in yourself."
         );
         assert_eq!(count(&doc, ".notice[data-consent-notice]"), 0);

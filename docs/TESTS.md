@@ -1618,6 +1618,10 @@ activity of allowed, denied and failed tool calls.
     red before the change.
 13. `pages_carry_no_inline_style`: no covered page holds ` style=` or `<style`. It passes
     before the change, since no page carries one today; it guards the restyle.
+14. `the_current_tab_is_marked_by_the_stylesheet`: the stylesheet holds a rule with the
+    selector `nav[data-nav="panel"] a[aria-current="page"]` that declares
+    `border-bottom-color: var(--accent)`, `color: var(--ink)` and `font-weight: 600`, so the
+    current tab outranks `nav[data-nav="panel"] a`. It is red before the change.
 
 ## s59_counts_paging.rs (statements 59 to 61)
 

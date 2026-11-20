@@ -1158,6 +1158,25 @@ async fn the_stylesheet_meets_contrast_and_size() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_current_tab_is_marked_by_the_stylesheet() {
+    let w = World::start().await;
+    let decls = declarations(&stylesheet(&w).await);
+    let current = r#"nav[data-nav="panel"] a[aria-current="page"]"#;
+    for (name, value) in [
+        ("border-bottom-color", "var(--accent)"),
+        ("color", "var(--ink)"),
+        ("font-weight", "600"),
+    ] {
+        assert!(
+            decls
+                .iter()
+                .any(|decl| decl.selector == current && decl.name == name && decl.value == value),
+            "the stylesheet must declare {name}: {value} in a rule with the selector {current}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn pages_carry_no_inline_style() {
     let s = seeded().await;
     for shot in covered(&s).await {
