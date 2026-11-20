@@ -434,7 +434,9 @@ The combined endpoint `/mcp` is its own MCP server:
   `ping`, `tools/list`, `tools/call`, notifications accepted with `202`. GET and DELETE:
   `405`.
 - Stateless rules: `server/discover` (`supportedVersions` `["2026-07-28", "2025-11-25",
-  "2025-06-18", "2025-03-26"]`, capabilities `{"tools": {}}`, `cacheScope` `private`),
+  "2025-06-18", "2025-03-26"]`, capabilities `{"tools": {}}`, `cacheScope` `private`; its result
+  `_meta` names the server as `io.modelcontextprotocol/serverInfo` (`name` `doorward`, `version` the crate
+  version), and the body `serverInfo` stays for clients built before that change),
   `tools/list` (`ttlMs` 60000, `cacheScope` `private`), `tools/call`. An unsupported
   version: `400`, `-32022`, with `data.supported` and `data.requested`.
 - Tool names are `{slug}__{tool}`. A tool whose name is not `^[A-Za-z0-9_.-]+$`, or whose

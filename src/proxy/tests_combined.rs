@@ -2608,3 +2608,41 @@ async fn a_user_unassigned_while_the_upstream_refuses_the_call_gets_the_refusal(
         }]
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stateless_discover_on_mcp_names_the_server_in_result_meta() {
+    let fx = fixture().await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {}});
+    let discovered = send(
+        &fx.state,
+        1,
+        "POST",
+        &[
+            ("MCP-Protocol-Version", "2026-07-28"),
+            ("Mcp-Method", "server/discover"),
+        ],
+        Some(
+            json!({"jsonrpc": "2.0", "id": 31, "method": "server/discover",
+            "params": {"_meta": meta}}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        discovered.status, 200,
+        "server/discover on /mcp is answered"
+    );
+    let identity = json!({"name": "doorward", "version": env!("CARGO_PKG_VERSION")});
+    assert_eq!(
+        discovered.json,
+        Some(json!({"jsonrpc": "2.0", "id": 31, "result": {
+            "supportedVersions": ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"],
+            "capabilities": {"tools": {}},
+            "serverInfo": identity,
+            "_meta": {"io.modelcontextprotocol/serverInfo": identity},
+            "cacheScope": "private",
+            "resultType": "complete",
+        }}))
+    );
+}

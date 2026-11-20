@@ -202,6 +202,7 @@ fn discover() -> Value {
         "supportedVersions": SUPPORTED,
         "capabilities": {"tools": {}},
         "serverInfo": server_info(),
+        "_meta": {"io.modelcontextprotocol/serverInfo": server_info()},
         "cacheScope": "private",
         "resultType": "complete",
     })

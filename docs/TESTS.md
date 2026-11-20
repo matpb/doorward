@@ -348,7 +348,8 @@ both; token for the slug `mcp`.
    each.
 6. `combined_discover_shape`: `supportedVersions` is
    `["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"]`, `capabilities` is
-   `{"tools": {}}`, `cacheScope` is `private`, `resultType` is `complete`.
+   `{"tools": {}}`, `cacheScope` is `private`, `resultType` is `complete`, and `_meta` names
+   the server as `io.modelcontextprotocol/serverInfo` with `name` `doorward` and the crate version.
 7. `combined_initialize_negotiates_the_revision`: a raw `initialize` asking `2025-06-18`
    is answered `2025-06-18`; one asking `1999-01-01` is answered `2025-11-25`.
 8. `combined_refuses_an_unknown_stateless_revision`: header and `_meta` version

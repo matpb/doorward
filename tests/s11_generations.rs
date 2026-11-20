@@ -271,6 +271,11 @@ async fn combined_discover_shape() {
         result["resultType"], "complete",
         "the discover answer must be complete"
     );
+    assert_eq!(
+        result["_meta"]["io.modelcontextprotocol/serverInfo"],
+        json!({"name": "doorward", "version": env!("CARGO_PKG_VERSION")}),
+        "the discover answer must name the server in its result _meta"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
