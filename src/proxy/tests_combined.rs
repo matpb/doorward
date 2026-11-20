@@ -946,7 +946,7 @@ async fn list_and_ping_follow_the_generation() {
             "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}})),
     )
     .await;
-    assert_eq!(stateless_ping.status, 200, "the stateless ping must be 200");
+    assert_eq!(stateless_ping.status, 404, "the stateless ping must be 404");
     assert_eq!(
         stateless_ping.json,
         Some(
@@ -1943,5 +1943,82 @@ async fn an_upstream_json_rpc_error_is_returned_under_the_clients_id_with_an_err
             outcome: "error".to_owned(),
             detail: String::new(),
         }]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stateless_methods_the_endpoint_does_not_serve_are_404_and_the_session_form_200() {
+    let fx = fixture().await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28"});
+    let stateless = [
+        ("MCP-Protocol-Version", "2026-07-28"),
+        ("Mcp-Method", "resources/list"),
+    ];
+    let reply = send(
+        &fx.state,
+        1,
+        "POST",
+        &stateless,
+        Some(
+            json!({"jsonrpc": "2.0", "id": 3, "method": "resources/list",
+            "params": {"_meta": meta}}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        reply.status, 404,
+        "a stateless resources/list on /mcp is 404"
+    );
+    assert_eq!(
+        reply
+            .json
+            .as_ref()
+            .map(|json| json["error"]["code"].clone()),
+        Some(json!(-32601))
+    );
+    assert_eq!(
+        reply.json.as_ref().map(|json| json["id"].clone()),
+        Some(json!(3))
+    );
+    let session = send(
+        &fx.state,
+        1,
+        "POST",
+        &[],
+        Some(json!({"jsonrpc": "2.0", "id": 4, "method": "resources/list", "params": {}})),
+    )
+    .await;
+    assert_eq!(session.status, 200, "a session resources/list stays 200");
+    assert_eq!(
+        session
+            .json
+            .as_ref()
+            .map(|json| json["error"]["code"].clone()),
+        Some(json!(-32601))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stateless_list_without_a_protocol_version_is_invalid_params_on_mcp() {
+    let fx = fixture().await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let stateless = [
+        ("MCP-Protocol-Version", "2026-07-28"),
+        ("Mcp-Method", "tools/list"),
+    ];
+    let reply = send(
+        &fx.state,
+        1,
+        "POST",
+        &stateless,
+        Some(json!({"jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": {}})),
+    )
+    .await;
+    assert_eq!(reply.status, 400, "a stateless list without _meta is a 400");
+    assert_eq!(
+        reply.json,
+        Some(json!({"jsonrpc": "2.0", "id": 5, "error": {"code": -32602,
+            "message": "Invalid params: missing _meta or protocol version"}}))
     );
 }

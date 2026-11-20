@@ -407,6 +407,8 @@ impl Gw {
 pub(super) enum Mode {
     /// JSON answers, with these extra headers on each.
     Json(Vec<(&'static str, &'static str)>),
+    /// JSON answers, and notifications answered 202 as the TypeScript SDK does: text/plain, no body.
+    TypeScript,
     /// Event streams with a notice first; the answer is the last event. Extra headers on each.
     Stream(Vec<(&'static str, &'static str)>),
     /// A notice, then the answer one second later.
@@ -572,6 +574,25 @@ fn respond(mode: &Mode, tools: &[String], seen: &Seen) -> Plan {
                     Some("application/json"),
                     session.as_deref(),
                     extra,
+                    Body::from(message.to_string()),
+                ),
+            },
+        },
+        Mode::TypeScript => match stream_or_close(seen) {
+            Some(plan) => plan,
+            None => match message {
+                None => build(
+                    202,
+                    Some("text/plain; charset=UTF-8"),
+                    None,
+                    &[],
+                    Body::empty(),
+                ),
+                Some(message) => build(
+                    200,
+                    Some("application/json"),
+                    session.as_deref(),
+                    &[],
                     Body::from(message.to_string()),
                 ),
             },
@@ -1347,6 +1368,182 @@ async fn a_response_without_a_session_or_under_stateless_rules_is_refused() {
         Some(-32600),
         "a stateless response is -32600"
     );
+    assert_eq!(demo.fake.count(), before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_notice_answered_202_as_text_is_relayed_empty() {
+    let demo = demo().await;
+    demo.fake.set(Mode::TypeScript);
+    let session = initialized(&demo).await;
+    let before = demo.fake.count();
+    let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string();
+    let reply = session_post(&demo, Some(&session), note).await;
+    assert_eq!(reply.status, 202, "a 202 notice answer is accepted");
+    assert_eq!(reply.body, "", "the upstream's body is never relayed");
+    assert_eq!(
+        reply.header("content-type"),
+        None,
+        "no content type is sent"
+    );
+    reply.assert_inert("the 202");
+    assert_eq!(
+        demo.fake.count(),
+        before + 1,
+        "the notice reaches the upstream"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notice_answered_200_with_no_body_keeps_the_upstream_status() {
+    let demo = demo().await;
+    let session = initialized(&demo).await;
+    demo.fake.set(Mode::Status(200, Some("text/plain"), ""));
+    let before = demo.fake.count();
+    let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string();
+    let reply = session_post(&demo, Some(&session), note).await;
+    assert_eq!(reply.status, 200, "an empty notice answer keeps its status");
+    assert_eq!(reply.body, "");
+    assert_eq!(
+        reply.header("content-type"),
+        None,
+        "no content type is sent"
+    );
+    assert_eq!(
+        demo.fake.count(),
+        before + 1,
+        "the notice reaches the upstream"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_answer_to_a_request_is_a_502_with_a_null_id() {
+    let demo = demo().await;
+    let session = initialized(&demo).await;
+    demo.fake
+        .set(Mode::Status(202, Some("text/plain; charset=UTF-8"), ""));
+    let reply = session_post(&demo, Some(&session), session_body(6, "ping", json!({}))).await;
+    assert_eq!(
+        reply.status, 502,
+        "an empty answer to a request is unavailable"
+    );
+    assert_eq!(
+        reply.json(),
+        json!({"jsonrpc": "2.0", "id": null,
+            "error": {"code": -32000, "message": "Upstream demo is unavailable"}})
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stateless_methods_the_server_does_not_implement_are_404() {
+    let demo = demo().await;
+    let before = demo.fake.count();
+    for method in [
+        "ping",
+        "initialize",
+        "logging/setLevel",
+        "resources/subscribe",
+        "tasks/get",
+        "no/such",
+    ] {
+        let reply = demo
+            .gw
+            .post(
+                "demo",
+                &demo.token,
+                stateless_headers(method, None),
+                stateless_body(7, method, json!({})),
+            )
+            .await;
+        assert_eq!(reply.status, 404, "stateless {method:?} is 404");
+        assert_eq!(reply.error_code(), Some(-32601), "stateless {method:?}");
+        assert_eq!(reply.error_message().as_deref(), Some("Method not found"));
+        assert_eq!(reply.json()["id"], json!(7), "the id is the request's id");
+        reply.assert_inert("the 404");
+    }
+    assert_eq!(demo.fake.count(), before, "refused methods reach nothing");
+    for method in ["resources/subscribe", "tasks/get", "no/such"] {
+        let reply = session_post(&demo, None, session_body(8, method, json!({}))).await;
+        assert_eq!(reply.status, 200, "session {method:?} stays 200");
+        assert_eq!(reply.error_code(), Some(-32601), "session {method:?}");
+        assert_eq!(reply.json()["id"], json!(8));
+    }
+    assert_eq!(demo.fake.count(), before, "refused methods reach nothing");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stateless_body_without_a_protocol_version_is_invalid_params() {
+    let demo = demo().await;
+    let before = demo.fake.count();
+    let headers = stateless_headers("tools/list", None);
+    let bodies = [
+        session_body(3, "tools/list", json!({})),
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}).to_string(),
+        session_body(
+            3,
+            "tools/list",
+            json!({"_meta": {"io.modelcontextprotocol/clientInfo": {}}}),
+        ),
+        session_body(
+            3,
+            "tools/list",
+            json!({"_meta": {"io.modelcontextprotocol/protocolVersion": 20260728}}),
+        ),
+    ];
+    for body in bodies {
+        let reply = demo
+            .gw
+            .post("demo", &demo.token, headers.clone(), body)
+            .await;
+        assert_eq!(reply.status, 400, "a body without the version is a 400");
+        assert_eq!(reply.error_code(), Some(-32602));
+        assert_eq!(
+            reply.error_message().as_deref(),
+            Some("Invalid params: missing _meta or protocol version")
+        );
+        assert_eq!(reply.json()["id"], json!(3), "the id is the request's id");
+    }
+    let mismatched = stateless_headers("tools/call", None);
+    let reply = demo
+        .gw
+        .post(
+            "demo",
+            &demo.token,
+            mismatched,
+            session_body(3, "tools/list", json!({})),
+        )
+        .await;
+    assert_eq!(
+        reply.error_code(),
+        Some(-32602),
+        "the missing version is judged before the Mcp-Method header"
+    );
+    assert_eq!(demo.fake.count(), before, "a refused body reaches nothing");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_meta_version_that_differs_from_the_header_stays_32020() {
+    let demo = demo().await;
+    let before = demo.fake.count();
+    let body = json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2025-11-25"}}})
+    .to_string();
+    let reply = demo
+        .gw
+        .post(
+            "demo",
+            &demo.token,
+            stateless_headers("tools/list", None),
+            body,
+        )
+        .await;
+    assert_eq!(reply.status, 400);
+    assert_eq!(reply.error_code(), Some(-32020));
+    assert_eq!(
+        reply.error_message().as_deref(),
+        Some("Header mismatch: MCP-Protocol-Version")
+    );
+    assert_eq!(reply.json()["id"], json!(4));
     assert_eq!(demo.fake.count(), before);
 }
 

@@ -4,13 +4,16 @@ use axum::body::{Body, Bytes, to_bytes};
 use axum::http::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
+use serde_json::Value;
 
 use super::handle::{INVALID, PARSE, bare, version_of};
 use crate::app::AppState;
 use crate::mcp::answer;
 use crate::mcp::headers::{HeaderRefusal, check_stateless};
 use crate::mcp::json::{JsonRefusal, parse_strict};
-use crate::mcp::message::{Generation, Message, Refusal, classify};
+use crate::mcp::message::{Generation, Message, Refusal, classify, meta_version};
+
+const MISSING_META: &str = "Invalid params: missing _meta or protocol version";
 
 /// A POST that passed intake: its classified message and its body bytes.
 pub(super) struct Intake {
@@ -70,6 +73,18 @@ pub(super) async fn intake(
             message.id.as_ref(),
             -32600,
             INVALID,
+        ));
+    }
+    if message.generation == Generation::Stateless
+        && meta_version(&message.value)
+            .and_then(Value::as_str)
+            .is_none()
+    {
+        return Err(answer::error(
+            StatusCode::BAD_REQUEST,
+            message.id.as_ref(),
+            -32602,
+            MISSING_META,
         ));
     }
     if let Err(HeaderRefusal(text)) = check_stateless(headers, &message) {

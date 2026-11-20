@@ -701,6 +701,13 @@ const CASES: &[(u16, Option<&str>, &str, &str)] = &[
     (200, None, "hello", "fault"),
     (200, None, "", "empty"),
     (418, Some("application/json"), "{}", "fault"),
+    (202, Some("text/plain"), "", "empty"),
+    (202, Some("text/plain; charset=UTF-8"), "ignored", "empty"),
+    (202, Some("application/json"), "{}", "empty"),
+    (200, Some("text/plain"), "", "empty"),
+    (200, Some("text/plain"), "x", "fault"),
+    (500, Some("text/plain"), "", "fault"),
+    (404, Some("text/plain"), "", "empty"),
 ];
 
 #[tokio::test(flavor = "multi_thread")]
@@ -850,6 +857,29 @@ async fn a_session_upstream_is_initialized_listed_and_closed_with_the_secret() {
         assert!(request.header("authorization").is_none());
         assert!(request.header("cookie").is_none());
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_upstream_that_answers_its_notice_as_text_is_listed() {
+    let session = session_style(vec![tool("alpha")]);
+    let up = TestUpstream::start(move |seen: &Seen| {
+        if seen.rpc() == "notifications/initialized" && seen.header("mcp-session-id") == Some("s1")
+        {
+            return answer(202, None, Some("text/plain; charset=UTF-8"), "");
+        }
+        session(seen)
+    })
+    .await;
+    let fixture = fixture().await;
+    let names_seen = catalog::refresh(&fixture.state, &secret_target_at(&fixture, &up.url))
+        .await
+        .expect("the refresh");
+    assert_eq!(names_seen, vec!["alpha"], "the list after a text notice");
+    assert_eq!(
+        up.seen().len(),
+        5,
+        "the same sequence as for an empty notice"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

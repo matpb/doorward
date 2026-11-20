@@ -363,7 +363,17 @@ both; token for the slug `mcp`.
 12. `notifications_are_accepted`: `notify("notifications/initialized", ..)` is 202 on a
     server path and on `/mcp`.
 13. `ping_follows_the_generation`: a session client's `ping` returns `{}` and reaches the
-    upstream; a stateless `request("ping", ..)` is `-32601` and never reaches it.
+    upstream; a stateless `request("ping", ..)` is 404 with `-32601` and never reaches it.
+14. `a_typescript_style_upstream_works_in_session_mode`: upstream `Generation::Session` in
+    `Mode::TypeScriptNotices` (notices answered 202, `text/plain; charset=UTF-8`, no body).
+    The notice is accepted as 202 with an empty body and no content type; the session
+    client lists and calls a tool.
+15. `stateless_refusals_have_the_specified_shapes`: stateless `ping` and `/mcp`
+    `resources/list` are 404 with `-32601` and the request's id; session `/mcp`
+    `resources/list` and session `tasks/get` are 200 with `-32601`; a stateless body without
+    `_meta` (on a server path) or with `_meta` lacking the version (on `/mcp`) is 400 with
+    `-32602` and `Invalid params: missing _meta or protocol version`; a `_meta` version
+    `2025-11-25` under header `2026-07-28` is 400 with `-32020`.
 
 ## s12_streaming.rs (statement 12)
 

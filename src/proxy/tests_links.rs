@@ -41,6 +41,8 @@ struct Behave {
     wait: Duration,
     /// How long each server/discover answer waits, at the start.
     probe_wait: Duration,
+    /// Answers notifications/initialized with 202 and text/plain, as the TypeScript SDK does.
+    text_notices: bool,
 }
 
 impl Default for Behave {
@@ -53,6 +55,7 @@ impl Default for Behave {
             fixed_id: None,
             wait: Duration::ZERO,
             probe_wait: Duration::ZERO,
+            text_notices: false,
         }
     }
 }
@@ -208,6 +211,9 @@ fn respond(behave: &Behave, book: &Mutex<Ledger>, seen: &Seen) -> Plan {
             );
             Plan::Reply(build(200, Some(&session), Some(&body)))
         }
+        "notifications/initialized" if behave.text_notices => {
+            answer(202, None, Some("text/plain; charset=UTF-8"), "")
+        }
         "notifications/initialized" => plan(202, None, None),
         "tools/list" | "tools/call" => {
             if let Some(status) = ledger.calls_status {
@@ -354,6 +360,26 @@ async fn a_stateless_upstream_is_probed_once_and_never_initialized() {
     let methods: Vec<String> = up.seen().iter().map(kind_of).collect();
     assert_eq!(methods, vec!["server/discover", "tools/list"]);
     assert_eq!(links.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_upstream_that_answers_its_notice_as_text_is_usable() {
+    let up = start(Behave {
+        text_notices: true,
+        ..Behave::default()
+    })
+    .await;
+    let fx = fixture().await;
+    let links = Links::new();
+    let target = target_at(&fx, up.url());
+    let listed = ask(&links, &fx.state, owned(1, 1), &target, list())
+        .await
+        .expect("the list is answered after a text notice");
+    assert_eq!(
+        listed["result"]["tools"][0]["name"], "echo",
+        "the upstream's tool is listed"
+    );
+    assert_eq!(up.count("notifications/initialized"), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

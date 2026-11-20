@@ -64,6 +64,9 @@ pub enum Mode {
     ServerRequest,
     /// Every POST answers 200 application/json with the body `not json at all`.
     Garbage,
+    /// Notifications are answered 202 with `text/plain; charset=UTF-8` and an empty body, as the TypeScript SDK does.
+    #[allow(dead_code)]
+    TypeScriptNotices,
     /// Every request answers 307 with this Location.
     Redirect(String),
     /// Normal, plus `Set-Cookie: upstream=1; Path=/` and `WWW-Authenticate: Basic realm="up"` on every response.
@@ -411,7 +414,7 @@ fn session_post(
         Some(id) if !client_answer => id,
         _ => {
             return Reply::Now(match check_session(state, rec) {
-                Ok(_) => accepted(),
+                Ok(_) => accepted(options),
                 Err(code) => status_only(code),
             });
         }
@@ -476,7 +479,7 @@ fn stateless_post(
         ));
     }
     let Some(id) = id else {
-        return Reply::Now(accepted());
+        return Reply::Now(accepted(options));
     };
     let Some(method) = method else {
         return Reply::Now(rpc_error(id, -32601, "Method not found"));
@@ -795,8 +798,14 @@ fn server_request_response(message: Value) -> Response {
         .expect("server request response")
 }
 
-fn accepted() -> Response {
-    status_only(StatusCode::ACCEPTED)
+/// The answer to a notification: 202 with no body, or as the TypeScript SDK sends it.
+fn accepted(options: &UpstreamOptions) -> Response {
+    match options.mode {
+        Mode::TypeScriptNotices => {
+            text_response(StatusCode::ACCEPTED, "text/plain; charset=UTF-8", "")
+        }
+        _ => status_only(StatusCode::ACCEPTED),
+    }
 }
 
 fn invalid_request() -> Response {

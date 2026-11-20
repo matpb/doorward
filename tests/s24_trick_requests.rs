@@ -508,8 +508,8 @@ async fn wrong_case_methods_are_refused() {
         )
         .await;
         assert_eq!(
-            reply.status, 200,
-            "{method:?}: a refused method answers as a JSON-RPC error"
+            reply.status, 404,
+            "{method:?}: a refused stateless method is 404 with a JSON-RPC error"
         );
         assert_eq!(
             reply.error_code(),
@@ -590,8 +590,8 @@ async fn task_requests_are_refused() {
     );
     let reply = send(&client, body, &call_headers(&plain_or_base64("echo"))).await;
     assert_eq!(
-        reply.status, 200,
-        "a task request answers as a JSON-RPC error"
+        reply.status, 404,
+        "a stateless task request is 404 with a JSON-RPC error"
     );
     assert_eq!(
         reply.error_code(),

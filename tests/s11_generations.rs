@@ -2,7 +2,7 @@ mod common;
 
 use common::client::{TestClient, Tokens};
 use common::mcp::McpClient;
-use common::upstream::{FakeUpstream, Generation, UpstreamOptions};
+use common::upstream::{FakeUpstream, Generation, Mode, UpstreamOptions};
 use common::world::World;
 use serde_json::{Value, json};
 
@@ -475,8 +475,8 @@ async fn ping_follows_the_generation() {
     let stateless = w.stateless_mcp("demo", &tokens);
     let refused = stateless.request("ping", json!({})).await;
     assert_eq!(
-        refused.status, 200,
-        "a refused method is answered in the JSON-RPC body"
+        refused.status, 404,
+        "a stateless ping the server does not implement is 404"
     );
     assert_eq!(
         refused.error_code(),
@@ -488,4 +488,190 @@ async fn ping_follows_the_generation() {
         1,
         "a stateless ping must never reach the upstream"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_typescript_style_upstream_works_in_session_mode() {
+    let w = World::start().await;
+    let options = UpstreamOptions {
+        generation: Generation::Session,
+        mode: Mode::TypeScriptNotices,
+        ..Default::default()
+    };
+    let (bob, _upstream, _) = bob_on(&w, "demo", options).await;
+    let tokens = w.token(&bob, "demo").await;
+    let client = session_on(&w, "demo", &tokens).await;
+    let note = client
+        .notify("notifications/initialized", Value::Null)
+        .await;
+    assert_eq!(
+        note.status, 202,
+        "a notification answered 202 by the upstream must be accepted"
+    );
+    assert_eq!(note.body, "", "the accepted notification has no body");
+    assert!(
+        note.header("content-type").is_none(),
+        "the accepted notification has no content type"
+    );
+    assert_eq!(
+        client.list_tools().await.tool_names(),
+        ["echo", "search", "delete_db"],
+        "the session client must list the upstream's tools"
+    );
+    let called = client.call_tool("echo", json!({"text": "hi"})).await;
+    assert_eq!(
+        called.text().as_deref(),
+        Some("called: echo"),
+        "the session client must call a tool"
+    );
+}
+
+/// The id of a JSON-RPC answer, or null when it has none.
+fn id_of(reply: &common::mcp::McpReply) -> Value {
+    reply
+        .json
+        .as_ref()
+        .and_then(|answer| answer.get("id").cloned())
+        .unwrap_or(Value::Null)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stateless_refusals_have_the_specified_shapes() {
+    let w = World::start().await;
+    let (bob, _upstream, _) = bob_on(&w, "demo", options(Generation::Both)).await;
+    let demo_tokens = w.token(&bob, "demo").await;
+    let mcp_tokens = w.token(&bob, "mcp").await;
+    let demo = McpClient::stateless(&w.resource("demo"), Some(&demo_tokens.access_token));
+    let mcp = McpClient::stateless(&w.resource("mcp"), Some(&mcp_tokens.access_token));
+    let stateless_meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28"});
+    let with_meta = |params: Value| {
+        let mut params = params;
+        params["_meta"] = stateless_meta.clone();
+        params
+    };
+    let request = |id: u64, method: &str, params: Value| {
+        json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+            .to_string()
+            .into_bytes()
+    };
+
+    let refused = demo
+        .raw(
+            &request(4, "ping", with_meta(json!({}))),
+            &[
+                ("MCP-Protocol-Version", "2026-07-28"),
+                ("Mcp-Method", "ping"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        refused.status, 404,
+        "a stateless ping the server does not implement must be 404"
+    );
+    assert_eq!(refused.error_code(), Some(-32601));
+    assert_eq!(
+        id_of(&refused),
+        json!(4),
+        "the answer carries the request id"
+    );
+
+    let refused = mcp
+        .raw(
+            &request(5, "resources/list", with_meta(json!({}))),
+            &[
+                ("MCP-Protocol-Version", "2026-07-28"),
+                ("Mcp-Method", "resources/list"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        refused.status, 404,
+        "a stateless resources/list on /mcp must be 404"
+    );
+    assert_eq!(refused.error_code(), Some(-32601));
+    assert_eq!(id_of(&refused), json!(5));
+
+    let session_mcp = session_on(&w, "mcp", &mcp_tokens).await;
+    let refused = session_mcp.request("resources/list", json!({})).await;
+    assert_eq!(
+        refused.status, 200,
+        "a session resources/list on /mcp stays 200"
+    );
+    assert_eq!(refused.error_code(), Some(-32601));
+
+    let session_demo = session_on(&w, "demo", &demo_tokens).await;
+    let refused = session_demo.request("tasks/get", json!({})).await;
+    assert_eq!(
+        refused.status, 200,
+        "a session tasks/get on a server path stays 200"
+    );
+    assert_eq!(refused.error_code(), Some(-32601));
+
+    let missing_meta = demo
+        .raw(
+            &request(9, "tools/list", json!({})),
+            &[
+                ("MCP-Protocol-Version", "2026-07-28"),
+                ("Mcp-Method", "tools/list"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        missing_meta.status, 400,
+        "a stateless body without _meta must be 400"
+    );
+    assert_eq!(missing_meta.error_code(), Some(-32602));
+    assert_eq!(
+        missing_meta.error_message().as_deref(),
+        Some("Invalid params: missing _meta or protocol version")
+    );
+    assert_eq!(id_of(&missing_meta), json!(9));
+
+    let missing_version = mcp
+        .raw(
+            &request(
+                10,
+                "tools/list",
+                json!({"_meta": {"io.modelcontextprotocol/clientInfo": {}}}),
+            ),
+            &[
+                ("MCP-Protocol-Version", "2026-07-28"),
+                ("Mcp-Method", "tools/list"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        missing_version.status, 400,
+        "a _meta without a protocol version must be 400 on /mcp"
+    );
+    assert_eq!(missing_version.error_code(), Some(-32602));
+    assert_eq!(
+        missing_version.error_message().as_deref(),
+        Some("Invalid params: missing _meta or protocol version")
+    );
+    assert_eq!(id_of(&missing_version), json!(10));
+
+    let other_version = demo
+        .raw(
+            &request(
+                11,
+                "tools/list",
+                json!({"_meta": {"io.modelcontextprotocol/protocolVersion": "2025-11-25"}}),
+            ),
+            &[
+                ("MCP-Protocol-Version", "2026-07-28"),
+                ("Mcp-Method", "tools/list"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        other_version.status, 400,
+        "a _meta version that differs from the header must be 400"
+    );
+    assert_eq!(other_version.error_code(), Some(-32020));
+    assert_eq!(
+        other_version.error_message().as_deref(),
+        Some("Header mismatch: MCP-Protocol-Version")
+    );
+    assert_eq!(id_of(&other_version), json!(11));
 }

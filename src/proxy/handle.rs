@@ -32,7 +32,6 @@ const MCP_METHOD: HeaderName = HeaderName::from_static("mcp-method");
 const MCP_NAME: HeaderName = HeaderName::from_static("mcp-name");
 pub(super) const INVALID: &str = "Invalid request";
 pub(super) const PARSE: &str = "Parse error";
-pub(super) const NO_METHOD: &str = "Method not found";
 const SESSION_LIMIT: usize = 256;
 pub(super) const TOOL_LIMIT: usize = 128;
 
@@ -108,9 +107,7 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
             }
             Decision::MethodNotFound => {
                 return match message.shape {
-                    Shape::Request => {
-                        answer::error(StatusCode::OK, message.id.as_ref(), -32601, NO_METHOD)
-                    }
+                    Shape::Request => answer::method_not_found(&message),
                     _ => bare(StatusCode::ACCEPTED),
                 };
             }

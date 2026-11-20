@@ -112,20 +112,23 @@ pub enum Kind {
     Empty,
 }
 
-/// The relay rule: statuses 200, 202, 400, 404 and 405 with a JSON or event-stream body, or
-/// with no body. Every other status, and every other content type, is a `Fault`.
+/// The relay rule: statuses 200, 202, 400, 404 and 405 with a JSON or event-stream body, or with
+/// no body. A 202, or a declared Content-Length 0, is an empty answer whatever its type.
 pub fn accept(response: &reqwest::Response) -> Result<Kind, Fault> {
-    if !matches!(response.status().as_u16(), 200 | 202 | 400 | 404 | 405) {
+    let status = response.status().as_u16();
+    if !matches!(status, 200 | 202 | 400 | 404 | 405) {
         return Err(Fault);
     }
     let headers = response.headers();
+    let declared = headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| text.parse::<u64>().ok());
+    if status == 202 || declared == Some(0) {
+        return Ok(Kind::Empty);
+    }
     let Some(content_type) = headers.get(CONTENT_TYPE) else {
-        let declared = headers
-            .get(CONTENT_LENGTH)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|text| text.parse::<u64>().ok())
-            .unwrap_or(0);
-        return if declared == 0 {
+        return if declared.is_none() {
             Ok(Kind::Empty)
         } else {
             Err(Fault)

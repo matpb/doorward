@@ -59,6 +59,15 @@ pub fn error(status: StatusCode, id: Option<&Value>, code: i64, message: &str) -
     respond(status, &body)
 }
 
+/// The gateway's -32601: HTTP 404 on the stateless form, 200 on the session form.
+pub fn method_not_found(message: &Message) -> Response {
+    let status = match message.generation {
+        Generation::Stateless => StatusCode::NOT_FOUND,
+        Generation::Session => StatusCode::OK,
+    };
+    error(status, message.id.as_ref(), -32601, "Method not found")
+}
+
 /// The 429 of a limited MCP request: JSON-RPC -32029 with a null id, and `Retry-After`.
 pub fn limited(wait: u64) -> Response {
     crate::web::limit::retry_after(

@@ -372,7 +372,7 @@ Forwarded methods on `/{slug}`; everything else is refused:
 
 With a switch off, the gateway answers the group's list methods itself with empty lists
 (`resources`, `resourceTemplates`, `prompts`), answers the other methods of the group with
-`-32601`, and removes `resources` or `prompts` from the capabilities in the relayed
+`-32601` (HTTP `404` under the stateless rules), and removes `resources` or `prompts` from the capabilities in the relayed
 `initialize` and `server/discover` results. Under the stateless rules its own answers carry
 `"resultType": "complete"`, and list answers `"ttlMs": 60000, "cacheScope": "private"`.
 
@@ -381,7 +381,9 @@ Stateless header rules: `MCP-Protocol-Version` must be present once and equal th
 `Mcp-Name` must be present once for `tools/call` and `prompts/get` (equal to
 `params.name`) and for `resources/read` (equal to `params.uri`). A value of the form
 `=?base64?...?=` is decoded before comparing. Any failure: `400`, `-32020`, message
-starting `Header mismatch:`. GET and DELETE under the stateless rules: `405`.
+starting `Header mismatch:`. A stateless body with no `params._meta` object, or with no string
+`io.modelcontextprotocol/protocolVersion` in it, is refused before these rules: `400`, `-32602`,
+message `Invalid params: missing _meta or protocol version`. GET and DELETE under the stateless rules: `405`.
 
 Relayed `tools/list` results keep the upstream's fields, minus denied tools and entries
 without a text name, on every page, and under the
@@ -392,6 +394,13 @@ Session rules: an `Mcp-Session-Id` from a relayed `initialize` response is recor
 answers `200` with an event stream; an upstream `405` is relayed as `405` with no body;
 any other answer is the `502` below. GET without a recorded session: `405`. DELETE with
 a recorded session is relayed and forgets it.
+
+Upstream answers: status 200, 202, 400, 404 or 405 is accepted, any other status is `502`. A `202`,
+and any accepted status that declares `Content-Length: 0`, is an empty answer whatever its content
+type, and its body is never read or relayed. A notification with an empty answer gets the upstream's
+status with no body and no `Content-Type`. A request with an id and an empty answer gets `502`
+(`-32000`, null id) for 200 and 202, and the upstream's status with no body for 400, 404 and 405.
+Any other non-empty answer must be JSON or an event stream.
 
 Event streams are relayed byte for byte as they arrive, and the gateway ends one when:
 the upstream ends it; the upstream sends nothing for `upstream_timeout_seconds`; one
@@ -463,7 +472,7 @@ The combined endpoint `/mcp` is its own MCP server:
   client leaves before the answer, `error` with the detail `the client left before the answer`.
 - An upstream that is unreachable, answers another id, or faults: `502`, `-32000`,
   `Upstream {slug} is unavailable`, row `unavailable`.
-- Every other method: `-32601`.
+- Every other method: `-32601`, HTTP `404` under the stateless rules.
 
 Answers that both endpoints share:
 
@@ -473,8 +482,9 @@ Answers that both endpoints share:
 | `Content-Encoding` present, charset other than UTF-8, byte order mark | `400`, JSON-RPC `-32600` |
 | Not valid JSON, duplicate key at any depth (compared after unescaping), lone surrogate, trailing data, nesting deeper than 64 | `400`, JSON-RPC `-32700` |
 | JSON array, `tools/call` without an `id`, a client-sent response under the stateless rules or without a session of the caller | `400`, JSON-RPC `-32600` |
-| Method outside the allowlist, `tasks/*`, `params.task` present | `200`, JSON-RPC `-32601`, upstream not contacted |
+| Method outside the allowlist, `tasks/*`, `params.task` present | `404` under the stateless rules, else `200`; JSON-RPC `-32601`, upstream not contacted |
 | `tools/call` for a tool that is not in the server's list or is denied | `200`, JSON-RPC `-32602` with message `Unknown tool: {name}`, upstream not contacted |
+| Stateless body with no `params._meta` or no string protocol version in it | `400`, JSON-RPC `-32602`, message `Invalid params: missing _meta or protocol version` |
 | Header and body disagree (2026-07-28), or a required header is missing or repeated | `400`, JSON-RPC `-32020` |
 | Session id not issued to this user, family and server | `404`, upstream not contacted |
 | Upstream unreachable, timed out, answered 401 or 403, redirected, or sent an unexpected content type | `502`, JSON-RPC `-32000` with message `Upstream {slug} is unavailable` |

@@ -19,7 +19,7 @@ use tokio::time::{Instant, timeout, timeout_at};
 
 use super::catalog::{self, RefreshError, SESSION, STATELESS};
 use super::combined_stream::{self, Call};
-use super::handle::{INVALID, NO_METHOD, Owed, TOOL_LIMIT, bare, cut, not_allowed};
+use super::handle::{INVALID, Owed, TOOL_LIMIT, bare, cut, not_allowed};
 use super::intake::{Intake, intake};
 use super::links::{self, Ask, Owner};
 use super::stream::Owned;
@@ -157,7 +157,7 @@ async fn post(state: &AppState, caller: &Arc<Caller>, headers: &HeaderMap, body:
     }
     if !matches!(decide(&message, ALL), Decision::Forward) {
         return match message.shape {
-            Shape::Request => answer::error(StatusCode::OK, message.id.as_ref(), -32601, NO_METHOD),
+            Shape::Request => answer::method_not_found(&message),
             _ => bare(StatusCode::ACCEPTED),
         };
     }
@@ -170,7 +170,7 @@ async fn post(state: &AppState, caller: &Arc<Caller>, headers: &HeaderMap, body:
         (Generation::Stateless, Some("server/discover")) => result(id, discover()),
         (_, Some("tools/list")) => list(state, caller, &message).await,
         (_, Some("tools/call")) => call(state, caller, &message, &bytes).await,
-        _ => answer::error(StatusCode::OK, message.id.as_ref(), -32601, NO_METHOD),
+        _ => answer::method_not_found(&message),
     }
 }
 
