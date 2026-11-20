@@ -434,8 +434,76 @@ async fn a_password_reset_ends_an_open_stream() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_expired_access_token_ends_an_open_stream() {
-    a_cut_off_ends_an_open_stream(Cut::Expire).await;
+async fn an_expired_access_token_does_not_cut_the_answer_to_a_post() {
+    let demo = demo().await;
+    demo.gw.seed(demo.server, &["echo"]);
+    let session = initialized(&demo).await;
+    let closed = Arc::new(AtomicUsize::new(0));
+    demo.fake.set(script(
+        vec![
+            (0, event(&notice())),
+            (1500, answer_event(1, echo_result())),
+        ],
+        Tail::Close,
+        &closed,
+    ));
+    let mut response = open(
+        &demo.gw,
+        &demo.token,
+        reqwest::Method::POST,
+        session_headers(Some(&session)),
+        Some(call_body(1, "echo")),
+    )
+    .await;
+    let first = response.chunk().await.expect("chunk").expect("the notice");
+    assert!(String::from_utf8_lossy(&first).contains("notifications/message"));
+    cut(&demo, demo.bob, &demo.token, Cut::Expire);
+    let rest = tokio::time::timeout(Duration::from_secs(5), drain(&mut response))
+        .await
+        .expect("the stream must end after its answer");
+    assert!(
+        String::from_utf8_lossy(&joined(&rest)).contains("called: echo"),
+        "the answer sent after the expiry must still reach the client"
+    );
+    let rows = rows_within(&demo.gw, 1, Duration::from_secs(1)).await;
+    assert_eq!(rows.len(), 1, "one row per streamed call");
+    assert_eq!(rows[0].decision, "allow");
+    assert_eq!(rows[0].outcome, "ok");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_expired_access_token_ends_an_open_get_stream() {
+    let demo = demo().await;
+    let session = initialized(&demo).await;
+    let closed = Arc::new(AtomicUsize::new(0));
+    demo.fake.set(silent(&closed));
+    let mut response = open(
+        &demo.gw,
+        &demo.token,
+        reqwest::Method::GET,
+        vec![
+            ("mcp-session-id", session.clone()),
+            ("accept", "text/event-stream".to_owned()),
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "the GET must open the stream"
+    );
+    let first = response.chunk().await.expect("chunk").expect("the notice");
+    assert!(String::from_utf8_lossy(&first).contains("notifications/message"));
+    cut(&demo, demo.bob, &demo.token, Cut::Expire);
+    tokio::time::timeout(Duration::from_secs(3), drain(&mut response))
+        .await
+        .expect("the expiry must end the GET stream within 3 seconds");
+    assert!(
+        wait_until(Duration::from_secs(2), || seen_closed(&closed)).await,
+        "the upstream must see the GET's connection closed"
+    );
+    assert!(demo.gw.tool_calls().is_empty(), "a GET writes no row");
 }
 
 #[tokio::test(flavor = "multi_thread")]

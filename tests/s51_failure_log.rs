@@ -10,7 +10,7 @@ use common::admin::{self, ServerSpec};
 use common::binary::{Run, free_port, write_file};
 use common::client::{OAuthApp, TestClient, pkce};
 use common::mcp::McpClient;
-use common::upstream::{FakeUpstream, Generation, UpstreamOptions};
+use common::upstream::{FakeUpstream, Generation, Mode, UpstreamOptions};
 use rusqlite::Connection;
 use serde_json::json;
 use tempfile::TempDir;
@@ -749,5 +749,88 @@ async fn a_database_error_on_the_combined_endpoint_writes_one_line() {
     assert_ne!(
         reply.status, 0,
         "the caller must get an answer while the database fails"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_database_error_during_the_access_check_writes_one_line_and_ends_unavailable() {
+    let gateway = Spawned::start();
+    let owner = gateway.owner().await;
+    let upstream = FakeUpstream::start(UpstreamOptions::default()).await;
+    let url = upstream.url();
+    let id = admin::add_server(
+        &owner,
+        &ServerSpec {
+            name: "demo",
+            slug: "demo",
+            upstream_url: &url,
+            secret: None,
+            pass_resources: false,
+            pass_prompts: false,
+        },
+    )
+    .await;
+    let page = admin::refresh_tools(&owner, &id).await;
+    assert_eq!(
+        page.status, 303,
+        "the tool list of demo must be fetched before the call"
+    );
+    let owner_id = admin::user_id(&owner, EMAIL)
+        .await
+        .expect("the owner must be listed on the users page");
+    let page = admin::assign(&owner, &owner_id, &[id.as_str()]).await;
+    assert_eq!(page.status, 303, "the owner must be assigned to demo");
+    upstream.set_mode(Mode::Delayed { millis: 1500 });
+
+    let registered = owner.register(CLIENT_NAME, &[LOOPBACK_CALLBACK]).await;
+    assert_eq!(registered.status, 201, "the probe client must register");
+    let client_id = registered
+        .json()
+        .and_then(|json| json["client_id"].as_str().map(str::to_owned))
+        .expect("registration answers with a client_id");
+    let app = OAuthApp {
+        client_id,
+        redirect_uri: LOOPBACK_CALLBACK.to_owned(),
+    };
+    let resource = format!("{}/demo", gateway.base);
+    let tokens = owner.connect(&app, &resource).await;
+    let mcp = McpClient::stateless(&resource, Some(&tokens.access_token));
+
+    let before = gateway.lines().len();
+    let call = mcp.call_tool("echo", json!({"text": "hi"}));
+    let hide = async {
+        // The bearer check has passed by now; the table goes before the answer, so the re-check fails.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        hide_table(&gateway.db, "access_tokens");
+    };
+    let (reply, ()) = tokio::join!(call, hide);
+    show_table(&gateway.db, "access_tokens");
+    assert_eq!(
+        reply.status, 502,
+        "a call whose access check cannot be made must be unavailable"
+    );
+    assert_eq!(
+        gateway.lines_since(before),
+        vec![
+            "doorward: access check failed: database error: no such table: access_tokens"
+                .to_string()
+        ],
+        "a database error during the access check must write exactly that one line"
+    );
+    let rows = admin::activity_with_details(&owner, None, None).await;
+    let calls: Vec<_> = rows
+        .iter()
+        .filter(|(row, _)| row.kind == "tool_call" && row.tool == "echo")
+        .collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "the call must write exactly one activity row"
+    );
+    let (row, detail) = calls[0];
+    assert_eq!(
+        (row.decision.as_str(), row.outcome.as_str(), detail.as_str()),
+        ("allow", "unavailable", "the access check could not be done"),
+        "the row must say the access check could not be done, not that access was lost"
     );
 }

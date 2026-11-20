@@ -15,6 +15,7 @@ use crate::app::AppState;
 use crate::audit::{self, OwnedEvent};
 use crate::crypto::Keys;
 use crate::db;
+use crate::report;
 
 const SEND_LIMIT: Duration = Duration::from_secs(8);
 const TEXT_LIMIT: usize = 300;
@@ -141,7 +142,10 @@ async fn load_settings(state: &AppState) -> Result<Settings, MailError> {
     match read {
         Ok(Ok(settings)) => Ok(settings),
         Ok(Err(err)) => Err(err),
-        Err(_) => Err(MailError(SETTINGS_UNREADABLE.to_owned())),
+        Err(err) => {
+            report::failure("mail settings", &err);
+            Err(MailError(SETTINGS_UNREADABLE.to_owned()))
+        }
     }
 }
 
@@ -244,7 +248,10 @@ async fn record_failure(state: &AppState, kind: &'static str, error: MailError) 
     };
     match audit::record_now(state, event).await {
         Ok(()) => MailError(shown),
-        Err(_) => MailError(limit(&format!("{shown} {LOG_FAILED}"))),
+        Err(err) => {
+            report::failure("mail failure record", &err);
+            MailError(limit(&format!("{shown} {LOG_FAILED}")))
+        }
     }
 }
 

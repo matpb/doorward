@@ -217,8 +217,8 @@ async fn the_consent_page_names_everything() {
     );
     assert_eq!(
         data(&consent, "data-client-verified").as_deref(),
-        Some("yes"),
-        "a metadata document client must be shown as verified"
+        Some("no"),
+        "a metadata document on a loopback redirect must be shown as unverified"
     );
     assert_eq!(
         data(&consent, "data-server").as_deref(),

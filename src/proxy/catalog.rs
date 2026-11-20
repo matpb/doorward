@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::http::header::{ACCEPT, CONTENT_TYPE};
@@ -355,7 +356,16 @@ async fn fetch(state: &AppState, target: &Target) -> Result<Vec<Value>, Failure>
 /// Asks the upstream for its tools as the gateway itself, within one time limit, and replaces the catalog.
 /// A failure writes the server's fixed message and leaves the stored tools as they were.
 pub async fn refresh(state: &AppState, target: &Target) -> Result<Vec<String>, RefreshError> {
-    let fetched = match tokio::time::timeout(time_limit(state), fetch(state, target)).await {
+    refresh_within(state, target, time_limit(state)).await
+}
+
+/// As `refresh`, with `limit` as the time the upstream may take.
+pub async fn refresh_within(
+    state: &AppState,
+    target: &Target,
+    limit: Duration,
+) -> Result<Vec<String>, RefreshError> {
+    let fetched = match tokio::time::timeout(limit, fetch(state, target)).await {
         Ok(result) => result,
         Err(_) => Err(Failure::upstream(Cause::NoAnswerInTime)),
     };
@@ -445,6 +455,12 @@ pub async fn lockdown(state: &AppState, target: &Target) -> &'static str {
         Reply::Denied(_) => "ok",
         _ => "unknown",
     }
+}
+
+/// True while a miss refresh stamped at `last` holds the next one off. A stamp later than `now`, from a
+/// clock stepped back, holds nothing off.
+pub fn held_off(last: Option<i64>, now: i64, every: i64) -> bool {
+    last.is_some_and(|stamp| stamp <= now && now - stamp < every)
 }
 
 /// The miss refreshes of each server: a miss waits for the one in flight.

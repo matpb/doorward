@@ -18,7 +18,7 @@ use super::upstream::{Cause, fail, time_limit};
 use crate::app::AppState;
 use crate::audit::{self, OwnedEvent};
 use crate::mcp::json::parse_strict;
-use crate::oauth::guard::{Caller, still_valid};
+use crate::oauth::guard::{Caller, Recheck, still_valid, still_valid_at};
 use crate::report;
 
 /// Chunks the client may lag the upstream by before the reading waits.
@@ -36,13 +36,17 @@ pub(super) struct Owned {
 }
 
 /// The tools/call a stream answers, with its request id; `call` is None for any other request.
+/// `at` is the admission second of a POST answer, None for a GET or DELETE stream.
 pub(super) struct Watch {
     pub call: Option<String>,
     pub id: Value,
+    pub at: Option<i64>,
 }
 
 /// The detail of a row whose caller lost access.
 pub(super) const ACCESS_LOST: &str = "access was lost";
+/// The detail of a row whose access check could not be made.
+pub(super) const CHECK_FAILED: &str = "the access check could not be done";
 /// The detail of a row whose client left before the answer.
 const CLOSED: &str = "the client closed the stream";
 /// The detail of a row whose tool reported an error.
@@ -56,7 +60,16 @@ enum End {
     Idle,
     Oversize,
     Refused,
+    CheckFailed,
     ClientGone,
+}
+
+/// The re-check of a watched stream: a POST answer keeps the time it was admitted at, a GET the clock now.
+async fn recheck(ctx: &Owned, at: Option<i64>) -> Recheck {
+    match at {
+        Some(at) => still_valid_at(&ctx.state, &ctx.caller, &ctx.slug, at).await,
+        None => still_valid(&ctx.state, &ctx.caller, &ctx.slug).await,
+    }
 }
 
 type Item = Result<Bytes, io::Error>;
@@ -80,15 +93,17 @@ async fn run(ctx: Owned, mut response: reqwest::Response, watch: Watch, tx: Send
     let idle = tokio::time::sleep(idle_for);
     tokio::pin!(idle);
     let mut observer = Observer::default();
+    let at = watch.at;
     let end = loop {
         let next = tokio::select! {
             biased;
             _ = tx.closed() => break End::ClientGone,
             _ = ticks.tick() => {
-                if !still_valid(&ctx.state, &ctx.caller, &ctx.slug).await {
-                    break End::Refused;
+                match recheck(&ctx, at).await {
+                    Recheck::Live => continue,
+                    Recheck::Lost => break End::Refused,
+                    Recheck::Failed => break End::CheckFailed,
                 }
-                continue;
             }
             _ = &mut idle => break End::Idle,
             chunk = response.chunk() => chunk,
@@ -99,7 +114,7 @@ async fn run(ctx: Owned, mut response: reqwest::Response, watch: Watch, tx: Send
             Err(_) => break End::Broken,
         };
         idle.as_mut().reset(tokio::time::Instant::now() + idle_for);
-        if let Err(end) = deliver(&tx, &mut ticks, &ctx, bytes.clone()).await {
+        if let Err(end) = deliver(&tx, &mut ticks, &ctx, bytes.clone(), at).await {
             break end;
         }
         if observer.feed(&bytes, watch.call.is_some().then_some(&watch.id), limit) {
@@ -111,6 +126,7 @@ async fn run(ctx: Owned, mut response: reqwest::Response, watch: Watch, tx: Send
             (Some(outcome), End::ClientGone) => (outcome, CLOSED.to_owned()),
             (Some(outcome), _) => (outcome, observer.answer.detail.to_owned()),
             (None, End::Refused) => ("refused", ACCESS_LOST.to_owned()),
+            (None, End::CheckFailed) => ("unavailable", CHECK_FAILED.to_owned()),
             (None, End::ClientGone) => ("error", CLOSED.to_owned()),
             (None, End::Broken) => ("unavailable", fail(&ctx.slug, Cause::NoConnection)),
             (None, End::Idle) => ("unavailable", fail(&ctx.slug, Cause::NoAnswerInTime)),
@@ -128,16 +144,17 @@ async fn deliver(
     ticks: &mut Interval,
     ctx: &Owned,
     bytes: Bytes,
+    at: Option<i64>,
 ) -> Result<(), End> {
     loop {
         tokio::select! {
             biased;
             _ = tx.closed() => return Err(End::ClientGone),
-            _ = ticks.tick() => {
-                if !still_valid(&ctx.state, &ctx.caller, &ctx.slug).await {
-                    return Err(End::Refused);
-                }
-            }
+            _ = ticks.tick() => match recheck(ctx, at).await {
+                Recheck::Live => {}
+                Recheck::Lost => return Err(End::Refused),
+                Recheck::Failed => return Err(End::CheckFailed),
+            },
             permit = tx.reserve() => {
                 return match permit {
                     Ok(permit) => {

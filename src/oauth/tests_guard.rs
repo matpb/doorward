@@ -28,7 +28,8 @@ use crate::web::SESSION_COOKIE;
 
 use super::families::{self, NewFamily};
 use super::guard::{
-    Caller, Refusal, Target, bearer_token, check, combined_still_valid, is_token_shape, still_valid,
+    Caller, Recheck, Refusal, Target, bearer_token, check, combined_still_valid, is_token_shape,
+    still_valid,
 };
 
 /// The fixed instant every test starts at, in unix seconds.
@@ -1529,8 +1530,9 @@ async fn a_request_refused_for_open_slots_gives_its_user_take_back() {
 async fn still_valid_is_true_for_a_live_token() {
     let (_gw, state, _user, issued) = live_token().await;
     let caller = caller_of(&state, &issued.access, "demo").await;
-    assert!(
+    assert_eq!(
         still_valid(&state, &caller, "demo").await,
+        Recheck::Live,
         "a live token stays valid"
     );
 }
@@ -1542,8 +1544,9 @@ async fn still_valid_is_false_once_the_user_is_disabled() {
     gw.conn()
         .execute("UPDATE users SET disabled = 1 WHERE id = ?1", params![user])
         .expect("disable");
-    assert!(
-        !still_valid(&state, &caller, "demo").await,
+    assert_eq!(
+        still_valid(&state, &caller, "demo").await,
+        Recheck::Lost,
         "a disabled user's token is no longer valid"
     );
 }
@@ -1553,8 +1556,9 @@ async fn still_valid_is_false_once_the_family_is_revoked() {
     let (gw, state, _user, issued) = live_token().await;
     let caller = caller_of(&state, &issued.access, "demo").await;
     families::revoke(&gw.conn(), issued.family, NOW).expect("revoke");
-    assert!(
-        !still_valid(&state, &caller, "demo").await,
+    assert_eq!(
+        still_valid(&state, &caller, "demo").await,
+        Recheck::Lost,
         "a revoked family is no longer valid"
     );
 }
@@ -1564,8 +1568,9 @@ async fn still_valid_is_false_after_a_password_reset() {
     let (gw, state, user, issued) = live_token().await;
     let caller = caller_of(&state, &issued.access, "demo").await;
     session::revoke_all(&gw.conn(), user).expect("reset");
-    assert!(
-        !still_valid(&state, &caller, "demo").await,
+    assert_eq!(
+        still_valid(&state, &caller, "demo").await,
+        Recheck::Lost,
         "a reset bumps the sign-in generation and ends the family"
     );
 }
@@ -1575,8 +1580,9 @@ async fn still_valid_is_false_once_the_access_token_expires() {
     let (gw, state, _user, issued) = live_token().await;
     let caller = caller_of(&state, &issued.access, "demo").await;
     gw.clock.set(NOW + 3601);
-    assert!(
-        !still_valid(&state, &caller, "demo").await,
+    assert_eq!(
+        still_valid(&state, &caller, "demo").await,
+        Recheck::Lost,
         "an access token past its hour is no longer valid"
     );
 }
@@ -1588,22 +1594,24 @@ async fn still_valid_is_false_once_the_user_is_unassigned() {
     gw.conn()
         .execute("DELETE FROM user_servers WHERE user_id = ?1", params![user])
         .expect("unassign");
-    assert!(
-        !still_valid(&state, &caller, "demo").await,
+    assert_eq!(
+        still_valid(&state, &caller, "demo").await,
+        Recheck::Lost,
         "an unassigned user's token is no longer valid"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn still_valid_is_false_on_a_database_error() {
+async fn still_valid_fails_on_a_database_error() {
     let (gw, state, _user, issued) = live_token().await;
     let caller = caller_of(&state, &issued.access, "demo").await;
     gw.conn()
         .execute_batch("ALTER TABLE access_tokens RENAME TO access_tokens_gone;")
         .expect("rename");
-    assert!(
-        !still_valid(&state, &caller, "demo").await,
-        "a database error answers false"
+    assert_eq!(
+        still_valid(&state, &caller, "demo").await,
+        Recheck::Failed,
+        "a database error is a check that could not be made, not a lost access"
     );
 }
 
@@ -1628,18 +1636,21 @@ async fn combined_still_valid_follows_the_token_and_the_assignment() {
     let carol = user_with(&gw, CAROL, &[other]);
     let combined = issue(&gw, user, None, CLIENT);
     let caller = combined_caller_of(&state, &combined.access).await;
-    assert!(
+    assert_eq!(
         combined_still_valid(&state, &caller, demo).await,
+        Recheck::Live,
         "a live combined token of an assigned server stays valid"
     );
-    assert!(
-        !combined_still_valid(&state, &caller, other).await,
+    assert_eq!(
+        combined_still_valid(&state, &caller, other).await,
+        Recheck::Lost,
         "bob's token must not pass for a server bob is not assigned to"
     );
     let carol_combined = issue(&gw, carol, None, CLIENT);
     let carol_caller = combined_caller_of(&state, &carol_combined.access).await;
-    assert!(
-        !combined_still_valid(&state, &carol_caller, demo).await,
+    assert_eq!(
+        combined_still_valid(&state, &carol_caller, demo).await,
+        Recheck::Lost,
         "carol's token must not pass for demo, which carol is not assigned to"
     );
     gw.conn()
@@ -1648,30 +1659,35 @@ async fn combined_still_valid_follows_the_token_and_the_assignment() {
             params![user, demo],
         )
         .expect("unassign");
-    assert!(
-        !combined_still_valid(&state, &caller, demo).await,
+    assert_eq!(
+        combined_still_valid(&state, &caller, demo).await,
+        Recheck::Lost,
         "an unassigned user's combined token is no longer valid"
     );
     assign(&gw, user, demo);
     let server_caller = caller_of(&state, &server_token.access, "demo").await;
-    assert!(
-        !combined_still_valid(&state, &server_caller, demo).await,
+    assert_eq!(
+        combined_still_valid(&state, &server_caller, demo).await,
+        Recheck::Lost,
         "a token of a server path is not a combined token"
     );
     families::revoke(&gw.conn(), combined.family, NOW).expect("revoke");
-    assert!(
-        !combined_still_valid(&state, &caller, demo).await,
+    assert_eq!(
+        combined_still_valid(&state, &caller, demo).await,
+        Recheck::Lost,
         "a revoked combined family is no longer valid"
     );
     let fresh = issue(&gw, user, None, CLIENT);
     let fresh_caller = combined_caller_of(&state, &fresh.access).await;
-    assert!(
+    assert_eq!(
         combined_still_valid(&state, &fresh_caller, demo).await,
+        Recheck::Live,
         "a fresh combined token stays valid"
     );
     gw.clock.set(NOW + 3601);
-    assert!(
-        !combined_still_valid(&state, &fresh_caller, demo).await,
+    assert_eq!(
+        combined_still_valid(&state, &fresh_caller, demo).await,
+        Recheck::Lost,
         "an expired combined access token is no longer valid"
     );
 }
@@ -1683,8 +1699,9 @@ async fn combined_still_valid_follows_the_family_and_the_user() {
 
     let revoked = issue(&gw, user, None, CLIENT);
     let revoked_caller = combined_caller_of(&state, &revoked.access).await;
-    assert!(
+    assert_eq!(
         combined_still_valid(&state, &revoked_caller, demo).await,
+        Recheck::Live,
         "precondition: the family is live"
     );
     gw.conn()
@@ -1693,8 +1710,9 @@ async fn combined_still_valid_follows_the_family_and_the_user() {
             params![NOW, revoked.family],
         )
         .expect("revoke the family row only");
-    assert!(
-        !combined_still_valid(&state, &revoked_caller, demo).await,
+    assert_eq!(
+        combined_still_valid(&state, &revoked_caller, demo).await,
+        Recheck::Lost,
         "a revoked family is refused while its access token is unexpired"
     );
 
@@ -1706,31 +1724,35 @@ async fn combined_still_valid_follows_the_family_and_the_user() {
             params![NOW - 1, lapsed.family],
         )
         .expect("expire the family row only");
-    assert!(
-        !combined_still_valid(&state, &lapsed_caller, demo).await,
+    assert_eq!(
+        combined_still_valid(&state, &lapsed_caller, demo).await,
+        Recheck::Lost,
         "a family past its own lifetime is refused while its access token is unexpired"
     );
 
     let dave = user_with(&gw, "dave@example.com", &[demo]);
     let disabled = issue(&gw, dave, None, CLIENT);
     let disabled_caller = combined_caller_of(&state, &disabled.access).await;
-    assert!(
+    assert_eq!(
         combined_still_valid(&state, &disabled_caller, demo).await,
+        Recheck::Live,
         "precondition: dave is live"
     );
     gw.conn()
         .execute("UPDATE users SET disabled = 1 WHERE id = ?1", params![dave])
         .expect("disable dave");
-    assert!(
-        !combined_still_valid(&state, &disabled_caller, demo).await,
+    assert_eq!(
+        combined_still_valid(&state, &disabled_caller, demo).await,
+        Recheck::Lost,
         "a disabled user's combined token is refused"
     );
 
     let erin = user_with(&gw, "erin@example.com", &[demo]);
     let raised = issue(&gw, erin, None, CLIENT);
     let raised_caller = combined_caller_of(&state, &raised.access).await;
-    assert!(
+    assert_eq!(
         combined_still_valid(&state, &raised_caller, demo).await,
+        Recheck::Live,
         "precondition: erin is live"
     );
     gw.conn()
@@ -1739,23 +1761,26 @@ async fn combined_still_valid_follows_the_family_and_the_user() {
             params![erin],
         )
         .expect("raise erin's sign-in generation");
-    assert!(
-        !combined_still_valid(&state, &raised_caller, demo).await,
+    assert_eq!(
+        combined_still_valid(&state, &raised_caller, demo).await,
+        Recheck::Lost,
         "a raised sign-in generation, as a password change makes, refuses the family"
     );
 
     let last = issue(&gw, user, None, CLIENT);
     let last_caller = combined_caller_of(&state, &last.access).await;
-    assert!(
+    assert_eq!(
         combined_still_valid(&state, &last_caller, demo).await,
+        Recheck::Live,
         "precondition: bob's last token is live"
     );
     gw.conn()
         .execute_batch("ALTER TABLE user_servers RENAME TO user_servers_gone;")
         .expect("rename");
-    assert!(
-        !combined_still_valid(&state, &last_caller, demo).await,
-        "a database error answers false"
+    assert_eq!(
+        combined_still_valid(&state, &last_caller, demo).await,
+        Recheck::Failed,
+        "a database error is a check that could not be made, not a lost access"
     );
 }
 
@@ -1776,6 +1801,7 @@ fn a_caller_debug_text_never_shows_the_token_hash() {
         server_id: Some(3),
         client_name: CLIENT.to_owned(),
         token_hash: hash.clone(),
+        admitted: NOW,
     };
     let text = format!("{caller:?}");
     assert!(

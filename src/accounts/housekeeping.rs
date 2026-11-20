@@ -2,11 +2,11 @@
 
 use rusqlite::{Connection, params};
 
+use super::reset::REQUEST_GAP_SECONDS;
+
 const DAY_SECONDS: i64 = 86_400;
 /// An invitation stays in the table this long after it expired.
 const INVITATION_KEEP_SECONDS: i64 = 7 * DAY_SECONDS;
-/// Mirrors REQUEST_GAP_SECONDS in reset.rs: a reset row blocks new mail for this long.
-const RESET_GAP_SECONDS: i64 = 300;
 
 /// Deletes rows that no longer decide anything.
 pub fn sweep(
@@ -18,7 +18,7 @@ pub fn sweep(
     conn.execute("DELETE FROM sessions WHERE expires_at <= ?1", params![now])?;
     conn.execute(
         "DELETE FROM password_resets WHERE expires_at <= ?1 AND created_at <= ?2",
-        params![now, now.saturating_sub(RESET_GAP_SECONDS)],
+        params![now, now.saturating_sub(REQUEST_GAP_SECONDS)],
     )?;
     conn.execute(
         "DELETE FROM invitations WHERE expires_at < ?1",

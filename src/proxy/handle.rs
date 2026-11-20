@@ -15,15 +15,17 @@ use serde_json::{Map, Value, json};
 use super::catalog;
 use super::intake::{Intake, intake};
 use super::sessions;
-use super::stream::{self, ACCESS_LOST, Owned, Watch};
-use super::upstream::{self, Cause, Fault, Kind, Outgoing, Target, TargetError};
+use super::stream::{self, ACCESS_LOST, CHECK_FAILED, Owned, Watch};
+use super::upstream::{
+    self, Cause, Fault, Kind, LIST_LIMIT, Outgoing, Target, TargetError, time_limit,
+};
 use crate::app::AppState;
 use crate::mcp::answer;
 use crate::mcp::json::parse_strict;
 use crate::mcp::message::{
     Decision, Generation, Message, Shape, Switches, decide, stateless_version,
 };
-use crate::oauth::guard::{self, Caller, still_valid};
+use crate::oauth::guard::{self, Caller, Recheck, still_valid, still_valid_at};
 use crate::policy;
 use crate::report;
 use crate::servers;
@@ -135,7 +137,7 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
     } else {
         None
     };
-    let target = match target(ctx).await {
+    let target = match target(ctx, call.as_deref()).await {
         Ok(target) => target,
         Err(refusal) => return refusal,
     };
@@ -184,7 +186,7 @@ pub(super) async fn get_or_delete(ctx: &Ctx<'_>, method: &Method, headers: &Head
         Ok(None) => return not_allowed(),
         Err(refusal) => return refusal,
     };
-    let target = match target(ctx).await {
+    let target = match target(ctx, None).await {
         Ok(target) => target,
         Err(refusal) => return refusal,
     };
@@ -348,11 +350,19 @@ async fn switches(ctx: &Ctx<'_>) -> Result<Switches, Response> {
     }
 }
 
-/// The upstream of the server, as the proxy opens it. Neither a missing row nor a bad secret is sent on.
-async fn target(ctx: &Ctx<'_>) -> Result<Target, Response> {
+/// The upstream of the server, as the proxy opens it. Neither a missing row nor a bad secret is sent on;
+/// a bad secret is the gateway's fault, written and recorded against the call, if there is one.
+async fn target(ctx: &Ctx<'_>, call: Option<&str>) -> Result<Target, Response> {
     match upstream::target(ctx.state, ctx.server_id).await {
         Ok(Some(target)) => Ok(target),
-        Ok(None) | Err(TargetError::Secret) => Err(answer::unavailable(ctx.slug)),
+        Ok(None) => Err(answer::unavailable(ctx.slug)),
+        Err(TargetError::Secret) => {
+            let phrase = upstream::fail(ctx.slug, Cause::SecretUnreadable);
+            if let Some(name) = call {
+                record(ctx, name, "allow", "unavailable", &phrase).await;
+            }
+            Err(answer::unavailable(ctx.slug))
+        }
         Err(TargetError::Db(err)) => {
             report::failure("server", &err);
             Err(bare(StatusCode::INTERNAL_SERVER_ERROR))
@@ -372,13 +382,21 @@ async fn listed(ctx: &Ctx<'_>, target: &Target, name: &str) -> Result<bool, Resp
     }
     let now = ctx.state.clock.now().unix_timestamp();
     let every = i64::try_from(ctx.state.config.limits.catalog_refresh_seconds).unwrap_or(i64::MAX);
-    if last.is_some_and(|started| now - started < every) {
+    if catalog::held_off(*last, now, every) {
         return Ok(false);
     }
     *last = Some(now);
-    Ok(match catalog::refresh(ctx.state, target).await {
-        Ok(fresh) => fresh.iter().any(|known| known == name),
-        Err(_) => false,
+    let state = ctx.state.clone();
+    let target = target.clone();
+    let refresh = tokio::spawn(async move {
+        let limit = time_limit(&state).min(LIST_LIMIT);
+        let outcome = catalog::refresh_within(&state, &target, limit).await;
+        *last = Some(state.clock.now().unix_timestamp());
+        outcome
+    });
+    Ok(match refresh.await {
+        Ok(Ok(fresh)) => fresh.iter().any(|known| known == name),
+        _ => false,
     })
 }
 
@@ -523,6 +541,7 @@ async fn relay_post(
         let watch = Watch {
             call: owed.as_ref().map(|owed| owed.tool.clone()),
             id: message.id.clone().unwrap_or(Value::Null),
+            at: Some(ctx.caller.admitted),
         };
         if let Some(owed) = owed {
             owed.hand_over();
@@ -535,8 +554,10 @@ async fn relay_post(
         Ok(read) => read,
         Err(Fault(cause)) => return fault(ctx, owed, cause).await,
     };
-    if !still_valid(ctx.state, &ctx.caller, ctx.slug).await {
-        return access_lost(ctx, owed).await;
+    match still_valid_at(ctx.state, &ctx.caller, ctx.slug, ctx.caller.admitted).await {
+        Recheck::Live => {}
+        Recheck::Lost => return access_lost(ctx, owed, &id).await,
+        Recheck::Failed => return check_failed(ctx, owed).await,
     }
     if !rewritten {
         if let Some(owed) = owed {
@@ -620,6 +641,7 @@ fn relay_get(ctx: &Ctx<'_>, response: reqwest::Response) -> Response {
             let watch = Watch {
                 call: None,
                 id: Value::Null,
+                at: None,
             };
             let body = stream::relay(ctx.owned(), response, watch);
             relayed(status, Some("text/event-stream"), body, None)
@@ -644,6 +666,7 @@ async fn relay_plain(ctx: &Ctx<'_>, response: reqwest::Response) -> Response {
             let watch = Watch {
                 call: None,
                 id: Value::Null,
+                at: None,
             };
             let body = stream::relay(ctx.owned(), response, watch);
             relayed(status, Some("text/event-stream"), body, None)
@@ -653,8 +676,10 @@ async fn relay_plain(ctx: &Ctx<'_>, response: reqwest::Response) -> Response {
             match upstream::body(ctx.state, response, cap).await {
                 Ok(bytes) => match parse_strict(&bytes) {
                     Ok(value) if value.is_object() => {
-                        if !still_valid(ctx.state, &ctx.caller, ctx.slug).await {
-                            return access_lost(ctx, None).await;
+                        match still_valid(ctx.state, &ctx.caller, ctx.slug).await {
+                            Recheck::Live => {}
+                            Recheck::Lost => return access_lost(ctx, None, &Value::Null).await,
+                            Recheck::Failed => return check_failed(ctx, None).await,
                         }
                         relayed(status, Some("application/json"), Body::from(bytes), None)
                     }
@@ -677,11 +702,13 @@ async fn fault(ctx: &Ctx<'_>, owed: Option<Owed>, cause: Cause) -> Response {
     answer::unavailable(ctx.slug)
 }
 
-/// The answer to a buffered answer whose caller lost access while it was awaited: the bearer check's
-/// own refusal for this path, as a new request would get it.
-async fn access_lost(ctx: &Ctx<'_>, owed: Option<Owed>) -> Response {
+/// The answer to a request whose caller lost access while it was awaited. A tools/call answers the
+/// refusal of an unknown tool, as /mcp does; any other method answers the bearer check's own refusal.
+async fn access_lost(ctx: &Ctx<'_>, owed: Option<Owed>, id: &Value) -> Response {
     if let Some(owed) = owed {
+        let name = owed.tool.clone();
         owed.settle("refused", ACCESS_LOST).await;
+        return answer::unknown_tool(id, &name);
     }
     match guard::check(
         ctx.state,
@@ -694,6 +721,14 @@ async fn access_lost(ctx: &Ctx<'_>, owed: Option<Owed>) -> Response {
         Err(refusal) => refusal.into_response(),
         Ok(_) => answer::unavailable(ctx.slug),
     }
+}
+
+/// The answer when the access check could not be made: the call is recorded unavailable.
+async fn check_failed(ctx: &Ctx<'_>, owed: Option<Owed>) -> Response {
+    if let Some(owed) = owed {
+        owed.settle("unavailable", CHECK_FAILED).await;
+    }
+    answer::unavailable(ctx.slug)
 }
 
 /// Removes the switched-off capabilities of an initialize or server/discover result, and on a
@@ -715,6 +750,9 @@ fn trim_capabilities(value: &mut Value, method: &str, switches: Switches) -> boo
     }
     if !switches.prompts {
         changed |= capabilities.remove("prompts").is_some();
+    }
+    if !switches.resources && !switches.prompts {
+        changed |= capabilities.remove("completions").is_some();
     }
     changed |= capabilities.remove("tasks").is_some();
     if method == "server/discover" {

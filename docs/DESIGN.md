@@ -168,7 +168,8 @@ it and allows it.
    through an allowlist; `Set-Cookie` and `WWW-Authenticate` never pass; `nosniff` and
    `Content-Security-Policy: sandbox` are added. Upstream 401 or 403 becomes 502.
 9. `tools/list` responses are buffered (capped), filtered by policy, and refresh the
-   catalog. Other responses stream through as they arrive; the stream is observed for the
+   catalog. JSON answers are buffered and re-checked; event streams stream through as they arrive, and
+   the stream is observed for the
    activity log. The catalog is one per server, shared by everyone who uses it, and the
    latest relayed list replaces it. A server whose tool list differs per caller or changes
    order between calls is not supported in v1: each list rewrites the catalog, and a caller
@@ -179,7 +180,8 @@ it and allows it.
     client-supplied id on `initialize` is stripped. An id the upstream issues twice is not
     rebound. A GET without a session gets 405.
 11. Open streams end when the user is disabled, reset or unassigned from the server, the
-    family is revoked, or the token expires. The check runs every second.
+    family is revoked, or the token expires. A POST answer compares its token's expiry with the
+    admission time, so an expiry during the call does not end it. The check runs every second.
 
 Changing a server's upstream address clears its stored secret. The server page and the
 README state what the gateway cannot fix: every user reaches the upstream under one

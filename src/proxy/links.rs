@@ -780,7 +780,7 @@ async fn session_recorded(
         Ok(found) => Ok(found),
         Err(err) => {
             report::failure("upstream sessions", &err);
-            Err(Fault(Cause::NoConnection))
+            Err(Fault(Cause::Written))
         }
     }
 }

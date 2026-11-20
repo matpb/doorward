@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
 
 use axum::body::{Body, Bytes};
 use axum::extract::Request;
@@ -22,21 +21,19 @@ use super::combined_stream::{self, Call};
 use super::handle::{INVALID, NOT_LISTED, Owed, TOOL_LIMIT, bare, cut, not_allowed};
 use super::intake::{Intake, intake};
 use super::links::{self, Answer, Ask, Owner};
-use super::stream::{ACCESS_LOST, Owned, detail_of};
-use super::upstream::{self, Cause, Fault, Kind, TargetError, time_limit};
+use super::stream::{ACCESS_LOST, CHECK_FAILED, Owned, detail_of};
+use super::upstream::{self, Cause, Fault, Kind, LIST_LIMIT, TargetError, time_limit};
 use crate::app::AppState;
 use crate::audit::{self, OwnedEvent};
 use crate::mcp::answer;
 use crate::mcp::message::{
     Decision, Generation, Message, Shape, Switches, decide, meta_version, param,
 };
-use crate::oauth::guard::{Caller, combined_still_valid};
+use crate::oauth::guard::{Caller, Recheck, combined_still_valid_at};
 use crate::policy;
 use crate::report;
 use crate::servers::valid_slug;
 
-/// The longest a whole tools/list may take, the wait for its turn included.
-const LIST_LIMIT: Duration = Duration::from_secs(10);
 /// The most pages one upstream list may take.
 const MAX_PAGES: usize = 20;
 /// The longest name a listed tool may have: `{slug}__{name}`.
@@ -46,6 +43,8 @@ const SUPPORTED: [&str; 4] = [STATELESS, SESSION, "2025-06-18", "2025-03-26"];
 /// The revisions a session initialize may answer with, newest first.
 const REVISIONS: [&str; 3] = [SESSION, "2025-06-18", "2025-03-26"];
 const LABEL: &str = "mcp";
+/// The row detail of a call whose stateless request headers do not match the stored definition.
+const HEADER_MISMATCH: &str = "the request headers do not match the call";
 const TTL_MS: i64 = 60_000;
 const ALL: Switches = Switches {
     resources: true,
@@ -313,9 +312,13 @@ async fn call(
     };
     let target = match upstream::target(state, server_id).await {
         Ok(Some(target)) => target,
-        Ok(None) | Err(TargetError::Secret) => {
+        Ok(None) => {
             let owed = Owed::of(owned_of(state, caller, started, slug, server_id), tool);
             return unavailable(owed, slug, Cause::NoConnection).await;
+        }
+        Err(TargetError::Secret) => {
+            let owed = Owed::of(owned_of(state, caller, started, slug, server_id), tool);
+            return unavailable(owed, slug, Cause::SecretUnreadable).await;
         }
         Err(TargetError::Db(err)) => {
             report::failure("server", &err);
@@ -338,7 +341,7 @@ async fn call(
         Err(_) => true,
     };
     if stateless && has_mcp_header {
-        return deny_call(state, caller, started, id, name, row, NOT_LISTED).await;
+        return deny_call(state, caller, started, id, name, row, HEADER_MISMATCH).await;
     }
     let arguments = body.params.as_ref().and_then(|params| params.arguments);
     let progress_token = body
@@ -358,9 +361,13 @@ async fn call(
         Ok(Answer::Refused { status, answer }) => {
             let (reply, outcome) = reissue(id, &answer, client_stateless);
             let detail = detail_of(&answer, outcome);
-            if !combined_still_valid(state, caller, server_id).await {
-                owed.settle("refused", ACCESS_LOST).await;
-                return answer::unknown_tool(id, name);
+            match combined_still_valid_at(state, caller, server_id, caller.admitted).await {
+                Recheck::Live => {}
+                Recheck::Lost => {
+                    owed.settle("refused", ACCESS_LOST).await;
+                    return answer::unknown_tool(id, name);
+                }
+                Recheck::Failed => return check_failed(owed).await,
             }
             owed.settle(outcome, detail).await;
             let status = if client_stateless {
@@ -391,9 +398,13 @@ async fn call(
     };
     let (reply, outcome) = reissue(id, &upstream_answer, client_stateless);
     let detail = detail_of(&upstream_answer, outcome);
-    if !combined_still_valid(state, caller, server_id).await {
-        owed.settle("refused", ACCESS_LOST).await;
-        return answer::unknown_tool(id, name);
+    match combined_still_valid_at(state, caller, server_id, caller.admitted).await {
+        Recheck::Live => {}
+        Recheck::Lost => {
+            owed.settle("refused", ACCESS_LOST).await;
+            return answer::unknown_tool(id, name);
+        }
+        Recheck::Failed => return check_failed(owed).await,
     }
     owed.settle(outcome, detail).await;
     respond(StatusCode::OK, &reply)
@@ -443,7 +454,7 @@ fn definition_of(
     .optional()
 }
 
-/// The definition of `tool` after a miss refresh of the server's catalog, which waits for one in flight.
+/// The definition of `tool` after a miss refresh, which waits for one in flight and runs in its own task.
 /// None when the refresh is held off, failed, or the tool is still absent.
 async fn refetch(
     state: &AppState,
@@ -468,32 +479,70 @@ async fn refetch(
     }
     let now = state.clock.now().unix_timestamp();
     let every = i64::try_from(state.config.limits.catalog_refresh_seconds).unwrap_or(i64::MAX);
-    if last.is_some_and(|started| now - started < every) {
+    if catalog::held_off(*last, now, every) {
         return Ok(None);
     }
     *last = Some(now);
+    let owner = Owner {
+        user_id: caller.user_id,
+        family_id: caller.family_id,
+    };
+    let task_state = state.clone();
+    let slug = server.slug.clone();
+    let tool_name = tool.to_owned();
+    let refresh = tokio::spawn(async move {
+        let found = refresh_list(&task_state, owner, &slug, server_id, &tool_name).await;
+        *last = Some(task_state.clock.now().unix_timestamp());
+        found
+    });
+    match refresh.await {
+        Ok(Refetch::Definition(definition)) => Ok(definition),
+        Ok(Refetch::Refused) => Ok(None),
+        Ok(Refetch::Database) => Err(bare(StatusCode::INTERNAL_SERVER_ERROR)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// What one miss refresh found: the tool's definition, a refused list, or a database error.
+enum Refetch {
+    Definition(Option<String>),
+    Refused,
+    Database,
+}
+
+/// One miss refresh: the server's list through the caller's link, stored, and the tool's definition from it.
+async fn refresh_list(
+    state: &AppState,
+    owner: Owner,
+    slug: &str,
+    server_id: i64,
+    tool: &str,
+) -> Refetch {
     let deadline = Instant::now() + time_limit(state).min(LIST_LIMIT);
-    let fetched = match fetch(state, caller, server, deadline).await {
+    let fetched = match fetch(state, owner, server_id, deadline).await {
         Ok(fetched) => fetched,
         Err(cause) => {
-            refuse(state, server, cause).await;
-            return Ok(None);
+            refuse(state, slug, server_id, cause).await;
+            return Refetch::Refused;
         }
     };
     let tools = fetched.tools;
+    let now = state.clock.now().unix_timestamp();
     match state
         .db
         .call(move |conn| store(conn, vec![(server_id, tools)], now))
         .await
     {
-        Ok(stored) => Ok(stored
-            .into_iter()
-            .flatten()
-            .find(|(name, _)| name.as_str() == tool)
-            .map(|(_, definition)| definition)),
+        Ok(stored) => Refetch::Definition(
+            stored
+                .into_iter()
+                .flatten()
+                .find(|(name, _)| name.as_str() == tool)
+                .map(|(_, definition)| definition),
+        ),
         Err(err) => {
             report::failure("tool catalog", &err);
-            Err(bare(StatusCode::INTERNAL_SERVER_ERROR))
+            Refetch::Database
         }
     }
 }
@@ -535,6 +584,12 @@ async fn unavailable(owed: Owed, slug: &str, cause: Cause) -> Response {
     let phrase = upstream::fail(slug, cause);
     owed.settle("unavailable", &phrase).await;
     answer::unavailable(slug)
+}
+
+/// The answer when the access check could not be made: the call is recorded unavailable.
+async fn check_failed(owed: Owed) -> Response {
+    owed.settle("unavailable", CHECK_FAILED).await;
+    answer::unavailable(LABEL)
 }
 
 /// A refused tools/call: one deny row with its detail, and the one answer every refusal gets. A name
@@ -658,17 +713,29 @@ async fn collect(
     if assigned.is_empty() {
         return Ok(Vec::new());
     }
+    let owner = Owner {
+        user_id: caller.user_id,
+        family_id: caller.family_id,
+    };
     let outcomes = join_all(
         assigned
             .iter()
-            .map(|server| fetch(state, caller, server, deadline)),
+            .map(|server| fetch(state, owner, server.server_id, deadline)),
     )
     .await;
     let mut fetched: Vec<(usize, Fetched)> = Vec::new();
     for (position, outcome) in outcomes.into_iter().enumerate() {
         match outcome {
             Ok(list) => fetched.push((position, list)),
-            Err(cause) => refuse(state, &assigned[position], cause).await,
+            Err(cause) => {
+                refuse(
+                    state,
+                    &assigned[position].slug,
+                    assigned[position].server_id,
+                    cause,
+                )
+                .await
+            }
         }
     }
     if fetched.is_empty() {
@@ -888,11 +955,11 @@ fn admit(candidates: &[Candidate], limit: u64) -> Vec<bool> {
 /// One server's tools, or the cause its list failed with, the deadline included.
 async fn fetch(
     state: &AppState,
-    caller: &Caller,
-    server: &Assigned,
+    owner: Owner,
+    server_id: i64,
     deadline: Instant,
 ) -> Result<Fetched, Cause> {
-    match timeout_at(deadline, fetch_pages(state, caller, server)).await {
+    match timeout_at(deadline, fetch_pages(state, owner, server_id)).await {
         Ok(fetched) => fetched,
         Err(_) => Err(Cause::NoAnswerInTime),
     }
@@ -900,22 +967,15 @@ async fn fetch(
 
 /// Every page of the server's list through the caller's link, within the byte limit and the page limit.
 /// Passing the page limit is reported as too large.
-async fn fetch_pages(
-    state: &AppState,
-    caller: &Caller,
-    server: &Assigned,
-) -> Result<Fetched, Cause> {
-    let target = match upstream::target(state, server.server_id).await {
+async fn fetch_pages(state: &AppState, owner: Owner, server_id: i64) -> Result<Fetched, Cause> {
+    let target = match upstream::target(state, server_id).await {
         Ok(Some(target)) => target,
-        Ok(None) | Err(TargetError::Secret) => return Err(Cause::NoConnection),
+        Ok(None) => return Err(Cause::NoConnection),
+        Err(TargetError::Secret) => return Err(Cause::SecretUnreadable),
         Err(TargetError::Db(err)) => {
             report::failure("server", &err);
-            return Err(Cause::NoConnection);
+            return Err(Cause::Written);
         }
-    };
-    let owner = Owner {
-        user_id: caller.user_id,
-        family_id: caller.family_id,
     };
     let limit = state.config.limits.tools_list_bytes;
     let mut tools = Vec::new();
@@ -965,14 +1025,16 @@ async fn fetch_pages(
 }
 
 /// Logs the fault of a failed list and records it as the server's refresh error.
-async fn refuse(state: &AppState, server: &Assigned, cause: Cause) {
-    upstream::fail(&server.slug, cause);
+async fn refuse(state: &AppState, slug: &str, server_id: i64, cause: Cause) {
+    upstream::fail(slug, cause);
     let error = match cause {
         Cause::TooLarge => RefreshError::TooLarge,
+        // The gateway's own causes store no refresh error: the upstream was not silent.
+        Cause::SecretUnreadable | Cause::Written => return,
         _ => RefreshError::Unavailable,
     };
     // catalog::fail reports its own database error.
-    let _ = catalog::fail(state, server.server_id, error).await;
+    let _ = catalog::fail(state, server_id, error).await;
 }
 
 /// A JSON-RPC result with the inert-content headers of the server path's own answers.

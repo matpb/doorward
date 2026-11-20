@@ -88,6 +88,7 @@ fn caller(user_id: i64) -> Caller {
         server_id: None,
         client_name: "test client".to_owned(),
         token_hash: "hash".to_owned(),
+        admitted: 0,
     }
 }
 
@@ -1027,6 +1028,7 @@ async fn combined_caller(state: &AppState, user_id: i64) -> Caller {
         server_id: None,
         client_name: "test client".to_owned(),
         token_hash: token_hash(&access),
+        admitted: now,
     }
 }
 
@@ -1039,6 +1041,7 @@ fn same_family(caller: &Caller) -> Caller {
         server_id: None,
         client_name: caller.client_name.clone(),
         token_hash: caller.token_hash.clone(),
+        admitted: caller.admitted,
     }
 }
 
@@ -1279,6 +1282,7 @@ async fn every_refusal_answers_the_same_and_writes_one_deny_row() {
         .expect("the rule id");
     let denied = format!("rule {rule_id}");
     let missing = "not in the tool list";
+    let headers = "the request headers do not match the call";
     let unassigned = "the server is not assigned";
     let cases: [(&str, Option<i64>, &str, &str, &str); 6] = [
         ("echo", None, "mcp", "echo", missing),
@@ -1286,7 +1290,7 @@ async fn every_refusal_answers_the_same_and_writes_one_deny_row() {
         ("other__echo", Some(other), "other", "echo", unassigned),
         ("demo__missing", Some(demo), "demo", "missing", missing),
         ("demo__denied", Some(demo), "demo", "denied", &denied),
-        ("demo__hidden", Some(demo), "demo", "hidden", missing),
+        ("demo__hidden", Some(demo), "demo", "hidden", headers),
     ];
     for (index, (name, server_id, slug, tool_name, detail)) in cases.into_iter().enumerate() {
         let caller = combined_caller(&fx.state, 1).await;

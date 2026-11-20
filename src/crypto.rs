@@ -19,6 +19,8 @@ use subtle::ConstantTimeEq;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use zeroize::Zeroizing;
 
+use crate::report;
+
 use crate::config::Config;
 
 const KEY_ENV: &str = "DOORWARD_KEY";
@@ -364,9 +366,15 @@ impl PasswordHasher {
         let known = phc.is_some();
         let stored = phc.unwrap_or_else(|| self.dummy.clone());
         let outcome = self
-            .run_blocking(slot, move || check_password(&password, &stored) && known)
+            .run_blocking(slot, move || check_password(&password, &stored))
             .await;
-        matches!(outcome, Ok(true))
+        match verdict(outcome, known) {
+            Ok(matched) => matched,
+            Err(reason) => {
+                report::failure("password check", &reason);
+                false
+            }
+        }
     }
 
     /// Runs `work` on a blocking thread. The run permit and the slot move into that thread,
@@ -496,13 +504,36 @@ fn hash_now(password: &str) -> Result<String, CryptoError> {
 }
 
 /// True only when `stored` is a valid PHC string that matches `password`.
-fn check_password(password: &str, stored: &str) -> bool {
-    let Ok(parsed) = PasswordHash::new(stored) else {
-        return false;
-    };
-    Argon2::default()
-        .verify_password(password.as_bytes(), &parsed)
-        .is_ok()
+/// Why a password could not be checked. A wrong password is `Ok(false)`, not one of these.
+#[derive(Debug, thiserror::Error)]
+enum CheckError {
+    #[error("the stored hash cannot be read")]
+    Unreadable,
+    #[error("the stored hash cannot be checked")]
+    Unchecked,
+    #[error("the hashing task failed")]
+    Task,
+}
+
+/// The verdict of a check: a wrong or unknown password is `Ok(false)`; a check that could not be
+/// made, including a hashing task that failed, is the reason it could not be made.
+fn verdict(
+    outcome: Result<Result<bool, CheckError>, CryptoError>,
+    known: bool,
+) -> Result<bool, CheckError> {
+    match outcome {
+        Ok(checked) => checked.map(|matched| matched && known),
+        Err(_) => Err(CheckError::Task),
+    }
+}
+
+fn check_password(password: &str, stored: &str) -> Result<bool, CheckError> {
+    let parsed = PasswordHash::new(stored).map_err(|_| CheckError::Unreadable)?;
+    match Argon2::default().verify_password(password.as_bytes(), &parsed) {
+        Ok(()) => Ok(true),
+        Err(argon2::password_hash::Error::PasswordInvalid) => Ok(false),
+        Err(_) => Err(CheckError::Unchecked),
+    }
 }
 
 #[cfg(test)]
@@ -774,6 +805,46 @@ mod tests {
                 "{token} is refused by open"
             );
         }
+    }
+
+    #[test]
+    fn a_failed_hashing_task_has_the_task_reason_and_no_verdict() {
+        let reason = verdict(Err(CryptoError::Task), true).expect_err("no verdict");
+        assert_eq!(reason.to_string(), "the hashing task failed");
+    }
+
+    #[test]
+    fn a_verdict_keeps_a_wrong_or_unknown_password_apart_from_a_failed_check() {
+        assert_eq!(verdict(Ok(Ok(true)), true).ok(), Some(true));
+        assert_eq!(verdict(Ok(Ok(true)), false).ok(), Some(false));
+        assert_eq!(verdict(Ok(Ok(false)), true).ok(), Some(false));
+        let reason = verdict(Ok(Err(CheckError::Unreadable)), true).expect_err("no verdict");
+        assert_eq!(reason.to_string(), "the stored hash cannot be read");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_closed_hashing_queue_refuses_a_right_password() {
+        let hasher = PasswordHasher::new().await.expect("hasher");
+        let slot = hasher.try_slot().expect("slot");
+        let phc = hasher
+            .hash(slot, "correct horse battery".to_owned())
+            .await
+            .expect("hash");
+        let slot = hasher.try_slot().expect("slot");
+        assert!(
+            hasher
+                .verify(slot, "correct horse battery".to_owned(), Some(phc.clone()))
+                .await,
+            "before the queue closes the right password is accepted"
+        );
+        let slot = hasher.try_slot().expect("slot");
+        hasher.run.close();
+        assert!(
+            !hasher
+                .verify(slot, "correct horse battery".to_owned(), Some(phc))
+                .await,
+            "a check that cannot run must refuse the sign-in"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

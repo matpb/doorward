@@ -14,14 +14,23 @@ use crate::servers;
 
 const USER_AGENT_VALUE: &str = concat!("doorward/", env!("CARGO_PKG_VERSION"));
 
+/// The most time a list of tools may take on a miss, whichever endpoint asks.
+pub(crate) const LIST_LIMIT: Duration = Duration::from_secs(10);
+
 /// Writes the one line of a fault on the server `slug` and returns its phrase for the activity detail.
+/// A database cause was written where it arose, so it writes nothing here.
 pub fn fail(slug: &str, cause: Cause) -> String {
     let fault = Fault(cause);
-    report::failure(&format!("upstream {slug}"), &fault);
+    match cause {
+        Cause::Written => {}
+        Cause::SecretUnreadable => report::failure(&format!("server {slug}"), &fault),
+        _ => report::failure(&format!("upstream {slug}"), &fault),
+    }
     fault.to_string()
 }
 
 /// What the gateway needs to contact one server.
+#[derive(Clone)]
 pub struct Target {
     pub server_id: i64,
     pub slug: String,
@@ -82,6 +91,10 @@ pub enum Cause {
     TooLarge,
     NotJson,
     NotMcp,
+    /// The stored secret of the server cannot be opened; the gateway's fault, not the upstream's.
+    SecretUnreadable,
+    /// A database error, already written to standard error where it arose.
+    Written,
 }
 
 /// An upstream fault and its cause. The client always gets the same 502; the cause goes to the log.
@@ -98,6 +111,8 @@ impl fmt::Display for Fault {
             Cause::TooLarge => f.write_str("an answer over the size limit"),
             Cause::NotJson => f.write_str("an answer that is not valid JSON"),
             Cause::NotMcp => f.write_str("an answer that is not an MCP answer"),
+            Cause::SecretUnreadable => f.write_str("the stored secret cannot be opened"),
+            Cause::Written => f.write_str("the database could not be read"),
         }
     }
 }

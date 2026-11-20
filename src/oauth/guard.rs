@@ -40,6 +40,16 @@ pub struct Caller {
     pub client_name: String,
     /// The hash the lookup used; never logged or shown.
     pub token_hash: String,
+    /// The clock's second when the request passed the bearer check.
+    pub admitted: i64,
+}
+
+/// The outcome of a re-check: the caller still passes, has lost access, or the check could not be made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recheck {
+    Live,
+    Lost,
+    Failed,
 }
 
 impl std::fmt::Debug for Caller {
@@ -141,48 +151,62 @@ pub async fn check(
     }
 }
 
-/// True when the caller's token still passes the check for `slug`, from the same family. A database
-/// error is false.
-pub async fn still_valid(state: &AppState, caller: &Caller, slug: &str) -> bool {
+/// The re-check of `caller` on `/{slug}` with the clock at `at`. The token's expiry and the family's are
+/// compared with `at`; revocation, disabling, deletion and assignment are read as they are now.
+pub async fn still_valid_at(state: &AppState, caller: &Caller, slug: &str, at: i64) -> Recheck {
     let hash = caller.token_hash.clone();
     let slug = slug.to_owned();
-    let now = state.clock.now().unix_timestamp();
     match state
         .db
-        .call(move |conn| find_caller(conn, &hash, now, Some(&slug)))
+        .call(move |conn| find_caller(conn, &hash, at, Some(&slug)))
         .await
     {
-        Ok(Some(found)) => found.family_id == caller.family_id,
-        Ok(None) => false,
+        Ok(Some(found)) if found.family_id == caller.family_id => Recheck::Live,
+        Ok(_) => Recheck::Lost,
         Err(err) => {
-            report::failure("bearer check", &err);
-            false
+            report::failure("access check", &err);
+            Recheck::Failed
         }
     }
 }
 
-/// True while the caller's token still passes the bearer check for `/mcp` and its user is
-/// still assigned to `server_id`. One query; false on a database error.
-pub async fn combined_still_valid(state: &AppState, caller: &Caller, server_id: i64) -> bool {
-    let hash = caller.token_hash.clone();
+/// `still_valid_at` with the clock now, for a GET stream, which a reconnect loses nothing by.
+pub async fn still_valid(state: &AppState, caller: &Caller, slug: &str) -> Recheck {
     let now = state.clock.now().unix_timestamp();
+    still_valid_at(state, caller, slug, now).await
+}
+
+/// The re-check of `caller` on `/mcp` with the clock at `at`, and its user still assigned to `server_id`.
+pub async fn combined_still_valid_at(
+    state: &AppState,
+    caller: &Caller,
+    server_id: i64,
+    at: i64,
+) -> Recheck {
+    let hash = caller.token_hash.clone();
     match state
         .db
         .call(move |conn| {
-            conn.query_row(COMBINED_SQL, params![hash, now, server_id], |row| {
+            conn.query_row(COMBINED_SQL, params![hash, at, server_id], |row| {
                 row.get::<_, i64>(0)
             })
             .optional()
         })
         .await
     {
-        Ok(Some(family)) => family == caller.family_id,
-        Ok(None) => false,
+        Ok(Some(family)) if family == caller.family_id => Recheck::Live,
+        Ok(_) => Recheck::Lost,
         Err(err) => {
-            report::failure("bearer check", &err);
-            false
+            report::failure("access check", &err);
+            Recheck::Failed
         }
     }
+}
+
+/// `combined_still_valid_at` with the clock now.
+pub async fn combined_still_valid(state: &AppState, caller: &Caller, server_id: i64) -> Recheck {
+    let now = state.clock.now().unix_timestamp();
+    combined_still_valid_at(state, caller, server_id, now).await
 }
 
 /// True when `text` is `prefix` followed by 43 base64url characters.
@@ -285,6 +309,7 @@ fn find_caller(
             server_id: row.get(3)?,
             client_name: row.get(4)?,
             token_hash: hash.to_owned(),
+            admitted: now,
         })
     })
     .optional()

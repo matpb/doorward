@@ -28,6 +28,10 @@ const FETCH_LIMIT: Duration = Duration::from_secs(5);
 const NAME_LIMIT: usize = 100;
 const CODE_PREFIX: &str = "dw_ac_";
 const ALL_SERVERS: &str = "all servers";
+const LISTENING_SENTENCE: &str =
+    "The sign-in will be handed to whatever program is listening on this computer.";
+const PRIVATE_SENTENCE: &str =
+    "The sign-in will be handed to whatever program on this computer opens addresses of this kind.";
 
 /// Where a request points for one user.
 #[derive(Debug, PartialEq, Eq)]
@@ -80,7 +84,9 @@ struct Shown {
 struct ConsentPage {
     redirect_host: String,
     origin: String,
-    loopback: bool,
+    /// True when the redirect is not an https address, so a document is a claim, not a publisher.
+    claim: bool,
+    local_sentence: Option<&'static str>,
     client: Shown,
     server: String,
     email: String,
@@ -155,7 +161,8 @@ pub async fn get_consent(
     let consent = ConsentPage {
         redirect_host: shown_host(&redirect_address),
         origin: origin_of(&redirect_address),
-        loopback: matches!(redirect_address, Redirect::Loopback { .. }),
+        claim: !is_https_web(&redirect_address),
+        local_sentence: local_sentence(&redirect_address),
         client,
         server,
         email,
@@ -219,13 +226,15 @@ async fn client_display(state: &AppState, client: &Client, redirect_uri: &str) -
         }),
         Client::Document { client_id } => {
             let metadata = fetch_within(state.cimd.as_ref(), client_id, FETCH_LIMIT).await?;
-            if !document_fits(&metadata, client_id, redirect_uri) {
+            let host = host_of(client_id)?;
+            if let Err(reason) = document_fits(&metadata, client_id, redirect_uri) {
+                report::failure(&format!("client metadata for {host}"), &reason);
                 return None;
             }
-            let host = host_of(client_id)?;
+            let verified = uri::parse(redirect_uri).is_some_and(|redirect| is_https_web(&redirect));
             Some(Shown {
                 name: document_name(metadata.client_name.as_deref(), &host),
-                verified: true,
+                verified,
                 client_host: Some(host),
             })
         }
@@ -254,17 +263,31 @@ pub(super) async fn fetch_within(
     }
 }
 
-/// The document names this client, lists the requested address, and asks for no secret.
-fn document_fits(metadata: &ClientMetadata, client_id: &str, redirect_uri: &str) -> bool {
-    metadata.client_id == client_id
-        && metadata
-            .token_endpoint_auth_method
-            .as_deref()
-            .is_none_or(|method| method == "none")
-        && metadata
-            .redirect_uris
-            .iter()
-            .any(|listed| uri::matches(listed, redirect_uri))
+/// Ok when the document names this client, asks for no secret and lists the requested address;
+/// otherwise the fixed reason it is not used.
+pub(super) fn document_fits(
+    metadata: &ClientMetadata,
+    client_id: &str,
+    redirect_uri: &str,
+) -> Result<(), &'static str> {
+    if metadata.client_id != client_id {
+        return Err("the document names another client");
+    }
+    let secret_free = metadata
+        .token_endpoint_auth_method
+        .as_deref()
+        .is_none_or(|method| method == "none");
+    if !secret_free {
+        return Err("the document asks for a client secret");
+    }
+    if !metadata
+        .redirect_uris
+        .iter()
+        .any(|listed| uri::matches(listed, redirect_uri))
+    {
+        return Err("the document does not list the redirect address");
+    }
+    Ok(())
 }
 
 /// The host of a metadata address, which is a web address.
@@ -307,6 +330,28 @@ fn mark_shown_in(
     )?;
     tx.commit()?;
     Ok(changed == 1)
+}
+
+/// True for an https web address, the only redirect a publisher's document can vouch for.
+fn is_https_web(redirect: &Redirect<'_>) -> bool {
+    matches!(
+        redirect,
+        Redirect::Web {
+            scheme: "https",
+            ..
+        }
+    )
+}
+
+/// The sentence a redirect that a local program may receive carries; None for an https address.
+fn local_sentence(redirect: &Redirect<'_>) -> Option<&'static str> {
+    match redirect {
+        Redirect::Loopback { .. } => Some(LISTENING_SENTENCE),
+        Redirect::Web {
+            scheme: "https", ..
+        } => None,
+        Redirect::Web { .. } => Some(PRIVATE_SENTENCE),
+    }
 }
 
 /// The redirect host as the page names it: host or host:port, or the scheme and a colon.
@@ -375,11 +420,11 @@ fn render(viewer: &Viewer, req: &str, consent: &ConsentPage) -> Response {
 fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
     html! {
         h1 { "You will be sent to " (consent.redirect_host) }
-        (client_line(&consent.client, consent.loopback))
+        (client_line(&consent.client, consent.claim))
         p { "Server: " (consent.server) }
         p { "Signed in as " (consent.email) }
-        @if consent.loopback {
-            p.local-app { "The sign-in will be handed to whatever program is listening on this computer." }
+        @if let Some(sentence) = consent.local_sentence {
+            p.local-app { (sentence) }
         }
         p.notice data-consent-notice { "Approve only if you started this sign-in yourself." }
         form method="post" action="/oauth/consent" {
@@ -398,15 +443,15 @@ fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
 }
 
 /// The client line: a claim for a registered client, a publisher for a web document, and a claim
-/// from a host for a document on a loopback redirect.
-fn client_line(client: &Shown, loopback: bool) -> Markup {
+/// from a host for a document on a redirect that is not an https address.
+fn client_line(client: &Shown, claim: bool) -> Markup {
     match client.client_host.as_deref() {
         None => html! {
             p data-client="registered" {
                 "An app that calls itself " q.client-name { (client.name) } ". Doorward cannot check this name."
             }
         },
-        Some(host) if loopback => html! {
+        Some(host) if claim => html! {
             p data-client="document-loopback" {
                 "Says it is " q.client-name { (client.name) } " from " span.client-host { (host) }
                 ". Any program on this computer can use that description."

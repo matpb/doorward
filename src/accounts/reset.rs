@@ -26,7 +26,7 @@ use super::throttle;
 const RESET_PREFIX: &str = "dw_rs_";
 const MINUTE_SECONDS: i64 = 60;
 /// At most one reset mail per account inside this many seconds.
-const REQUEST_GAP_SECONDS: i64 = 300;
+pub const REQUEST_GAP_SECONDS: i64 = 300;
 
 /// A reset link that can still be used: its user and that user's address.
 struct Reset {

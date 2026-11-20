@@ -12,10 +12,10 @@ use tokio::time::{Interval, MissedTickBehavior};
 
 use super::combined::reissue;
 use super::sse::sse_events;
-use super::stream::{ACCESS_LOST, Framing, Owned, detail_of, record};
+use super::stream::{ACCESS_LOST, CHECK_FAILED, Framing, Owned, detail_of, record};
 use super::upstream::{self, Cause, time_limit};
 use crate::mcp::json::parse_strict;
-use crate::oauth::guard::combined_still_valid;
+use crate::oauth::guard::{Recheck, combined_still_valid_at};
 
 /// Chunks the client may lag the upstream by before the reading waits.
 const CHANNEL: usize = 8;
@@ -48,6 +48,7 @@ enum End {
     Answered(&'static str, &'static str),
     Unavailable(Cause),
     Refused,
+    CheckFailed,
     ClientGone,
 }
 
@@ -75,12 +76,11 @@ async fn run(call: Call, mut response: reqwest::Response, tx: Sender<Item>) {
         let next = tokio::select! {
             biased;
             _ = tx.closed() => break End::ClientGone,
-            _ = ticks.tick() => {
-                if !valid(&call).await {
-                    break End::Refused;
-                }
-                continue;
-            }
+            _ = ticks.tick() => match valid(&call).await {
+                Recheck::Live => continue,
+                Recheck::Lost => break End::Refused,
+                Recheck::Failed => break End::CheckFailed,
+            },
             _ = &mut idle => break End::Unavailable(Cause::NoAnswerInTime),
             chunk = response.chunk() => chunk,
         };
@@ -115,6 +115,7 @@ async fn run(call: Call, mut response: reqwest::Response, tx: Sender<Item>) {
         End::Answered(outcome, detail) => (outcome, detail.to_owned()),
         End::Unavailable(cause) => ("unavailable", upstream::fail(&call.owned.slug, cause)),
         End::Refused => ("refused", ACCESS_LOST.to_owned()),
+        End::CheckFailed => ("unavailable", CHECK_FAILED.to_owned()),
         End::ClientGone => ("error", LEFT.to_owned()),
     };
     record(&call.owned, &call.tool, "allow", outcome, &detail).await;
@@ -135,11 +136,13 @@ async fn pass(
         if is_progress(&value) {
             deliver(tx, ticks, call, frame(&value)).await?;
         } else if answers(&value, &call.upstream_id) {
-            let (reply, outcome, detail) = if valid(call).await {
-                let (reply, outcome) = reissue(&call.client_id, &value, call.stateless);
-                (reply, outcome, detail_of(&value, outcome))
-            } else {
-                (refusal(&call.client_id, &call.name), "refused", ACCESS_LOST)
+            let (reply, outcome, detail) = match valid(call).await {
+                Recheck::Live => {
+                    let (reply, outcome) = reissue(&call.client_id, &value, call.stateless);
+                    (reply, outcome, detail_of(&value, outcome))
+                }
+                Recheck::Lost => (refusal(&call.client_id, &call.name), "refused", ACCESS_LOST),
+                Recheck::Failed => return Err(End::CheckFailed),
             };
             deliver(tx, ticks, call, frame(&reply)).await?;
             return Ok(Some((outcome, detail)));
@@ -172,8 +175,10 @@ async fn deliver(
             biased;
             _ = tx.closed() => return Err(End::ClientGone),
             _ = ticks.tick() => {
-                if !valid(call).await {
-                    return Err(End::Refused);
+                match valid(call).await {
+                    Recheck::Live => {}
+                    Recheck::Lost => return Err(End::Refused),
+                    Recheck::Failed => return Err(End::CheckFailed),
                 }
             }
             permit = tx.reserve() => {
@@ -189,9 +194,15 @@ async fn deliver(
     }
 }
 
-/// True while the caller still passes the bearer check and stays assigned to the server.
-async fn valid(call: &Call) -> bool {
-    combined_still_valid(&call.owned.state, &call.owned.caller, call.owned.server_id).await
+/// The re-check of the call's caller, its expiries compared at the second it was admitted.
+async fn valid(call: &Call) -> Recheck {
+    combined_still_valid_at(
+        &call.owned.state,
+        &call.owned.caller,
+        call.owned.server_id,
+        call.owned.caller.admitted,
+    )
+    .await
 }
 
 /// One event of the client's stream: the `message` event line and the compact JSON as its data.

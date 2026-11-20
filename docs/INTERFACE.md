@@ -168,6 +168,10 @@ and leaves the link or code usable. A wrong `current_password` answers `400` as 
 | `GET /account/disconnect/{token}` | | link from the new-connection email: `200` `data-page="disconnect"` |
 | `POST /account/disconnect/{token}` | | family revoked, `200` `data-page="disconnected"` |
 
+A stored hash that cannot be read refuses the sign-in as a wrong password, with the same answer, and
+writes `doorward: password check failed: the stored hash cannot be read`. A hash that cannot be
+checked for another reason writes `doorward: password check failed: the stored hash cannot be checked`.
+
 Throttling: a wrong password is counted for its account and its client address together,
 and a count lasts `block_minutes`. A sign-in answers `429`, right password included, while
 any of three counts is at its limit:
@@ -269,7 +273,9 @@ by link stays `reset`).
 
 A `mail_failed` row's detail is `<kind>: <error>`. The kind is the mail that failed:
 `invitation`, `reset`, `new_connection` (a client connected to the account) or `test` (the
-send-test button). The row never holds an address or a message body.
+send-test button). The row never holds an address or a message body. A mail settings row that cannot be read writes
+`doorward: mail settings failed: <error>`, and a failed mail whose `mail_failed` row cannot be written
+writes `doorward: mail failure record failed: <error>`.
 
 Retention: the housekeeping run, at start and every ten minutes, deletes every activity
 row older than `activity_days` days, whatever its kind.
@@ -335,8 +341,8 @@ the error page, never with a redirect.
 
 `GET /oauth/consent?req={id}`: `200` `data-page="consent"` with `data-redirect-host`
 (host and port of the redirect address, or the scheme for a private-scheme address),
-`data-client-name`, `data-client-verified="yes|no"` (`no` for dynamically registered
-clients), `data-client-host` (the host of a URL-shaped `client_id`, absent otherwise),
+`data-client-name`, `data-client-verified="yes|no"` (`yes` only for a document on an https redirect; `no` for every
+other client, registered ones included), `data-client-host` (the host of a URL-shaped `client_id`, absent otherwise),
 `data-server` (slug, or `all servers` for the combined endpoint) and `data-user`
 (email). Unknown, expired, used, or another session's request: `400` `data-page="error"`.
 A user who is not assigned to the server, or a server that does not exist, gives `403`
@@ -344,17 +350,20 @@ A user who is not assigned to the server, or a server that does not exist, gives
 combined endpoint needs no assignment. Anonymous: `303 /login?req={id}`. For a URL-shaped
 client the fetched document must name this `client_id`, declare the auth method `none` or
 none at all, and list the redirect address (loopback port aside), else `400`
-`data-page="error"`.
+`data-page="error"`. A document that fits no further is logged under its host as `doorward: client
+metadata for <host> failed: <reason>`, where the reason is one of `the document names another client`,
+`the document asks for a client secret` or `the document does not list the redirect address`.
 
 Every consent page holds exactly one element with `data-consent-notice`, saying "Approve
 only if you started this sign-in yourself." The client line is one of three: a registered
 client is `p[data-client="registered"]` reading "An app that calls itself
 `<q class="client-name">` NAME. Doorward cannot check this name."; a document with a web
 redirect is `p[data-client="document"]`, "NAME, published by `<span class="client-host">`
-HOST."; a document with a loopback redirect is `p[data-client="document-loopback"]`, "Says it
+HOST."; a document with a redirect that is not https, loopback or private scheme, is `p[data-client="document-loopback"]`, "Says it
 is NAME from HOST. Any program on this computer can use that description." A page for a
 loopback redirect address, of any client kind, also holds `p.local-app` reading "The sign-in
-will be handed to whatever program is listening on this computer."
+will be handed to whatever program is listening on this computer." A page for a private-scheme
+redirect of any client kind holds `p.local-app` reading "The sign-in will be handed to whatever program on this computer opens addresses of this kind."
 
 `POST /oauth/consent`: `req`, `decision` (`approve` or `deny`). `303` to the redirect
 address with `code`, `state`, `iss`; or with `error=access_denied`, `state`, `iss`. The
@@ -393,6 +402,10 @@ in the query string is never read. A database error during the check answers `50
 (`doorward: bearer check failed: <error>`); a token that is unknown or expired still gets the
 `401`.
 
+The token's expiry and its family's expiry are compared with the admission time of the request,
+so a POST answer keeps the access it was admitted with for the whole call. A GET stream compares
+with the clock as it runs.
+
 ## MCP paths
 
 A request is handled by the stateless rules (revision 2026-07-28 and later) when its
@@ -421,7 +434,7 @@ Forwarded methods on `/{slug}`; everything else is refused:
 With a switch off, the gateway answers the group's list methods itself with empty lists
 (`resources`, `resourceTemplates`, `prompts`), answers the other methods of the group with
 `-32601` (HTTP `404` under the stateless rules), and removes `resources` or `prompts` from the capabilities in the relayed
-`initialize` and `server/discover` results, and always removes `tasks`. A completion whose ref type is
+`initialize` and `server/discover` results, always removes `tasks`, and with both switches off also removes `completions`. A completion whose ref type is
 not `ref/prompt` or `ref/resource`, or is missing, is `-32601` with either switch on. A stateless `subscriptions/listen` is not served on either endpoint: `404`,
 `-32601`, upstream not contacted. A relayed stateless `server/discover` also loses `listChanged` under `tools`, `prompts`
 and `resources`, and `subscribe` under `resources`; a session `initialize` keeps them. Under the stateless rules its own answers carry
@@ -491,11 +504,13 @@ The combined endpoint `/mcp` is its own MCP server:
   server does not exist, whose server the caller is not assigned to now, whose rules deny it,
   whose tool has an `x-mcp-header` key on a stateless link, or whose tool is not in the catalog. The rules
   are checked first; a tool the catalog lacks is refreshed from the upstream at most once per
-  `catalog_refresh_seconds` per server, and a call that finds that refresh running waits for it. A refusal is `200` with `-32602` and
+  `catalog_refresh_seconds` per server, and a call that finds that refresh running waits for it. The refresh is bounded by the lesser of
+`limits.upstream_timeout_seconds` and 10 seconds, and it runs to its end when the caller leaves. A
+new refresh of the server may start `catalog_refresh_seconds` after the last one returned. A refusal is `200` with `-32602` and
   `Unknown tool: {name as sent}` for every one of them; no upstream sees it. Its activity
   row is `deny` / `refused`: under the real server and the bare tool name when the server
   exists, else with no server, the slug `mcp` and the name as sent. The detail is `not in the tool list`,
-  `the server is not assigned`, or `rule {id}` for the rule that denies it.
+  `the server is not assigned`, `rule {id}` for the rule that denies it, or `the request headers do not match the call` for a tool with an `x-mcp-header` key on a stateless link.
 - An allowed call is sent with the client's `params.arguments` as raw bytes (absent when
   absent or `null`), its `_meta.progressToken` when that is a string or an integer, and
   nothing else of the request: no other `_meta` key, no client header, not the client's id.
@@ -517,12 +532,14 @@ The combined endpoint `/mcp` is its own MCP server:
   `tools_list_bytes`, or sends no bytes for `upstream_timeout_seconds` (comment lines count as
   bytes). Its last event is then the `-32000` error `Upstream {slug} is unavailable` under the
   client's id. When the client leaves, the upstream connection is closed and no event is sent.
-- While a relayed stream is open, the caller's token and its assignment to the server are
-  checked every second. A failed check ends the stream with no further event. A check that
-  fails before the answer is sent makes the answer the `-32602` refusal above.
+- While a relayed GET stream is open, the caller's token and its assignment to the server are
+  checked every second. A POST stream is checked the same way, with its token expiry compared to
+  the admission time. A failed check ends the stream with no further event. A check that cannot
+  be made ends it as `unavailable`, with the detail `the access check could not be done`. A check
+  that fails before the answer is sent makes the answer the `-32602` refusal above.
 - A streamed call writes one row when its stream ends: `allow` with the outcome of the answer
   when one was sent (`ok`, or `error` for a JSON-RPC error or a replaced input request),
-  `refused` with the detail `access was lost` after a failed check, `unavailable` after a stream that ended without an answer, or
+  `refused` with the detail `access was lost` after a failed check, `unavailable` with the detail `the access check could not be done` after a check that could not be made, `unavailable` after a stream that ended without an answer, or
   `error` with the detail `the client closed the stream` when the client left.
 - Before the answer is returned the caller's token and its assignment to the server are
   checked again; when either fails the answer is the refusal above and the row is
@@ -534,7 +551,11 @@ The combined endpoint `/mcp` is its own MCP server:
   `Upstream {slug} is unavailable`, row `unavailable`. The row's detail and the one log line
   `doorward: upstream {slug} failed: {phrase}` carry the fault: `no connection`, `no answer in time`,
   `the upstream answered {status}`, `an answer of the wrong content type`, `an answer over the size limit`,
-  `an answer that is not valid JSON`, or `an answer that is not an MCP answer`.
+  `an answer that is not valid JSON`, or `an answer that is not an MCP answer`. A server whose stored
+  secret cannot be opened is `unavailable` with the detail `the stored secret cannot be opened` and
+  the line `doorward: server {slug} failed: the stored secret cannot be opened`. A database error
+  while reading a session writes only `doorward: upstream sessions failed: <error>`, and its row's
+  detail is `the database could not be read`.
 - A `tools/call` that the upstream answers with HTTP `400` or `404` and a JSON-RPC error (`jsonrpc`
   `2.0`, the id the gateway sent upstream, no `result`, an `error` with an integer `code` and a string
   `message`, optional `data`; read under the tool-list cap) is relayed with the client's id and the same

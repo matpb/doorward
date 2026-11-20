@@ -684,8 +684,9 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
 7. `an_unlisted_redirect_is_blocked_at_authorize`: `register("X",
    &["https://attacker.example.com/cb"])` is 201; `authorize` with it is an error page;
    the activity has a `redirect_blocked` row.
-8. `metadata_document_client_completes_the_flow`: `W.app()`; the consent page has
-   `data-client-name` `Example Client` and `data-client-verified` `yes`.
+8. `metadata_document_client_completes_the_flow`: `W.app()`, a document on the loopback redirect
+   `127.0.0.1:53535`; the consent page has `data-client-name` `Example Client` and
+   `data-client-verified` `no`, since a document is verified only on an https redirect.
 9. `the_document_is_fetched_only_after_sign_in`: an anonymous `authorize` is 303
    `/login?req=..` and `W.gw.cimd().fetches(APP_ID) == 0`; after `login_for` and the
    consent GET it is at least 1.
@@ -976,8 +977,9 @@ bob is assigned to demo and signed in. `A` is `W.app()`.
 
 1. `the_consent_page_names_everything`: `authorize` answers 303 to
    `/oauth/consent?req=..`; its GET is 200 `consent` with `data-redirect-host`
-   `127.0.0.1:53535`, `data-client-name` `Example Client`, `data-client-verified` `yes`,
-   `data-server` `demo`, `data-user` bob's email, and no `Location`.
+   `127.0.0.1:53535`, `data-client-name` `Example Client`, `data-client-verified` `no` (a
+   document on a loopback redirect is unverified), `data-server` `demo`, `data-user` bob's
+   email, and no `Location`.
 2. `consent_is_asked_every_time`: after a complete `W.token`, a second `authorize` again
    answers 303 to `/oauth/consent` and never to the client's address.
 3. `one_approval_issues_one_code`: `consent(req, "approve")` answers 303 to an address
@@ -1052,10 +1054,10 @@ bob is assigned to demo and signed in. `A` is `W.app()`.
     with the cursor redirect gets the same `p.local-app` sentence and `data-client-verified`
     `no`.
 27. `a_document_that_does_not_list_the_redirect_shows_the_error_page`: the document lists
-    another address; the consent page is 400 with kind `error` and no `Location`. The line
-    on standard error (`the document does not list the redirect address`) is checked
-    in-crate in phase B, since an in-process test cannot read standard error. It passes
-    before the change.
+    another address; the consent page is 400 with kind `error` and no `Location`. The reason
+    `the document does not list the redirect address` is asserted in-crate at `document_fits`
+    (`oauth::tests_consent`, `a_document_not_listing_the_redirect_gives_that_reason`), since an
+    in-process test cannot read standard error; no test reads the line on standard error.
 
 ## s34_redirects_codes.rs (statement 34)
 
@@ -1511,3 +1513,9 @@ by the request.
     `/mcp`; after the session starts, `upstream_sessions` is renamed away and one tool call
     is made: exactly one line starts `doorward: upstream sessions failed: ` and none says
     `no connection`. It is red before the change, since a second line says `no connection`.
+11. `a_database_error_during_the_access_check_writes_one_line_and_ends_unavailable`: a stateless
+    `/demo` call whose upstream is delayed; 500 ms in, `access_tokens` is renamed away, so the bearer
+    check has passed but the re-check after the answer cannot read the table. The answer is 502, exactly
+    one line reads `doorward: access check failed: database error: no such table: access_tokens`, and
+    the one `tool_call` row is `allow` / `unavailable` with the detail `the access check could not be done`.
+    It is red before the change, since the old check wrote `access was lost` and no line.

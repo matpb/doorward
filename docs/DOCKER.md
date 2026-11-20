@@ -87,7 +87,7 @@ message names the variable and never prints the value.
 | `DOORWARD_LIMITS_ADDRESS_FAILURES` | `30` | More than this many wrong passwords from one client address, for any accounts, inside `block_minutes` make that address answer `429`. |
 | `DOORWARD_LIMITS_BLOCK_MINUTES` | `15` | Minutes a wrong password stays counted. Each one stops counting this long after it was made. |
 | `DOORWARD_LIMITS_DCR_PER_HOUR` | `60` | Client registrations per client address per hour. |
-| `DOORWARD_LIMITS_UNUSED_REGISTRATIONS` | `10000` | Most registered clients that have never completed a sign-in. At the bound the oldest such client is dropped to make room; a client that has completed a sign-in is never dropped for this. Must be at least 1. |
+| `DOORWARD_LIMITS_UNUSED_REGISTRATIONS` | `10000` | Most registered clients that have never completed a sign-in. At the bound the oldest such client is dropped to make room; a client that has completed a sign-in is never dropped for this. Must be at least 1. A flood of registrations from many addresses can push out a client that registered but has not finished its first sign-in; it registers again on its next try. |
 | `DOORWARD_LIMITS_GENERAL_BURST` | `240` | General class, per address: requests allowed at once. |
 | `DOORWARD_LIMITS_GENERAL_PER_MINUTE` | `600` | General class, per address: sustained requests per minute. |
 | `DOORWARD_LIMITS_OAUTH_BURST` | `60` | OAuth class, per address: requests allowed at once. |
@@ -242,6 +242,8 @@ Counters live in memory and reset on restart. Password guessing stays covered by
 database throttle, which survives restarts. A flood of failing requests from one shared
 address can block that address for everyone behind it.
 
+The registration limit counts an address's attempts; registration attempts are kept for one hour, so it counts only the last hour.
+
 ## Client addresses
 
 The gateway counts requests by client address. It takes the address from the socket peer,
@@ -287,6 +289,17 @@ shapes:
   that matches no row writes nothing.
 - `doorward: client metadata for <host> failed: <error>`, when a client metadata document
   cannot be fetched. Only the host of the client ID is written, never its path or query.
+- `doorward: client metadata for <host> failed: <reason>`, when a fetched document does not fit: the
+  reason is `the document names another client`, `the document asks for a client secret` or
+  `the document does not list the redirect address`.
+- `doorward: access check failed: <error>`, when the database cannot answer a re-check of an admitted
+  call or an open stream. The call ends `unavailable` with the detail `the access check could not be done`.
+- `doorward: server <slug> failed: the stored secret cannot be opened`, when a server's stored secret
+  cannot be read. The call ends `unavailable`.
+- `doorward: password check failed: the stored hash cannot be read`, when a stored password hash cannot
+  be read. The sign-in is refused as a wrong password.
+- `doorward: mail settings failed: <error>`, when the mail settings cannot be read, and
+  `doorward: mail failure record failed: <error>`, when a failed mail cannot be recorded.
 - `doorward: health check failed: <error>`, when `/healthz` cannot read the database.
 - At start-up, a file that cannot be used exits 2 with the file's path and the cause:
   `doorward: cannot read the config file <path>: <error>`,

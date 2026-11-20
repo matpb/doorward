@@ -290,8 +290,8 @@ async fn metadata_document_client_completes_the_flow() {
     );
     assert_eq!(
         consent.attr("main", "data-client-verified").as_deref(),
-        Some("yes"),
-        "a client with a metadata document must be shown as verified"
+        Some("no"),
+        "a metadata document on a loopback redirect must be shown as unverified"
     );
     let tokens = bob.connect(&w.app(), &w.resource("demo")).await;
     assert!(

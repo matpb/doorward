@@ -22,7 +22,7 @@ use crate::web::{CSRF_COOKIE, SESSION_COOKIE, content_security_policy};
 use crate::{CimdError, CimdFetcher, ClientMetadata};
 
 use super::authorize::{Params, Resource, back_url, check_request, is_request_id, resource_of};
-use super::consent::{document_name, fetch_within};
+use super::consent::{document_fits, document_name, fetch_within};
 
 const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const ISSUER: &str = "https://auth.example.com";
@@ -927,7 +927,8 @@ async fn a_document_client_named_by_direction_characters_shows_its_host() {
     );
     assert_eq!(
         page.main_attr("data-client-verified").as_deref(),
-        Some("yes")
+        Some("no"),
+        "a document client on a loopback redirect is a claim, so it is not verified"
     );
 }
 
@@ -1645,5 +1646,57 @@ async fn a_throttled_password_change_waits_for_the_whole_block() {
         blocked.retry_after.as_deref(),
         Some("420"),
         "the throttle lasts block_minutes * 60 seconds"
+    );
+}
+
+/// A metadata document for `client_id` with the secret method `auth` and the listed `redirects`.
+fn metadata_for(client_id: &str, auth: Option<&str>, redirects: &[&str]) -> ClientMetadata {
+    ClientMetadata {
+        client_id: client_id.to_owned(),
+        client_name: Some("Example Client".to_owned()),
+        redirect_uris: redirects
+            .iter()
+            .map(|listed| (*listed).to_owned())
+            .collect(),
+        token_endpoint_auth_method: auth.map(str::to_owned),
+    }
+}
+
+#[test]
+fn a_document_that_names_the_client_asks_for_no_secret_and_lists_the_redirect_fits() {
+    let metadata = metadata_for(DOC_ID, Some("none"), &[REDIRECT]);
+    assert_eq!(document_fits(&metadata, DOC_ID, REDIRECT), Ok(()));
+}
+
+#[test]
+fn a_document_with_no_auth_method_fits() {
+    let metadata = metadata_for(DOC_ID, None, &[REDIRECT]);
+    assert_eq!(document_fits(&metadata, DOC_ID, REDIRECT), Ok(()));
+}
+
+#[test]
+fn a_document_naming_another_client_gives_that_reason() {
+    let metadata = metadata_for("https://other.example.com/app.json", None, &[REDIRECT]);
+    assert_eq!(
+        document_fits(&metadata, DOC_ID, REDIRECT),
+        Err("the document names another client")
+    );
+}
+
+#[test]
+fn a_document_asking_for_a_secret_gives_that_reason() {
+    let metadata = metadata_for(DOC_ID, Some("client_secret_basic"), &[REDIRECT]);
+    assert_eq!(
+        document_fits(&metadata, DOC_ID, REDIRECT),
+        Err("the document asks for a client secret")
+    );
+}
+
+#[test]
+fn a_document_not_listing_the_redirect_gives_that_reason() {
+    let metadata = metadata_for(DOC_ID, None, &["http://127.0.0.1:53535/other"]);
+    assert_eq!(
+        document_fits(&metadata, DOC_ID, REDIRECT),
+        Err("the document does not list the redirect address")
     );
 }
