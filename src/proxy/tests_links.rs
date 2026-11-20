@@ -1384,3 +1384,54 @@ async fn a_dropped_requester_still_finishes_the_handshake() {
     assert_eq!(up.count("initialize"), 1);
     assert_eq!(links.len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stateless_makes_each_link_once_and_tells_its_form() {
+    let fx = fixture().await;
+    let links = Links::new();
+    let stateless_up = start(Behave::stateless()).await;
+    let stateless_target = target_at(&fx, stateless_up.url());
+    assert!(
+        links
+            .stateless(&fx.state, owned(1, 1), &stateless_target)
+            .await
+            .expect("the stateless form"),
+        "a stateless upstream's link must tell the stateless form"
+    );
+    assert!(
+        links
+            .stateless(&fx.state, owned(1, 1), &stateless_target)
+            .await
+            .expect("the stateless form"),
+        "the same link tells the same form again"
+    );
+    assert_eq!(
+        stateless_up.count("server/discover"),
+        1,
+        "the stateless link is made with one probe"
+    );
+    assert_eq!(stateless_up.count("initialize"), 0);
+
+    let session_up = start(Behave::default()).await;
+    let session_target = target_at(&fx, session_up.url());
+    assert!(
+        !links
+            .stateless(&fx.state, owned(1, 2), &session_target)
+            .await
+            .expect("the session form"),
+        "a session upstream's link must not tell the stateless form"
+    );
+    assert!(
+        !links
+            .stateless(&fx.state, owned(1, 2), &session_target)
+            .await
+            .expect("the session form"),
+        "the same session link tells the session form again"
+    );
+    assert_eq!(
+        session_up.count("initialize"),
+        1,
+        "the session link is made with one initialize"
+    );
+    assert_eq!(links.len(), 2, "one link per owner and server");
+}

@@ -4,29 +4,34 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::Request;
 use axum::http::header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::future::join_all;
-use rusqlite::{Connection, params};
-use serde_json::{Value, json};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::Deserialize;
+use serde_json::value::RawValue;
+use serde_json::{Map, Value, json};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tokio::time::{Instant, timeout, timeout_at};
 
 use super::catalog::{self, RefreshError, SESSION, STATELESS};
-use super::handle::{INVALID, NO_METHOD, bare, not_allowed};
+use super::handle::{INVALID, NO_METHOD, Owed, TOOL_LIMIT, bare, cut, not_allowed};
 use super::intake::{Intake, intake};
 use super::links::{self, Ask, Owner};
-use super::upstream::{self, TargetError, time_limit};
+use super::stream::Owned;
+use super::upstream::{self, Fault, TargetError, time_limit};
 use crate::app::AppState;
+use crate::audit::{self, OwnedEvent};
 use crate::mcp::answer;
 use crate::mcp::message::{
     Decision, Generation, Message, Shape, Switches, decide, meta_version, param,
 };
-use crate::oauth::guard::Caller;
+use crate::oauth::guard::{Caller, combined_still_valid};
 use crate::policy;
+use crate::servers::valid_slug;
 
 /// The longest a whole tools/list may take, the wait for its turn included.
 const LIST_LIMIT: Duration = Duration::from_secs(10);
@@ -118,11 +123,11 @@ pub async fn handle(state: &AppState, caller: Caller, request: Request) -> Respo
     if parts.method != Method::POST {
         return not_allowed();
     }
-    post(state, &caller, &parts.headers, body).await
+    post(state, &Arc::new(caller), &parts.headers, body).await
 }
 
-async fn post(state: &AppState, caller: &Caller, headers: &HeaderMap, body: Body) -> Response {
-    let Intake { message, .. } = match intake(state, headers, body).await {
+async fn post(state: &AppState, caller: &Arc<Caller>, headers: &HeaderMap, body: Body) -> Response {
+    let Intake { message, bytes } = match intake(state, headers, body).await {
         Ok(intake) => intake,
         Err(refusal) => return refusal,
     };
@@ -163,6 +168,7 @@ async fn post(state: &AppState, caller: &Caller, headers: &HeaderMap, body: Body
         (Generation::Session, Some("ping")) => result(id, json!({})),
         (Generation::Stateless, Some("server/discover")) => result(id, discover()),
         (_, Some("tools/list")) => list(state, caller, &message).await,
+        (_, Some("tools/call")) => call(state, caller, &message, &bytes).await,
         _ => answer::error(StatusCode::OK, message.id.as_ref(), -32601, NO_METHOD),
     }
 }
@@ -202,6 +208,327 @@ fn discover() -> Value {
 
 fn server_info() -> Value {
     json!({"name": "doorward", "version": env!("CARGO_PKG_VERSION")})
+}
+
+/// The parts of a tools/call body the upstream may see, borrowed from the body bytes.
+#[derive(Deserialize)]
+struct CallBody<'a> {
+    #[serde(borrow)]
+    params: Option<CallParams<'a>>,
+}
+
+/// The raw arguments, and the `_meta` of the request, of a tools/call.
+#[derive(Deserialize)]
+struct CallParams<'a> {
+    #[serde(borrow)]
+    arguments: Option<&'a RawValue>,
+    #[serde(rename = "_meta")]
+    meta: Option<Value>,
+}
+
+/// The server a slug names, as one database read gives it for a call.
+struct Found {
+    server: Assigned,
+    assigned: bool,
+    definition: Option<String>,
+}
+
+/// The text a result that asks for input is replaced with.
+const ASKED: &str = "This tool asked for input that this endpoint does not relay.";
+
+/// tools/call: the name is split and checked against the caller's servers, rules and catalog, then sent
+/// through the caller's link. A refused call never reaches an upstream.
+async fn call(
+    state: &AppState,
+    caller: &Arc<Caller>,
+    message: &Message,
+    bytes: &Bytes,
+) -> Response {
+    let null = Value::Null;
+    let id = message.id.as_ref().unwrap_or(&null);
+    let Some(name) = message.tool.as_deref() else {
+        return answer::error(
+            StatusCode::BAD_REQUEST,
+            message.id.as_ref(),
+            -32600,
+            INVALID,
+        );
+    };
+    let body = match serde_json::from_slice::<CallBody>(bytes) {
+        Ok(body) => body,
+        Err(_) => {
+            return answer::error(
+                StatusCode::BAD_REQUEST,
+                message.id.as_ref(),
+                -32600,
+                INVALID,
+            );
+        }
+    };
+    let started = std::time::Instant::now();
+    let Some((slug, tool)) = split(name) else {
+        return deny_call(state, caller, started, id, name, None).await;
+    };
+    let user = caller.user_id;
+    let (lookup_slug, lookup_tool) = (slug.to_owned(), tool.to_owned());
+    let found = match state
+        .db
+        .call(move |conn| lookup(conn, user, &lookup_slug, &lookup_tool))
+        .await
+    {
+        Ok(found) => found,
+        Err(err) => {
+            eprintln!("doorward: the call cannot read its server: {err}");
+            return bare(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+    let Some(found) = found else {
+        return deny_call(state, caller, started, id, name, None).await;
+    };
+    let server_id = found.server.server_id;
+    let row = Some((server_id, slug, tool));
+    if !found.assigned {
+        return deny_call(state, caller, started, id, name, row).await;
+    }
+    let definition = match found.definition {
+        Some(definition) => definition,
+        None => match refetch(state, caller, &found.server, tool).await {
+            Ok(Some(definition)) => definition,
+            Ok(None) => return deny_call(state, caller, started, id, name, row).await,
+            Err(refusal) => return refusal,
+        },
+    };
+    if !policy::decide(&found.server.rules, user, server_id, tool).allowed {
+        return deny_call(state, caller, started, id, name, row).await;
+    }
+    let target = match upstream::target(state, server_id).await {
+        Ok(Some(target)) => target,
+        Ok(None) | Err(TargetError::Secret) => {
+            let owed = Owed::of(owned_of(state, caller, started, slug, server_id), tool);
+            return unavailable(owed, slug).await;
+        }
+        Err(TargetError::Db(err)) => {
+            eprintln!("doorward: the server cannot be read: {err}");
+            return bare(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+    let owner = Owner {
+        user_id: user,
+        family_id: caller.family_id,
+    };
+    let stateless = match state.links.stateless(state, owner, &target).await {
+        Ok(stateless) => stateless,
+        Err(Fault) => {
+            let owed = Owed::of(owned_of(state, caller, started, slug, server_id), tool);
+            return unavailable(owed, slug).await;
+        }
+    };
+    let has_mcp_header = match serde_json::from_str::<Value>(&definition) {
+        Ok(stored) => has_header_key(&stored),
+        Err(_) => true,
+    };
+    if stateless && has_mcp_header {
+        return deny_call(state, caller, started, id, name, row).await;
+    }
+    let arguments = body.params.as_ref().and_then(|params| params.arguments);
+    let progress_token = body
+        .params
+        .as_ref()
+        .and_then(|params| params.meta.as_ref())
+        .and_then(|meta| meta.get("progressToken"));
+    let owed = Owed::of(owned_of(state, caller, started, slug, server_id), tool);
+    let ask = Ask::Call {
+        name: tool,
+        arguments,
+        progress_token,
+    };
+    let sent = match state.links.send(state, owner, &target, ask).await {
+        Ok(sent) => sent,
+        Err(Fault) => return unavailable(owed, slug).await,
+    };
+    let cap = state.config.limits.tools_list_bytes;
+    let upstream_answer = match links::read(state, sent, cap).await {
+        Ok(upstream_answer) => upstream_answer,
+        Err(Fault) => return unavailable(owed, slug).await,
+    };
+    let client_stateless = message.generation == Generation::Stateless;
+    let (reply, outcome) = reissue(id, &upstream_answer, client_stateless);
+    if !combined_still_valid(state, caller, server_id).await {
+        owed.settle("refused").await;
+        return answer::unknown_tool(id, name);
+    }
+    owed.settle(outcome).await;
+    respond(StatusCode::OK, &reply)
+}
+
+/// The server a slug names with the caller's assignment, rules and stored definition of `tool`, in one read.
+fn lookup(conn: &Connection, user: i64, slug: &str, tool: &str) -> rusqlite::Result<Option<Found>> {
+    let server_id = conn
+        .query_row(
+            "SELECT id FROM servers WHERE slug = ?1",
+            params![slug],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    let Some(server_id) = server_id else {
+        return Ok(None);
+    };
+    let assigned = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM user_servers WHERE user_id = ?1 AND server_id = ?2)",
+        params![user, server_id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let rules = policy::load(conn, user, server_id)?;
+    let definition = conn
+        .query_row(
+            "SELECT definition FROM tool_catalog WHERE server_id = ?1 AND name = ?2",
+            params![server_id, tool],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(Some(Found {
+        server: Assigned {
+            server_id,
+            slug: slug.to_owned(),
+            rules,
+        },
+        assigned,
+        definition,
+    }))
+}
+
+/// One refresh of the server's catalog through the caller's link, for a tool the catalog lacks. Returns
+/// the stored definition of `tool` after it; None when the refresh failed or the tool is still absent.
+async fn refetch(
+    state: &AppState,
+    caller: &Caller,
+    server: &Assigned,
+    tool: &str,
+) -> Result<Option<String>, Response> {
+    let deadline = Instant::now() + time_limit(state).min(LIST_LIMIT);
+    let Some(fetched) = fetch(state, caller, server, deadline).await else {
+        refuse(state, server).await;
+        return Ok(None);
+    };
+    let now = state.clock.now().unix_timestamp();
+    let server_id = server.server_id;
+    let tools = fetched.tools;
+    match state
+        .db
+        .call(move |conn| store(conn, vec![(server_id, tools)], now))
+        .await
+    {
+        Ok(stored) => Ok(stored
+            .into_iter()
+            .flatten()
+            .find(|(name, _)| name.as_str() == tool)
+            .map(|(_, definition)| definition)),
+        Err(err) => {
+            eprintln!("doorward: the tool catalog cannot be stored: {err}");
+            Err(bare(StatusCode::INTERNAL_SERVER_ERROR))
+        }
+    }
+}
+
+/// What the row of an allowed call needs after its handler returns: the server, the caller and the start.
+fn owned_of(
+    state: &AppState,
+    caller: &Arc<Caller>,
+    started: std::time::Instant,
+    slug: &str,
+    server_id: i64,
+) -> Owned {
+    Owned {
+        state: state.clone(),
+        slug: slug.to_owned(),
+        server_id,
+        caller: Arc::clone(caller),
+        started,
+    }
+}
+
+/// The 502 of a call whose upstream cannot answer, with its row written as unavailable.
+async fn unavailable(owed: Owed, slug: &str) -> Response {
+    owed.settle("unavailable").await;
+    answer::unavailable(slug)
+}
+
+/// A refused tools/call: one deny row and the one answer every refusal gets. A name that names no
+/// server has no server in its row, under the label `mcp`, and the name as sent.
+async fn deny_call(
+    state: &AppState,
+    caller: &Caller,
+    started: std::time::Instant,
+    id: &Value,
+    name: &str,
+    server: Option<(i64, &str, &str)>,
+) -> Response {
+    let (server_id, slug, tool) = match server {
+        Some((server_id, slug, tool)) => (Some(server_id), slug, tool),
+        None => (None, LABEL, name),
+    };
+    let event = OwnedEvent {
+        kind: "tool_call".to_owned(),
+        user_id: Some(caller.user_id),
+        user_email: caller.user_email.clone(),
+        server_id,
+        server_slug: slug.to_owned(),
+        tool: cut(tool, TOOL_LIMIT),
+        client: caller.client_name.clone(),
+        decision: "deny".to_owned(),
+        outcome: "refused".to_owned(),
+        detail: String::new(),
+        duration_ms: Some(i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX)),
+    };
+    if let Err(err) = audit::record_now(state, event).await {
+        eprintln!("doorward: the activity row cannot be written: {err}");
+    }
+    answer::unknown_tool(id, name)
+}
+
+/// The upstream's answer under the client's id, and the outcome of its row. A result that asks for
+/// input becomes a tool error; a stateless client's result is marked complete, a session client's is not.
+fn reissue(id: &Value, answer: &Value, stateless: bool) -> (Value, &'static str) {
+    let (member, body, outcome) = match answer.get("result") {
+        Some(result) => {
+            let (result, outcome) = result_for_client(result, stateless);
+            ("result", result, outcome)
+        }
+        None => (
+            "error",
+            answer.get("error").cloned().unwrap_or(Value::Null),
+            "error",
+        ),
+    };
+    let mut reply = Map::new();
+    reply.insert("jsonrpc".to_owned(), json!("2.0"));
+    reply.insert("id".to_owned(), id.clone());
+    reply.insert(member.to_owned(), body);
+    (Value::Object(reply), outcome)
+}
+
+/// A result as the client gets it: one that asks for input is replaced by a tool error, and resultType is
+/// set to complete for a stateless client and removed for a session client.
+fn result_for_client(result: &Value, stateless: bool) -> (Value, &'static str) {
+    let asks = result
+        .get("resultType")
+        .is_some_and(|kind| kind.as_str() != Some("complete"));
+    let (mut value, outcome) = if asks {
+        (
+            json!({"content": [{"type": "text", "text": ASKED}], "isError": true}),
+            "error",
+        )
+    } else {
+        (result.clone(), "ok")
+    };
+    if let Value::Object(object) = &mut value {
+        if stateless {
+            object.insert("resultType".to_owned(), json!("complete"));
+        } else {
+            object.remove("resultType");
+        }
+    }
+    (value, outcome)
 }
 
 /// tools/list: the caller's tools across the servers it is assigned to now, under one turn and deadline.
@@ -414,6 +741,16 @@ fn listed(
     tool.as_object_mut()?
         .insert("name".to_owned(), Value::String(merged));
     Some(tool)
+}
+
+/// The server slug and the tool of a merged name, split at the first `__`; None when it has no `__`,
+/// a prefix that is not a valid slug, a tool outside `^[A-Za-z0-9_.-]+$`, or more than 128 bytes.
+pub(super) fn split(name: &str) -> Option<(&str, &str)> {
+    if name.len() > MERGED_LIMIT {
+        return None;
+    }
+    let (slug, tool) = name.split_once("__")?;
+    (valid_slug(slug) && valid_name(tool)).then_some((slug, tool))
 }
 
 /// True for `^[A-Za-z0-9_.-]+$`.

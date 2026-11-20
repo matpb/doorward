@@ -1,10 +1,3 @@
 # Test files written before their code. Each must compile and fail; remove a name when its code lands.
-s10_combined
-s11_generations
 s12_streaming
-s13_upstream_faults
-s14_assignment
-s17_activity
 s20_cimd_fetcher
-s32_rules
-s47_combined_grants

@@ -1,7 +1,7 @@
 //! The combined endpoint's own methods and tools/list, over a fixture gateway and scripted upstreams.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::Json;
@@ -16,9 +16,12 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
 use super::catalog;
-use super::combined::{NOTES, handle};
+use super::combined::{NOTES, handle, split};
 use super::tests::{Fixture, Plan, Seen, TestUpstream, answer, fixture, fixture_with};
 use crate::app::AppState;
+use crate::config::Lifetimes;
+use crate::crypto::token_hash;
+use crate::oauth::families::{self, NewFamily};
 use crate::oauth::guard::Caller;
 
 const CLOSED: &str = "http://127.0.0.1:9/mcp";
@@ -88,6 +91,16 @@ fn caller(user_id: i64) -> Caller {
     }
 }
 
+/// A POST to `/mcp` with the given headers and body text.
+fn request_of(method: &str, headers: &[(&str, &str)], body: Option<String>) -> Request {
+    let mut builder = Request::builder().method(method).uri("/mcp");
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let body = body.map_or_else(Body::empty, Body::from);
+    builder.body(body).expect("request")
+}
+
 /// What the combined endpoint answered.
 struct Reply {
     status: u16,
@@ -103,13 +116,20 @@ async fn send(
     headers: &[(&str, &str)],
     body: Option<Value>,
 ) -> Reply {
-    let mut builder = Request::builder().method(method).uri("/mcp");
-    for (name, value) in headers {
-        builder = builder.header(*name, *value);
-    }
-    let body = body.map_or_else(Body::empty, |value| Body::from(value.to_string()));
-    let request = builder.body(body).expect("request");
-    let response: Response = handle(state, caller(user_id), request).await;
+    let body = body.map(|value| value.to_string());
+    send_text(state, caller(user_id), method, headers, body).await
+}
+
+/// One request to `/mcp` as `caller`, with the body text exactly as given.
+async fn send_text(
+    state: &AppState,
+    caller: Caller,
+    method: &str,
+    headers: &[(&str, &str)],
+    body: Option<String>,
+) -> Reply {
+    let request = request_of(method, headers, body);
+    let response: Response = handle(state, caller, request).await;
     let status = response.status().as_u16();
     let headers = response.headers().clone();
     let bytes = to_bytes(response.into_body(), 1 << 22)
@@ -974,4 +994,1008 @@ async fn peak_answer(State((peak, tools)): State<PeakState>, body: Bytes) -> Res
         _ => discover(),
     };
     Json(json!({"jsonrpc": "2.0", "id": request["id"], "result": result})).into_response()
+}
+
+/// A combined token family of `user_id` in the database, and the caller its access token gives.
+async fn combined_caller(state: &AppState, user_id: i64) -> Caller {
+    let now = state.clock.now().unix_timestamp();
+    let (family_id, access) = state
+        .db
+        .call(move |conn| {
+            let epoch: i64 = conn.query_row(
+                "SELECT auth_epoch FROM users WHERE id = ?1",
+                params![user_id],
+                |row| row.get(0),
+            )?;
+            let new = NewFamily {
+                user_id,
+                server_id: None,
+                client_id: "dcr_test",
+                client_name: "test client",
+                auth_epoch: epoch,
+            };
+            let family_id = families::create(conn, &new, now, 90)?;
+            let pair = families::mint_pair(conn, family_id, now, &Lifetimes::default())?;
+            Ok((family_id, pair.access_token))
+        })
+        .await
+        .expect("a combined token");
+    Caller {
+        user_id,
+        user_email: format!("user{user_id}@example.com"),
+        family_id,
+        server_id: None,
+        client_name: "test client".to_owned(),
+        token_hash: token_hash(&access),
+    }
+}
+
+/// Another caller of the same family as `caller`, so both calls share one upstream link.
+fn same_family(caller: &Caller) -> Caller {
+    Caller {
+        user_id: caller.user_id,
+        user_email: caller.user_email.clone(),
+        family_id: caller.family_id,
+        server_id: None,
+        client_name: caller.client_name.clone(),
+        token_hash: caller.token_hash.clone(),
+    }
+}
+
+/// One tool_call activity row.
+#[derive(Debug, PartialEq)]
+struct CallRow {
+    user: Option<i64>,
+    server: Option<i64>,
+    slug: String,
+    tool: String,
+    decision: String,
+    outcome: String,
+    detail: String,
+}
+
+/// The tool_call rows, oldest first.
+async fn call_rows(state: &AppState) -> Vec<CallRow> {
+    state
+        .db
+        .call(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT user_id, server_id, server_slug, tool, decision, outcome, detail \
+                 FROM activity WHERE kind = 'tool_call' ORDER BY id",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok(CallRow {
+                    user: row.get(0)?,
+                    server: row.get(1)?,
+                    slug: row.get(2)?,
+                    tool: row.get(3)?,
+                    decision: row.get(4)?,
+                    outcome: row.get(5)?,
+                    detail: row.get(6)?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<CallRow>>>()
+        })
+        .await
+        .expect("the activity rows")
+}
+
+/// The tool_call rows, polled for up to 3 seconds until there are `wanted` of them.
+async fn wait_for_rows(state: &AppState, wanted: usize) -> Vec<CallRow> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let rows = call_rows(state).await;
+        if rows.len() >= wanted || Instant::now() >= deadline {
+            return rows;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The requests of `up` that were tools/call.
+fn calls(up: &TestUpstream) -> Vec<Seen> {
+    up.seen()
+        .into_iter()
+        .filter(|seen| seen.rpc() == "tools/call")
+        .collect()
+}
+
+/// How many requests of `up` carried the JSON-RPC `method`.
+fn rpc_count(up: &TestUpstream, method: &str) -> usize {
+    up.seen().iter().filter(|seen| seen.rpc() == method).count()
+}
+
+/// The answer that names the tool it was called with, sent at once.
+fn echo_text(seen: &Seen) -> Plan {
+    let name = seen.json()["params"]["name"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    reply_to(
+        seen,
+        json!({"content": [{"type": "text", "text": format!("called: {name}")}]}),
+    )
+}
+
+/// The answer of `echo_text`, sent after `wait`.
+fn echo_after(seen: &Seen, wait: Duration) -> Plan {
+    match echo_text(seen) {
+        Plan::Reply(response) => Plan::Late(wait, response),
+        other => other,
+    }
+}
+
+/// A stateless upstream: server/discover, `tools` as its list, and `call` as its answer to tools/call.
+async fn stateless_with(
+    tools: Vec<Value>,
+    call: impl Fn(&Seen) -> Plan + Send + Sync + 'static,
+) -> TestUpstream {
+    TestUpstream::start(move |seen: &Seen| match seen.rpc().as_str() {
+        "server/discover" => reply_to(seen, discover()),
+        "tools/list" => reply_to(seen, json!({"tools": tools.clone()})),
+        "tools/call" => call(seen),
+        _ => reply_to(seen, json!({})),
+    })
+    .await
+}
+
+/// A session upstream whose list is read from `tools` at each request; tools/call answers with the name.
+/// Each initialize gets a new session id, as a real upstream gives one.
+async fn session_shared(tools: Arc<Mutex<Vec<Value>>>) -> TestUpstream {
+    let issued = Arc::new(AtomicUsize::new(0));
+    TestUpstream::start(move |seen: &Seen| {
+        if seen.method == "DELETE" {
+            return answer(200, None, None, "");
+        }
+        if seen.header("mcp-protocol-version") == Some("2026-07-28") {
+            return answer(400, None, None, "");
+        }
+        let id = seen.json()["id"].clone();
+        match seen.rpc().as_str() {
+            "initialize" => {
+                let session = format!("s{}", issued.fetch_add(1, Ordering::SeqCst) + 1);
+                answer(
+                    200,
+                    Some(&session),
+                    Some("application/json"),
+                    &rpc_text(
+                        &id,
+                        json!({"protocolVersion": "2025-11-25", "capabilities": {}}),
+                    ),
+                )
+            }
+            _ if !seen
+                .header("mcp-session-id")
+                .is_some_and(|id| id.starts_with('s')) =>
+            {
+                answer(400, None, None, "")
+            }
+            "notifications/initialized" => answer(202, None, None, ""),
+            "tools/list" => {
+                let listed = tools.lock().expect("the tool list").clone();
+                answer(
+                    200,
+                    None,
+                    Some("application/json"),
+                    &rpc_text(&id, json!({"tools": listed})),
+                )
+            }
+            "tools/call" => echo_text(seen),
+            _ => answer(404, None, None, ""),
+        }
+    })
+    .await
+}
+
+/// A session-style tools/call body for `name` with empty arguments.
+fn call_body(id: i64, name: &str) -> String {
+    json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": {}}})
+        .to_string()
+}
+
+/// The same call as a stateless client sends it: the version in `_meta`.
+fn stateless_call_body(id: i64, name: &str) -> String {
+    json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
+        "name": name,
+        "arguments": {},
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+    }})
+    .to_string()
+}
+
+/// The text of the first content item of a call answer.
+fn call_text(reply: &Reply) -> Option<&str> {
+    reply
+        .json
+        .as_ref()?
+        .get("result")?
+        .get("content")?
+        .get(0)?
+        .get("text")?
+        .as_str()
+}
+
+/// Removes the assignment of `user_id` to `server_id`.
+async fn unassign(state: &AppState, user_id: i64, server_id: i64) {
+    state
+        .db
+        .call(move |conn| {
+            conn.execute(
+                "DELETE FROM user_servers WHERE user_id = ?1 AND server_id = ?2",
+                params![user_id, server_id],
+            )
+        })
+        .await
+        .expect("the unassignment");
+}
+
+#[test]
+fn split_takes_the_first_double_underscore_and_refuses_the_rest() {
+    assert_eq!(split("a__b__c"), Some(("a", "b__c")));
+    assert_eq!(split("a___echo"), Some(("a", "_echo")));
+    assert_eq!(split("echo"), None);
+    assert_eq!(split("__echo"), None);
+    assert_eq!(split("a__"), None);
+    assert_eq!(split("A__echo"), None);
+    assert_eq!(split("a__b c"), None);
+    let longest = format!("a__{}", "x".repeat(125));
+    assert_eq!(longest.len(), 128);
+    assert_eq!(split(&longest), Some(("a", &longest[3..])));
+    let too_long = format!("a__{}", "x".repeat(126));
+    assert_eq!(too_long.len(), 129);
+    assert_eq!(split(&too_long), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_refusal_answers_the_same_and_writes_one_deny_row() {
+    let fx = fixture().await;
+    let hidden =
+        json!({"name": "hidden", "inputSchema": {"type": "object", "x-mcp-header": "Region"}});
+    let up = stateless_with(vec![tool("echo"), tool("denied"), hidden], echo_text).await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let other = server(&fx.state, "other", CLOSED).await;
+    let demo = fx.server_id;
+    fx.state
+        .db
+        .call(move |conn| {
+            conn.execute(
+                "INSERT INTO rules (user_id, effect, server_id, tool, created_at) \
+                 VALUES (1, 'deny', ?1, 'denied', 0)",
+                params![demo],
+            )
+        })
+        .await
+        .expect("the deny rule");
+    let cases: [(&str, Option<i64>, &str, &str); 6] = [
+        ("echo", None, "mcp", "echo"),
+        ("nope__echo", None, "mcp", "nope__echo"),
+        ("other__echo", Some(other), "other", "echo"),
+        ("demo__missing", Some(demo), "demo", "missing"),
+        ("demo__denied", Some(demo), "demo", "denied"),
+        ("demo__hidden", Some(demo), "demo", "hidden"),
+    ];
+    for (index, (name, server_id, slug, tool_name)) in cases.into_iter().enumerate() {
+        let caller = combined_caller(&fx.state, 1).await;
+        let reply = send_text(
+            &fx.state,
+            caller,
+            "POST",
+            &[],
+            Some(call_body(index as i64 + 2, name)),
+        )
+        .await;
+        assert_eq!(reply.status, 200, "{name}: a refusal answers 200");
+        assert_eq!(
+            reply.json,
+            Some(json!({
+                "jsonrpc": "2.0",
+                "id": index as i64 + 2,
+                "error": {"code": -32602, "message": format!("Unknown tool: {name}")},
+            })),
+            "{name}: the refusal must name the tool as sent"
+        );
+        assert!(
+            calls(&up).is_empty(),
+            "{name}: the upstream must never see a tools/call"
+        );
+        let rows = call_rows(&fx.state).await;
+        assert_eq!(
+            rows.len(),
+            index + 1,
+            "{name}: exactly one row for the refusal"
+        );
+        assert_eq!(
+            rows[index],
+            CallRow {
+                user: Some(1),
+                server: server_id,
+                slug: slug.to_owned(),
+                tool: tool_name.to_owned(),
+                decision: "deny".to_owned(),
+                outcome: "refused".to_owned(),
+                detail: String::new(),
+            },
+            "{name}: the refused row"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn arguments_reach_the_upstream_byte_for_byte() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("echo")], echo_text).await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let caller = combined_caller(&fx.state, 1).await;
+    let body = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"demo__echo","arguments":{"n": 12345678901234567890123, "b": 1, "a": 2}}}"#;
+    let reply = send_text(&fx.state, caller, "POST", &[], Some(body.to_owned())).await;
+    assert_eq!(reply.status, 200, "the call must be answered");
+    assert_eq!(call_text(&reply), Some("called: echo"));
+    let sent = calls(&up);
+    assert_eq!(sent.len(), 1, "the upstream must receive one tools/call");
+    assert_eq!(sent[0].json()["params"]["name"], "echo");
+    assert!(
+        String::from_utf8_lossy(&sent[0].body)
+            .contains(r#""arguments":{"n": 12345678901234567890123, "b": 1, "a": 2}"#),
+        "the arguments must reach the upstream byte for byte"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_arguments_and_the_progress_token_reach_the_upstream() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("echo")], echo_text).await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let caller = combined_caller(&fx.state, 1).await;
+    let body = r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"demo__echo","arguments":{},"requestState":"rs-1","_meta":{"progressToken":"p-1","vendor.example/x":"vendor-y","io.modelcontextprotocol/clientCapabilities":{"elicitation":{}}}}}"#;
+    let reply = send_text(&fx.state, caller, "POST", &[], Some(body.to_owned())).await;
+    assert_eq!(reply.status, 200, "the call must be answered");
+    let sent = calls(&up);
+    assert_eq!(sent.len(), 1, "the upstream must receive one tools/call");
+    let text = String::from_utf8_lossy(&sent[0].body).into_owned();
+    for hidden in ["rs-1", "vendor.example/x", "vendor-y", "elicitation"] {
+        assert!(
+            !text.contains(hidden),
+            "{hidden} must not reach the upstream: {text}"
+        );
+    }
+    let upstream_body = sent[0].json();
+    assert_eq!(
+        upstream_body["params"]["_meta"]["progressToken"],
+        json!("p-1"),
+        "a string progress token must reach the upstream"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_calls_with_one_client_id_keep_it_and_reach_the_upstream_under_their_own_ids() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("echo")], |seen: &Seen| {
+        echo_after(seen, Duration::from_millis(200))
+    })
+    .await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let first_caller = combined_caller(&fx.state, 1).await;
+    let second_caller = same_family(&first_caller);
+    let (first, second) = tokio::join!(
+        send_text(
+            &fx.state,
+            first_caller,
+            "POST",
+            &[],
+            Some(call_body(7, "demo__echo"))
+        ),
+        send_text(
+            &fx.state,
+            second_caller,
+            "POST",
+            &[],
+            Some(call_body(7, "demo__echo"))
+        ),
+    );
+    for reply in [&first, &second] {
+        assert_eq!(
+            reply.json.as_ref().map(|json| json["id"].clone()),
+            Some(json!(7))
+        );
+        assert_eq!(call_text(reply), Some("called: echo"));
+    }
+    let ids: Vec<Value> = calls(&up)
+        .iter()
+        .map(|seen| seen.json()["id"].clone())
+        .collect();
+    assert_eq!(ids.len(), 2, "both calls must reach the upstream");
+    assert_ne!(
+        ids[0], ids[1],
+        "the upstream ids of the two calls must differ"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_result_that_asks_for_input_is_a_tool_error_and_a_complete_one_is_plain() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("ask"), tool("done")], |seen: &Seen| {
+        match seen.json()["params"]["name"].as_str() {
+            Some("ask") => reply_to(
+                seen,
+                json!({"resultType": "input_required", "content": [{"type": "text", "text": "needs input"}]}),
+            ),
+            _ => reply_to(
+                seen,
+                json!({"resultType": "complete", "content": [{"type": "text", "text": "done"}]}),
+            ),
+        }
+    })
+    .await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let asked = json!({
+        "content": [{"type": "text", "text": "This tool asked for input that this endpoint does not relay."}],
+        "isError": true,
+    });
+    let session = combined_caller(&fx.state, 1).await;
+    let reply = send_text(
+        &fx.state,
+        session,
+        "POST",
+        &[],
+        Some(call_body(1, "demo__ask")),
+    )
+    .await;
+    assert_eq!(
+        reply.json.as_ref().map(|json| json["result"].clone()),
+        Some(asked.clone()),
+        "a session client gets the tool error for input_required"
+    );
+    let session = combined_caller(&fx.state, 1).await;
+    let reply = send_text(
+        &fx.state,
+        session,
+        "POST",
+        &[],
+        Some(call_body(2, "demo__done")),
+    )
+    .await;
+    assert_eq!(
+        reply.json.as_ref().map(|json| json["result"].clone()),
+        Some(json!({"content": [{"type": "text", "text": "done"}]})),
+        "a session client gets a complete result without resultType"
+    );
+    let stateless = combined_caller(&fx.state, 1).await;
+    let reply = send_text(
+        &fx.state,
+        stateless,
+        "POST",
+        &[
+            ("MCP-Protocol-Version", "2026-07-28"),
+            ("Mcp-Method", "tools/call"),
+            ("Mcp-Name", "demo__ask"),
+        ],
+        Some(stateless_call_body(3, "demo__ask")),
+    )
+    .await;
+    let mut stateless_asked = asked;
+    stateless_asked["resultType"] = json!("complete");
+    assert_eq!(
+        reply.json.as_ref().map(|json| json["result"].clone()),
+        Some(stateless_asked),
+        "a stateless client gets the tool error marked complete"
+    );
+    let outcomes: Vec<(String, String)> = call_rows(&fx.state)
+        .await
+        .into_iter()
+        .map(|row| (row.decision, row.outcome))
+        .collect();
+    assert_eq!(
+        outcomes,
+        vec![
+            ("allow".to_owned(), "error".to_owned()),
+            ("allow".to_owned(), "ok".to_owned()),
+            ("allow".to_owned(), "error".to_owned()),
+        ],
+        "each answered call writes its own row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upstream_answer_under_another_id_is_502_and_unavailable() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("echo")], |_seen: &Seen| {
+        answer(
+            200,
+            None,
+            Some("application/json"),
+            &rpc_text(&json!(999), json!({"content": []})),
+        )
+    })
+    .await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let caller = combined_caller(&fx.state, 1).await;
+    let reply = send_text(
+        &fx.state,
+        caller,
+        "POST",
+        &[],
+        Some(call_body(5, "demo__echo")),
+    )
+    .await;
+    assert_eq!(
+        reply.status, 502,
+        "a foreign answer is an unavailable upstream"
+    );
+    assert_eq!(
+        reply.json,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": null,
+            "error": {"code": -32000, "message": "Upstream demo is unavailable"},
+        })),
+    );
+    let rows = call_rows(&fx.state).await;
+    assert_eq!(
+        rows,
+        vec![CallRow {
+            user: Some(1),
+            server: Some(fx.server_id),
+            slug: "demo".to_owned(),
+            tool: "echo".to_owned(),
+            decision: "allow".to_owned(),
+            outcome: "unavailable".to_owned(),
+            detail: String::new(),
+        }]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_user_unassigned_while_the_upstream_holds_the_answer_is_refused() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("echo")], |seen: &Seen| {
+        echo_after(seen, Duration::from_millis(400))
+    })
+    .await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    list(&fx.state, 1).await;
+    let caller = combined_caller(&fx.state, 1).await;
+    let (reply, ()) = tokio::join!(
+        send_text(
+            &fx.state,
+            caller,
+            "POST",
+            &[],
+            Some(call_body(8, "demo__echo"))
+        ),
+        async {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            unassign(&fx.state, 1, fx.server_id).await;
+        },
+    );
+    assert_eq!(calls(&up).len(), 1, "the call must have gone upstream");
+    assert_eq!(
+        reply.json,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "error": {"code": -32602, "message": "Unknown tool: demo__echo"},
+        })),
+        "the answer the upstream held must be replaced by the refusal"
+    );
+    let rows = call_rows(&fx.state).await;
+    assert_eq!(
+        rows,
+        vec![CallRow {
+            user: Some(1),
+            server: Some(fx.server_id),
+            slug: "demo".to_owned(),
+            tool: "echo".to_owned(),
+            decision: "allow".to_owned(),
+            outcome: "refused".to_owned(),
+            detail: String::new(),
+        }]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_leaves_while_the_upstream_holds_the_answer_leaves_one_row() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("echo")], |_seen: &Seen| Plan::Silent).await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    list(&fx.state, 1).await;
+    let caller = combined_caller(&fx.state, 1).await;
+    let state = fx.state.clone();
+    let request = request_of("POST", &[], Some(call_body(9, "demo__echo")));
+    let task = tokio::spawn(async move { handle(&state, caller, request).await });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while calls(&up).is_empty() {
+        assert!(Instant::now() < deadline, "the upstream must hold the call");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    task.abort();
+    let rows = wait_for_rows(&fx.state, 1).await;
+    assert_eq!(
+        rows,
+        vec![CallRow {
+            user: Some(1),
+            server: Some(fx.server_id),
+            slug: "demo".to_owned(),
+            tool: "echo".to_owned(),
+            decision: "allow".to_owned(),
+            outcome: "error".to_owned(),
+            detail: "the client left before the answer".to_owned(),
+        }]
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        call_rows(&fx.state).await.len(),
+        1,
+        "still one row 500 ms later"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_added_upstream_is_callable_and_a_missing_one_costs_one_list() {
+    let fx = fixture().await;
+    let listed = Arc::new(Mutex::new(vec![tool("echo")]));
+    let up = session_shared(Arc::clone(&listed)).await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let family = combined_caller(&fx.state, 1).await;
+    let list_body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).to_string();
+    let first = send_text(
+        &fx.state,
+        same_family(&family),
+        "POST",
+        &[],
+        Some(list_body),
+    )
+    .await;
+    assert_eq!(names(&first), vec!["demo__echo"]);
+    listed.lock().expect("the tool list").push(tool("added"));
+    let reply = send_text(
+        &fx.state,
+        same_family(&family),
+        "POST",
+        &[],
+        Some(call_body(2, "demo__added")),
+    )
+    .await;
+    assert_eq!(
+        call_text(&reply),
+        Some("called: added"),
+        "a tool added after the last list must be callable"
+    );
+    assert_eq!(
+        rpc_count(&up, "tools/list"),
+        2,
+        "the first list and one refresh for the new name"
+    );
+    assert_eq!(rpc_count(&up, "initialize"), 1, "no second initialize");
+    let reply = send_text(
+        &fx.state,
+        same_family(&family),
+        "POST",
+        &[],
+        Some(call_body(3, "demo__nope")),
+    )
+    .await;
+    assert_eq!(
+        reply.json,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "error": {"code": -32602, "message": "Unknown tool: demo__nope"},
+        })),
+    );
+    assert_eq!(
+        rpc_count(&up, "tools/list"),
+        3,
+        "a missing tool costs exactly one more list"
+    );
+    assert_eq!(calls(&up).len(), 1, "only the added tool was called");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rules_table_that_cannot_be_read_is_500_and_the_upstream_is_untouched() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("echo")], echo_text).await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    fx.state
+        .db
+        .call(|conn| conn.execute_batch("DROP TABLE rules"))
+        .await
+        .expect("the rules table is dropped");
+    let caller = combined_caller(&fx.state, 1).await;
+    let reply = send_text(
+        &fx.state,
+        caller,
+        "POST",
+        &[],
+        Some(call_body(11, "demo__echo")),
+    )
+    .await;
+    assert_eq!(
+        reply.status, 500,
+        "a rules read that fails is an internal error"
+    );
+    assert!(up.seen().is_empty(), "the upstream must not be contacted");
+    assert!(call_rows(&fx.state).await.is_empty(), "no row is written");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_successful_call_writes_one_allow_row_under_the_real_server() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("echo")], echo_text).await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let caller = combined_caller(&fx.state, 1).await;
+    let reply = send_text(
+        &fx.state,
+        caller,
+        "POST",
+        &[],
+        Some(call_body(12, "demo__echo")),
+    )
+    .await;
+    assert_eq!(reply.status, 200, "the call must be answered");
+    assert_eq!(call_text(&reply), Some("called: echo"));
+    assert_eq!(
+        call_rows(&fx.state).await,
+        vec![CallRow {
+            user: Some(1),
+            server: Some(fx.server_id),
+            slug: "demo".to_owned(),
+            tool: "echo".to_owned(),
+            decision: "allow".to_owned(),
+            outcome: "ok".to_owned(),
+            detail: String::new(),
+        }]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_malformed_call_is_refused_without_an_upstream_or_a_row() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("echo")], echo_text).await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let caller = combined_caller(&fx.state, 1).await;
+    let number_name =
+        r#"{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":5,"arguments":{}}}"#;
+    let reply = send_text(&fx.state, caller, "POST", &[], Some(number_name.to_owned())).await;
+    assert_eq!(reply.status, 400, "a name that is not a string is a 400");
+    assert_eq!(
+        reply.json,
+        Some(
+            json!({"jsonrpc": "2.0", "id": 21, "error": {"code": -32600, "message": "Invalid request"}})
+        ),
+    );
+    let caller = combined_caller(&fx.state, 1).await;
+    let task = r#"{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"demo__echo","arguments":{},"task":{}}}"#;
+    let reply = send_text(&fx.state, caller, "POST", &[], Some(task.to_owned())).await;
+    assert_eq!(
+        reply.json,
+        Some(
+            json!({"jsonrpc": "2.0", "id": 22, "error": {"code": -32601, "message": "Method not found"}})
+        ),
+        "a task parameter stays method not found"
+    );
+    let caller = combined_caller(&fx.state, 1).await;
+    let no_id =
+        r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"demo__echo","arguments":{}}}"#;
+    let reply = send_text(&fx.state, caller, "POST", &[], Some(no_id.to_owned())).await;
+    assert_eq!(
+        reply.status, 400,
+        "a call without an id is the intake refusal"
+    );
+    assert_eq!(
+        reply.json,
+        Some(
+            json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "Invalid request"}})
+        ),
+    );
+    assert!(
+        up.seen().is_empty(),
+        "no malformed call reaches the upstream"
+    );
+    assert!(
+        call_rows(&fx.state).await.is_empty(),
+        "no malformed call writes a row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_event_stream_answer_is_read_to_its_answer_and_returned_as_json() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("echo")], |seen: &Seen| {
+        let id = seen.json()["id"].clone();
+        answer(
+            200,
+            None,
+            Some("text/event-stream"),
+            &format!(
+                "data: {}\n\n",
+                rpc_text(
+                    &id,
+                    json!({"content": [{"type": "text", "text": "streamed"}]})
+                )
+            ),
+        )
+    })
+    .await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let caller = combined_caller(&fx.state, 1).await;
+    let reply = send_text(
+        &fx.state,
+        caller,
+        "POST",
+        &[],
+        Some(call_body(31, "demo__echo")),
+    )
+    .await;
+    assert_eq!(reply.status, 200, "the streamed answer is answered");
+    assert_eq!(
+        reply
+            .headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json"),
+        "the answer is one JSON body, not an event stream"
+    );
+    assert_eq!(call_text(&reply), Some("streamed"));
+    assert_eq!(
+        reply.json.as_ref().map(|json| json["id"].clone()),
+        Some(json!(31))
+    );
+    assert_eq!(
+        call_rows(&fx.state)
+            .await
+            .last()
+            .map(|row| row.outcome.clone()),
+        Some("ok".to_owned()),
+        "the streamed call writes an ok row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_to_an_unassigned_server_never_reaches_it_even_when_its_catalog_has_the_tool() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("echo")], echo_text).await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![]).await;
+    let demo = fx.server_id;
+    fx.state
+        .db
+        .call(move |conn| catalog::replace(conn, demo, &[tool("echo")], 100))
+        .await
+        .expect("the stored catalog");
+    let caller = combined_caller(&fx.state, 1).await;
+    let reply = send_text(
+        &fx.state,
+        caller,
+        "POST",
+        &[],
+        Some(call_body(41, "demo__echo")),
+    )
+    .await;
+    assert_eq!(
+        reply.json,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 41,
+            "error": {"code": -32602, "message": "Unknown tool: demo__echo"},
+        })),
+    );
+    assert!(
+        up.seen().is_empty(),
+        "the upstream must see no request at all, not even a handshake"
+    );
+    assert_eq!(
+        call_rows(&fx.state).await,
+        vec![CallRow {
+            user: Some(1),
+            server: Some(demo),
+            slug: "demo".to_owned(),
+            tool: "echo".to_owned(),
+            decision: "deny".to_owned(),
+            outcome: "refused".to_owned(),
+            detail: String::new(),
+        }]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_upstream_tool_with_an_mcp_header_key_is_callable() {
+    let fx = fixture().await;
+    let listed = Arc::new(Mutex::new(vec![json!({
+        "name": "hidden",
+        "inputSchema": {"type": "object", "x-mcp-header": "Region"},
+    })]));
+    let up = session_shared(listed).await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let caller = combined_caller(&fx.state, 1).await;
+    let reply = send_text(
+        &fx.state,
+        caller,
+        "POST",
+        &[],
+        Some(call_body(42, "demo__hidden")),
+    )
+    .await;
+    assert_eq!(
+        reply.status, 200,
+        "a session link may carry an x-mcp-header tool"
+    );
+    assert_eq!(call_text(&reply), Some("called: hidden"));
+    assert_eq!(
+        call_rows(&fx.state).await,
+        vec![CallRow {
+            user: Some(1),
+            server: Some(fx.server_id),
+            slug: "demo".to_owned(),
+            tool: "hidden".to_owned(),
+            decision: "allow".to_owned(),
+            outcome: "ok".to_owned(),
+            detail: String::new(),
+        }]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upstream_json_rpc_error_is_returned_under_the_clients_id_with_an_error_row() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("echo")], |seen: &Seen| {
+        let id = seen.json()["id"].clone();
+        answer(
+            200,
+            None,
+            Some("application/json"),
+            &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "boom"}})
+                .to_string(),
+        )
+    })
+    .await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let caller = combined_caller(&fx.state, 1).await;
+    let reply = send_text(
+        &fx.state,
+        caller,
+        "POST",
+        &[],
+        Some(call_body(41, "demo__echo")),
+    )
+    .await;
+    assert_eq!(
+        reply.status, 200,
+        "an upstream error is answered in the body"
+    );
+    assert_eq!(
+        reply.json,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 41,
+            "error": {"code": -32000, "message": "boom"},
+        })),
+        "the upstream error must carry the client's id"
+    );
+    assert_eq!(
+        call_rows(&fx.state).await,
+        vec![CallRow {
+            user: Some(1),
+            server: Some(fx.server_id),
+            slug: "demo".to_owned(),
+            tool: "echo".to_owned(),
+            decision: "allow".to_owned(),
+            outcome: "error".to_owned(),
+            detail: String::new(),
+        }]
+    );
 }

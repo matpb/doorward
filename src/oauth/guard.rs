@@ -156,6 +156,30 @@ pub async fn still_valid(state: &AppState, caller: &Caller, slug: &str) -> bool 
     }
 }
 
+/// True while the caller's token still passes the bearer check for `/mcp` and its user is
+/// still assigned to `server_id`. One query; false on a database error.
+pub async fn combined_still_valid(state: &AppState, caller: &Caller, server_id: i64) -> bool {
+    let hash = caller.token_hash.clone();
+    let now = state.clock.now().unix_timestamp();
+    match state
+        .db
+        .call(move |conn| {
+            conn.query_row(COMBINED_SQL, params![hash, now, server_id], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()
+        })
+        .await
+    {
+        Ok(Some(family)) => family == caller.family_id,
+        Ok(None) => false,
+        Err(err) => {
+            eprintln!("doorward: the bearer check cannot read the database: {err}");
+            false
+        }
+    }
+}
+
 /// True when `text` is `prefix` followed by 43 base64url characters.
 pub fn is_token_shape(text: &str, prefix: &str) -> bool {
     text.strip_prefix(prefix)
@@ -229,6 +253,18 @@ const CHECK_SQL: &str = "SELECT f.user_id, u.email, f.id, f.server_id, f.client_
       OR (?3 IS NOT NULL AND f.server_id IN (SELECT id FROM servers WHERE slug = ?3) \
           AND EXISTS (SELECT 1 FROM user_servers us \
                       WHERE us.user_id = f.user_id AND us.server_id = f.server_id)))";
+
+/// The family of the caller's combined token when it passes every check for `/mcp` and the user is
+/// assigned to the server in `?3`.
+const COMBINED_SQL: &str = "SELECT f.id FROM access_tokens a \
+    JOIN token_families f ON f.id = a.family_id \
+    JOIN users u ON u.id = f.user_id \
+    WHERE a.token_hash = ?1 AND a.expires_at > ?2 \
+    AND f.revoked_at IS NULL AND f.expires_at > ?2 \
+    AND u.disabled = 0 AND f.auth_epoch = u.auth_epoch \
+    AND f.server_id IS NULL \
+    AND EXISTS (SELECT 1 FROM user_servers us \
+                WHERE us.user_id = f.user_id AND us.server_id = ?3)";
 
 fn find_caller(
     conn: &Connection,

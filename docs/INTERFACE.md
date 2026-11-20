@@ -419,6 +419,29 @@ The combined endpoint `/mcp` is its own MCP server:
 - At least one assigned server and every one of them failed or timed out: `502`, `-32000`,
   `Upstream mcp is unavailable`. No assigned server: an empty list.
 - A request carrying `Mcp-Session-Id`: `404`, upstream not contacted.
+- `tools/call` takes `{slug}__{tool}`, split at the first `__`. A name without `__`, with an
+  empty or invalid slug or tool, or longer than 128 bytes is refused; so is a name whose
+  server does not exist, whose server the caller is not assigned to now, whose tool is not
+  in the catalog after one refresh of that server, that the caller's rules deny, or whose
+  tool has an `x-mcp-header` key on a stateless link. A refusal is `200` with `-32602` and
+  `Unknown tool: {name as sent}` for every one of them; no upstream sees it. Its activity
+  row is `deny` / `refused`: under the real server and the bare tool name when the server
+  exists, else with no server, the slug `mcp` and the name as sent.
+- An allowed call is sent with the client's `params.arguments` as raw bytes (absent when
+  absent or `null`), its `_meta.progressToken` when that is a string or an integer, and
+  nothing else of the request: no other `_meta` key, no client header, not the client's id.
+- The upstream answer is read whole, also when it is an event stream: nothing is relayed
+  while it runs. It is returned under the client's id with its `result` or `error`. A result
+  whose `resultType` is present and not `complete` becomes a tool error with the text
+  `This tool asked for input that this endpoint does not relay.` and `isError` true. A
+  stateless client's result has `resultType` `complete`; a session client's has none.
+- Before the answer is returned the caller's token and its assignment to the server are
+  checked again; when either fails the answer is the refusal above and the row is
+  `allow` / `refused`. A call that reached an upstream writes one row: `allow` with outcome
+  `ok`, `error` (a JSON-RPC error or a tool error result), or `unavailable`, or, when the
+  client leaves before the answer, `error` with the detail `the client left before the answer`.
+- An upstream that is unreachable, answers another id, or faults: `502`, `-32000`,
+  `Upstream {slug} is unavailable`, row `unavailable`.
 - Every other method: `-32601`.
 
 Answers that both endpoints share:

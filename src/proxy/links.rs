@@ -122,10 +122,7 @@ impl Links {
         let key = (owner.family_id, target.server_id);
         let mut retried = false;
         loop {
-            let link = match self.inner.usable(key, target) {
-                Some(link) => link,
-                None => self.make(state, owner, key, target).await?,
-            };
+            let link = self.link_for(state, owner, key, target).await?;
             let id = link.next_id();
             let outgoing = outgoing(&link.form, &ask, id)?;
             let response = upstream::send(state, target, outgoing).await?;
@@ -156,6 +153,32 @@ impl Links {
                 }
                 _ => return Err(Fault),
             }
+        }
+    }
+
+    /// True when the owner's link to `target` speaks the stateless form; makes the link first when needed.
+    pub async fn stateless(
+        &self,
+        state: &AppState,
+        owner: Owner,
+        target: &Target,
+    ) -> Result<bool, Fault> {
+        let key = (owner.family_id, target.server_id);
+        let link = self.link_for(state, owner, key, target).await?;
+        Ok(matches!(link.form, Form::Stateless))
+    }
+
+    /// The owner's usable link for `key`, or one made now.
+    async fn link_for(
+        &self,
+        state: &AppState,
+        owner: Owner,
+        key: (i64, i64),
+        target: &Target,
+    ) -> Result<Arc<Link>, Fault> {
+        match self.inner.usable(key, target) {
+            Some(link) => Ok(link),
+            None => self.make(state, owner, key, target).await,
         }
     }
 

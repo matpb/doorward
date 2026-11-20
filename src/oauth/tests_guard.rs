@@ -27,7 +27,9 @@ use crate::db::Db;
 use crate::web::SESSION_COOKIE;
 
 use super::families::{self, NewFamily};
-use super::guard::{Caller, Refusal, Target, bearer_token, check, is_token_shape, still_valid};
+use super::guard::{
+    Caller, Refusal, Target, bearer_token, check, combined_still_valid, is_token_shape, still_valid,
+};
 
 /// The fixed instant every test starts at, in unix seconds.
 const NOW: i64 = 1_800_000_000;
@@ -1599,6 +1601,158 @@ async fn still_valid_is_false_on_a_database_error() {
         .expect("rename");
     assert!(
         !still_valid(&state, &caller, "demo").await,
+        "a database error answers false"
+    );
+}
+
+/// The caller that the bearer check gives the access token on `/mcp`.
+async fn combined_caller_of(state: &AppState, access: &str) -> Caller {
+    let (caller, _open) = check(
+        state,
+        Ipv4Addr::LOCALHOST.into(),
+        &bearer_headers(access),
+        Target::Combined,
+    )
+    .await
+    .unwrap_or_else(|_| panic!("the combined token must pass the bearer check"));
+    caller
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn combined_still_valid_follows_the_token_and_the_assignment() {
+    let (gw, state, user, server_token) = live_token().await;
+    let demo = scalar(&gw, "SELECT id FROM servers WHERE slug = 'demo'", []);
+    let other = add_server(&gw, "other");
+    let carol = user_with(&gw, CAROL, &[other]);
+    let combined = issue(&gw, user, None, CLIENT);
+    let caller = combined_caller_of(&state, &combined.access).await;
+    assert!(
+        combined_still_valid(&state, &caller, demo).await,
+        "a live combined token of an assigned server stays valid"
+    );
+    assert!(
+        !combined_still_valid(&state, &caller, other).await,
+        "bob's token must not pass for a server bob is not assigned to"
+    );
+    let carol_combined = issue(&gw, carol, None, CLIENT);
+    let carol_caller = combined_caller_of(&state, &carol_combined.access).await;
+    assert!(
+        !combined_still_valid(&state, &carol_caller, demo).await,
+        "carol's token must not pass for demo, which carol is not assigned to"
+    );
+    gw.conn()
+        .execute(
+            "DELETE FROM user_servers WHERE user_id = ?1 AND server_id = ?2",
+            params![user, demo],
+        )
+        .expect("unassign");
+    assert!(
+        !combined_still_valid(&state, &caller, demo).await,
+        "an unassigned user's combined token is no longer valid"
+    );
+    assign(&gw, user, demo);
+    let server_caller = caller_of(&state, &server_token.access, "demo").await;
+    assert!(
+        !combined_still_valid(&state, &server_caller, demo).await,
+        "a token of a server path is not a combined token"
+    );
+    families::revoke(&gw.conn(), combined.family, NOW).expect("revoke");
+    assert!(
+        !combined_still_valid(&state, &caller, demo).await,
+        "a revoked combined family is no longer valid"
+    );
+    let fresh = issue(&gw, user, None, CLIENT);
+    let fresh_caller = combined_caller_of(&state, &fresh.access).await;
+    assert!(
+        combined_still_valid(&state, &fresh_caller, demo).await,
+        "a fresh combined token stays valid"
+    );
+    gw.clock.set(NOW + 3601);
+    assert!(
+        !combined_still_valid(&state, &fresh_caller, demo).await,
+        "an expired combined access token is no longer valid"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn combined_still_valid_follows_the_family_and_the_user() {
+    let (gw, state, user, _server_token) = live_token().await;
+    let demo = scalar(&gw, "SELECT id FROM servers WHERE slug = 'demo'", []);
+
+    let revoked = issue(&gw, user, None, CLIENT);
+    let revoked_caller = combined_caller_of(&state, &revoked.access).await;
+    assert!(
+        combined_still_valid(&state, &revoked_caller, demo).await,
+        "precondition: the family is live"
+    );
+    gw.conn()
+        .execute(
+            "UPDATE token_families SET revoked_at = ?1 WHERE id = ?2",
+            params![NOW, revoked.family],
+        )
+        .expect("revoke the family row only");
+    assert!(
+        !combined_still_valid(&state, &revoked_caller, demo).await,
+        "a revoked family is refused while its access token is unexpired"
+    );
+
+    let lapsed = issue(&gw, user, None, CLIENT);
+    let lapsed_caller = combined_caller_of(&state, &lapsed.access).await;
+    gw.conn()
+        .execute(
+            "UPDATE token_families SET expires_at = ?1 WHERE id = ?2",
+            params![NOW - 1, lapsed.family],
+        )
+        .expect("expire the family row only");
+    assert!(
+        !combined_still_valid(&state, &lapsed_caller, demo).await,
+        "a family past its own lifetime is refused while its access token is unexpired"
+    );
+
+    let dave = user_with(&gw, "dave@example.com", &[demo]);
+    let disabled = issue(&gw, dave, None, CLIENT);
+    let disabled_caller = combined_caller_of(&state, &disabled.access).await;
+    assert!(
+        combined_still_valid(&state, &disabled_caller, demo).await,
+        "precondition: dave is live"
+    );
+    gw.conn()
+        .execute("UPDATE users SET disabled = 1 WHERE id = ?1", params![dave])
+        .expect("disable dave");
+    assert!(
+        !combined_still_valid(&state, &disabled_caller, demo).await,
+        "a disabled user's combined token is refused"
+    );
+
+    let erin = user_with(&gw, "erin@example.com", &[demo]);
+    let raised = issue(&gw, erin, None, CLIENT);
+    let raised_caller = combined_caller_of(&state, &raised.access).await;
+    assert!(
+        combined_still_valid(&state, &raised_caller, demo).await,
+        "precondition: erin is live"
+    );
+    gw.conn()
+        .execute(
+            "UPDATE users SET auth_epoch = auth_epoch + 1 WHERE id = ?1",
+            params![erin],
+        )
+        .expect("raise erin's sign-in generation");
+    assert!(
+        !combined_still_valid(&state, &raised_caller, demo).await,
+        "a raised sign-in generation, as a password change makes, refuses the family"
+    );
+
+    let last = issue(&gw, user, None, CLIENT);
+    let last_caller = combined_caller_of(&state, &last.access).await;
+    assert!(
+        combined_still_valid(&state, &last_caller, demo).await,
+        "precondition: bob's last token is live"
+    );
+    gw.conn()
+        .execute_batch("ALTER TABLE user_servers RENAME TO user_servers_gone;")
+        .expect("rename");
+    assert!(
+        !combined_still_valid(&state, &last_caller, demo).await,
         "a database error answers false"
     );
 }

@@ -729,21 +729,25 @@ const LEFT: &str = "the client left before the answer";
 
 /// The activity row a tools/call owes once it went upstream. Dropped unsettled, because the client
 /// left, it writes the row from its own task.
-struct Owed {
+pub(super) struct Owed {
     ctx: Option<Owned>,
     tool: String,
 }
 
 impl Owed {
     fn new(ctx: &Ctx<'_>, tool: &str) -> Owed {
+        Owed::of(ctx.owned(), tool)
+    }
+
+    pub(super) fn of(owned: Owned, tool: &str) -> Owed {
         Owed {
-            ctx: Some(ctx.owned()),
+            ctx: Some(owned),
             tool: tool.to_owned(),
         }
     }
 
     /// Writes the row with `outcome` in its own task and waits for it, so a dropped waiter writes nothing more.
-    async fn settle(mut self, outcome: &str) {
+    pub(super) async fn settle(mut self, outcome: &str) {
         let Some(owned) = self.ctx.take() else {
             return;
         };
