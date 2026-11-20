@@ -607,6 +607,21 @@ legend {
   max-width: 17.5rem;
 }
 
+@media (min-width: 40.0625rem) {
+  .filters {
+    display: grid;
+    grid-template-rows: auto auto;
+    grid-template-columns: repeat(2, minmax(0, 17.5rem)) auto;
+    grid-auto-flow: column;
+    justify-content: start;
+    gap: 0.25rem 1rem;
+  }
+
+  .filters > button {
+    grid-row: 2;
+  }
+}
+
 /* Buttons */
 button,
 a.button {
