@@ -140,3 +140,46 @@ fn the_example_env_file_starts_a_gateway() {
     Config::from_sources(None, &pairs)
         .expect("the example env file with its placeholders filled must start a gateway");
 }
+
+/// The text of the first ```toml block of `text`, without its fences.
+fn first_toml_block(text: &str) -> &str {
+    const OPEN: &str = "```toml\n";
+    let start = text
+        .find(OPEN)
+        .unwrap_or_else(|| panic!("README.md must hold a ```toml block"))
+        + OPEN.len();
+    let length = text[start..]
+        .find("\n```")
+        .unwrap_or_else(|| panic!("the ```toml block of README.md must be closed"));
+    &text[start..start + length]
+}
+
+/// The start check of `config`, with a refusal as its message.
+fn start_check_of(config: &Config) -> Result<Option<String>, String> {
+    config.start_check().map_err(|err| err.to_string())
+}
+
+#[test]
+fn the_example_config_passes_the_start_check() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("doorward.example.toml");
+    let config = Config::load(&path).expect("doorward.example.toml must load");
+    assert_eq!(
+        start_check_of(&config),
+        Ok(None),
+        "doorward.example.toml must start: it lists a proxy in trusted_proxies"
+    );
+}
+
+#[test]
+fn the_readme_config_passes_the_start_check() {
+    let text = repo_file("README.md");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("doorward.toml");
+    std::fs::write(&path, first_toml_block(&text)).expect("write the README config");
+    let config = Config::load(&path).expect("the README config must load");
+    assert_eq!(
+        start_check_of(&config),
+        Ok(None),
+        "the README config must start: it lists a proxy in trusted_proxies"
+    );
+}

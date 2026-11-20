@@ -2,10 +2,11 @@ mod common;
 
 use std::time::Duration;
 
-use common::admin;
+use common::admin::{self, ServerSpec};
+use common::client::Page;
 use common::mail::link_with_prefix;
-use common::upstream::UpstreamOptions;
-use common::world::{PASSWORD, World};
+use common::upstream::{FakeUpstream, UpstreamOptions};
+use common::world::{OWNER_EMAIL, PASSWORD, SECRET_HEADER, World, secret_for};
 use serde_json::json;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -16,6 +17,8 @@ const NEW_PASSWORD: &str = "a new long password";
 const CANARY: &str = "CANARY-7f3a91";
 const TOOL_CALL: &str = r#"[data-kind="tool_call"]"#;
 const HOSTILE_ADDRESS: &str = "\"<b>x</b>\"@example.com";
+const ACTIVITY_LINK: &str = r#"a[data-link="activity"]"#;
+const FILTER_FORM: &str = r#"form[data-form="activity-filter"]"#;
 
 fn kinds(rows: &[admin::ActivityRow]) -> Vec<String> {
     rows.iter().map(|row| row.kind.clone()).collect()
@@ -354,5 +357,193 @@ async fn user_text_is_escaped() {
     assert!(
         !page.body.contains("<b>x</b>"),
         "the activity page must escape the address typed by the user"
+    );
+}
+
+/// A server on a fresh upstream, renamed so that its name differs from its slug.
+async fn named_server(w: &World, slug: &str, name: &str) -> (FakeUpstream, String) {
+    let (upstream, id) = w.upstream(slug, UpstreamOptions::default()).await;
+    let url = upstream.url();
+    let secret = secret_for(slug);
+    let spec = ServerSpec {
+        name,
+        slug,
+        upstream_url: &url,
+        secret: Some((SECRET_HEADER, secret.as_str())),
+        pass_resources: false,
+        pass_prompts: false,
+    };
+    let page = admin::update_server(&w.owner, &id, &spec).await;
+    assert_eq!(page.status, 303, "renaming server {slug} must be saved");
+    (upstream, id)
+}
+
+/// The (value, text) pair of every option of the select `css`, in page order.
+fn options(page: &Page, css: &str) -> Vec<(String, String)> {
+    let option = format!("{css} option");
+    page.attrs(&option, "value")
+        .into_iter()
+        .zip(page.texts(&option))
+        .collect()
+}
+
+fn option(value: &str, text: &str) -> (String, String) {
+    (value.to_owned(), text.to_owned())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_activity_page_offers_a_user_and_a_server_filter() {
+    let w = World::start().await;
+    let carol = w.user(CAROL).await;
+    let bob = w.user(BOB).await;
+    let (_beta, beta_id) = named_server(&w, "beta", "Beta Tools").await;
+    let (_alpha, alpha_id) = named_server(&w, "alpha", "Alpha Tools").await;
+    w.grant(BOB, &[alpha_id.as_str(), beta_id.as_str()]).await;
+    w.grant(CAROL, &[alpha_id.as_str()]).await;
+    let bob_alpha = w.session_mcp("alpha", &w.token(&bob, "alpha").await);
+    bob_alpha.initialize().await;
+    bob_alpha.call_tool("echo", json!({})).await;
+    let carol_alpha = w.session_mcp("alpha", &w.token(&carol, "alpha").await);
+    carol_alpha.initialize().await;
+    carol_alpha.call_tool("echo", json!({})).await;
+
+    let bob_id = w.user_id(BOB).await;
+    let carol_id = w.user_id(CAROL).await;
+    let owner_id = w.user_id(OWNER_EMAIL).await;
+    let page = w.owner.get("/admin/activity").await;
+    assert_eq!(page.status, 200, "the activity page must answer 200");
+    assert_eq!(
+        page.count(FILTER_FORM),
+        1,
+        "the activity page must hold one filter form"
+    );
+    assert_eq!(
+        page.attr(FILTER_FORM, "method").as_deref(),
+        Some("get"),
+        "the filter form must submit with GET"
+    );
+    assert_eq!(
+        page.attr(FILTER_FORM, "action").as_deref(),
+        Some("/admin/activity"),
+        "the filter form must submit to /admin/activity"
+    );
+    assert_eq!(
+        page.text(r#"label[for="filter-user"]"#).as_deref(),
+        Some("User"),
+        "the user filter must have the label User"
+    );
+    assert_eq!(
+        page.attr("select#filter-user", "name").as_deref(),
+        Some("user"),
+        "the user filter must be named user"
+    );
+    assert_eq!(
+        page.text(r#"label[for="filter-server"]"#).as_deref(),
+        Some("Server"),
+        "the server filter must have the label Server"
+    );
+    assert_eq!(
+        page.attr("select#filter-server", "name").as_deref(),
+        Some("server"),
+        "the server filter must be named server"
+    );
+    assert_eq!(
+        options(&page, "select#filter-user"),
+        vec![
+            option("", "Any user"),
+            option(&bob_id, BOB),
+            option(&carol_id, CAROL),
+            option(&owner_id, OWNER_EMAIL),
+        ],
+        "the user filter must offer Any user, then every user ordered by email"
+    );
+    assert_eq!(
+        options(&page, "select#filter-server"),
+        vec![
+            option("", "Any server"),
+            option(&alpha_id, "Alpha Tools (alpha)"),
+            option(&beta_id, "Beta Tools (beta)"),
+        ],
+        "the server filter must offer Any server, then every server ordered by slug"
+    );
+    assert_eq!(
+        page.texts(&format!("{FILTER_FORM} button")),
+        vec!["Filter".to_string()],
+        "the filter form must hold one button reading Filter"
+    );
+    assert_eq!(
+        page.attr(&format!("{FILTER_FORM} button"), "type")
+            .as_deref(),
+        Some("submit"),
+        "the Filter button must submit the form"
+    );
+    assert_eq!(
+        page.count("select option[selected]"),
+        0,
+        "no option may be selected while no filter is set"
+    );
+
+    let by_bob = w.owner.get(&format!("/admin/activity?user={bob_id}")).await;
+    assert_eq!(by_bob.status, 200, "the filtered page must answer 200");
+    let users = by_bob.attrs("[data-kind]", "data-user");
+    assert!(!users.is_empty(), "bob's activity must not be empty");
+    assert!(
+        users.iter().all(|user| user == BOB),
+        "filtering by bob must show only bob's rows, users were {users:?}"
+    );
+    assert_eq!(
+        by_bob.attrs("select#filter-user option[selected]", "value"),
+        vec![bob_id.clone()],
+        "bob's option must be the selected user"
+    );
+
+    let every = w.owner.get("/admin/activity").await;
+    let empty = w.owner.get("/admin/activity?user=&server=").await;
+    assert_eq!(empty.status, 200, "the empty filters must answer 200");
+    let every_time = every.attrs("[data-kind]", "data-time");
+    assert!(!every_time.is_empty(), "the activity page must hold rows");
+    assert_eq!(
+        empty.attrs("[data-kind]", "data-time"),
+        every_time,
+        "empty user and server filters must show every row"
+    );
+    assert_eq!(
+        empty.attrs("[data-kind]", "data-user"),
+        every.attrs("[data-kind]", "data-user"),
+        "empty user and server filters must show the rows of every user"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_user_and_server_pages_link_to_their_activity() {
+    let w = World::start().await;
+    w.user(BOB).await;
+    let bob_id = w.user_id(BOB).await;
+    let (_up, server_id) = w.upstream("demo", UpstreamOptions::default()).await;
+
+    let user_page = w.owner.get(&format!("/admin/users/{bob_id}")).await;
+    assert_eq!(user_page.status, 200, "bob's page must answer 200");
+    assert_eq!(
+        user_page.attrs(ACTIVITY_LINK, "href"),
+        vec![format!("/admin/activity?user={bob_id}")],
+        "bob's page must link to his activity"
+    );
+    assert_eq!(
+        user_page.texts(ACTIVITY_LINK),
+        vec!["Activity".to_string()],
+        "the link on bob's page must read Activity"
+    );
+
+    let server_page = w.owner.get(&format!("/admin/servers/{server_id}")).await;
+    assert_eq!(server_page.status, 200, "the server page must answer 200");
+    assert_eq!(
+        server_page.attrs(ACTIVITY_LINK, "href"),
+        vec![format!("/admin/activity?server={server_id}")],
+        "the server page must link to its activity"
+    );
+    assert_eq!(
+        server_page.texts(ACTIVITY_LINK),
+        vec!["Activity".to_string()],
+        "the link on the server page must read Activity"
     );
 }

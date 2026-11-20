@@ -29,6 +29,12 @@ exists. `docs/INTERFACE.md` gives the routes, fields, statuses and attributes us
   test source (`Ipv4Addr::new(10, 0, 0, 1)`), never written as dotted text.
 - Assertions carry a message that says what was expected.
 
+## s01_install.rs (statement 1)
+
+1. `the_root_address_leads_to_setup_then_to_sign_in`: on a fresh gateway `GET /` is 303
+   `/setup`; after the owner is created, `GET /` is 303 `/login`; `GET /nothing-here` is
+   still 401, the answer of a server path.
+
 ## s02_first_owner.rs (statement 2)
 
 Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
@@ -506,6 +512,15 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
 8. `activity_outlives_the_user`: after bob is deleted his rows still show his email.
 9. `user_text_is_escaped`: a failed sign-in for the address
    `"<b>x</b>"@example.com` leaves no `<b>x</b>` in the activity page body.
+10. `the_activity_page_offers_a_user_and_a_server_filter`: the page holds one GET form
+    `form[data-form="activity-filter"]` to `/admin/activity` with a `user` select (labelled
+    User, options `Any user`, then every user by email) and a `server` select (labelled
+    Server, options `Any server`, then every server by slug, `{name} ({slug})`) and one
+    Filter button. `user={bob id}` shows only bob's rows and selects bob's option;
+    `user=&server=` shows the rows of the unfiltered page.
+11. `the_user_and_server_pages_link_to_their_activity`: bob's page has one
+    `a[data-link="activity"]` reading Activity with href `/admin/activity?user={id}`; the
+    server page has one with href `/admin/activity?server={id}`.
 
 ## s18_unauthorized.rs (statement 18)
 
@@ -1024,6 +1039,11 @@ seconds; "refuses" means the process exits non-zero within 5 seconds.
    or `DOORWARD_CONFIG`.
 3. `the_example_env_file_starts_a_gateway`: `.env.example` with its placeholders filled is
    accepted by the loader (`Config::from_sources` with no file, over those pairs).
+4. `the_example_config_passes_the_start_check`: `doorward.example.toml`, loaded by
+   `Config::load`, has `start_check()` equal to `Ok(None)`.
+5. `the_readme_config_passes_the_start_check`: the first `toml` fenced block of
+   `README.md`, written to a temp dir and loaded by `Config::load`, has `start_check()`
+   equal to `Ok(None)`.
 
 ## s42_proxy_start.rs (statement 42)
 
