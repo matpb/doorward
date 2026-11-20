@@ -866,19 +866,26 @@ bob is assigned to demo and signed in. `A` is `W.app()`.
     changes nothing; its POST is 200 `disconnected`; the token is then 401.
 16. `the_combined_endpoint_is_named_on_the_page`: `resource` `{base}/mcp` gives
     `data-server` `all servers`.
-17. `prompt_none_never_yields_a_code`: with a completed approval on file,
-    `authorize_raw` with `prompt=none` answers 303 to the client with
+17. `prompt_none_never_yields_a_code`: for a registered client with a completed approval on
+    file, `authorize_raw` with `prompt=none` answers 303 to the client with
     `error=interaction_required`, `state` and `iss`, and no `code`.
+    `prompt_none_never_yields_a_code_for_a_document_client_is_an_error_page`: the same request
+    for the document client, with an approval on file, is an error page with no `Location`
+    and no `code`.
 18. `sign_in_then_consent_round_trip`: an anonymous `authorize` is 303 `/login?req=X`;
     `login_for(X, ..)` is 303 `/oauth/consent?req=X`; approval and `token_code` succeed.
 19. `errors_that_must_not_redirect`: an unknown `client_id`, a repeated `state`
     parameter, a `request_uri` parameter, a `request` parameter: each an error page.
-20. `errors_that_go_back_to_the_client`: `response_type=token`, no `code_challenge`,
-    `code_challenge_method=plain`: 303 to the client with `error=invalid_request`. No
-    `resource`, a `resource` on another origin, a `resource` with the path `/Bad_Slug`:
-    303 with `error=invalid_target`. Each carries `state` and `iss`.
-21. `a_plain_challenge_never_reaches_consent`: after test 20's `plain` attempt there is no
-    consent address in any answer.
+20. `errors_that_go_back_to_the_client`: for a registered client, `response_type=token`, no
+    `code_challenge`, `code_challenge_method=plain`: 303 to the client with
+    `error=invalid_request`. No `resource`, a `resource` on another origin, a `resource` with
+    the path `/Bad_Slug`: 303 with `error=invalid_target`. Each carries `state` and `iss`, and
+    no `code`. `errors_that_go_back_to_the_client_for_a_document_client_is_an_error_page`: the
+    same six requests for the document client are error pages with no `Location` and no `code`.
+21. `a_plain_challenge_never_reaches_consent`: for a registered client, a signed-in and an
+    anonymous `plain` attempt are each refused with `error=invalid_request` and show no consent
+    address. `a_plain_challenge_never_reaches_consent_for_a_document_client_is_an_error_page`:
+    the same two attempts for the document client are error pages with no consent address.
 22. `a_registered_client_is_shown_as_a_claim`: a client registered as `Claude Code published
     by claude.ai` with `APP_REDIRECT` has one `p[data-client="registered"]` reading `An app
     that calls itself Claude Code published by claude.ai. Doorward cannot check this name.`;
@@ -1207,7 +1214,8 @@ is forced with `W.gw.restart()`.
 2. `a_web_client_sees_the_notice`: the same for a client whose redirect is an allowlisted
    https address.
 3. `the_combined_endpoint_sees_the_notice`: the same on the consent page for `/mcp`.
-4. `only_a_local_app_is_told_it_runs_on_this_computer`: "This app runs on your computer."
+4. `only_a_local_app_is_told_it_runs_on_this_computer`: "The sign-in will be handed to whatever
+   program is listening on this computer."
    is on the page of test 1 and on neither of the other two.
 
 ## s47_combined_grants.rs (statement 47)

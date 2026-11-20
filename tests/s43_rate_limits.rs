@@ -734,7 +734,7 @@ async fn rotating_addresses_cannot_fill_the_request_tables() {
     let mut w = World::start().await;
     tight(&mut w, |c| {
         c.limits.auth_requests_max = 50;
-        c.limits.dcr_total_per_hour = 50;
+        c.limits.unused_registrations = 50;
     })
     .await;
     let browser = w.client();
@@ -763,7 +763,7 @@ async fn rotating_addresses_cannot_fill_the_request_tables() {
     assert!(registered > 0, "the registrations must create clients");
     assert!(
         registered <= 50,
-        "oauth_clients holds {registered} rows, the registration cap is 50"
+        "oauth_clients holds {registered} rows, the bound of unused registrations is 50"
     );
 }
 

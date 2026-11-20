@@ -32,6 +32,7 @@ trusted_proxies = ["127.0.0.1", "::1"]
 # address_failures = 30
 # block_minutes = 15
 # dcr_per_hour = 60
+# unused_registrations = 10000
 # activity_days = 90
 
 # Outgoing mail.

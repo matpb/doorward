@@ -75,8 +75,8 @@ Authorize flow:
 3. No browser session: `/login`, then back.
 4. For a CIMD client the metadata document is fetched only now, after login.
 5. Consent page (S33): shown every time. Headline is the
-   redirect target; then the client name (marked unverified for dynamically registered
-   clients, with its real host), the server, and "signed in as <email>". No client-supplied
+   redirect target; then the client name (a dynamically registered client is shown as a claim
+   that Doorward cannot check; a document client with its real host), the server, and "signed in as <email>". No client-supplied
    links or images. Approve and Deny are CSRF-protected POSTs answering 303 straight to
    the client.
 6. The user must be assigned to the requested server, or no code is issued.

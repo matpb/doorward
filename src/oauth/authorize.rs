@@ -192,7 +192,7 @@ pub fn load(conn: &Connection, id_hash: &str) -> rusqlite::Result<Option<Stored>
     .optional()
 }
 
-/// `GET /oauth/authorize`: a refusal that cannot be sent back gets a page, the rest go to the client.
+/// `GET /oauth/authorize`: a refusal goes back to a registered address, a document client gets a page.
 pub async fn get_authorize(
     State(state): State<AppState>,
     viewer: Viewer,
@@ -212,13 +212,15 @@ pub async fn get_authorize(
         .db
         .call(move |conn| check_redirect_in(conn, &client_owned, &redirect_owned, now))
         .await;
-    match checked {
-        Ok(Checked::Allowed) => {}
+    let document = match checked {
+        Ok(Checked::Allowed { document }) => document,
         Ok(Checked::Refused(host)) => return error_page(host.as_deref()),
         Err(err) => return internal_error("authorization request", &err),
-    }
+    };
     let asked = match check_request(&params, &issuer) {
         Ok(asked) => asked,
+        // A document's address is checked only after its fetch, so its errors never redirect.
+        Err(_) if document => return error_page(None),
         Err(error) => {
             let echoed = params.get("state").filter(|text| text.len() <= STATE_LIMIT);
             return redirect(&back_url(&issuer, redirect_uri, ("error", error), echoed));
@@ -260,7 +262,8 @@ pub async fn get_authorize(
 
 /// What the checks before storing decided.
 enum Checked {
-    Allowed,
+    /// `document` tells whether the client is a metadata document.
+    Allowed { document: bool },
     /// The host to name on the error page, when one is named.
     Refused(Option<String>),
 }
@@ -301,7 +304,9 @@ fn check_within(
         }
         return Ok(Checked::Refused(host));
     }
-    Ok(Checked::Allowed)
+    Ok(Checked::Allowed {
+        document: matches!(client, Client::Document { .. }),
+    })
 }
 
 /// A registered client must have registered the requested address; a document is checked later.

@@ -117,7 +117,7 @@ address_failures = 30         # wrong passwords per address, for any accounts, i
 block_minutes = 15            # the window
 activity_days = 90            # days an activity row is kept
 dcr_per_hour = 60             # registrations per address
-dcr_total_per_hour = 600      # registrations of all addresses together
+unused_registrations = 10000  # registered clients never used, kept at most this many
 general_burst = 240           # per client address: everything not listed below
 general_per_minute = 600
 oauth_burst = 60              # per client address: token, register, authorize
@@ -293,6 +293,9 @@ fields are ignored. `201`:
 Errors: `400 {"error": "invalid_redirect_uri"}` for a URI with a fragment, a wildcard, or
 plain HTTP on a non-loopback host; `400 {"error": "invalid_client_metadata"}` otherwise;
 `429` past `dcr_per_hour`. Allowlist membership is not checked here but at authorize time.
+A new client makes room first: when `unused_registrations` clients have never completed a
+sign-in, the oldest of them is deleted. A client that has completed a sign-in is never
+deleted for this.
 
 `GET /oauth/authorize`: `response_type=code`, `client_id`, `redirect_uri`,
 `code_challenge`, `code_challenge_method=S256`, `resource`, optional `state`, `scope`.
@@ -306,7 +309,9 @@ plain HTTP on a non-loopback host; `400 {"error": "invalid_client_metadata"}` ot
 | Valid, session | `303 /oauth/consent?req={id}` |
 
 For a URL-shaped `client_id` the metadata document is fetched when the consent page is
-rendered, never before login. A fetch failure renders `400` `data-page="error"`.
+rendered, never before login. A fetch failure renders `400` `data-page="error"`. For a
+URL-shaped `client_id`, a request that fails any check in the table above is answered with
+the error page, never with a redirect.
 
 `GET /oauth/consent?req={id}`: `200` `data-page="consent"` with `data-redirect-host`
 (host and port of the redirect address, or the scheme for a private-scheme address),
@@ -322,8 +327,14 @@ none at all, and list the redirect address (loopback port aside), else `400`
 `data-page="error"`.
 
 Every consent page holds exactly one element with `data-consent-notice`, saying "Approve
-only if you started this sign-in yourself." A page for a loopback redirect address also
-says "This app runs on your computer."
+only if you started this sign-in yourself." The client line is one of three: a registered
+client is `p[data-client="registered"]` reading "An app that calls itself
+`<q class="client-name">` NAME. Doorward cannot check this name."; a document with a web
+redirect is `p[data-client="document"]`, "NAME, published by `<span class="client-host">`
+HOST."; a document with a loopback redirect is `p[data-client="document-loopback"]`, "Says it
+is NAME from HOST. Any program on this computer can use that description." A page for a
+loopback redirect address, of any client kind, also holds `p.local-app` reading "The sign-in
+will be handed to whatever program is listening on this computer."
 
 `POST /oauth/consent`: `req`, `decision` (`approve` or `deny`). `303` to the redirect
 address with `code`, `state`, `iss`; or with `error=access_denied`, `state`, `iss`. The
@@ -553,8 +564,7 @@ upstream. The body is the error page on pages,
 `{"error":"too_many_requests","error_description":"Too many requests. Try again later."}`
 on the JSON routes, and the JSON-RPC error `-32029` with a null id on the MCP paths. Over
 `mcp_open` the wait is 1. The older refusals carry the same headers: a blocked sign-in or
-password change waits `block_minutes * 60`, a registration past `dcr_per_hour` or
-`dcr_total_per_hour` waits 3600.
+password change waits `block_minutes * 60`, a registration past `dcr_per_hour` waits 3600.
 
 The limiter keeps at most `rate_table_keys` keys, IPv6 at most half of them; past that,
 new keys of a class share one bucket and no live key is dropped. Counts live in memory and

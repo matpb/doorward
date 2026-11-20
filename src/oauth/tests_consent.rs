@@ -931,25 +931,31 @@ async fn a_document_client_named_by_direction_characters_shows_its_host() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_state_over_1024_bytes_goes_back_without_an_echo() {
-    let gw = start(fixed(Ok(document(None)))).await;
-    let browser = anonymous(&gw);
+/// An authorize request for `client_id` at REDIRECT whose state is 1025 bytes long.
+async fn oversized_state_request(gw: &Gateway, browser: &Browser, client_id: &str) -> Reply {
     let combined = format!("{}/mcp", gw.base);
     let long_state = "s".repeat(1025);
     let mut query = Serializer::new(String::new());
     query.extend_pairs([
         ("response_type", "code"),
-        ("client_id", DOC_ID),
+        ("client_id", client_id),
         ("redirect_uri", REDIRECT),
         ("code_challenge", CHALLENGE),
         ("code_challenge_method", "S256"),
         ("resource", combined.as_str()),
         ("state", long_state.as_str()),
     ]);
-    let reply = browser
+    browser
         .get(&format!("/oauth/authorize?{}", query.finish()))
-        .await;
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_state_over_1024_bytes_goes_back_without_an_echo() {
+    let gw = start(fixed(Ok(document(None)))).await;
+    let browser = anonymous(&gw);
+    let client_id = browser.register("Cursor", REDIRECT).await;
+    let reply = oversized_state_request(&gw, &browser, &client_id).await;
     assert_eq!(reply.status, 303, "the refusal goes back to the client");
     let location = reply.location.clone().expect("a Location");
     assert!(location.starts_with(REDIRECT), "to the client: {location}");
@@ -960,6 +966,31 @@ async fn a_state_over_1024_bytes_goes_back_without_an_echo() {
         "an oversized state is not echoed"
     );
     assert_eq!(reply.query("iss").as_deref(), Some(gw.base.as_str()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_state_over_1024_bytes_goes_back_without_an_echo_for_a_document_client_is_an_error_page()
+{
+    let gw = start(fixed(Ok(document(None)))).await;
+    let browser = anonymous(&gw);
+    let reply = oversized_state_request(&gw, &browser, DOC_ID).await;
+    assert_eq!(
+        reply.status, 400,
+        "an oversized state from a document client must answer 400"
+    );
+    assert_eq!(
+        reply.kind().as_deref(),
+        Some("error"),
+        "an oversized state from a document client must render the error page"
+    );
+    assert_eq!(
+        reply.location, None,
+        "an oversized state from a document client must not redirect"
+    );
+    assert!(
+        !reply.body.contains(&"s".repeat(64)),
+        "an oversized state must not be echoed in the error page"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1317,7 +1348,7 @@ async fn the_consent_page_shows_its_parts_in_order_with_two_decisions() {
     let body = page.body.clone();
     let places: Vec<usize> = [
         "You will be sent to",
-        "Example Client published by client.example.com",
+        "Says it is ",
         "Server: all servers",
         "Signed in as",
     ]
@@ -1329,7 +1360,9 @@ async fn the_consent_page_shows_its_parts_in_order_with_two_decisions() {
         "headline, client, server, then the signed-in user: {places:?}"
     );
     assert!(
-        body.contains("This app runs on your computer."),
+        body.contains(
+            "The sign-in will be handed to whatever program is listening on this computer."
+        ),
         "a loopback redirect carries the local-app sentence"
     );
     assert!(

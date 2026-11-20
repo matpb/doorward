@@ -207,8 +207,8 @@ pub const SETTINGS: &[Setting] = &[
         kind: Kind::Whole,
     },
     Setting {
-        variable: "DOORWARD_LIMITS_DCR_TOTAL_PER_HOUR",
-        path: "limits.dcr_total_per_hour",
+        variable: "DOORWARD_LIMITS_UNUSED_REGISTRATIONS",
+        path: "limits.unused_registrations",
         kind: Kind::Whole,
     },
     Setting {
@@ -287,7 +287,7 @@ pub struct Limits {
     pub mcp_open: u64,
     pub rate_table_keys: u64,
     pub auth_requests_max: u64,
-    pub dcr_total_per_hour: u64,
+    pub unused_registrations: u64,
     pub activity_days: u64,
 }
 
@@ -335,7 +335,7 @@ impl Default for Limits {
             mcp_open: 64,
             rate_table_keys: 100_000,
             auth_requests_max: 10_000,
-            dcr_total_per_hour: 600,
+            unused_registrations: 10_000,
             activity_days: 90,
         }
     }
@@ -772,7 +772,7 @@ impl Limits {
                 ("mcp_open", self.mcp_open),
                 ("rate_table_keys", self.rate_table_keys),
                 ("auth_requests_max", self.auth_requests_max),
-                ("dcr_total_per_hour", self.dcr_total_per_hour),
+                ("unused_registrations", self.unused_registrations),
                 ("activity_days", self.activity_days),
             ],
         )?;

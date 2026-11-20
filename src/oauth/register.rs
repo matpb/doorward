@@ -82,10 +82,10 @@ pub async fn post_register(State(state): State<AppState>, request: Request) -> R
     let checked = check_metadata(&object);
     let now = state.clock.now().unix_timestamp();
     let limit = i64::try_from(state.config.limits.dcr_per_hour).unwrap_or(i64::MAX);
-    let total = i64::try_from(state.config.limits.dcr_total_per_hour).unwrap_or(i64::MAX);
+    let unused = i64::try_from(state.config.limits.unused_registrations).unwrap_or(i64::MAX);
     let decided = state
         .db
-        .call(move |conn| register_capped(conn, &address, limit, total, now, checked))
+        .call(move |conn| register_bounded(conn, &address, limit, unused, now, checked))
         .await;
     match decided {
         Ok(Decision::Created(body)) => answer(StatusCode::CREATED, body),
@@ -215,6 +215,7 @@ fn is_invisible(c: char) -> bool {
 }
 
 /// One transaction: the attempt is counted first; then the refusal or the new client is decided.
+/// As `register_bounded`, with no bound on the registrations that were never used.
 pub fn register_in(
     conn: &mut Connection,
     address: &str,
@@ -222,15 +223,15 @@ pub fn register_in(
     now: i64,
     checked: Result<Registration, Refusal>,
 ) -> rusqlite::Result<Decision> {
-    register_capped(conn, address, limit, i64::MAX, now, checked)
+    register_bounded(conn, address, limit, i64::MAX, now, checked)
 }
 
-/// As `register_in`, and also limited when the attempts of all addresses in the hour reach `total`.
-pub fn register_capped(
+/// As `register_in`, and keeps at most `unused_bound` registrations that were never used.
+pub fn register_bounded(
     conn: &mut Connection,
     address: &str,
     limit: i64,
-    total: i64,
+    unused_bound: i64,
     now: i64,
     checked: Result<Registration, Refusal>,
 ) -> rusqlite::Result<Decision> {
@@ -244,8 +245,7 @@ pub fn register_capped(
         params![address],
         |row| row.get(0),
     )?;
-    let all: i64 = tx.query_row("SELECT COUNT(*) FROM dcr_attempts", [], |row| row.get(0))?;
-    if counted >= limit || all >= total {
+    if counted >= limit {
         tx.commit()?;
         return Ok(Decision::Limited);
     }
@@ -260,21 +260,24 @@ pub fn register_capped(
             return Ok(Decision::Refused(refusal));
         }
     };
-    let created = insert_client(&tx, &registration, now)?;
+    let created = insert_client(&tx, &registration, now, unused_bound)?;
     tx.commit()?;
     Ok(Decision::Created(created))
 }
 
-/// Drops unused registrations older than a week, then stores the new one and returns its answer.
+/// Drops unused registrations older than a week, makes room under the bound, then stores the new
+/// one and returns its answer.
 fn insert_client(
     tx: &Transaction<'_>,
     registration: &Registration,
     now: i64,
+    unused_bound: i64,
 ) -> rusqlite::Result<Value> {
     tx.execute(
         "DELETE FROM oauth_clients WHERE used_at IS NULL AND created_at < ?1",
         params![now - WEEK_SECONDS],
     )?;
+    make_room(tx, unused_bound)?;
     let client_id = random_token("dcr_");
     let stored_uris = Value::from(registration.redirect_uris.clone()).to_string();
     tx.execute(
@@ -291,4 +294,22 @@ fn insert_client(
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
     }))
+}
+
+/// Deletes the oldest unused registrations until one more fits under `bound`. Used ones stay.
+fn make_room(tx: &Transaction<'_>, bound: i64) -> rusqlite::Result<()> {
+    let unused: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM oauth_clients WHERE used_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    let excess = unused - bound + 1;
+    if excess > 0 {
+        tx.execute(
+            "DELETE FROM oauth_clients WHERE rowid IN (SELECT rowid FROM oauth_clients \
+             WHERE used_at IS NULL ORDER BY created_at, rowid LIMIT ?1)",
+            params![excess],
+        )?;
+    }
+    Ok(())
 }

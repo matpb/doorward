@@ -8,7 +8,8 @@ use common::world::World;
 const BOB: &str = "bob@example.com";
 const STATE: &str = "state-1";
 const NOTICE: &str = "Approve only if you started this sign-in yourself.";
-const LOCAL_SENTENCE: &str = "This app runs on your computer.";
+const LOCAL_SENTENCE: &str =
+    "The sign-in will be handed to whatever program is listening on this computer.";
 const WEB_ID: &str = "https://web.example.com/app.json";
 const WEB_URI: &str = "https://app.example.com/oauth/cb";
 

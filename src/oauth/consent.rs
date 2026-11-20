@@ -375,11 +375,11 @@ fn render(viewer: &Viewer, req: &str, consent: &ConsentPage) -> Response {
 fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
     html! {
         h1 { "You will be sent to " (consent.redirect_host) }
-        p { (client_line(&consent.client)) }
+        (client_line(&consent.client, consent.loopback))
         p { "Server: " (consent.server) }
         p { "Signed in as " (consent.email) }
         @if consent.loopback {
-            p.local-app { "This app runs on your computer." }
+            p.local-app { "The sign-in will be handed to whatever program is listening on this computer." }
         }
         p.notice data-consent-notice { "Approve only if you started this sign-in yourself." }
         form method="post" action="/oauth/consent" {
@@ -397,11 +397,26 @@ fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
     }
 }
 
-/// The client name and its standing: "(unverified)" if registered, "published by" if a document.
-fn client_line(client: &Shown) -> String {
+/// The client line: a claim for a registered client, a publisher for a web document, and a claim
+/// from a host for a document on a loopback redirect.
+fn client_line(client: &Shown, loopback: bool) -> Markup {
     match client.client_host.as_deref() {
-        Some(host) => format!("{} published by {host}", client.name),
-        None => format!("{} (unverified)", client.name),
+        None => html! {
+            p data-client="registered" {
+                "An app that calls itself " q.client-name { (client.name) } ". Doorward cannot check this name."
+            }
+        },
+        Some(host) if loopback => html! {
+            p data-client="document-loopback" {
+                "Says it is " q.client-name { (client.name) } " from " span.client-host { (host) }
+                ". Any program on this computer can use that description."
+            }
+        },
+        Some(host) => html! {
+            p data-client="document" {
+                q.client-name { (client.name) } ", published by " span.client-host { (host) } "."
+            }
+        },
     }
 }
 

@@ -87,7 +87,7 @@ message names the variable and never prints the value.
 | `DOORWARD_LIMITS_ADDRESS_FAILURES` | `30` | More than this many wrong passwords from one client address, for any accounts, inside `block_minutes` make that address answer `429`. |
 | `DOORWARD_LIMITS_BLOCK_MINUTES` | `15` | Minutes a wrong password stays counted. Each one stops counting this long after it was made. |
 | `DOORWARD_LIMITS_DCR_PER_HOUR` | `60` | Client registrations per client address per hour. |
-| `DOORWARD_LIMITS_DCR_TOTAL_PER_HOUR` | `600` | Client registrations per hour for all addresses together. |
+| `DOORWARD_LIMITS_UNUSED_REGISTRATIONS` | `10000` | Most registered clients that have never completed a sign-in. At the bound the oldest such client is dropped to make room; a client that has completed a sign-in is never dropped for this. Must be at least 1. |
 | `DOORWARD_LIMITS_GENERAL_BURST` | `240` | General class, per address: requests allowed at once. |
 | `DOORWARD_LIMITS_GENERAL_PER_MINUTE` | `600` | General class, per address: sustained requests per minute. |
 | `DOORWARD_LIMITS_OAUTH_BURST` | `60` | OAuth class, per address: requests allowed at once. |

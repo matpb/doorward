@@ -620,21 +620,49 @@ async fn the_combined_endpoint_is_named_on_the_page() {
     );
 }
 
+/// A dynamically registered client whose redirect address is APP_REDIRECT.
+async fn registered_app(w: &World) -> OAuthApp {
+    let page = w
+        .client()
+        .register("Registered Client", &[APP_REDIRECT])
+        .await;
+    assert_eq!(page.status, 201, "registering the client must answer 201");
+    let client_id = page
+        .json()
+        .and_then(|json| json["client_id"].as_str().map(str::to_string))
+        .expect("the registration answer must carry a client_id");
+    OAuthApp {
+        client_id,
+        redirect_uri: APP_REDIRECT.into(),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn prompt_none_never_yields_a_code() {
     let (w, bob, _upstream) = bob_on_demo().await;
-    w.token(&bob, "demo").await;
-    let pkce = client::pkce();
-    let mut query = request_query(&w.app(), &w.resource("demo"), &pkce);
+    let registered = registered_app(&w).await;
+    bob.connect(&registered, &w.resource("demo")).await;
+    let mut query = request_query(&registered, &w.resource("demo"), &client::pkce());
     set_param(&mut query, "prompt", "none");
     let page = send(&bob, &query).await;
-    assert_back_at_client(&page, w.base(), "prompt=none");
+    assert_back_at_client(&page, w.base(), "prompt=none for a registered client");
     assert_eq!(
         page.query("error").as_deref(),
         Some("interaction_required"),
         "prompt=none must be refused with interaction_required"
     );
-    assert_no_code(&page, "prompt=none");
+    assert_no_code(&page, "prompt=none for a registered client");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn prompt_none_never_yields_a_code_for_a_document_client_is_an_error_page() {
+    let (w, bob, _upstream) = bob_on_demo().await;
+    w.token(&bob, "demo").await;
+    let mut query = request_query(&w.app(), &w.resource("demo"), &client::pkce());
+    set_param(&mut query, "prompt", "none");
+    let page = send(&bob, &query).await;
+    assert_error_page(&page, "prompt=none for a document client");
+    assert_no_code(&page, "prompt=none for a document client");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -712,12 +740,9 @@ async fn errors_that_must_not_redirect() {
     assert_error_page(&send(&browser, &request).await, "a request parameter");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn errors_that_go_back_to_the_client() {
-    let w = World::start().await;
-    let browser = w.client();
-    let pkce = client::pkce();
-    let base_query = request_query(&w.app(), &w.resource("demo"), &pkce);
+/// Six refused requests for `app`, each with the error it must carry when it may be redirected.
+fn refused_requests(w: &World, app: &OAuthApp) -> Vec<(&'static str, Query, &'static str)> {
+    let base_query = request_query(app, &w.resource("demo"), &client::pkce());
 
     let mut response_type = base_query.clone();
     set_param(&mut response_type, "response_type", "token");
@@ -732,15 +757,22 @@ async fn errors_that_go_back_to_the_client() {
     let mut bad_slug = base_query;
     set_param(&mut bad_slug, "resource", &w.resource("Bad_Slug"));
 
-    let cases = [
+    vec![
         ("response_type=token", response_type, "invalid_request"),
         ("no code_challenge", no_challenge, "invalid_request"),
         ("code_challenge_method=plain", plain, "invalid_request"),
         ("no resource", no_resource, "invalid_target"),
         ("a resource on another origin", foreign, "invalid_target"),
         ("a resource at /Bad_Slug", bad_slug, "invalid_target"),
-    ];
-    for (step, query, error) in cases {
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn errors_that_go_back_to_the_client() {
+    let w = World::start().await;
+    let browser = w.client();
+    let registered = registered_app(&w).await;
+    for (step, query, error) in refused_requests(&w, &registered) {
         let page = send(&browser, &query).await;
         assert_back_at_client(&page, w.base(), step);
         assert_eq!(
@@ -748,30 +780,62 @@ async fn errors_that_go_back_to_the_client() {
             Some(error),
             "{step} must be refused with error={error}"
         );
+        assert_no_code(&page, step);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn errors_that_go_back_to_the_client_for_a_document_client_is_an_error_page() {
+    let w = World::start().await;
+    let browser = w.client();
+    for (step, query, _error) in refused_requests(&w, &w.app()) {
+        let page = send(&browser, &query).await;
+        assert_error_page(&page, &format!("{step} for a document client"));
+        assert_no_code(&page, step);
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_plain_challenge_never_reaches_consent() {
     let (w, bob, _upstream) = bob_on_demo().await;
-    let mut plain = request_query(&w.app(), &w.resource("demo"), &client::pkce());
+    let registered = registered_app(&w).await;
+    let mut plain = request_query(&registered, &w.resource("demo"), &client::pkce());
     set_param(&mut plain, "code_challenge_method", "plain");
     let signed_in = send(&bob, &plain).await;
     let anonymous = send(&w.client(), &plain).await;
-    assert_eq!(
-        signed_in.query("error").as_deref(),
-        Some("invalid_request"),
-        "a plain challenge must be refused with invalid_request"
-    );
     for (step, page) in [
         ("a signed-in browser", &signed_in),
         ("an anonymous browser", &anonymous),
     ] {
+        assert_eq!(
+            page.query("error").as_deref(),
+            Some("invalid_request"),
+            "a plain challenge from {step} must be refused with invalid_request"
+        );
         let location = page.location().unwrap_or_default();
         assert!(
             !location.contains("/oauth/consent"),
             "{step} must not be sent to consent for a plain challenge, got {location}"
         );
+        assert!(
+            !page.body.contains("/oauth/consent"),
+            "{step} must not be shown the consent address for a plain challenge"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plain_challenge_never_reaches_consent_for_a_document_client_is_an_error_page() {
+    let (w, bob, _upstream) = bob_on_demo().await;
+    let mut plain = request_query(&w.app(), &w.resource("demo"), &client::pkce());
+    set_param(&mut plain, "code_challenge_method", "plain");
+    let signed_in = send(&bob, &plain).await;
+    let anonymous = send(&w.client(), &plain).await;
+    for (step, page) in [
+        ("a signed-in browser", &signed_in),
+        ("an anonymous browser", &anonymous),
+    ] {
+        assert_error_page(page, &format!("a plain challenge from {step}"));
         assert!(
             !page.body.contains("/oauth/consent"),
             "{step} must not be shown the consent address for a plain challenge"

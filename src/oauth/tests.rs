@@ -944,22 +944,28 @@ async fn a_registration_over_the_address_limit_waits_an_hour() {
 }
 
 #[test]
-fn the_total_cap_limits_every_address_together_until_the_hour_passes() {
+fn addresses_share_no_total_and_the_first_unused_client_gives_way() {
     let (_dir, mut conn) = open();
-    let mut attempt = |address: &str, now: i64| {
-        register::register_capped(&mut conn, address, 100, 2, now, Ok(valid_body()))
-            .expect("register")
-    };
-    assert!(matches!(attempt("addr-a", NOW), Decision::Created(_)));
-    assert!(matches!(attempt("addr-b", NOW), Decision::Created(_)));
+    let mut ids = Vec::new();
+    for address in ["addr-a", "addr-b", "addr-c"] {
+        let decision =
+            register::register_bounded(&mut conn, address, 100, 2, NOW, Ok(valid_body()))
+                .expect("register");
+        let Decision::Created(body) = decision else {
+            panic!("a registration from {address} must be created, got {decision:?}");
+        };
+        ids.push(body["client_id"].as_str().expect("client id").to_owned());
+    }
     assert!(
-        matches!(attempt("addr-c", NOW), Decision::Limited),
-        "the third registration of all addresses within the hour is limited"
+        clients::find(&conn, &ids[0]).expect("find").is_none(),
+        "the first unused client must give way to the third at the bound of 2"
     );
-    assert!(
-        matches!(attempt("addr-c", NOW + HOUR + 1), Decision::Created(_)),
-        "after the hour the attempts no longer count"
-    );
+    for id in &ids[1..] {
+        assert!(
+            clients::find(&conn, id).expect("find").is_some(),
+            "the unused client {id} must stay"
+        );
+    }
 }
 
 #[test]

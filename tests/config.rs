@@ -199,7 +199,7 @@ fn sections_default_when_absent() {
             mcp_open: 64,
             rate_table_keys: 100_000,
             auth_requests_max: 10_000,
-            dcr_total_per_hour: 600,
+            unused_registrations: 10_000,
             activity_days: 90,
         }
     );

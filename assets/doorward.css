@@ -124,6 +124,10 @@ button {
   font-weight: 600;
 }
 
+q.client-name {
+  font-weight: 600;
+}
+
 .notice {
   color: var(--muted);
 }
