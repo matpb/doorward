@@ -183,6 +183,7 @@ fn sections_default_when_absent() {
             tools_list_bytes: 4_194_304,
             upstream_timeout_seconds: 300,
             account_failures: 5,
+            account_ceiling: 50,
             address_failures: 30,
             block_minutes: 15,
             dcr_per_hour: 60,
@@ -198,6 +199,7 @@ fn sections_default_when_absent() {
             rate_table_keys: 100_000,
             auth_requests_max: 10_000,
             dcr_total_per_hour: 600,
+            activity_days: 90,
         }
     );
     assert_eq!(config.mail.smtp_ca_file, None);

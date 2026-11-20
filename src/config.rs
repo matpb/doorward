@@ -121,6 +121,11 @@ pub const SETTINGS: &[Setting] = &[
         kind: Kind::Whole,
     },
     Setting {
+        variable: "DOORWARD_LIMITS_ACCOUNT_CEILING",
+        path: "limits.account_ceiling",
+        kind: Kind::Whole,
+    },
+    Setting {
         variable: "DOORWARD_LIMITS_ADDRESS_FAILURES",
         path: "limits.address_failures",
         kind: Kind::Whole,
@@ -196,6 +201,11 @@ pub const SETTINGS: &[Setting] = &[
         kind: Kind::Whole,
     },
     Setting {
+        variable: "DOORWARD_LIMITS_ACTIVITY_DAYS",
+        path: "limits.activity_days",
+        kind: Kind::Whole,
+    },
+    Setting {
         variable: "DOORWARD_MAIL_SMTP_CA_FILE",
         path: "mail.smtp_ca_file",
         kind: Kind::Path,
@@ -249,6 +259,7 @@ pub struct Limits {
     pub tools_list_bytes: u64,
     pub upstream_timeout_seconds: u64,
     pub account_failures: u64,
+    pub account_ceiling: u64,
     pub address_failures: u64,
     pub block_minutes: u64,
     pub dcr_per_hour: u64,
@@ -264,6 +275,7 @@ pub struct Limits {
     pub rate_table_keys: u64,
     pub auth_requests_max: u64,
     pub dcr_total_per_hour: u64,
+    pub activity_days: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,6 +307,7 @@ impl Default for Limits {
             tools_list_bytes: 4_194_304,
             upstream_timeout_seconds: 300,
             account_failures: 5,
+            account_ceiling: 50,
             address_failures: 30,
             block_minutes: 15,
             dcr_per_hour: 60,
@@ -310,6 +323,7 @@ impl Default for Limits {
             rate_table_keys: 100_000,
             auth_requests_max: 10_000,
             dcr_total_per_hour: 600,
+            activity_days: 90,
         }
     }
 }
@@ -665,6 +679,7 @@ impl Limits {
                 ("tools_list_bytes", self.tools_list_bytes),
                 ("upstream_timeout_seconds", self.upstream_timeout_seconds),
                 ("account_failures", self.account_failures),
+                ("account_ceiling", self.account_ceiling),
                 ("address_failures", self.address_failures),
                 ("block_minutes", self.block_minutes),
                 ("dcr_per_hour", self.dcr_per_hour),
@@ -680,8 +695,15 @@ impl Limits {
                 ("rate_table_keys", self.rate_table_keys),
                 ("auth_requests_max", self.auth_requests_max),
                 ("dcr_total_per_hour", self.dcr_total_per_hour),
+                ("activity_days", self.activity_days),
             ],
-        )
+        )?;
+        if self.account_ceiling < self.account_failures {
+            return Err(ConfigError::Invalid(
+                "limits.account_ceiling must be at least limits.account_failures".to_owned(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1004,6 +1026,45 @@ mod tests {
             Config::from_sources(None, &with(&[("DOORWARD_SHARED_CLIENT_ADDRESS", "true")]))
                 .expect("the flag loads");
         assert!(config.shared_client_address);
+    }
+
+    #[test]
+    fn the_ceiling_and_activity_defaults_apply() {
+        let config = Config::from_sources(None, &with(&[])).expect("the defaults load");
+        assert_eq!(config.limits.account_ceiling, 50);
+        assert_eq!(config.limits.activity_days, 90);
+        assert_eq!(Limits::default().account_ceiling, 50);
+        assert_eq!(Limits::default().activity_days, 90);
+    }
+
+    #[test]
+    fn a_ceiling_below_the_failures_is_refused() {
+        assert_eq!(
+            refusal(&[("DOORWARD_LIMITS_ACCOUNT_CEILING", "4")]),
+            "invalid config: limits.account_ceiling must be at least limits.account_failures"
+        );
+    }
+
+    #[test]
+    fn a_ceiling_equal_to_the_failures_is_valid() {
+        let config = Config::from_sources(None, &with(&[("DOORWARD_LIMITS_ACCOUNT_CEILING", "5")]))
+            .expect("a ceiling equal to the failures loads");
+        assert_eq!(config.limits.account_ceiling, 5);
+    }
+
+    #[test]
+    fn an_activity_period_of_zero_is_refused() {
+        assert_eq!(
+            refusal(&[("DOORWARD_LIMITS_ACTIVITY_DAYS", "0")]),
+            "invalid config: limits.activity_days must be at least 1"
+        );
+    }
+
+    #[test]
+    fn an_activity_period_is_read() {
+        let config = Config::from_sources(None, &with(&[("DOORWARD_LIMITS_ACTIVITY_DAYS", "7")]))
+            .expect("the period loads");
+        assert_eq!(config.limits.activity_days, 7);
     }
 
     fn started(public_url: &str, extra: &[(&str, &str)]) -> Config {

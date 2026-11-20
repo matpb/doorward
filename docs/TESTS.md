@@ -1052,8 +1052,10 @@ tests of `s06_passwords.rs` keep their meaning: there every request comes from o
 
 1. `a_strangers_failures_do_not_lock_the_owner_out`: five wrong passwords for the owner at
    A are each 401; the owner's right password at A is then 429, and at B it answers 303.
-2. `the_block_of_a_pair_ends_with_the_window`: after 15 minutes and 1 second the right
-   password at A answers 303.
+2. `the_block_of_a_pair_ends_with_the_window`: four wrong passwords at A, a fifth ten
+   minutes later; fourteen minutes after the first the right password at A is 429, and 15
+   minutes and 1 second after the first it answers 303 (the window rolls: it is not
+   counted from the last failure).
 3. `a_success_clears_only_its_own_pair`: four wrong at A and four wrong at B; the right
    password at A answers 303; one more wrong at B is 401 and the right password at B is
    then 429; at A four more wrong passwords are each 401, not 429.
@@ -1067,10 +1069,11 @@ tests of `s06_passwords.rs` keep their meaning: there every request comes from o
    `account_failures` is refused at start.
 7. `parallel_guesses_from_many_addresses_stop_at_the_ceiling`: `account_ceiling = 10`,
    `address_failures = 1000`. Thirty browsers, each at its own address, post a wrong
-   password at once: at most ten are 401 and the rest 429; the right password is then 429.
+   password at once: exactly ten are 401 and the rest 429; the right password is then 429.
 8. `an_unknown_account_is_throttled_like_a_real_one`: the same sequence as test 1 for an
    email with no account gives the same statuses and the same bodies.
-9. `a_reset_lifts_every_block_of_the_account`: A is blocked and the ceiling is reached;
+9. `a_reset_lifts_every_block_of_the_account`: `account_ceiling = 8`; five wrong at A and
+   three at B, so A is blocked and the ceiling is reached;
    after a reset by mail the new password answers 303 at A without waiting.
 10. `unlock_lifts_every_block_of_the_account`: the same, lifted by `doorward unlock`.
 11. `wrong_current_passwords_count_for_the_pair`: bob is signed in at A. Five wrong

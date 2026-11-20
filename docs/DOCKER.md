@@ -82,6 +82,7 @@ message names the variable and never prints the value.
 | `DOORWARD_LIMITS_TOOLS_LIST_BYTES` | `4194304` | Largest tool list or stream event in bytes that a server may send. |
 | `DOORWARD_LIMITS_UPSTREAM_TIMEOUT_SECONDS` | `300` | Seconds an upstream server may stay silent before the call ends. |
 | `DOORWARD_LIMITS_ACCOUNT_FAILURES` | `5` | Consecutive wrong passwords for one account before every sign-in to that account answers `429`, right password included, until `block_minutes` have passed since the last failure. |
+| `DOORWARD_LIMITS_ACCOUNT_CEILING` | `50` | Wrong passwords for one account from all client addresses together, inside `DOORWARD_LIMITS_BLOCK_MINUTES`, that block the account for every address. Must be at least `DOORWARD_LIMITS_ACCOUNT_FAILURES`. |
 | `DOORWARD_LIMITS_ADDRESS_FAILURES` | `30` | More than this many wrong passwords from one client address, for any accounts, inside `block_minutes` make that address answer `429`. |
 | `DOORWARD_LIMITS_BLOCK_MINUTES` | `15` | Minutes since the last wrong password after which an account block ends, and the window for counting address failures. |
 | `DOORWARD_LIMITS_DCR_PER_HOUR` | `60` | Client registrations per client address per hour. |
@@ -97,6 +98,7 @@ message names the variable and never prints the value.
 | `DOORWARD_LIMITS_MCP_OPEN` | `64` | Most MCP requests and streams one user may have open at the same time. |
 | `DOORWARD_LIMITS_RATE_TABLE_KEYS` | `100000` | Most addresses and users the rate limiter keeps counters for at once. |
 | `DOORWARD_LIMITS_AUTH_REQUESTS_MAX` | `10000` | Most pending sign-in requests kept at once. |
+| `DOORWARD_LIMITS_ACTIVITY_DAYS` | `90` | Days an activity row is kept. The housekeeping run deletes older rows. Must be at least `1`. |
 | `DOORWARD_MAIL_SMTP_CA_FILE` | (none) | PEM file with extra trusted roots for SMTP over TLS. |
 
 Names that are not settings:

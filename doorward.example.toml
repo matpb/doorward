@@ -21,9 +21,11 @@ database = "doorward.db"
 # tools_list_bytes = 4194304
 # upstream_timeout_seconds = 300
 # account_failures = 5
+# account_ceiling = 50
 # address_failures = 30
 # block_minutes = 15
 # dcr_per_hour = 60
+# activity_days = 90
 
 # Outgoing mail.
 [mail]

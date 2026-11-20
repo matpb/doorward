@@ -134,10 +134,22 @@ pub struct TestClient {
     http: reqwest::Client,
     jar: Mutex<BTreeMap<String, String>>,
     attributes: Mutex<BTreeMap<String, String>>,
+    forwarded_for: Option<String>,
 }
 
 impl TestClient {
     pub fn new(base: &str) -> TestClient {
+        TestClient::build(base, None)
+    }
+
+    /// A browser whose every request carries `X-Forwarded-For: address`.
+    // harness_client includes this file on its own and never calls this constructor.
+    #[allow(dead_code)]
+    pub fn at(base: &str, address: &str) -> TestClient {
+        TestClient::build(base, Some(address.to_string()))
+    }
+
+    fn build(base: &str, forwarded_for: Option<String>) -> TestClient {
         TestClient {
             base: base.to_string(),
             http: reqwest::Client::builder()
@@ -146,6 +158,7 @@ impl TestClient {
                 .expect("http client"),
             jar: Mutex::new(BTreeMap::new()),
             attributes: Mutex::new(BTreeMap::new()),
+            forwarded_for,
         }
     }
 
@@ -257,6 +270,9 @@ impl TestClient {
     ) -> Vec<(String, String)> {
         if cookies && let Some(header) = self.cookie_header() {
             defaults.push(("cookie", header));
+        }
+        if let Some(address) = &self.forwarded_for {
+            defaults.push(("x-forwarded-for", address.clone()));
         }
         let mut headers: Vec<(String, String)> = defaults
             .into_iter()

@@ -11,3 +11,6 @@ s24_trick_requests
 s26_panel
 s29_state_survives
 s32_rules
+s44_lockout
+s45_retention
+s46_consent_notice
