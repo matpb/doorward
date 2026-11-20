@@ -3,9 +3,7 @@
 use std::net::IpAddr;
 
 use axum::extract::{Path, Request, State};
-use axum::http::header::{
-    AUTHORIZATION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, WWW_AUTHENTICATE, X_CONTENT_TYPE_OPTIONS,
-};
+use axum::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -187,26 +185,9 @@ pub async fn server_path(
 pub async fn combined_path(State(state): State<AppState>, request: Request) -> Response {
     let peer = peer_of(request.extensions());
     match check(&state, peer, request.headers(), Target::Combined).await {
-        Ok((_caller, open)) => hold(unavailable(COMBINED), open),
+        Ok((caller, open)) => hold(proxy::combined::handle(&state, caller, request).await, open),
         Err(refusal) => refusal.into_response(),
     }
-}
-
-/// The answer of a request that passed the guard. The proxy replaces it in the next slice.
-fn unavailable(label: &str) -> Response {
-    let body = format!(
-        r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32000,"message":"Upstream {label} is unavailable"}}}}"#
-    );
-    (
-        StatusCode::BAD_GATEWAY,
-        [
-            (CONTENT_TYPE, "application/json"),
-            (X_CONTENT_TYPE_OPTIONS, "nosniff"),
-            (CONTENT_SECURITY_POLICY, "sandbox"),
-        ],
-        body,
-    )
-        .into_response()
 }
 
 /// The metadata address the challenge points at, from the configured public address.

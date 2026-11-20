@@ -74,6 +74,8 @@ pub struct Sent {
     pub response: reqwest::Response,
     pub id: Value,
     pub kind: Kind,
+    /// True when the link that sent the request speaks the stateless form.
+    pub stateless: bool,
 }
 
 /// The kept links, keyed by (family, server), with their bounds.
@@ -133,11 +135,13 @@ impl Links {
                     retried = true;
                 }
                 200 => {
+                    let stateless = matches!(link.form, Form::Stateless);
                     return match upstream::accept(&response) {
                         Ok(kind @ (Kind::Json | Kind::Stream)) => Ok(Sent {
                             response,
                             id: json!(id),
                             kind,
+                            stateless,
                         }),
                         _ => Err(Fault),
                     };
@@ -845,7 +849,9 @@ fn whole_answer(value: Value, expected: &Value) -> Option<Value> {
 
 /// Reads the answer to `sent.id`: an object with that id and exactly one of `result` and `error`.
 pub async fn read(state: &AppState, sent: Sent, cap: u64) -> Result<Value, Fault> {
-    let Sent { response, id, kind } = sent;
+    let Sent {
+        response, id, kind, ..
+    } = sent;
     read_answer(state, response, kind, cap, &id)
         .await?
         .ok_or(Fault)

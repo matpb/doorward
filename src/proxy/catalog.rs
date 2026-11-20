@@ -414,28 +414,19 @@ pub fn names(conn: &Connection, server_id: i64) -> rusqlite::Result<Vec<String>>
     rows.collect()
 }
 
-/// Replaces the server's tools in one IMMEDIATE transaction and returns the names that were new.
-/// After the first refresh of a server, each new name gets a `tool_appeared` row, at most 50.
-pub fn replace(
-    conn: &mut Connection,
-    server_id: i64,
-    tools: &[Value],
-    now: i64,
-) -> rusqlite::Result<Vec<String>> {
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let (slug, had_success): (String, bool) = tx.query_row(
-        "SELECT slug, catalog_at IS NOT NULL FROM servers WHERE id = ?1",
-        params![server_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+/// The stored definitions of the server, in catalog order.
+pub fn definitions(conn: &Connection, server_id: i64) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut statement = conn.prepare(
+        "SELECT name, definition FROM tool_catalog WHERE server_id = ?1 ORDER BY position",
     )?;
-    let before: HashSet<String> = names(&tx, server_id)?.into_iter().collect();
-    tx.execute(
-        "DELETE FROM tool_catalog WHERE server_id = ?1",
-        params![server_id],
-    )?;
+    let rows = statement.query_map(params![server_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect()
+}
+
+/// The tools the catalog keeps, as name and definition text: named, at most 128 bytes, first of each name.
+fn kept_tools(tools: &[Value]) -> Vec<(&str, String)> {
     let mut seen: HashSet<&str> = HashSet::new();
-    let mut added = Vec::new();
-    let mut position: i64 = 0;
+    let mut kept = Vec::new();
     for tool in tools {
         let Some(name) = tool.get("name").and_then(Value::as_str) else {
             continue;
@@ -443,14 +434,53 @@ pub fn replace(
         if name.is_empty() || name.len() > NAME_LIMIT || !seen.insert(name) {
             continue;
         }
+        kept.push((name, tool.to_string()));
+    }
+    kept
+}
+
+/// Replaces the server's tools in one IMMEDIATE transaction and returns the names that were new.
+/// Writes nothing when the stored tools already equal `tools` and the last refresh succeeded.
+pub fn replace(
+    conn: &mut Connection,
+    server_id: i64,
+    tools: &[Value],
+    now: i64,
+) -> rusqlite::Result<Vec<String>> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let (slug, had_success, clean): (String, bool, bool) = tx.query_row(
+        "SELECT slug, catalog_at IS NOT NULL, catalog_error IS NULL FROM servers WHERE id = ?1",
+        params![server_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let kept = kept_tools(tools);
+    let stored = definitions(&tx, server_id)?;
+    let unchanged = clean
+        && had_success
+        && stored.len() == kept.len()
+        && stored
+            .iter()
+            .zip(&kept)
+            .all(|((name, text), (kept_name, kept_text))| {
+                name.as_str() == *kept_name && text.as_str() == kept_text.as_str()
+            });
+    if unchanged {
+        return Ok(Vec::new());
+    }
+    let before: HashSet<String> = stored.into_iter().map(|(name, _)| name).collect();
+    tx.execute(
+        "DELETE FROM tool_catalog WHERE server_id = ?1",
+        params![server_id],
+    )?;
+    let mut added = Vec::new();
+    for (position, (name, text)) in kept.iter().enumerate() {
         tx.execute(
             "INSERT INTO tool_catalog (server_id, position, name, definition) \
              VALUES (?1, ?2, ?3, ?4)",
-            params![server_id, position, name, tool.to_string()],
+            params![server_id, position as i64, name, text],
         )?;
-        position += 1;
-        if !before.contains(name) {
-            added.push(name.to_owned());
+        if !before.contains(*name) {
+            added.push((*name).to_owned());
         }
     }
     tx.execute(

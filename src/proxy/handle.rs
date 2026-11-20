@@ -3,24 +3,24 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::body::{Body, Bytes, to_bytes};
+use axum::body::{Body, Bytes};
 use axum::http::header::{
-    ACCEPT, ALLOW, CONTENT_ENCODING, CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
+    ACCEPT, ALLOW, CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use super::catalog;
+use super::intake::{Intake, intake};
 use super::sessions;
 use super::stream::{self, Owned, Watch};
 use super::upstream::{self, Fault, Kind, Outgoing, Target, TargetError};
 use crate::app::AppState;
 use crate::mcp::answer;
-use crate::mcp::headers::{HeaderRefusal, check_stateless};
-use crate::mcp::json::{JsonRefusal, parse_strict};
+use crate::mcp::json::parse_strict;
 use crate::mcp::message::{
-    Decision, Generation, Message, Refusal, Shape, Switches, classify, decide, stateless_version,
+    Decision, Generation, Message, Shape, Switches, decide, stateless_version,
 };
 use crate::oauth::guard::Caller;
 use crate::policy;
@@ -30,9 +30,9 @@ const MCP_PROTOCOL_VERSION: HeaderName = HeaderName::from_static("mcp-protocol-v
 const MCP_SESSION_ID: HeaderName = HeaderName::from_static("mcp-session-id");
 const MCP_METHOD: HeaderName = HeaderName::from_static("mcp-method");
 const MCP_NAME: HeaderName = HeaderName::from_static("mcp-name");
-const INVALID: &str = "Invalid request";
-const PARSE: &str = "Parse error";
-const NO_METHOD: &str = "Method not found";
+pub(super) const INVALID: &str = "Invalid request";
+pub(super) const PARSE: &str = "Parse error";
+pub(super) const NO_METHOD: &str = "Method not found";
 const SESSION_LIMIT: usize = 256;
 pub(super) const TOOL_LIMIT: usize = 128;
 
@@ -73,41 +73,10 @@ enum Sent {
 
 /// Steps 1 to 10 of the POST order. Every refusal answers before any upstream contact.
 pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Response {
-    if headers.contains_key(CONTENT_ENCODING) || !utf8_only(headers) {
-        return answer::error(StatusCode::BAD_REQUEST, None, -32600, INVALID);
-    }
-    let limit = usize::try_from(ctx.state.config.limits.body_bytes).unwrap_or(usize::MAX);
-    let bytes = match to_bytes(body, limit).await {
-        Ok(bytes) => bytes,
-        Err(_) => return bare(StatusCode::PAYLOAD_TOO_LARGE),
+    let Intake { message, bytes } = match intake(ctx.state, headers, body).await {
+        Ok(intake) => intake,
+        Err(refusal) => return refusal,
     };
-    let value = match parse_strict(&bytes) {
-        Ok(value) => value,
-        Err(JsonRefusal::Encoding) => {
-            return answer::error(StatusCode::BAD_REQUEST, None, -32600, INVALID);
-        }
-        Err(JsonRefusal::Syntax) => {
-            return answer::error(StatusCode::BAD_REQUEST, None, -32700, PARSE);
-        }
-    };
-    let (version, clean) = version_of(headers);
-    let message = match classify(value, version) {
-        Ok(message) => message,
-        Err(Refusal::InvalidRequest) => {
-            return answer::error(StatusCode::BAD_REQUEST, None, -32600, INVALID);
-        }
-    };
-    if !clean && message.generation == Generation::Session {
-        return answer::error(
-            StatusCode::BAD_REQUEST,
-            message.id.as_ref(),
-            -32600,
-            INVALID,
-        );
-    }
-    if let Err(HeaderRefusal(text)) = check_stateless(headers, &message) {
-        return answer::error(StatusCode::BAD_REQUEST, message.id.as_ref(), -32020, &text);
-    }
     let session = if message.method.as_deref() == Some("initialize") {
         None
     } else {
@@ -284,28 +253,9 @@ fn relayed(
     response
 }
 
-/// The client's Content-Type values are all readable and name no charset but UTF-8.
-fn utf8_only(headers: &HeaderMap) -> bool {
-    headers.get_all(CONTENT_TYPE).iter().all(|value| {
-        let Ok(text) = value.to_str() else {
-            return false;
-        };
-        text.split(';')
-            .skip(1)
-            .filter_map(|param| param.split_once('='))
-            .filter(|(key, _)| key.trim().eq_ignore_ascii_case("charset"))
-            .all(|(_, charset)| {
-                charset
-                    .trim()
-                    .trim_matches('"')
-                    .eq_ignore_ascii_case("utf-8")
-            })
-    })
-}
-
 /// The MCP-Protocol-Version value when it is sent once and visible, and whether the header is clean
 /// (absent, or sent once and visible).
-fn version_of(headers: &HeaderMap) -> (Option<&str>, bool) {
+pub(super) fn version_of(headers: &HeaderMap) -> (Option<&str>, bool) {
     let mut values = headers.get_all(MCP_PROTOCOL_VERSION).iter();
     match (values.next(), values.next()) {
         (None, _) => (None, true),

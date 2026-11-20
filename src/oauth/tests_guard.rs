@@ -238,13 +238,6 @@ fn plain_challenge(base: &str, slug: &str) -> String {
     )
 }
 
-/// The answer of an accepted request on `/mcp`, which keeps its placeholder until the next slice.
-fn placeholder(slug: &str) -> String {
-    format!(
-        r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32000,"message":"Upstream {slug} is unavailable"}}}}"#
-    )
-}
-
 /// The status, headers and body of one answer. Every header is kept, in order.
 struct Reply {
     status: u16,
@@ -632,22 +625,30 @@ async fn a_token_that_passes_reaches_the_handler() {
         reply.status, 405,
         "DELETE /demo without a session must be answered 405 by the handler"
     );
-    for method in [
-        reqwest::Method::GET,
-        reqwest::Method::POST,
-        reqwest::Method::DELETE,
-    ] {
+    for method in [reqwest::Method::GET, reqwest::Method::DELETE] {
         let reply = http.bearer(method.clone(), "/mcp", &combined.access).await;
-        assert_eq!(
-            reply.status, 502,
-            "{method} /mcp must reach the placeholder"
-        );
-        assert_eq!(
-            reply.body,
-            placeholder("mcp"),
-            "the placeholder body of mcp"
-        );
+        assert_eq!(reply.status, 405, "{method} /mcp must be answered 405");
     }
+    let reply = http
+        .request(
+            reqwest::Method::POST,
+            "/mcp",
+            vec![
+                ("authorization", format!("Bearer {}", combined.access)),
+                ("content-type", JSON_TYPE.to_owned()),
+            ],
+            Some(String::new()),
+        )
+        .await;
+    assert_eq!(
+        reply.status, 400,
+        "POST /mcp with an empty body must be refused by the handler"
+    );
+    assert_eq!(
+        reply.body,
+        r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}"#,
+        "the empty body is a parse error"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1351,6 +1352,7 @@ async fn state_of(gw: &Gateway) -> AppState {
         reset_requests: Arc::new(Semaphore::new(1)),
         limiter,
         links: Arc::new(crate::proxy::links::Links::new()),
+        turns: Arc::new(crate::proxy::combined::Turns::default()),
         config,
     }
 }

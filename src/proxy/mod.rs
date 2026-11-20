@@ -12,13 +12,17 @@ use crate::mcp::answer;
 use crate::oauth::guard::Caller;
 
 pub mod catalog;
+pub mod combined;
 mod handle;
+mod intake;
 pub mod links;
 pub mod sessions;
 mod sse;
 mod stream;
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod tests_combined;
 #[cfg(test)]
 mod tests_handle;
 #[cfg(test)]

@@ -412,8 +412,13 @@ The combined endpoint `/mcp` is its own MCP server:
   "2025-06-18", "2025-03-26"]`, capabilities `{"tools": {}}`, `cacheScope` `private`),
   `tools/list` (`ttlMs` 60000, `cacheScope` `private`), `tools/call`. An unsupported
   version: `400`, `-32022`, with `data.supported` and `data.requested`.
-- Tool names are `{slug}__{tool}`. A merged name longer than 128 characters is left out
-  and logged. Tools are ordered by slug, then by the upstream's order.
+- Tool names are `{slug}__{tool}`. A tool whose name is not `^[A-Za-z0-9_.-]+$`, or whose
+  merged name is longer than 128 characters, is left out and logged with the server's slug
+  and a count, never the name. A tool with an `x-mcp-header` key at any depth is left out
+  of a stateless upstream's list. Tools are ordered by slug, then by the upstream's order.
+- At least one assigned server and every one of them failed or timed out: `502`, `-32000`,
+  `Upstream mcp is unavailable`. No assigned server: an empty list.
+- A request carrying `Mcp-Session-Id`: `404`, upstream not contacted.
 - Every other method: `-32601`.
 
 Answers that both endpoints share:

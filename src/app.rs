@@ -23,6 +23,7 @@ use crate::config::{Config, ConfigError};
 use crate::crypto::{CryptoError, KeyError, Keys, PasswordHasher, random_token};
 use crate::db::{Db, DbError};
 use crate::oauth;
+use crate::proxy::combined;
 use crate::proxy::links::Links;
 use crate::rate;
 use crate::web;
@@ -83,6 +84,8 @@ pub struct AppState {
     pub limiter: Arc<rate::Limiter>,
     /// The gateway's kept upstream links, one per token family and server.
     pub links: Arc<Links>,
+    /// One tools/list at a time per user on the combined endpoint.
+    pub turns: Arc<combined::Turns>,
 }
 
 /// Validates the config, opens the database and returns the gateway.
@@ -120,6 +123,7 @@ pub(crate) async fn assemble(
         reset_requests: Arc::new(Semaphore::new(RESET_REQUEST_PERMITS)),
         limiter,
         links: Arc::new(Links::new()),
+        turns: Arc::new(combined::Turns::default()),
     };
     spawn_sweeps(&state);
     Ok(Gateway {
