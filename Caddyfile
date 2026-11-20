@@ -1,0 +1,48 @@
+{
+	# Admin API off: nothing may change the running configuration.
+	admin off
+	servers {
+		# HTTP/3 needs a UDP port, which the stack does not publish.
+		protocols h1 h2
+		timeouts {
+			# Request headers must arrive within 10 seconds.
+			read_header 10s
+		}
+	}
+}
+
+{$DOORWARD_PUBLIC_URL} {
+	# Bodies over the limit get 413 here, before the gateway sees them.
+	request_body {
+		max_size {$DOORWARD_LIMITS_BODY_BYTES:1048576}
+	}
+	reverse_proxy doorward:8717 {
+		# Flush every write at once so event streams are not held back.
+		flush_interval -1
+		# Drops any X-Forwarded-Host the client sent.
+		header_up -X-Forwarded-Host
+	}
+	# Only an unreachable gateway (502 to 504) gets JSON; other errors keep their own status.
+	handle_errors {
+		@token {
+			path /oauth/token /oauth/register
+			expression {err.status_code} >= 502 && {err.status_code} <= 504
+		}
+		handle @token {
+			header Content-Type application/json
+			respond `{"error":"temporarily_unavailable"}` 503
+		}
+	}
+	# Filtered access log, off by default: uncomment to use; other Host names bypass it.
+	# log {
+	# 	format filter {
+	# 		wrap json
+	# 		fields {
+	# 			request>uri regexp "(/reset/|/invite/|/account/disconnect/)[^/?]+" "${1}REDACTED"
+	# 			request>uri regexp "\?.*$" "?REDACTED"
+	# 			request>headers>Authorization delete
+	# 			request>headers>Cookie delete
+	# 		}
+	# 	}
+	# }
+}

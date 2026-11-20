@@ -1,0 +1,12 @@
+# The image is built from the sources only: no git data, build output, tests, docs or secrets.
+.git
+target
+proof
+tests
+docs
+scripts
+.env
+.env.*
+*.db
+*.db-*
+*.key

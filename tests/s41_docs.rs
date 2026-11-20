@@ -120,6 +120,14 @@ fn the_example_env_file_starts_a_gateway() {
             .unwrap_or_else(|| panic!(".env.example line is not NAME=value: {line}"));
         pairs.push((name.trim().to_owned(), value.trim().to_owned()));
     }
+    // The Compose files set the database and the listen address, so the env file
+    // may leave them out.
+    if !pairs.iter().any(|(name, _)| name == "DOORWARD_DATABASE") {
+        pairs.push(("DOORWARD_DATABASE".to_owned(), database.clone()));
+    }
+    if !pairs.iter().any(|(name, _)| name == "DOORWARD_LISTEN") {
+        pairs.push(("DOORWARD_LISTEN".to_owned(), "0.0.0.0:8717".to_owned()));
+    }
     for (name, value) in &mut pairs {
         if value.is_empty() {
             match name.as_str() {

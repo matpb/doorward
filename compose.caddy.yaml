@@ -1,0 +1,92 @@
+# Caddy in front with automatic HTTPS; the gateway publishes no port on the host.
+name: doorward
+
+services:
+  caddy:
+    image: caddy:2.11
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      # Same number on both sides: Caddy listens on the port named in DOORWARD_PUBLIC_URL.
+      - "${HTTPS_PORT:-443}:${HTTPS_PORT:-443}"
+    environment:
+      # Only these two values reach Caddy; the rest of .env stays out.
+      DOORWARD_PUBLIC_URL: ${DOORWARD_PUBLIC_URL:?set DOORWARD_PUBLIC_URL in .env}
+      DOORWARD_LIMITS_BODY_BYTES: ${DOORWARD_LIMITS_BODY_BYTES:-1048576}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      edge:
+      proxy:
+        # Fixed address: the gateway trusts it as the only proxy.
+        ipv4_address: 10.213.87.2
+    read_only: true # Root file system is read-only; Caddy writes only to its two volumes.
+    cap_drop: [ALL] # No Linux capabilities.
+    security_opt: ["no-new-privileges:true"] # No gaining privileges through a binary.
+    pids_limit: 1024 # Caps the number of processes.
+    mem_limit: 512m # Caps memory.
+    cpus: 2 # Caps CPU time.
+    ulimits:
+      nofile: 65536 # Open-file limit.
+    stop_grace_period: 15s # Time to finish requests before a forced stop.
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+  doorward:
+    build: .
+    image: ${IMAGE:-doorward:local}
+    user: "65532:65532" # Not root; the same user the image sets.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Fixed by the container layout; these win over .env.
+      DOORWARD_DATABASE: /data/doorward.db
+      DOORWARD_LISTEN: 0.0.0.0:8717
+      # The only proxy the gateway believes: the Caddy address above.
+      DOORWARD_TRUSTED_PROXIES: 10.213.87.2
+    volumes:
+      - doorward-data:/data
+    networks:
+      proxy:
+      egress:
+    read_only: true # Root file system is read-only; data lives in the volume.
+    tmpfs:
+      - /tmp:size=64m # Scratch space for SQLite; small and in memory.
+    cap_drop: [ALL] # No Linux capabilities.
+    security_opt: ["no-new-privileges:true"] # No gaining privileges through a binary.
+    pids_limit: 1024 # Caps the number of processes (the blocking pool needs many).
+    mem_limit: 512m # Caps memory.
+    cpus: 2 # Caps CPU time.
+    ulimits:
+      nofile: 65536 # Open-file limit.
+    stop_grace_period: 15s # Time to finish requests before a forced stop.
+    logging: *logging
+    restart: unless-stopped
+
+networks:
+  edge:
+    # Caddy's public side; IPv6 is on. Remove this line on a host without IPv6.
+    enable_ipv6: true
+  proxy:
+    # No route out of this network: only Caddy and the gateway are on it.
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.213.87.0/29
+  egress:
+    # The gateway's own outbound network, for mail and upstream servers.
+    driver: bridge
+
+volumes:
+  doorward-data:
+    name: doorward-data
+  caddy-data:
+    name: caddy-data
+  caddy-config:
+    name: caddy-config

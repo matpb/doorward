@@ -1,0 +1,51 @@
+# The gateway alone, published on the host's loopback address only, for a proxy or tunnel you run.
+name: doorward
+
+services:
+  doorward:
+    build: .
+    image: ${IMAGE:-doorward:local}
+    user: "65532:65532" # Not root; the same user the image sets.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Fixed by the container layout; these win over .env.
+      DOORWARD_DATABASE: /data/doorward.db
+      DOORWARD_LISTEN: 0.0.0.0:8717
+      # The bridge gateway is the peer the gateway sees from the host's loopback port.
+      DOORWARD_TRUSTED_PROXIES: 10.213.87.9
+    ports:
+      # Loopback only: nothing outside this host can reach the gateway directly.
+      - "127.0.0.1:8717:8717"
+    volumes:
+      - doorward-data:/data
+    read_only: true # Root file system is read-only; data lives in the volume.
+    tmpfs:
+      - /tmp:size=64m # Scratch space for SQLite; small and in memory.
+    cap_drop: [ALL] # No Linux capabilities.
+    security_opt: ["no-new-privileges:true"] # No gaining privileges through a binary.
+    pids_limit: 1024 # Caps the number of processes (the blocking pool needs many).
+    mem_limit: 512m # Caps memory.
+    cpus: 2 # Caps CPU time.
+    ulimits:
+      nofile: 65536 # Open-file limit.
+    stop_grace_period: 15s # Time to finish requests before a forced stop.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+networks:
+  default:
+    # Fixed subnet: the gateway address is the one the gateway trusts as proxy.
+    ipam:
+      config:
+        - subnet: 10.213.87.8/29
+          gateway: 10.213.87.9
+
+volumes:
+  doorward-data:
+    name: doorward-data
