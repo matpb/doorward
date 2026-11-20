@@ -8,10 +8,13 @@ use clap::{Parser, Subcommand};
 use doorward::app::UnlockError;
 use doorward::{Config, Deps, build, serve, unlock};
 use tokio::net::TcpListener;
-use tokio::signal::unix::{SignalKind, signal};
+use tokio::signal::unix::{Signal, SignalKind, signal};
+use tokio::sync::oneshot;
 
 /// The longest a health check may wait for the gateway's answer.
 const HEALTH_LIMIT: Duration = Duration::from_secs(3);
+/// How long a stop waits for open requests after the first stop signal.
+const STOP_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Parser)]
 #[command(name = "doorward")]
@@ -109,14 +112,38 @@ async fn start(config_path: Option<&Path>) -> Result<ExitCode, Box<dyn Error>> {
     eprintln!("doorward listening on http://{}", listener.local_addr()?);
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
-    serve(listener, gateway.router, async move {
-        tokio::select! {
-            _ = interrupt.recv() => {}
-            _ = terminate.recv() => {}
+    let (stop, stopping) = oneshot::channel::<()>();
+    let served = serve(listener, gateway.router, async move {
+        let _ = stopping.await;
+    });
+    tokio::pin!(served);
+    tokio::select! {
+        () = next_signal(&mut interrupt, &mut terminate) => {}
+        result = &mut served => {
+            result?;
+            return Ok(ExitCode::SUCCESS);
         }
-    })
-    .await?;
+    }
+    eprintln!("doorward: stopping, waiting up to 10 seconds for open requests");
+    let _ = stop.send(());
+    tokio::select! {
+        result = &mut served => result?,
+        () = tokio::time::sleep(STOP_WAIT) => {
+            eprintln!("doorward: stopped with requests still open");
+        }
+        () = next_signal(&mut interrupt, &mut terminate) => {
+            eprintln!("doorward: stopped with requests still open");
+        }
+    }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Resolves on the next SIGINT or SIGTERM; the streams stay installed for later calls.
+async fn next_signal(interrupt: &mut Signal, terminate: &mut Signal) {
+    tokio::select! {
+        _ = interrupt.recv() => {}
+        _ = terminate.recv() => {}
+    }
 }
 
 /// Asks the gateway's `/healthz`: exit 0 on 200, else exit 1 with one line on stderr.

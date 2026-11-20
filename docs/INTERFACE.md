@@ -596,9 +596,24 @@ not; a failed read also writes one line, `doorward: health check failed: <error>
 health` asks this route on the listen address: it exits 0 on `200` and 1 otherwise, with one
 line on standard error.
 
+`GET /healthz` (any method) is counted in the general class per client address, like any
+anonymous request, except when the client address is a loopback address: then it takes no
+bucket, so the local probe never uses one up. A limited `/healthz` answers the JSON `429` of
+the rate limits below and does not read the database.
+
+## Stopping
+
+On the first `SIGINT` or `SIGTERM` the gateway stops accepting connections and writes one line
+on standard error: `doorward: stopping, waiting up to 10 seconds for open requests`. If every
+connection has closed, it exits 0. If requests are still open 10 seconds after the signal, it
+writes `doorward: stopped with requests still open` and exits 0. A second `SIGINT` or
+`SIGTERM` during the wait ends it at once, with the same second line and exit 0. The 10
+seconds is fixed, not a setting. Nothing changes while the gateway runs.
+
 ## Rate limits
 
-Every request but `GET /healthz` is counted before its route runs. Classes and keys:
+Every request is counted before its route runs, except `GET /healthz` from a loopback address
+(see Health). Classes and keys:
 
 | Class | Key | Requests |
 |---|---|---|

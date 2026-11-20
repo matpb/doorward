@@ -23,14 +23,11 @@ use crate::rate::{Class, Key, Open};
 use super::address::client_address;
 use super::page;
 
-/// The class of a request by method and path. `None` for `/healthz`, which is never limited.
-pub fn class_of(method: &Method, path: &str) -> Option<Class> {
-    if path == "/healthz" {
-        return None;
-    }
+/// The class of a request by method and path.
+pub fn class_of(method: &Method, path: &str) -> Class {
     let post = *method == Method::POST;
     let segments: Vec<&str> = path.split('/').collect();
-    let class = match segments.as_slice() {
+    match segments.as_slice() {
         ["", "oauth", "token" | "register"] if post => Class::Oauth,
         ["", "oauth", "authorize"] if *method == Method::GET => Class::Oauth,
         ["", "login" | "setup" | "forgot"] | ["", "account", "password"] if post => {
@@ -40,8 +37,7 @@ pub fn class_of(method: &Method, path: &str) -> Option<Class> {
             Class::Credentials
         }
         _ => Class::General,
-    };
-    Some(class)
+    }
 }
 
 /// The socket address of the request, unspecified when the server recorded none.
@@ -61,12 +57,15 @@ pub fn now_nanos(clock: &dyn Clock) -> u64 {
 }
 
 /// Takes the request's bucket for its address and class; `Err` gives the seconds to wait.
+/// `GET /healthz` from a loopback address takes no bucket, so the local probes never use one up.
 fn admit(state: &AppState, request: &Request) -> Result<(), u64> {
-    let Some(class) = class_of(request.method(), request.uri().path()) else {
-        return Ok(());
-    };
+    let path = request.uri().path();
     let peer = peer_of(request.extensions());
     let address = client_address(peer, request.headers(), &state.config.trusted_proxies);
+    if path == "/healthz" && address.is_loopback() {
+        return Ok(());
+    }
+    let class = class_of(request.method(), path);
     let now = now_nanos(state.clock.as_ref());
     state.limiter.take(class, Key::address(address), now)
 }
@@ -186,33 +185,29 @@ mod tests {
 
     #[test]
     fn every_route_of_the_table_has_its_class() {
-        let cases: &[(Method, &str, Option<Class>)] = &[
-            (Method::POST, "/oauth/token", Some(Class::Oauth)),
-            (Method::POST, "/oauth/register", Some(Class::Oauth)),
-            (Method::GET, "/oauth/authorize", Some(Class::Oauth)),
-            (Method::POST, "/login", Some(Class::Credentials)),
-            (Method::POST, "/setup", Some(Class::Credentials)),
-            (Method::POST, "/forgot", Some(Class::Credentials)),
-            (Method::POST, "/invite/abc", Some(Class::Credentials)),
-            (Method::POST, "/reset/abc", Some(Class::Credentials)),
-            (Method::POST, "/account/password", Some(Class::Credentials)),
-            (
-                Method::POST,
-                "/account/disconnect/abc",
-                Some(Class::Credentials),
-            ),
-            (Method::GET, "/login", Some(Class::General)),
-            (Method::POST, "/oauth/authorize", Some(Class::General)),
-            (Method::GET, "/oauth/token", Some(Class::General)),
-            (Method::POST, "/login/", Some(Class::General)),
-            (Method::POST, "/invite", Some(Class::General)),
-            (Method::POST, "/invite/a/b", Some(Class::General)),
-            (Method::POST, "/account/disconnect", Some(Class::General)),
-            (Method::POST, "/oauth/token/x", Some(Class::General)),
-            (Method::GET, "/healthz", None),
-            (Method::POST, "/healthz", None),
-            (Method::GET, "/", Some(Class::General)),
-            (Method::GET, "/admin/users", Some(Class::General)),
+        let cases: &[(Method, &str, Class)] = &[
+            (Method::POST, "/oauth/token", Class::Oauth),
+            (Method::POST, "/oauth/register", Class::Oauth),
+            (Method::GET, "/oauth/authorize", Class::Oauth),
+            (Method::POST, "/login", Class::Credentials),
+            (Method::POST, "/setup", Class::Credentials),
+            (Method::POST, "/forgot", Class::Credentials),
+            (Method::POST, "/invite/abc", Class::Credentials),
+            (Method::POST, "/reset/abc", Class::Credentials),
+            (Method::POST, "/account/password", Class::Credentials),
+            (Method::POST, "/account/disconnect/abc", Class::Credentials),
+            (Method::GET, "/login", Class::General),
+            (Method::POST, "/oauth/authorize", Class::General),
+            (Method::GET, "/oauth/token", Class::General),
+            (Method::POST, "/login/", Class::General),
+            (Method::POST, "/invite", Class::General),
+            (Method::POST, "/invite/a/b", Class::General),
+            (Method::POST, "/account/disconnect", Class::General),
+            (Method::POST, "/oauth/token/x", Class::General),
+            (Method::GET, "/healthz", Class::General),
+            (Method::POST, "/healthz", Class::General),
+            (Method::GET, "/", Class::General),
+            (Method::GET, "/admin/users", Class::General),
         ];
         for (method, path, want) in cases {
             assert_eq!(class_of(method, path), *want, "{method} {path}");

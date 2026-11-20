@@ -138,6 +138,11 @@ Each key in the Compose files, and what it is for:
 
 Caddy keeps the image's default user. All its capabilities are still dropped.
 
+A stop signal, such as `docker compose stop`, starts the gateway's own stop: it stops accepting
+connections and waits up to 10 seconds for open requests, such as a stream that is still
+running. Then it exits 0, writing `doorward: stopped with requests still open` if any remain.
+Docker's `stop_grace_period` of 15 seconds is therefore longer than the gateway's own wait.
+
 ## Data: database, key file and backups
 
 The database and its key file are one unit. The key file sits next to the database in the
@@ -270,7 +275,8 @@ entry that is not itself a trusted proxy.
 The image's health check runs `doorward health` every 30 seconds. It asks `/healthz` on the
 listen address, which reads the database: the check passes only while the database answers.
 A failing check exits 1 with one line on standard error, and the gateway's own line
-`doorward: health check failed: <error>` names the cause.
+`doorward: health check failed: <error>` names the cause. The check comes from the loopback
+address, so it never uses up a rate limit budget.
 
 ## Logs
 
@@ -301,6 +307,10 @@ shapes:
 - `doorward: mail settings failed: <error>`, when the mail settings cannot be read, and
   `doorward: mail failure record failed: <error>`, when a failed mail cannot be recorded.
 - `doorward: health check failed: <error>`, when `/healthz` cannot read the database.
+- `doorward: stopping, waiting up to 10 seconds for open requests`, on the first stop signal.
+  Not a failure.
+- `doorward: stopped with requests still open`, when the wait ends with requests still open.
+  Not a failure; the gateway then exits 0.
 - At start-up, a file that cannot be used exits 2 with the file's path and the cause:
   `doorward: cannot read the config file <path>: <error>`,
   `doorward: cannot open the database <path>: <error>`,
