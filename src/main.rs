@@ -124,7 +124,10 @@ async fn start(config_path: Option<&Path>) -> Result<ExitCode, Box<dyn Error>> {
             return Ok(ExitCode::SUCCESS);
         }
     }
-    eprintln!("doorward: stopping, waiting up to 10 seconds for open requests");
+    eprintln!(
+        "doorward: stopping, waiting up to {} seconds for open requests",
+        STOP_WAIT.as_secs()
+    );
     let _ = stop.send(());
     tokio::select! {
         result = &mut served => result?,

@@ -599,8 +599,8 @@ health` asks this route on the listen address: it exits 0 on `200` and 1 otherwi
 line on standard error.
 
 `GET /healthz` (any method) is counted in the general class per client address, like any
-anonymous request, except when the client address is a loopback address: then it takes no
-bucket, so the local probe never uses one up. A limited `/healthz` answers the JSON `429` of
+anonymous request, except when the client address is a loopback address and the request carries
+no `X-Forwarded-For` header: then it takes no bucket, so the local probe never uses one up. A limited `/healthz` answers the JSON `429` of
 the rate limits below and does not read the database.
 
 ## Stopping
@@ -615,8 +615,8 @@ in the activity log.
 
 ## Rate limits
 
-Every request is counted before its route runs, except `GET /healthz` from a loopback address
-(see Health). Classes and keys:
+Every request is counted before its route runs, except `/healthz` from a loopback address with
+no `X-Forwarded-For` header (see Health). Classes and keys:
 
 | Class | Key | Requests |
 |---|---|---|

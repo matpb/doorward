@@ -57,12 +57,13 @@ pub fn now_nanos(clock: &dyn Clock) -> u64 {
 }
 
 /// Takes the request's bucket for its address and class; `Err` gives the seconds to wait.
-/// `GET /healthz` from a loopback address takes no bucket, so the local probes never use one up.
+/// `/healthz` from a loopback address with no `X-Forwarded-For` header takes no bucket.
 fn admit(state: &AppState, request: &Request) -> Result<(), u64> {
     let path = request.uri().path();
     let peer = peer_of(request.extensions());
     let address = client_address(peer, request.headers(), &state.config.trusted_proxies);
-    if path == "/healthz" && address.is_loopback() {
+    let forwarded = request.headers().contains_key("x-forwarded-for");
+    if path == "/healthz" && address.is_loopback() && !forwarded {
         return Ok(());
     }
     let class = class_of(request.method(), path);
