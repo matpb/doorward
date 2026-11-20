@@ -2180,3 +2180,58 @@ async fn stateless_requests_need_client_capabilities_on_mcp() {
         "a notification needs no client capabilities"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stateless_notifications_need_no_metadata_on_mcp() {
+    let fx = fixture().await;
+    let up = stateless_up(vec![tool("echo")]).await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let headers = [
+        ("MCP-Protocol-Version", "2026-07-28"),
+        ("Mcp-Method", "notifications/cancelled"),
+    ];
+    let bodies = [
+        json!({"jsonrpc": "2.0", "method": "notifications/cancelled"}),
+        json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}}),
+        json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": 1, "_meta": {}}}),
+    ];
+    for body in bodies {
+        let reply = send(&fx.state, 1, "POST", &headers, Some(body.clone())).await;
+        assert_eq!(reply.status, 202, "{body} is accepted on /mcp");
+    }
+    let different = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2025-11-25"}}});
+    let reply = send(&fx.state, 1, "POST", &headers, Some(different)).await;
+    assert_eq!(reply.status, 400, "a different version is refused on /mcp");
+    assert_eq!(
+        reply
+            .json
+            .as_ref()
+            .map(|json| json["error"]["code"].clone()),
+        Some(json!(-32020))
+    );
+    let not_a_string = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": 7}}});
+    let reply = send(&fx.state, 1, "POST", &headers, Some(not_a_string)).await;
+    assert_eq!(reply.status, 400, "a number version is refused on /mcp");
+    assert_eq!(
+        reply
+            .json
+            .as_ref()
+            .map(|json| json["error"]["code"].clone()),
+        Some(json!(-32602))
+    );
+    let no_method = [("MCP-Protocol-Version", "2026-07-28")];
+    let body = json!({"jsonrpc": "2.0", "method": "notifications/cancelled"});
+    let reply = send(&fx.state, 1, "POST", &no_method, Some(body)).await;
+    assert_eq!(reply.status, 400, "a missing Mcp-Method is refused on /mcp");
+    assert_eq!(
+        reply
+            .json
+            .as_ref()
+            .map(|json| json["error"]["code"].clone()),
+        Some(json!(-32020))
+    );
+}

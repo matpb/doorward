@@ -536,6 +536,45 @@ fn id_of(reply: &common::mcp::McpReply) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_stateless_notification_needs_no_metadata() {
+    let w = World::start().await;
+    let (bob, _upstream, _) = bob_on(&w, "demo", options(Generation::Both)).await;
+    let demo_tokens = w.token(&bob, "demo").await;
+    let demo = McpClient::stateless(&w.resource("demo"), Some(&demo_tokens.access_token));
+    let headers = [
+        ("MCP-Protocol-Version", "2026-07-28"),
+        ("Mcp-Method", "notifications/cancelled"),
+    ];
+    for params in [json!(null), json!({"requestId": 1}), json!({"_meta": {}})] {
+        let mut body = json!({"jsonrpc": "2.0", "method": "notifications/cancelled"});
+        if !params.is_null() {
+            body["params"] = params.clone();
+        }
+        let text = body.to_string();
+        let reply = demo.raw(text.as_bytes(), &headers).await;
+        assert_eq!(reply.status, 202, "{text} is accepted: {}", reply.body);
+    }
+    let different = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2025-11-25"}}})
+    .to_string();
+    let reply = demo.raw(different.as_bytes(), &headers).await;
+    assert_eq!(reply.status, 400, "a different version is refused");
+    assert_eq!(reply.error_code(), Some(-32020));
+    let not_a_string = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": 7}}})
+    .to_string();
+    let reply = demo.raw(not_a_string.as_bytes(), &headers).await;
+    assert_eq!(reply.status, 400, "a number version is refused");
+    assert_eq!(reply.error_code(), Some(-32602));
+    let plain = json!({"jsonrpc": "2.0", "method": "notifications/cancelled"}).to_string();
+    let reply = demo
+        .raw(plain.as_bytes(), &[("MCP-Protocol-Version", "2026-07-28")])
+        .await;
+    assert_eq!(reply.status, 400, "a missing Mcp-Method is refused");
+    assert_eq!(reply.error_code(), Some(-32020));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn stateless_refusals_have_the_specified_shapes() {
     let w = World::start().await;
     let (bob, _upstream, _) = bob_on(&w, "demo", options(Generation::Both)).await;

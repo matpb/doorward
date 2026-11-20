@@ -1538,7 +1538,10 @@ async fn a_stateless_body_without_a_protocol_version_is_invalid_params() {
         session_body(
             3,
             "tools/list",
-            json!({"_meta": {"io.modelcontextprotocol/clientInfo": {}}}),
+            json!({"_meta": {
+                "io.modelcontextprotocol/clientInfo": {},
+                "io.modelcontextprotocol/clientCapabilities": {},
+            }}),
         ),
         session_body(
             3,
@@ -1676,6 +1679,127 @@ async fn a_stateless_notification_without_client_capabilities_is_still_accepted(
         demo.fake.count(),
         before + 1,
         "the notification is forwarded"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stateless_notification_needs_no_metadata() {
+    let demo = demo().await;
+    let bodies = [
+        json!({"jsonrpc": "2.0", "method": "notifications/cancelled"}),
+        json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}}),
+        json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": 1, "_meta": {}}}),
+    ];
+    for value in bodies {
+        let before = demo.fake.count();
+        let body = value.to_string();
+        let reply = demo
+            .gw
+            .post(
+                "demo",
+                &demo.token,
+                stateless_headers("notifications/cancelled", None),
+                body.clone(),
+            )
+            .await;
+        assert_eq!(reply.status, 202, "{body} is accepted");
+        assert_eq!(demo.fake.count(), before + 1, "{body} is forwarded once");
+        let seen = demo.fake.seen();
+        let forwarded = seen.last().expect("one forwarded request");
+        assert_eq!(forwarded.body, body.as_bytes(), "forwarded byte-equal");
+    }
+    let before = demo.fake.count();
+    let request = json!({"jsonrpc": "2.0", "id": 15, "method": "tools/list"}).to_string();
+    let reply = demo
+        .gw
+        .post(
+            "demo",
+            &demo.token,
+            stateless_headers("tools/list", None),
+            request,
+        )
+        .await;
+    assert_eq!(reply.status, 400, "a request with no _meta is refused");
+    assert_eq!(reply.error_code(), Some(-32602));
+    assert_eq!(reply.json()["id"], json!(15));
+    assert_eq!(demo.fake.count(), before, "the upstream sees no request");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stateless_notification_version_is_checked_when_present() {
+    let demo = demo().await;
+    let before = demo.fake.count();
+    let different = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2025-11-25"}}})
+    .to_string();
+    let reply = demo
+        .gw
+        .post(
+            "demo",
+            &demo.token,
+            stateless_headers("notifications/cancelled", None),
+            different,
+        )
+        .await;
+    assert_eq!(reply.status, 400, "a different version is refused");
+    assert_eq!(reply.error_code(), Some(-32020));
+    assert_eq!(
+        reply.error_message().as_deref(),
+        Some("Header mismatch: MCP-Protocol-Version")
+    );
+    for version in [json!(7), json!(null), json!(true), json!([]), json!({})] {
+        let body = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": version}}})
+        .to_string();
+        let reply = demo
+            .gw
+            .post(
+                "demo",
+                &demo.token,
+                stateless_headers("notifications/cancelled", None),
+                body,
+            )
+            .await;
+        assert_eq!(reply.status, 400, "{version} is not a version string");
+        assert_eq!(reply.error_code(), Some(-32602));
+        assert_eq!(
+            reply.error_message().as_deref(),
+            Some("Invalid params: missing _meta, protocol version or client capabilities")
+        );
+        assert!(reply.json()["id"].is_null(), "a notification has no id");
+    }
+    assert_eq!(
+        demo.fake.count(),
+        before,
+        "the upstream sees no notification"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stateless_notification_keeps_the_method_header_rule() {
+    let demo = demo().await;
+    let before = demo.fake.count();
+    let body = json!({"jsonrpc": "2.0", "method": "notifications/cancelled"}).to_string();
+    let mut missing = stateless_headers("notifications/cancelled", None);
+    missing.retain(|(name, _)| *name != "mcp-method");
+    let other = stateless_headers("notifications/progress", None);
+    for headers in [missing, other] {
+        let reply = demo
+            .gw
+            .post("demo", &demo.token, headers, body.clone())
+            .await;
+        assert_eq!(reply.status, 400, "the Mcp-Method header must match");
+        assert_eq!(reply.error_code(), Some(-32020));
+        assert_eq!(
+            reply.error_message().as_deref(),
+            Some("Header mismatch: Mcp-Method")
+        );
+    }
+    assert_eq!(
+        demo.fake.count(),
+        before,
+        "the upstream sees no notification"
     );
 }
 

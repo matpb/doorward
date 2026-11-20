@@ -380,6 +380,10 @@ both; token for the slug `mcp`.
     records no such request. Upstream `Mode::DeclaresFlags`: a stateless discover on `/demo`
     has capabilities `{"tools": {"extra": 1}}` (no `listChanged` or `subscribe`, switches off);
     a session initialize keeps `tools.listChanged`.
+17. `a_stateless_notification_needs_no_metadata`: `notifications/cancelled` with no `params`,
+    with `params` lacking `_meta`, and with `_meta: {}` is 202; a `_meta` version `2025-11-25`
+    under header `2026-07-28` is 400 `-32020`; a numeric version is 400 `-32602`; a missing
+    `Mcp-Method` header is 400 `-32020`.
 
 ## s12_streaming.rs (statement 12)
 

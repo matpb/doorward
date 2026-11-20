@@ -77,11 +77,11 @@ pub(super) async fn intake(
             INVALID,
         ));
     }
-    if message.generation == Generation::Stateless
-        && meta_version(&message.value)
-            .and_then(Value::as_str)
-            .is_none()
-    {
+    let missing_version = match meta_version(&message.value) {
+        Some(version) => !version.is_string(),
+        None => message.shape == Shape::Request,
+    };
+    if message.generation == Generation::Stateless && missing_version {
         return Err(missing_meta(&message));
     }
     if message.generation == Generation::Stateless

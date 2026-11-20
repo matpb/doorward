@@ -462,7 +462,13 @@ fn stateless_post(
         Some("tools/call" | "resources/read" | "prompts/get")
     );
     let expected_name = method.and_then(|m| name_param(m, &params));
-    let problem = header_problem(rec, "MCP-Protocol-Version", meta_version)
+    // A notification may omit the version from its body; then only the method header is compared.
+    let version_problem = if meta_version.is_some() || id.is_some() {
+        header_problem(rec, "MCP-Protocol-Version", meta_version)
+    } else {
+        None
+    };
+    let problem = version_problem
         .or_else(|| header_problem(rec, "Mcp-Method", body_method))
         .or_else(|| {
             if needs_name {

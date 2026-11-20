@@ -5,7 +5,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::Value;
 
-use super::message::{Generation, Message, meta_version, param};
+use super::message::{Generation, Message, Shape, meta_version, param};
 
 const BASE64_OPEN: &str = "=?base64?";
 const BASE64_CLOSE: &str = "?=";
@@ -18,13 +18,16 @@ pub fn check_stateless(headers: &HeaderMap, message: &Message) -> Result<(), Hea
     if message.generation == Generation::Session {
         return Ok(());
     }
-    let version = meta_version(&message.value).and_then(Value::as_str);
-    must_match(
-        headers,
-        "mcp-protocol-version",
-        "MCP-Protocol-Version",
-        version,
-    )?;
+    // A notification may omit the version from its body; the header then decides the generation.
+    let body_version = meta_version(&message.value);
+    if body_version.is_some() || message.shape == Shape::Request {
+        must_match(
+            headers,
+            "mcp-protocol-version",
+            "MCP-Protocol-Version",
+            body_version.and_then(Value::as_str),
+        )?;
+    }
     must_match(
         headers,
         "mcp-method",

@@ -379,15 +379,18 @@ and `resources`, and `subscribe` under `resources`; a session `initialize` keeps
 `"resultType": "complete"`, and list answers `"ttlMs": 60000, "cacheScope": "private"`.
 
 Stateless header rules: `MCP-Protocol-Version` must be present once and equal the body's
-`_meta` version; `Mcp-Method` must be present once and equal the body's `method`;
+`_meta` version (a notification whose body carries no version is not compared on this header;
+the header then sets the generation); `Mcp-Method` must be present once and equal the body's `method`;
 `Mcp-Name` must be present once for `tools/call` and `prompts/get` (equal to
 `params.name`) and for `resources/read` (equal to `params.uri`). A value of the form
 `=?base64?...?=` is decoded before comparing. Any failure: `400`, `-32020`, message
-starting `Header mismatch:`. A stateless body with no `params._meta` object, or with no string
+starting `Header mismatch:`. A stateless request with no `params._meta` object, or with no string
 `io.modelcontextprotocol/protocolVersion` in it, or with no JSON object as
-`io.modelcontextprotocol/clientCapabilities` (a request only, not a notification), is refused before
-these rules: `400`, `-32602`, message `Invalid params: missing _meta, protocol version or client capabilities`.
-`io.modelcontextprotocol/clientInfo` is not required. GET and DELETE under the stateless rules: `405`.
+`io.modelcontextprotocol/clientCapabilities`, is refused before these rules, as is any stateless
+message whose `_meta` version is present but not a string: `400`, `-32602`, message
+`Invalid params: missing _meta, protocol version or client capabilities`. A notification may omit
+`params` and `_meta` altogether. `io.modelcontextprotocol/clientInfo` is not required.
+GET and DELETE under the stateless rules: `405`.
 
 Relayed `tools/list` results keep the upstream's fields, minus denied tools and entries
 without a text name, on every page, and under the
@@ -488,7 +491,7 @@ Answers that both endpoints share:
 | JSON array, `tools/call` without an `id`, a client-sent response under the stateless rules or without a session of the caller | `400`, JSON-RPC `-32600` |
 | Method outside the allowlist, `tasks/*`, `params.task` present | `404` under the stateless rules, else `200`; JSON-RPC `-32601`, upstream not contacted |
 | `tools/call` for a tool that is not in the server's list or is denied | `200`, JSON-RPC `-32602` with message `Unknown tool: {name}`, upstream not contacted |
-| Stateless body with no `params._meta`, no string protocol version, or (request only) no object client capabilities in it | `400`, JSON-RPC `-32602`, message `Invalid params: missing _meta, protocol version or client capabilities` |
+| Stateless request with no `params._meta`, no string protocol version, or no object client capabilities in it; or any stateless message whose `_meta` version is not a string | `400`, JSON-RPC `-32602`, message `Invalid params: missing _meta, protocol version or client capabilities` |
 | Header and body disagree (2026-07-28), or a required header is missing or repeated | `400`, JSON-RPC `-32020` |
 | Session id not issued to this user, family and server | `404`, upstream not contacted |
 | Upstream unreachable, timed out, answered 401 or 403, redirected, or sent an unexpected content type | `502`, JSON-RPC `-32000` with message `Upstream {slug} is unavailable` |
