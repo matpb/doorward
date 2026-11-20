@@ -410,22 +410,24 @@ const EMAIL: &str = "bob@example.com";
 /// Puts a login block for `EMAIL` into the database, as tests/cli_unlock.rs does.
 fn insert_block(database: &Path) {
     let conn = rusqlite::Connection::open(database).expect("open database");
-    conn.execute(
-        "INSERT INTO login_blocks (account_hash, failures, last_failed_at) VALUES (?1, 5, 1800000000)",
-        [token_hash(EMAIL)],
-    )
-    .expect("insert block");
+    for _ in 0..5 {
+        conn.execute(
+            "INSERT INTO login_failures (account_hash, address, at) VALUES (?1, '127.0.0.1', 1800000000)",
+            [token_hash(EMAIL)],
+        )
+        .expect("insert failure");
+    }
 }
 
-/// How many login blocks the database holds for `EMAIL`.
+/// How many counted failures the database holds for `EMAIL`.
 fn block_count(database: &Path) -> i64 {
     let conn = rusqlite::Connection::open(database).expect("open database");
     conn.query_row(
-        "SELECT COUNT(*) FROM login_blocks WHERE account_hash = ?1",
+        "SELECT COUNT(*) FROM login_failures WHERE account_hash = ?1",
         [token_hash(EMAIL)],
         |row| row.get(0),
     )
-    .expect("count blocks")
+    .expect("count failures")
 }
 
 #[test]

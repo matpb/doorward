@@ -1082,6 +1082,9 @@ tests of `s06_passwords.rs` keep their meaning: there every request comes from o
 12. `the_address_rule_still_spans_accounts`: `address_failures = 6`; seven wrong passwords
     at A, each for another email: the next attempt at A for any account is 429 and the
     same account at B is not.
+13. `a_right_current_password_clears_its_own_pair`: bob is signed in at A. Two wrong
+    current passwords are each 400 and leave two rows in `login_failures`; the right
+    current password answers 303 and leaves none.
 
 ## s45_retention.rs (statement 45)
 

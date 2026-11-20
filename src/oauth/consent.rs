@@ -368,8 +368,9 @@ fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
         p { "Server: " (consent.server) }
         p { "Signed in as " (consent.email) }
         @if consent.loopback {
-            p.notice { "This app runs on your computer. Approve only if you started this sign-in yourself." }
+            p.local-app { "This app runs on your computer." }
         }
+        p.notice data-consent-notice { "Approve only if you started this sign-in yourself." }
         form method="post" action="/oauth/consent" {
             input type="hidden" name="csrf" value=(csrf);
             input type="hidden" name="req" value=(req);

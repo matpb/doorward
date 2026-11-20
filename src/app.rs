@@ -211,6 +211,7 @@ fn spawn_sweeps(state: &AppState) {
     let clock = Arc::clone(&state.clock);
     let replay_seconds = oauth::families::replay_window(&state.config.lifetimes);
     let block_seconds = to_i64(state.config.limits.block_minutes).saturating_mul(60);
+    let activity_seconds = to_i64(state.config.limits.activity_days).saturating_mul(86_400);
     let limiter = Arc::clone(&state.limiter);
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(SWEEP_EVERY);
@@ -219,7 +220,9 @@ fn spawn_sweeps(state: &AppState) {
             limiter.sweep(web::limit::now_nanos(clock.as_ref()));
             let now = clock.now().unix_timestamp();
             let swept = db
-                .call(move |conn| sweep_in(conn, now, replay_seconds, block_seconds))
+                .call(move |conn| {
+                    sweep_in(conn, now, replay_seconds, block_seconds, activity_seconds)
+                })
                 .await;
             if let Err(err) = swept {
                 eprintln!("doorward: housekeeping failed: {err}");
@@ -234,10 +237,11 @@ fn sweep_in(
     now: i64,
     replay_seconds: i64,
     block_seconds: i64,
+    activity_seconds: i64,
 ) -> rusqlite::Result<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     oauth::families::sweep(&tx, now, replay_seconds)?;
-    housekeeping::sweep(&tx, now, block_seconds)?;
+    housekeeping::sweep(&tx, now, block_seconds, activity_seconds)?;
     tx.commit()
 }
 

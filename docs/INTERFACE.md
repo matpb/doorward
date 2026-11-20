@@ -111,9 +111,11 @@ refresh_replay_seconds = 30
 body_bytes = 1048576
 tools_list_bytes = 4194304
 upstream_timeout_seconds = 300
-account_failures = 5          # consecutive wrong passwords before the account is blocked
-address_failures = 30         # wrong passwords per address inside the window
-block_minutes = 15
+account_failures = 5          # wrong passwords for one account from one address inside the window
+account_ceiling = 50          # wrong passwords for one account from all addresses inside the window
+address_failures = 30         # wrong passwords per address, for any accounts, inside the window
+block_minutes = 15            # the window
+activity_days = 90            # days an activity row is kept
 dcr_per_hour = 60             # registrations per address
 dcr_total_per_hour = 600      # registrations of all addresses together
 general_burst = 240           # per client address: everything not listed below
@@ -149,20 +151,34 @@ and leaves the link or code usable. A wrong `current_password` answers `400` as 
 | `GET /forgot` | | `200` `data-page="forgot"` |
 | `POST /forgot` | `email` | always `200` `data-page="forgot-sent"` with identical body, whether or not the address exists. The mail is sent after the response, so the answer takes the same time either way; a failed send is recorded as `mail_failed`. A new request replaces an earlier unused link, but at most one reset mail goes to an account per 5 minutes: a request inside that time is ignored silently |
 | `GET /reset/{token}` | | `200` `data-page="reset"` or `404` `data-page="link-invalid"` |
-| `POST /reset/{token}` | `password` | password set, all sessions and token families of the user revoked, the account's login block lifted, `303 /login` |
+| `POST /reset/{token}` | `password` | password set, all sessions and token families of the user revoked, every counted wrong password of the account removed, `303 /login` |
 | `GET /account` | | `200` `data-page="account"`; connected clients as rows with `data-family`, `data-client-name`, `data-server`; anonymous: `303 /login` |
 | `POST /account/password` | `current_password`, `new_password` | as reset, but the current session is replaced by a new one; `303 /account`. A wrong current password counts as a failed sign-in for the account: `400`, and `429` once the account is blocked |
 | `POST /account/clients/{family}/disconnect` | | family revoked, `303 /account` |
 | `GET /account/disconnect/{token}` | | link from the new-connection email: `200` `data-page="disconnect"` |
 | `POST /account/disconnect/{token}` | | family revoked, `200` `data-page="disconnected"` |
 
-Throttling: after `account_failures` consecutive failures an account answers `429` to every
-login attempt, right password included, until `block_minutes` have passed since the last
-failure; the count then starts again from zero. An address with more than
-`address_failures` failures inside `block_minutes` answers `429`. An attempt is counted
-before its password is checked and uncounted when the password is right, so attempts made
-at the same moment cannot exceed the limit. A blocked attempt is neither checked nor
-counted.
+Throttling: a wrong password is counted for its account and its client address together,
+and a count lasts `block_minutes`. A sign-in answers `429`, right password included, while
+any of three counts is at its limit:
+
+| Count | Limit | Who is blocked |
+|---|---|---|
+| Wrong passwords for one account from one address | `account_failures` (5) | that account from that address |
+| Wrong passwords for one account from all addresses | `account_ceiling` (50) | that account from every address |
+| Wrong passwords from one address, for any accounts | more than `address_failures` (30) | that address |
+
+The window rolls: each wrong password stops counting `block_minutes` after it was made,
+not after the last one. A right password removes the counts of its own account and address
+and no others. A password reset and `doorward unlock` remove every count of the account.
+An attempt is counted before its password is checked and uncounted when the password is
+right, so attempts made at the same moment cannot exceed a limit. A blocked attempt is
+neither checked nor counted.
+
+Someone who knows an email address can therefore keep that account blocked for everyone
+only by sending `account_ceiling` wrong passwords from many addresses in every window;
+from one address they block only themselves. The ways out are a password reset by mail
+and `doorward unlock`.
 
 The address is the socket peer. When the peer is in `trusted_proxies`, it is the last
 `X-Forwarded-For` entry that is not itself a trusted proxy; an entry that is not an address
@@ -228,6 +244,9 @@ and `server` filters take ids. Newest rows come first.
 Activity kinds: `tool_call`, `login`, `login_failed`, `invitation`, `reset`, `admin_change`,
 `client_connected`, `client_disconnected`, `redirect_blocked`, `mail_failed`,
 `tool_appeared`.
+
+Retention: the housekeeping run, at start and every ten minutes, deletes every activity
+row older than `activity_days` days, whatever its kind.
 
 ## Authorization server
 
@@ -295,6 +314,10 @@ combined endpoint needs no assignment. Anonymous: `303 /login?req={id}`. For a U
 client the fetched document must name this `client_id`, declare the auth method `none` or
 none at all, and list the redirect address (loopback port aside), else `400`
 `data-page="error"`.
+
+Every consent page holds exactly one element with `data-consent-notice`, saying "Approve
+only if you started this sign-in yourself." A page for a loopback redirect address also
+says "This app runs on your computer."
 
 `POST /oauth/consent`: `req`, `decision` (`approve` or `deny`). `303` to the redirect
 address with `code`, `state`, `iss`; or with `error=access_denied`, `state`, `iss`. The

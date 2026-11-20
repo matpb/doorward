@@ -14,7 +14,6 @@ pub enum Attempt {
     /// A failure is reserved. `phc` is the hash of an enabled account, else None.
     /// `epoch` is the account's auth epoch.
     Counted {
-        failure_id: i64,
         user_id: Option<i64>,
         phc: Option<String>,
         epoch: Option<i64>,
@@ -29,6 +28,7 @@ pub struct Reserve {
     pub now: i64,
     pub block_seconds: i64,
     pub account_failures: i64,
+    pub account_ceiling: i64,
     pub address_failures: i64,
 }
 
@@ -36,7 +36,7 @@ pub struct Reserve {
 /// `epoch` are the hash that was verified and the auth epoch read with it.
 pub struct Success {
     pub account: String,
-    pub failure_id: i64,
+    pub address: String,
     pub user_id: i64,
     pub email: String,
     pub previous: Option<String>,
@@ -46,7 +46,7 @@ pub struct Success {
     pub epoch: i64,
 }
 
-/// Transaction T1: prunes old failures, checks both limits, reserves one failure and reads the user.
+/// Transaction T1: prunes old failures, checks the three limits, reserves one failure and reads the user.
 pub async fn reserve(db: &Db, input: Reserve) -> Result<Attempt, DbError> {
     db.call(move |conn| reserve_in(conn, &input)).await
 }
@@ -57,24 +57,20 @@ pub async fn succeed(db: &Db, success: Success) -> Result<Option<String>, DbErro
     db.call(move |conn| succeed_in(conn, &success)).await
 }
 
-/// Deletes the login block of an account (the hash of its normalised email).
+/// Deletes every counted failure of an account (the hash of its normalised email).
 pub fn lift_block(conn: &Connection, email: &str) -> rusqlite::Result<()> {
     conn.execute(
-        "DELETE FROM login_blocks WHERE account_hash = ?1",
+        "DELETE FROM login_failures WHERE account_hash = ?1",
         params![token_hash(&normalize_email(email))],
     )?;
     Ok(())
 }
 
-/// Clears the account's block and its reserved failure, as a successful sign-in does.
-pub fn clear_attempt(conn: &Connection, account: &str, failure_id: i64) -> rusqlite::Result<()> {
+/// Deletes the counted failures of one account from one address, as a right password does.
+pub fn clear_attempt(conn: &Connection, account: &str, address: &str) -> rusqlite::Result<()> {
     conn.execute(
-        "DELETE FROM login_blocks WHERE account_hash = ?1",
-        params![account],
-    )?;
-    conn.execute(
-        "DELETE FROM login_failures WHERE id = ?1",
-        params![failure_id],
+        "DELETE FROM login_failures WHERE account_hash = ?1 AND address = ?2",
+        params![account, address],
     )?;
     Ok(())
 }
@@ -95,36 +91,28 @@ fn reserve_in(conn: &mut Connection, input: &Reserve) -> rusqlite::Result<Attemp
         tx.commit()?;
         return Ok(Attempt::Blocked);
     }
-    let stored: Option<(i64, i64)> = tx
-        .query_row(
-            "SELECT failures, last_failed_at FROM login_blocks WHERE account_hash = ?1",
-            params![input.account],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    let failures = match stored {
-        Some((failures, last_failed_at))
-            if input.now < last_failed_at.saturating_add(input.block_seconds) =>
-        {
-            failures
-        }
-        _ => 0,
-    };
-    if failures >= input.account_failures {
+    let account_rows: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM login_failures WHERE account_hash = ?1",
+        params![input.account],
+        |row| row.get(0),
+    )?;
+    if account_rows >= input.account_ceiling {
+        tx.commit()?;
+        return Ok(Attempt::Blocked);
+    }
+    let pair_rows: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM login_failures WHERE account_hash = ?1 AND address = ?2",
+        params![input.account, input.address],
+        |row| row.get(0),
+    )?;
+    if pair_rows >= input.account_failures {
         tx.commit()?;
         return Ok(Attempt::Blocked);
     }
     tx.execute(
-        "INSERT INTO login_blocks (account_hash, failures, last_failed_at) VALUES (?1, ?2, ?3) \
-         ON CONFLICT(account_hash) DO UPDATE SET \
-         failures = excluded.failures, last_failed_at = excluded.last_failed_at",
-        params![input.account, failures + 1, input.now],
+        "INSERT INTO login_failures (account_hash, address, at) VALUES (?1, ?2, ?3)",
+        params![input.account, input.address, input.now],
     )?;
-    tx.execute(
-        "INSERT INTO login_failures (address, at) VALUES (?1, ?2)",
-        params![input.address, input.now],
-    )?;
-    let failure_id = tx.last_insert_rowid();
     let user: Option<(i64, String, i64, i64)> = tx
         .query_row(
             "SELECT id, password_hash, disabled, auth_epoch FROM users WHERE email = ?1",
@@ -139,7 +127,6 @@ fn reserve_in(conn: &mut Connection, input: &Reserve) -> rusqlite::Result<Attemp
         None => (None, None, None),
     };
     Ok(Attempt::Counted {
-        failure_id,
         user_id,
         phc,
         epoch,
@@ -151,7 +138,7 @@ fn succeed_in(conn: &mut Connection, success: &Success) -> rusqlite::Result<Opti
     if !still_current(&tx, success)? {
         return Ok(None);
     }
-    clear_attempt(&tx, &success.account, success.failure_id)?;
+    clear_attempt(&tx, &success.account, &success.address)?;
     if let Some(previous) = &success.previous {
         session::delete(&tx, previous)?;
     }
@@ -175,4 +162,253 @@ fn still_current(conn: &Connection, success: &Success) -> rusqlite::Result<bool>
         params![success.user_id, success.phc, success.epoch],
         |row| row.get(0),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::{Connection, params};
+
+    use super::{Attempt, Reserve, Success, lift_block, reserve_in, succeed_in};
+    use crate::crypto::token_hash;
+    use crate::db::Db;
+
+    const NOW: i64 = 1_000;
+    const WINDOW: i64 = 900;
+    const X: &str = "x@example.com";
+    const V: &str = "v@example.com";
+    const A: &str = "192.0.2.10";
+    const B: &str = "192.0.2.20";
+
+    fn reserve(email: &str, address: &str, now: i64) -> Reserve {
+        Reserve {
+            account: token_hash(email),
+            address: address.to_owned(),
+            email: email.to_owned(),
+            now,
+            block_seconds: WINDOW,
+            account_failures: 5,
+            account_ceiling: 50,
+            address_failures: 30,
+        }
+    }
+
+    fn success(user_id: i64, phc: String, epoch: i64) -> Success {
+        Success {
+            account: token_hash(X),
+            address: A.to_owned(),
+            user_id,
+            email: X.to_owned(),
+            previous: None,
+            now: NOW,
+            lifetime: 3_600,
+            phc,
+            epoch,
+        }
+    }
+
+    fn open() -> (tempfile::TempDir, Db) {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let db = Db::open(&dir.path().join("doorward.db")).expect("database");
+        (dir, db)
+    }
+
+    fn insert_user(conn: &Connection, email: &str) -> rusqlite::Result<i64> {
+        conn.execute(
+            "INSERT INTO users (email, password_hash, role, created_at) VALUES (?1, 'hash', 'user', 0)",
+            params![email],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn insert_failure(
+        conn: &Connection,
+        email: &str,
+        address: &str,
+        at: i64,
+    ) -> rusqlite::Result<()> {
+        conn.execute(
+            "INSERT INTO login_failures (account_hash, address, at) VALUES (?1, ?2, ?3)",
+            params![token_hash(email), address, at],
+        )?;
+        Ok(())
+    }
+
+    fn counted_rows(conn: &Connection, email: &str) -> rusqlite::Result<i64> {
+        conn.query_row(
+            "SELECT COUNT(*) FROM login_failures WHERE account_hash = ?1",
+            params![token_hash(email)],
+            |row| row.get(0),
+        )
+    }
+
+    fn rows_at(conn: &Connection, address: &str) -> rusqlite::Result<i64> {
+        conn.query_row(
+            "SELECT COUNT(*) FROM login_failures WHERE address = ?1",
+            params![address],
+            |row| row.get(0),
+        )
+    }
+
+    fn is_counted(attempt: &Attempt) -> bool {
+        matches!(attempt, Attempt::Counted { .. })
+    }
+
+    /// The verified hash and epoch of a counted attempt on an enabled account.
+    fn verified(attempt: Attempt) -> (String, i64) {
+        match attempt {
+            Attempt::Counted {
+                user_id: Some(_),
+                phc: Some(phc),
+                epoch: Some(epoch),
+            } => (phc, epoch),
+            _ => panic!("the attempt must count an enabled account"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_late_success_cannot_erase_another_accounts_failure() {
+        let (_dir, db) = open();
+        let (first, second, v_rows, address_rows) = db
+            .call(|conn| {
+                let user_id = insert_user(conn, X)?;
+                let (phc, epoch) = verified(reserve_in(conn, &reserve(X, A, NOW))?);
+                let (late_phc, late_epoch) = verified(reserve_in(conn, &reserve(X, A, NOW))?);
+                let first = succeed_in(conn, &success(user_id, phc, epoch))?;
+                reserve_in(conn, &reserve(V, A, NOW))?;
+                let second = succeed_in(conn, &success(user_id, late_phc, late_epoch))?;
+                Ok((
+                    first.is_some(),
+                    second.is_some(),
+                    counted_rows(conn, V)?,
+                    rows_at(conn, A)?,
+                ))
+            })
+            .await
+            .expect("the sign-ins run");
+        assert!(first && second, "both right passwords must sign in");
+        assert_eq!(
+            v_rows, 1,
+            "the other account's failure must still be stored"
+        );
+        assert_eq!(address_rows, 1, "the address must still count that failure");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_late_success_after_an_unlock_cannot_erase_another_accounts_failure() {
+        let (_dir, db) = open();
+        let (signed_in, v_rows, address_rows) = db
+            .call(|conn| {
+                let user_id = insert_user(conn, X)?;
+                let (phc, epoch) = verified(reserve_in(conn, &reserve(X, A, NOW))?);
+                reserve_in(conn, &reserve(X, A, NOW))?;
+                lift_block(conn, X)?;
+                reserve_in(conn, &reserve(V, A, NOW))?;
+                let late = succeed_in(conn, &success(user_id, phc, epoch))?;
+                Ok((late.is_some(), counted_rows(conn, V)?, rows_at(conn, A)?))
+            })
+            .await
+            .expect("the sign-ins run");
+        assert!(signed_in, "the right password must sign in");
+        assert_eq!(
+            v_rows, 1,
+            "the other account's failure must still be stored"
+        );
+        assert_eq!(address_rows, 1, "the address must still count that failure");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_address_rule_blocks_one_row_past_its_limit() {
+        let (_dir, db) = open();
+        let answers = db
+            .call(|conn| {
+                let mut answers = Vec::new();
+                for email in [
+                    "a1@example.com",
+                    "a2@example.com",
+                    "a3@example.com",
+                    "a4@example.com",
+                ] {
+                    let mut input = reserve(email, A, NOW);
+                    input.address_failures = 2;
+                    answers.push(is_counted(&reserve_in(conn, &input)?));
+                }
+                Ok(answers)
+            })
+            .await
+            .expect("reserve");
+        assert_eq!(answers, vec![true, true, true, false]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_ceiling_blocks_at_exactly_its_count() {
+        let (_dir, db) = open();
+        let answers = db
+            .call(|conn| {
+                let mut answers = Vec::new();
+                for address in [A, B, "192.0.2.30", "192.0.2.40"] {
+                    let mut input = reserve(X, address, NOW);
+                    input.account_ceiling = 3;
+                    answers.push(is_counted(&reserve_in(conn, &input)?));
+                }
+                Ok(answers)
+            })
+            .await
+            .expect("reserve");
+        assert_eq!(answers, vec![true, true, true, false]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_pair_blocks_at_exactly_its_count_and_not_the_other_address() {
+        let (_dir, db) = open();
+        let answers = db
+            .call(|conn| {
+                let mut answers = Vec::new();
+                for _ in 0..4 {
+                    let mut input = reserve(X, A, NOW);
+                    input.account_failures = 3;
+                    answers.push(is_counted(&reserve_in(conn, &input)?));
+                }
+                let mut other = reserve(X, B, NOW);
+                other.account_failures = 3;
+                answers.push(is_counted(&reserve_in(conn, &other)?));
+                Ok(answers)
+            })
+            .await
+            .expect("reserve");
+        assert_eq!(answers, vec![true, true, true, false, true]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_row_at_the_window_edge_is_pruned_and_one_second_newer_still_counts() {
+        let (_dir, db) = open();
+        let (pruned_counts, pruned_rows, newer_blocks) = db
+            .call(|conn| {
+                let mut pruned = reserve(X, A, NOW);
+                pruned.account_failures = 1;
+                pruned.account_ceiling = 1;
+                insert_failure(conn, X, A, NOW - WINDOW)?;
+                let pruned_counts = is_counted(&reserve_in(conn, &pruned)?);
+                let pruned_rows = counted_rows(conn, X)?;
+                let mut newer = reserve(V, A, NOW);
+                newer.account_failures = 1;
+                newer.account_ceiling = 1;
+                insert_failure(conn, V, A, NOW - WINDOW + 1)?;
+                let newer_blocks = !is_counted(&reserve_in(conn, &newer)?);
+                Ok((pruned_counts, pruned_rows, newer_blocks))
+            })
+            .await
+            .expect("reserve");
+        assert!(
+            pruned_counts,
+            "a row at now minus the window must be pruned"
+        );
+        assert_eq!(
+            pruned_rows, 1,
+            "only the new row may remain for the account"
+        );
+        assert!(
+            newer_blocks,
+            "a row one second newer must still count against the pair"
+        );
+    }
 }

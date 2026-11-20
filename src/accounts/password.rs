@@ -11,7 +11,7 @@ use crate::crypto::token_hash;
 use crate::oauth::connected;
 use crate::web::limit;
 use crate::web::{
-    VerifiedForm, Viewer, busy, internal_error, redirect, session_cookie, with_cookie,
+    VerifiedForm, Viewer, busy, internal_error, redirect, session_cookie, throttle_key, with_cookie,
 };
 
 use super::account::account_page;
@@ -24,13 +24,13 @@ pub const PASSWORD_MESSAGE: &str = "The password must be 12 to 256 characters.";
 const WRONG_CURRENT: &str = "The current password is wrong.";
 const BLOCKED: &str = "Too many sign-in attempts. Try again later.";
 
-/// What the change writes: the signed-in user, the reserved failure, the verified old hash and its
+/// What the change writes: the signed-in user, the client address, the verified old hash and its
 /// epoch, the presented session cookie value and the new hash.
 pub(super) struct Change {
     pub(super) user_id: i64,
     pub(super) email: String,
     pub(super) account: String,
-    pub(super) failure_id: i64,
+    pub(super) address: String,
     pub(super) old_phc: String,
     pub(super) epoch: i64,
     pub(super) session: Option<String>,
@@ -81,7 +81,6 @@ pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) ->
         Err(_) => return internal_error(),
     };
     let Attempt::Counted {
-        failure_id,
         user_id,
         phc,
         epoch,
@@ -107,7 +106,7 @@ pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) ->
         user_id,
         account: token_hash(&user.email),
         email: user.email,
-        failure_id,
+        address: throttle_key(form.viewer.address),
         old_phc,
         epoch,
         session: form.viewer.presented_session().map(str::to_owned),
@@ -132,7 +131,7 @@ pub(super) fn change_in(
     if !presented_session_exists(&tx, change.session.as_deref())? {
         return Ok(None);
     }
-    throttle::clear_attempt(&tx, &change.account, change.failure_id)?;
+    throttle::clear_attempt(&tx, &change.account, &change.address)?;
     let updated = tx.execute(
         "UPDATE users SET password_hash = ?1 WHERE id = ?2 AND password_hash = ?3 \
          AND auth_epoch = ?4 AND disabled = 0",

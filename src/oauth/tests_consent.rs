@@ -1328,10 +1328,12 @@ async fn the_consent_page_shows_its_parts_in_order_with_two_decisions() {
         "headline, client, server, then the signed-in user: {places:?}"
     );
     assert!(
-        body.contains(
-            "This app runs on your computer. Approve only if you started this sign-in yourself."
-        ),
-        "a loopback redirect carries the local-app warning"
+        body.contains("This app runs on your computer."),
+        "a loopback redirect carries the local-app sentence"
+    );
+    assert!(
+        body.contains("Approve only if you started this sign-in yourself."),
+        "every consent page carries the notice"
     );
     let doc = Html::parse_document(&body);
     let forms = Selector::parse(r#"form[action="/oauth/consent"]"#).expect("selector");

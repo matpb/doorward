@@ -81,10 +81,10 @@ message names the variable and never prints the value.
 | `DOORWARD_LIMITS_BODY_BYTES` | `1048576` | Largest request body in bytes. Caddy uses the same limit. |
 | `DOORWARD_LIMITS_TOOLS_LIST_BYTES` | `4194304` | Largest tool list or stream event in bytes that a server may send. |
 | `DOORWARD_LIMITS_UPSTREAM_TIMEOUT_SECONDS` | `300` | Seconds an upstream server may stay silent before the call ends. |
-| `DOORWARD_LIMITS_ACCOUNT_FAILURES` | `5` | Consecutive wrong passwords for one account before every sign-in to that account answers `429`, right password included, until `block_minutes` have passed since the last failure. |
+| `DOORWARD_LIMITS_ACCOUNT_FAILURES` | `5` | Wrong passwords for one account from one client address, inside `DOORWARD_LIMITS_BLOCK_MINUTES`, after which a sign-in to that account from that address answers `429`, right password included. Other addresses are not affected. |
 | `DOORWARD_LIMITS_ACCOUNT_CEILING` | `50` | Wrong passwords for one account from all client addresses together, inside `DOORWARD_LIMITS_BLOCK_MINUTES`, that block the account for every address. Must be at least `DOORWARD_LIMITS_ACCOUNT_FAILURES`. |
 | `DOORWARD_LIMITS_ADDRESS_FAILURES` | `30` | More than this many wrong passwords from one client address, for any accounts, inside `block_minutes` make that address answer `429`. |
-| `DOORWARD_LIMITS_BLOCK_MINUTES` | `15` | Minutes since the last wrong password after which an account block ends, and the window for counting address failures. |
+| `DOORWARD_LIMITS_BLOCK_MINUTES` | `15` | Minutes a wrong password stays counted. Each one stops counting this long after it was made. |
 | `DOORWARD_LIMITS_DCR_PER_HOUR` | `60` | Client registrations per client address per hour. |
 | `DOORWARD_LIMITS_DCR_TOTAL_PER_HOUR` | `600` | Client registrations per hour for all addresses together. |
 | `DOORWARD_LIMITS_GENERAL_BURST` | `240` | General class, per address: requests allowed at once. |
@@ -198,8 +198,12 @@ file before the first start.
 
 ## Unlock an account
 
-A sign-in block ends by itself after `DOORWARD_LIMITS_BLOCK_MINUTES` without a wrong
-password. To end it now, run the gateway's own `unlock` command in the running container.
+A sign-in block ends by itself: each wrong password stops counting
+`DOORWARD_LIMITS_BLOCK_MINUTES` after it was made. A block is for one account from one
+client address, unless the account reached `DOORWARD_LIMITS_ACCOUNT_CEILING` wrong
+passwords from all addresses together: then it is blocked for everyone. A password reset
+by mail ends every block of the account. To end them now without mail, run the gateway's
+own `unlock` command in the running container.
 The image has no shell, but the binary runs directly:
 
 ```

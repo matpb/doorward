@@ -9,7 +9,12 @@ const INVITATION_KEEP_SECONDS: i64 = 7 * DAY_SECONDS;
 const RESET_GAP_SECONDS: i64 = 300;
 
 /// Deletes rows that no longer decide anything.
-pub fn sweep(conn: &Connection, now: i64, block_seconds: i64) -> rusqlite::Result<()> {
+pub fn sweep(
+    conn: &Connection,
+    now: i64,
+    block_seconds: i64,
+    activity_seconds: i64,
+) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM sessions WHERE expires_at <= ?1", params![now])?;
     conn.execute(
         "DELETE FROM password_resets WHERE expires_at <= ?1 AND created_at <= ?2",
@@ -24,8 +29,8 @@ pub fn sweep(conn: &Connection, now: i64, block_seconds: i64) -> rusqlite::Resul
         params![now.saturating_sub(block_seconds)],
     )?;
     conn.execute(
-        "DELETE FROM login_blocks WHERE last_failed_at <= ?1",
-        params![now.saturating_sub(block_seconds)],
+        "DELETE FROM activity WHERE at <= ?1",
+        params![now.saturating_sub(activity_seconds)],
     )?;
     Ok(())
 }
@@ -87,18 +92,18 @@ mod tests {
         Ok(())
     }
 
-    fn insert_failure(conn: &Connection, address: &str, at: i64) -> rusqlite::Result<()> {
+    fn insert_failure(conn: &Connection, label: &str, at: i64) -> rusqlite::Result<()> {
         conn.execute(
-            "INSERT INTO login_failures (address, at) VALUES (?1, ?2)",
-            params![address, at],
+            "INSERT INTO login_failures (account_hash, address, at) VALUES (?1, ?1, ?2)",
+            params![label, at],
         )?;
         Ok(())
     }
 
-    fn insert_block(conn: &Connection, account: &str, last_failed_at: i64) -> rusqlite::Result<()> {
+    fn insert_activity(conn: &Connection, tool: &str, at: i64) -> rusqlite::Result<()> {
         conn.execute(
-            "INSERT INTO login_blocks (account_hash, failures, last_failed_at) VALUES (?1, 5, ?2)",
-            params![account, last_failed_at],
+            "INSERT INTO activity (at, kind, tool) VALUES (?1, 'tool_call', ?2)",
+            params![at, tool],
         )?;
         Ok(())
     }
@@ -134,10 +139,7 @@ mod tests {
                 insert_failure(conn, "f_old", NOW - BLOCK - 1)?;
                 insert_failure(conn, "f_edge", NOW - BLOCK)?;
                 insert_failure(conn, "f_live", NOW - BLOCK + 1)?;
-                insert_block(conn, "b_old", NOW - BLOCK - 1)?;
-                insert_block(conn, "b_edge", NOW - BLOCK)?;
-                insert_block(conn, "b_live", NOW - BLOCK + 1)?;
-                sweep(conn, NOW, BLOCK)?;
+                sweep(conn, NOW, BLOCK, i64::MAX)?;
                 Ok(vec![
                     remaining(conn, "SELECT id_hash FROM sessions ORDER BY id_hash")?,
                     remaining(
@@ -149,10 +151,6 @@ mod tests {
                         "SELECT token_hash FROM invitations ORDER BY token_hash",
                     )?,
                     remaining(conn, "SELECT address FROM login_failures ORDER BY address")?,
-                    remaining(
-                        conn,
-                        "SELECT account_hash FROM login_blocks ORDER BY account_hash",
-                    )?,
                 ])
             })
             .await
@@ -161,7 +159,6 @@ mod tests {
         assert_eq!(kept[1], vec!["r_live"], "password resets");
         assert_eq!(kept[2], vec!["i_edge", "i_live"], "invitations");
         assert_eq!(kept[3], vec!["f_live"], "login failures");
-        assert_eq!(kept[4], vec!["b_live"], "login blocks");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -172,7 +169,7 @@ mod tests {
             .call(|conn| {
                 insert_reset(conn, "r_299", NOW - 299, NOW - 1)?;
                 insert_reset(conn, "r_300", NOW - 300, NOW - 1)?;
-                sweep(conn, NOW, BLOCK)?;
+                sweep(conn, NOW, BLOCK, i64::MAX)?;
                 remaining(
                     conn,
                     "SELECT token_hash FROM password_resets ORDER BY token_hash",
@@ -184,27 +181,19 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_block_still_inside_its_window_is_never_swept() {
+    async fn a_failure_still_inside_its_window_is_never_swept() {
         let dir = tempfile::tempdir().expect("dir");
         let db = open_db(&dir);
         let kept = db
             .call(|conn| {
-                insert_block(conn, "b_now", NOW)?;
-                insert_block(conn, "b_inside", NOW - 10)?;
                 insert_failure(conn, "f_now", NOW)?;
-                sweep(conn, NOW, BLOCK)?;
-                Ok(vec![
-                    remaining(
-                        conn,
-                        "SELECT account_hash FROM login_blocks ORDER BY account_hash",
-                    )?,
-                    remaining(conn, "SELECT address FROM login_failures ORDER BY address")?,
-                ])
+                insert_failure(conn, "f_inside", NOW - 10)?;
+                sweep(conn, NOW, BLOCK, i64::MAX)?;
+                remaining(conn, "SELECT address FROM login_failures ORDER BY address")
             })
             .await
             .expect("sweep");
-        assert_eq!(kept[0], vec!["b_inside", "b_now"]);
-        assert_eq!(kept[1], vec!["f_now"]);
+        assert_eq!(kept, vec!["f_inside", "f_now"]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -213,17 +202,30 @@ mod tests {
         let db = open_db(&dir);
         let kept = db
             .call(|conn| {
-                insert_block(conn, "b_old", 0)?;
                 insert_failure(conn, "f_old", 0)?;
-                sweep(conn, NOW, i64::MAX)?;
-                Ok(vec![
-                    remaining(conn, "SELECT account_hash FROM login_blocks")?,
-                    remaining(conn, "SELECT address FROM login_failures")?,
-                ])
+                sweep(conn, NOW, i64::MAX, i64::MAX)?;
+                remaining(conn, "SELECT address FROM login_failures")
             })
             .await
             .expect("sweep");
-        assert_eq!(kept[0], vec!["b_old"]);
-        assert_eq!(kept[1], vec!["f_old"]);
+        assert_eq!(kept, vec!["f_old"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_activity_row_keeps_exactly_the_rows_inside_its_period() {
+        let dir = tempfile::tempdir().expect("dir");
+        let db = open_db(&dir);
+        let period = 90 * DAY;
+        let kept = db
+            .call(move |conn| {
+                insert_activity(conn, "a_old", NOW - period - 1)?;
+                insert_activity(conn, "a_edge", NOW - period)?;
+                insert_activity(conn, "a_live", NOW - period + 1)?;
+                sweep(conn, NOW, BLOCK, period)?;
+                remaining(conn, "SELECT tool FROM activity ORDER BY tool")
+            })
+            .await
+            .expect("sweep");
+        assert_eq!(kept, vec!["a_live"]);
     }
 }

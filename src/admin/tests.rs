@@ -555,20 +555,11 @@ async fn a_form_body_over_64_kib_is_forbidden() {
     assert_eq!(page.status, 200, "the owner's session must still be valid");
 }
 
-/// Counted failures: the rows of `login_failures` and the sum of `login_blocks.failures`.
-fn throttle_counts(dir: &Path) -> (i64, i64) {
+/// Counted failures: the rows of `login_failures`.
+fn throttle_counts(dir: &Path) -> i64 {
     let conn = rusqlite::Connection::open(dir.join("doorward.db")).expect("open");
-    let failures: i64 = conn
-        .query_row("SELECT COUNT(*) FROM login_failures", [], |row| row.get(0))
-        .expect("failures count");
-    let blocked: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(failures), 0) FROM login_blocks",
-            [],
-            |row| row.get(0),
-        )
-        .expect("blocks count");
-    (failures, blocked)
+    conn.query_row("SELECT COUNT(*) FROM login_failures", [], |row| row.get(0))
+        .expect("failures count")
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -637,8 +628,8 @@ async fn no_free_hash_slot_answers_503_and_counts_nothing() {
     assert_eq!(counted.status, 401, "a wrong password must be counted");
     assert_eq!(
         throttle_counts(dir.path()),
-        (1, 1),
-        "one counted failure must be recorded in both throttle tables"
+        1,
+        "one counted failure must be recorded"
     );
 
     let mut held = Vec::new();
@@ -663,7 +654,7 @@ async fn no_free_hash_slot_answers_503_and_counts_nothing() {
     );
     assert_eq!(
         throttle_counts(dir.path()),
-        (1, 1),
+        1,
         "a busy answer must not count a failure"
     );
 
@@ -681,7 +672,7 @@ async fn no_free_hash_slot_answers_503_and_counts_nothing() {
     );
     assert_eq!(
         throttle_counts(dir.path()),
-        (2, 2),
+        2,
         "the checked failure must now be counted"
     );
 }

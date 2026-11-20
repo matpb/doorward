@@ -52,7 +52,6 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
         Err(_) => return internal_error(),
     };
     let Attempt::Counted {
-        failure_id,
         user_id,
         phc,
         epoch,
@@ -72,7 +71,7 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
     };
     let success = Success {
         account,
-        failure_id,
+        address: throttle_key(form.viewer.address),
         user_id,
         email: email.clone(),
         previous: form.viewer.presented_session().map(str::to_owned),
@@ -110,6 +109,7 @@ pub(super) fn reservation(state: &AppState, email: &str, address: IpAddr, now: i
         now,
         block_seconds: to_i64(limits.block_minutes).saturating_mul(60),
         account_failures: to_i64(limits.account_failures),
+        account_ceiling: to_i64(limits.account_ceiling),
         address_failures: to_i64(limits.address_failures),
     }
 }

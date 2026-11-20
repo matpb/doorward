@@ -444,6 +444,37 @@ async fn wrong_current_passwords_count_for_the_pair() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_right_current_password_clears_its_own_pair() {
+    let w = world(|_| {}).await;
+    w.user(BOB).await;
+    let a = browser_at(&w, A);
+    let page = a.login(BOB, PASSWORD).await;
+    assert_eq!(page.status, 303, "bob must sign in at A");
+    for n in 1..=2 {
+        let page = a.change_password(WRONG, NEW_PASSWORD).await;
+        assert_eq!(
+            page.status, 400,
+            "wrong current password {n} at A must answer 400"
+        );
+    }
+    assert_eq!(
+        failure_rows(&w),
+        2,
+        "the two wrong current passwords must be counted"
+    );
+    let page = a.change_password(PASSWORD, NEW_PASSWORD).await;
+    assert_eq!(
+        page.status, 303,
+        "the right current password at A must change the password"
+    );
+    assert_eq!(
+        failure_rows(&w),
+        0,
+        "a right current password must leave no counted failure for its pair"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_address_rule_still_spans_accounts() {
     let w = world(|c| c.limits.address_failures = 6).await;
     let a = browser_at(&w, A);

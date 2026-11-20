@@ -17,24 +17,27 @@ fn write_config(dir: &Path) -> PathBuf {
     path
 }
 
-/// How many login blocks the database holds for `EMAIL`.
+/// How many counted failures the database holds for `EMAIL`.
 fn block_count(database: &Path) -> i64 {
     let conn = rusqlite::Connection::open(database).expect("open database");
     conn.query_row(
-        "SELECT COUNT(*) FROM login_blocks WHERE account_hash = ?1",
+        "SELECT COUNT(*) FROM login_failures WHERE account_hash = ?1",
         [token_hash(EMAIL)],
         |row| row.get(0),
     )
-    .expect("count blocks")
+    .expect("count failures")
 }
 
+/// Five counted failures from one address: the pair is blocked.
 fn insert_block(database: &Path) {
     let conn = rusqlite::Connection::open(database).expect("open database");
-    conn.execute(
-        "INSERT INTO login_blocks (account_hash, failures, last_failed_at) VALUES (?1, 5, 1800000000)",
-        [token_hash(EMAIL)],
-    )
-    .expect("insert block");
+    for _ in 0..5 {
+        conn.execute(
+            "INSERT INTO login_failures (account_hash, address, at) VALUES (?1, '127.0.0.1', 1800000000)",
+            [token_hash(EMAIL)],
+        )
+        .expect("insert failure");
+    }
 }
 
 fn unlock(config: &Path, email: &str) -> std::process::Output {
@@ -56,8 +59,8 @@ fn unlock_removes_the_block_and_prints_the_line() {
     insert_block(&database);
     assert_eq!(
         block_count(&database),
-        1,
-        "the block must be in place first"
+        5,
+        "the failures must be in place first"
     );
 
     let output = unlock(&config, EMAIL);
