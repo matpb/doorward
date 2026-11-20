@@ -1,0 +1,13 @@
+# Proof overrides for compose.yaml: loopback port, proof volume name, proof limits.
+services:
+  doorward:
+    # The gateway reads its public address from .env in a real install; the proof passes it here.
+    ports: !override
+      - "127.0.0.1:${PROOF_PLAIN_PORT}:8717"
+    environment:
+      DOORWARD_PUBLIC_URL: ${DOORWARD_PUBLIC_URL}
+      DOORWARD_LIMITS_GENERAL_BURST: ${PROOF_GENERAL_BURST:-}
+      DOORWARD_LIMITS_GENERAL_PER_MINUTE: ${PROOF_GENERAL_PER_MINUTE:-}
+volumes:
+  doorward-data:
+    name: doorward-proof-data
