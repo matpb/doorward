@@ -821,3 +821,34 @@ async fn an_answer_with_both_result_and_error_is_not_the_answer() {
     );
     assert_eq!(rows(&fx.state).await, vec![row("echo", "unavailable", "")]);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stream_whose_final_message_is_an_upstream_error_reaches_the_client_with_its_id() {
+    let fx = fixture().await;
+    let closed = Arc::new(AtomicUsize::new(0));
+    let up = upstream(&["echo"], move |seen: &Seen| {
+        let id = seen.json()["id"].clone();
+        let error = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32021,
+            "message": "MissingRequiredClientCapabilityError",
+            "data": {"requiredCapabilities": {"sampling": {}}}}});
+        scripted(
+            vec![(0, event(&progress(1))), (0, event(&error))],
+            false,
+            &closed,
+        )
+    })
+    .await;
+    let caller = setup(&fx, &up).await;
+    let streamed = read(handle(&fx.state, caller, post(&call_of("demo__echo"), &[])).await).await;
+    assert_eq!(
+        streamed.events(),
+        vec![
+            progress(1),
+            json!({"jsonrpc": "2.0", "id": 41, "error": {"code": -32021,
+                "message": "MissingRequiredClientCapabilityError",
+                "data": {"requiredCapabilities": {"sampling": {}}}}}),
+        ],
+        "the error reaches the client under its own id"
+    );
+    assert_eq!(rows(&fx.state).await, vec![row("echo", "error", "")]);
+}

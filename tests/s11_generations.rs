@@ -575,6 +575,50 @@ async fn a_stateless_notification_needs_no_metadata() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_upstream_error_reaches_the_combined_client_with_its_own_id() {
+    let w = World::start().await;
+    let refusing = UpstreamOptions {
+        mode: Mode::RefusesCalls,
+        ..options(Generation::Stateless)
+    };
+    let (bob, _upstream, _) = bob_on(&w, "demo", refusing).await;
+    let mcp_tokens = w.token(&bob, "mcp").await;
+    let mcp = McpClient::stateless(&w.resource("mcp"), Some(&mcp_tokens.access_token));
+    let error = json!({"code": -32021, "message": "MissingRequiredClientCapabilityError",
+        "data": {"requiredCapabilities": {"sampling": {}}}});
+    let stateless_call = json!({"jsonrpc": "2.0", "id": 401, "method": "tools/call", "params": {
+        "name": "demo__echo", "arguments": {},
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {}}}});
+    let reply = mcp
+        .raw(
+            stateless_call.to_string().as_bytes(),
+            &[
+                ("MCP-Protocol-Version", "2026-07-28"),
+                ("Mcp-Method", "tools/call"),
+                ("Mcp-Name", "demo__echo"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        reply.status, 400,
+        "a stateless client gets the upstream's 400"
+    );
+    assert_eq!(
+        reply.json,
+        Some(json!({"jsonrpc": "2.0", "id": 401, "error": error}))
+    );
+    let session_call = json!({"jsonrpc": "2.0", "id": 402, "method": "tools/call",
+        "params": {"name": "demo__echo", "arguments": {}}});
+    let reply = mcp.raw(session_call.to_string().as_bytes(), &[]).await;
+    assert_eq!(reply.status, 200, "a session client always gets 200");
+    assert_eq!(
+        reply.json,
+        Some(json!({"jsonrpc": "2.0", "id": 402, "error": error}))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn stateless_refusals_have_the_specified_shapes() {
     let w = World::start().await;
     let (bob, _upstream, _) = bob_on(&w, "demo", options(Generation::Both)).await;

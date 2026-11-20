@@ -70,6 +70,9 @@ pub enum Mode {
     /// initialize and server/discover declare listChanged and subscribe in their capabilities.
     #[allow(dead_code)]
     DeclaresFlags,
+    /// tools/call answers 400 application/json with a JSON-RPC error -32021 that carries data.
+    #[allow(dead_code)]
+    RefusesCalls,
     /// Every request answers 307 with this Location.
     Redirect(String),
     /// Normal, plus `Set-Cookie: upstream=1; Path=/` and `WWW-Authenticate: Basic realm="up"` on every response.
@@ -597,6 +600,18 @@ fn answer(
     if method == "tools/call" {
         match &options.mode {
             Mode::Hang => return Reply::Hang,
+            Mode::RefusesCalls => {
+                let error = json!({
+                    "code": -32021,
+                    "message": "MissingRequiredClientCapabilityError",
+                    "data": {"requiredCapabilities": {"sampling": {}}},
+                });
+                return Reply::Now(text_response(
+                    StatusCode::BAD_REQUEST,
+                    "application/json; charset=utf-8",
+                    &json!({"jsonrpc": "2.0", "id": id, "error": error}).to_string(),
+                ));
+            }
             Mode::Progress { steps, interval_ms } => {
                 return Reply::Progress {
                     steps: *steps,

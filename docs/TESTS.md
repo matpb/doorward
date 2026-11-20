@@ -384,6 +384,9 @@ both; token for the slug `mcp`.
     with `params` lacking `_meta`, and with `_meta: {}` is 202; a `_meta` version `2025-11-25`
     under header `2026-07-28` is 400 `-32020`; a numeric version is 400 `-32602`; a missing
     `Mcp-Method` header is 400 `-32020`.
+18. `an_upstream_error_reaches_the_combined_client_with_its_own_id`: a stateless `tools/call` on
+    `/mcp` to an upstream that answers 400 with -32021 and `data` is 400 with the same error under
+    the client's id 401; a session call (no version) gets 200 with the same error under id 402.
 
 ## s12_streaming.rs (statement 12)
 

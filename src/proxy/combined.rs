@@ -21,7 +21,7 @@ use super::catalog::{self, RefreshError, SESSION, STATELESS};
 use super::combined_stream::{self, Call};
 use super::handle::{INVALID, Owed, TOOL_LIMIT, bare, cut, not_allowed};
 use super::intake::{Intake, intake};
-use super::links::{self, Ask, Owner};
+use super::links::{self, Answer, Ask, Owner};
 use super::stream::Owned;
 use super::upstream::{self, Fault, Kind, TargetError, time_limit};
 use crate::app::AppState;
@@ -343,11 +343,25 @@ async fn call(
         arguments,
         progress_token,
     };
+    let client_stateless = message.generation == Generation::Stateless;
     let sent = match state.links.send(state, owner, &target, ask).await {
-        Ok(sent) => sent,
+        Ok(Answer::Sent(sent)) => sent,
+        Ok(Answer::Refused { status, answer }) => {
+            let (reply, outcome) = reissue(id, &answer, client_stateless);
+            if !combined_still_valid(state, caller, server_id).await {
+                owed.settle("refused").await;
+                return answer::unknown_tool(id, name);
+            }
+            owed.settle(outcome).await;
+            let status = if client_stateless {
+                status
+            } else {
+                StatusCode::OK
+            };
+            return respond(status, &reply);
+        }
         Err(Fault) => return unavailable(owed, slug).await,
     };
-    let client_stateless = message.generation == Generation::Stateless;
     if sent.kind == Kind::Stream {
         owed.hand_over();
         let call = Call {
@@ -860,7 +874,7 @@ async fn fetch_pages(state: &AppState, caller: &Caller, server: &Assigned) -> Op
     let mut used: u64 = 0;
     let mut stateless = false;
     for page in 0..MAX_PAGES {
-        let sent = state
+        let Answer::Sent(sent) = state
             .links
             .send(
                 state,
@@ -871,7 +885,10 @@ async fn fetch_pages(state: &AppState, caller: &Caller, server: &Assigned) -> Op
                 },
             )
             .await
-            .ok()?;
+            .ok()?
+        else {
+            return None;
+        };
         if page == 0 {
             stateless = sent.stateless;
         }

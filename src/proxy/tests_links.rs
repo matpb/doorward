@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 
-use super::links::{Ask, Links, Owner, read};
+use super::links::{Answer, Ask, Links, Owner, Sent, read};
 use super::tests::{Fixture, Plan, Seen, TestUpstream, answer, fixture, fixture_with};
 use super::upstream::{self, Fault, Target};
 use crate::app::AppState;
@@ -77,6 +77,8 @@ struct Ledger {
     issued: u64,
     live: HashSet<String>,
     calls_status: Option<u16>,
+    /// With calls_status set, whether the refusal carries a JSON-RPC error body.
+    calls_error: bool,
     /// How long each server/discover answer waits now.
     probe_wait: Duration,
     /// How long each initialize answer waits now.
@@ -217,6 +219,9 @@ fn respond(behave: &Behave, book: &Mutex<Ledger>, seen: &Seen) -> Plan {
         "notifications/initialized" => plan(202, None, None),
         "tools/list" | "tools/call" => {
             if let Some(status) = ledger.calls_status {
+                if ledger.calls_error {
+                    return plan(status, None, Some(&error_of(id)));
+                }
                 return plan(status, None, None);
             }
             if behave.sessions {
@@ -307,8 +312,18 @@ async fn ask(
     target: &Target,
     request: Ask<'_>,
 ) -> Result<Value, Fault> {
-    let sent = links.send(state, owner, target, request).await?;
+    let Answer::Sent(sent) = links.send(state, owner, target, request).await? else {
+        return Err(Fault);
+    };
     read(state, sent, CAP).await
+}
+
+/// The sent request of an answer that is not a refusal; a list is never refused.
+fn sent_of(answer: Answer) -> Sent {
+    match answer {
+        Answer::Sent(sent) => sent,
+        Answer::Refused { .. } => panic!("a list is never refused"),
+    }
 }
 
 /// A port that nothing listens on.
@@ -606,7 +621,7 @@ async fn ten_concurrent_first_sends_make_one_link() {
     let target = target_at(&fx, up.url());
     let sent = join_all((0..10).map(|_| links.send(&fx.state, owned(1, 1), &target, list()))).await;
     for result in sent {
-        let sent = result.expect("sent");
+        let sent = sent_of(result.expect("sent"));
         read(&fx.state, sent, CAP).await.expect("answered");
     }
     assert_eq!(up.count("initialize"), 1);
@@ -896,6 +911,33 @@ async fn a_400_drops_the_link_closes_it_once_and_the_next_send_probes_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_list_refused_with_a_jsonrpc_error_is_a_fault_and_drops_the_link() {
+    let up = start(Behave::default()).await;
+    let fx = fixture().await;
+    let links = Links::new();
+    let target = target_at(&fx, up.url());
+    ask(&links, &fx.state, owned(1, 1), &target, list())
+        .await
+        .expect("first list");
+    {
+        let mut ledger = up.ledger();
+        ledger.calls_status = Some(400);
+        ledger.calls_error = true;
+    }
+    let result = ask(&links, &fx.state, owned(1, 1), &target, list()).await;
+    assert!(matches!(result, Err(Fault)), "a list is never relayed");
+    assert_eq!(links.len(), 0, "the link is dropped as before");
+    wait_for(&up, "DELETE", 1).await;
+    assert_eq!(up.count("DELETE"), 1);
+    up.ledger().calls_status = None;
+    ask(&links, &fx.state, owned(1, 1), &target, list())
+        .await
+        .expect("list after the drop");
+    assert_eq!(up.count("server/discover"), 2);
+    assert_eq!(up.count("initialize"), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_answer_for_another_id_is_a_fault() {
     let up =
         stateless_with(|_: &Seen| json_plan(&result_of(json!(999), json!({"tools": []})))).await;
@@ -905,6 +947,7 @@ async fn an_answer_for_another_id_is_a_fault() {
         .send(&fx.state, owned(1, 1), &target_at(&fx, &up.url), list())
         .await
         .expect("sent");
+    let sent = sent_of(sent);
     assert!(matches!(read(&fx.state, sent, CAP).await, Err(Fault)));
 }
 
@@ -921,6 +964,7 @@ async fn an_object_with_both_result_and_error_is_a_fault() {
         .send(&fx.state, owned(1, 1), &target_at(&fx, &up.url), list())
         .await
         .expect("sent");
+    let sent = sent_of(sent);
     assert!(matches!(read(&fx.state, sent, CAP).await, Err(Fault)));
 }
 
@@ -939,6 +983,7 @@ async fn an_array_is_a_fault() {
         .send(&fx.state, owned(1, 1), &target_at(&fx, &up.url), list())
         .await
         .expect("sent");
+    let sent = sent_of(sent);
     assert!(matches!(read(&fx.state, sent, CAP).await, Err(Fault)));
 }
 
@@ -961,6 +1006,7 @@ async fn a_stream_answer_comes_after_a_request_and_a_notification() {
         .send(&fx.state, owned(1, 1), &target_at(&fx, &up.url), list())
         .await
         .expect("sent");
+    let sent = sent_of(sent);
     let answer = read(&fx.state, sent, CAP).await.expect("the answer");
     assert_eq!(answer["id"], json!(3));
     assert_eq!(answer["result"]["tools"][0]["name"], json!("echo"));

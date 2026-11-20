@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Method};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use rusqlite::params;
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -78,6 +78,12 @@ pub struct Sent {
     pub stateless: bool,
 }
 
+/// What an upstream sent for one request: an answer to read, or a JSON-RPC error with HTTP 400 or 404.
+pub enum Answer {
+    Sent(Sent),
+    Refused { status: StatusCode, answer: Value },
+}
+
 /// The kept links, keyed by (family, server), with their bounds.
 pub struct Links {
     inner: Arc<Inner>,
@@ -111,15 +117,17 @@ impl Links {
         Self::with_limits(total, per_user)
     }
 
-    /// Sends `ask` on the owner's link to `target`, making the link first when needed.
+    /// Sends `ask` on the owner's link to `target`, making the link first when needed. A tools/call
+    /// that the upstream refuses with a JSON-RPC error keeps the link and is returned as `Refused`.
     pub async fn send(
         &self,
         state: &AppState,
         owner: Owner,
         target: &Target,
         ask: Ask<'_>,
-    ) -> Result<Sent, Fault> {
+    ) -> Result<Answer, Fault> {
         let key = (owner.family_id, target.server_id);
+        let relays = matches!(ask, Ask::Call { .. });
         let mut retried = false;
         loop {
             let link = self.link_for(state, owner, key, target).await?;
@@ -134,17 +142,22 @@ impl Links {
                 200 => {
                     let stateless = matches!(link.form, Form::Stateless);
                     return match upstream::accept(&response) {
-                        Ok(kind @ (Kind::Json | Kind::Stream)) => Ok(Sent {
+                        Ok(kind @ (Kind::Json | Kind::Stream)) => Ok(Answer::Sent(Sent {
                             response,
                             id: json!(id),
                             kind,
                             stateless,
-                        }),
+                        })),
                         _ => Err(Fault),
                     };
                 }
-                400 => {
-                    if self.inner.drop_link(key, link.generation)
+                400 | 404 => {
+                    let status = response.status();
+                    if relays && let Some(answer) = refusal(state, response, &json!(id)).await {
+                        return Ok(Answer::Refused { status, answer });
+                    }
+                    if status == StatusCode::BAD_REQUEST
+                        && self.inner.drop_link(key, link.generation)
                         && let Some(session) = link.session_id()
                     {
                         close_later(state, owned_target(target), session.clone());
@@ -808,6 +821,25 @@ async fn exchange(
         session,
         answer,
     })
+}
+
+/// The whole answer of a 400 or 404 JSON body that is a JSON-RPC error to `id`: `jsonrpc` 2.0, no `result`,
+/// and an `error` with an integer code and a string message. None for any other body, or one over the cap.
+async fn refusal(state: &AppState, response: reqwest::Response, id: &Value) -> Option<Value> {
+    if !matches!(upstream::accept(&response), Ok(Kind::Json)) {
+        return None;
+    }
+    let cap = state.config.limits.tools_list_bytes;
+    let bytes = upstream::body(state, response, cap).await.ok()?;
+    let value = parse_strict(&bytes).ok()?;
+    let object = value.as_object()?;
+    let error = object.get("error")?.as_object()?;
+    let well_formed = object.get("jsonrpc") == Some(&json!("2.0"))
+        && object.get("id") == Some(id)
+        && !object.contains_key("result")
+        && error.get("code").is_some_and(Value::is_i64)
+        && error.get("message").is_some_and(Value::is_string);
+    well_formed.then_some(value)
 }
 
 /// The whole answer to request `id` in a body of the given kind; None for any other message.

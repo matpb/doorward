@@ -479,6 +479,12 @@ The combined endpoint `/mcp` is its own MCP server:
   client leaves before the answer, `error` with the detail `the client left before the answer`.
 - An upstream that is unreachable, answers another id, or faults: `502`, `-32000`,
   `Upstream {slug} is unavailable`, row `unavailable`.
+- A `tools/call` that the upstream answers with HTTP `400` or `404` and a JSON-RPC error (`jsonrpc`
+  `2.0`, the id the gateway sent upstream, no `result`, an `error` with an integer `code` and a string
+  `message`, optional `data`; read under the tool-list cap) is relayed with the client's id and the same
+  `code`, `message` and `data`, and row `error`. A stateless client gets the upstream's status; a session
+  client gets `200`. The link is kept. Any other `400` or `404` body is the `502` above; a `400` drops
+  the link as before.
 - Every other method: `-32601`, HTTP `404` under the stateless rules.
 
 Answers that both endpoints share:
