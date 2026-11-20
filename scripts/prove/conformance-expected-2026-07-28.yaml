@@ -1,0 +1,4 @@
+# Suite expected-failures file for the 2026-07-28 revision, read by the gateway and combined runs.
+# Each entry is scenario:check-id. The sidecar scripts/prove/conformance-expected.tsv must hold one row per target.
+server:
+  - server-stateless:sep-2575-http-server-no-independent-requests-on-stream

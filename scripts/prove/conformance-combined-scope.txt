@@ -1,0 +1,18 @@
+# The combined endpoint serves tools only, so only the scenarios below are gated there.
+server-initialize
+ping
+server-session-lifecycle
+tools-list
+tools-call-simple-text
+tools-call-image
+tools-call-audio
+tools-call-embedded-resource
+tools-call-mixed-content
+tools-call-error
+tools-call-with-progress
+server-sse-multiple-streams
+server-sse-polling
+json-schema-2020-12
+http-header-validation
+server-stateless
+dns-rebinding-protection

@@ -1,0 +1,3 @@
+revision	target	scenario	check	class	substring	approval	reason
+2026-07-28	server-path	server-stateless	sep-2575-http-server-no-independent-requests-on-stream	reference quirk	test_streaming_elicitation	pending	The reference server answers this test tool with two JSON lines under application/json; the specification allows one JSON object or an event stream, so the gateway answers 502 and the check cannot run.
+2026-07-28	combined	server-stateless	sep-2575-http-server-no-independent-requests-on-stream	reference quirk	test_streaming_elicitation	pending	The reference server answers this test tool with two JSON lines under application/json; the specification allows one JSON object or an event stream, so the gateway answers 502 and the check cannot run.
