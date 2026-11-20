@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::header::{CACHE_CONTROL, RETRY_AFTER};
+use axum::http::header::{ACCEPT, CACHE_CONTROL, RETRY_AFTER};
 use axum::http::{Extensions, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -77,10 +77,20 @@ pub async fn pages_by_address(
     request: Request,
     next: Next,
 ) -> Response {
+    let browser = accepts_html(&request);
     match admit(&state, &request) {
         Ok(()) => next.run(request).await,
-        Err(wait) => page_limited(wait),
+        Err(wait) => page_limited(wait, browser),
     }
+}
+
+/// True when an `Accept` header of the request names text/html.
+fn accepts_html(request: &Request) -> bool {
+    request
+        .headers()
+        .get_all(ACCEPT)
+        .iter()
+        .any(|value| value.to_str().is_ok_and(|text| text.contains("text/html")))
 }
 
 /// Runs before the JSON and asset routes; a limited request gets the JSON 429.
@@ -95,9 +105,16 @@ pub async fn api_by_address(
     }
 }
 
-/// The HTML 429 of a page: the plain error page the other refusals use.
-fn page_limited(wait: u64) -> Response {
-    let body = html! { h1 { "Too many requests" } };
+/// The HTML 429 of a page. A browser also gets the sentence that says when to try again.
+fn page_limited(wait: u64, browser: bool) -> Response {
+    let body = if browser {
+        html! {
+            h1 { "Too many requests" }
+            p { "Try again in a moment." }
+        }
+    } else {
+        html! { h1 { "Too many requests" } }
+    };
     retry_after(
         page(
             StatusCode::TOO_MANY_REQUESTS,
@@ -231,6 +248,50 @@ mod tests {
             .await
             .expect("the body");
         assert_eq!(bytes.as_ref(), expected.as_slice());
+    }
+
+    #[test]
+    fn a_request_that_accepts_html_is_a_browser_request() {
+        let request = |accept: Option<&str>| {
+            let mut builder = Request::builder();
+            if let Some(accept) = accept {
+                builder = builder.header(ACCEPT, accept);
+            }
+            builder.body(Body::empty()).expect("request")
+        };
+        assert!(accepts_html(&request(Some(
+            "text/html,application/xhtml+xml"
+        ))));
+        assert!(!accepts_html(&request(Some("application/json"))));
+        assert!(!accepts_html(&request(Some("*/*"))));
+        assert!(!accepts_html(&request(None)));
+    }
+
+    #[tokio::test]
+    async fn a_limited_page_tells_a_browser_when_to_try_again_and_no_one_else() {
+        let browser = page_limited(3, true);
+        assert_eq!(browser.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(browser.headers()[RETRY_AFTER].to_str().expect("ascii"), "3");
+        let text = String::from_utf8(
+            to_bytes(browser.into_body(), usize::MAX)
+                .await
+                .expect("the body")
+                .to_vec(),
+        )
+        .expect("utf-8");
+        assert!(text.contains("<h1>Too many requests</h1>"), "{text}");
+        assert!(text.contains("<p>Try again in a moment.</p>"), "{text}");
+
+        let plain = page_limited(3, false);
+        let text = String::from_utf8(
+            to_bytes(plain.into_body(), usize::MAX)
+                .await
+                .expect("the body")
+                .to_vec(),
+        )
+        .expect("utf-8");
+        assert!(text.contains("<h1>Too many requests</h1>"), "{text}");
+        assert!(!text.contains("Try again"), "{text}");
     }
 
     #[test]

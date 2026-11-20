@@ -7,6 +7,7 @@ mod form;
 mod headers;
 pub mod limit;
 mod page;
+pub mod ui;
 mod viewer;
 
 pub use address::{client_address, throttle_key};

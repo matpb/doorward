@@ -6,8 +6,9 @@ what. `PUB` is the configured `public_url`.
 ## Conventions
 
 - HTML pages are `text/html; charset=utf-8` and carry the headers listed in the design.
-  The outermost `<main>` has a `data-page` attribute naming the page (`login`, `consent`,
-  `error`, ...). Error text sits in an element with `class="error"`, notices in
+  Every page starts with a `header[data-brand]` naming Doorward, and `body[data-layout]` is
+  `card`, `page` or `panel`. The outermost `<main>` has a `data-page` attribute naming the
+  page (`login`, `consent`, `error`, ...). Error text sits in an element with `class="error"`, notices in
   `class="notice"`.
 - Every form has `<input type="hidden" name="csrf" value="...">`. Forms are
   `application/x-www-form-urlencoded`. A successful POST answers `303` with `Location`.
@@ -633,7 +634,8 @@ so a wrong token or a user over their budget keeps using up the address. One use
 
 A limited request answers `429` with an integer `Retry-After` of at least 1,
 `Cache-Control: no-store` and no `WWW-Authenticate`; it changes no state and reaches no
-upstream. The body is the error page on pages,
+upstream. The body is the error page on pages (a request whose `Accept` names `text/html`
+also gets `Try again in a moment.`),
 `{"error":"too_many_requests","error_description":"Too many requests. Try again later."}`
 on the JSON routes, and the JSON-RPC error `-32029` with a null id on the MCP paths. Over
 `mcp_open` the wait is 1. The older refusals carry the same headers: a blocked sign-in or

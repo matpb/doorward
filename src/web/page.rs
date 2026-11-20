@@ -18,6 +18,35 @@ pub struct MainData<'a> {
     pub user: Option<&'a str>,
 }
 
+/// The layout of a page kind: `panel` for the admin panel, `page` for the account page, else `card`.
+pub fn layout_of(kind: &str) -> &'static str {
+    match kind {
+        "admin" | "users" | "user" | "invitations" | "invitation-created" | "servers"
+        | "server" | "rules" | "redirects" | "mail" | "activity" => "panel",
+        "account" => "page",
+        _ => "card",
+    }
+}
+
+/// The brand of the header: a link to the panel or the account page, a plain span on the card.
+fn brand(layout: &str) -> Markup {
+    let content = html! {
+        svg class="brand-mark" width="22" height="22" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true" {
+            path d="M6 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16";
+            path d="M3 21h18";
+            path d="M14.5 12.5v.01";
+        }
+        span { "Doorward" }
+    };
+    match layout {
+        "panel" => html! { a class="brand" href="/admin" { (content) } },
+        "page" => html! { a class="brand" href="/account" { (content) } },
+        _ => html! { span class="brand" { (content) } },
+    }
+}
+
 /// The page shell: doctype, language, viewport, stylesheet and the main element.
 pub fn page(status: StatusCode, kind: &str, title: &str, body: Markup) -> Response {
     page_with(status, kind, title, &MainData::default(), body)
@@ -31,6 +60,7 @@ pub fn page_with(
     data: &MainData<'_>,
     body: Markup,
 ) -> Response {
+    let layout = layout_of(kind);
     let document = html! {
         (DOCTYPE)
         html lang="en" {
@@ -40,7 +70,12 @@ pub fn page_with(
                 title { (title) }
                 link rel="stylesheet" href="/assets/doorward.css";
             }
-            body {
+            body data-layout=(layout) {
+                header.site data-brand {
+                    div.site-bar {
+                        (brand(layout))
+                    }
+                }
                 main data-page=(kind)
                     data-lockdown=[data.lockdown]
                     data-redirect-host=[data.redirect_host]
@@ -174,6 +209,94 @@ mod tests {
             .attrs()
             .map(|(name, value)| (name.to_owned(), value.to_owned()))
             .collect()
+    }
+
+    /// The text of a response body.
+    async fn text_of(response: Response) -> String {
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        String::from_utf8(bytes.to_vec()).expect("utf-8")
+    }
+
+    /// How many elements of `doc` match `css`.
+    fn count(doc: &Html, css: &str) -> usize {
+        doc.select(&Selector::parse(css).expect("selector")).count()
+    }
+
+    #[test]
+    fn each_listed_kind_has_its_layout() {
+        let panel = [
+            "admin",
+            "users",
+            "user",
+            "invitations",
+            "invitation-created",
+            "servers",
+            "server",
+            "rules",
+            "redirects",
+            "mail",
+            "activity",
+        ];
+        for kind in panel {
+            assert_eq!(layout_of(kind), "panel", "{kind} must use the panel layout");
+        }
+        assert_eq!(layout_of("account"), "page");
+        for kind in [
+            "login",
+            "forgot-sent",
+            "invite",
+            "consent",
+            "disconnect",
+            "disconnected",
+            "error",
+            "forbidden",
+            "link-invalid",
+            "no-access",
+        ] {
+            assert_eq!(layout_of(kind), "card", "{kind} must use the card layout");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_header_names_doorward_and_links_the_brand_by_layout() {
+        let cases = [
+            ("servers", "panel", Some("/admin")),
+            ("account", "page", Some("/account")),
+            ("login", "card", None),
+        ];
+        for (kind, layout, href) in cases {
+            let doc =
+                Html::parse_document(&text_of(page(StatusCode::OK, kind, "T", html! {})).await);
+            assert_eq!(
+                count(
+                    &doc,
+                    &format!(r#"body[data-layout="{layout}"] > header[data-brand]"#)
+                ),
+                1,
+                "{kind} must hold one header directly in body with layout {layout}"
+            );
+            let link = match href {
+                Some(href) => format!(r#"a.brand[href="{href}"]"#),
+                None => "span.brand".to_string(),
+            };
+            assert_eq!(
+                count(&doc, &format!("header[data-brand] .site-bar > {link}")),
+                1,
+                "{kind} must show the brand as {link}"
+            );
+            assert_eq!(
+                count(&doc, r#"header[data-brand] .brand svg[aria-hidden="true"]"#),
+                1,
+                "the brand of {kind} must hold the aria-hidden mark"
+            );
+            let brand = doc
+                .select(&Selector::parse("header[data-brand] .brand").expect("selector"))
+                .next()
+                .expect("a brand");
+            assert_eq!(brand.text().collect::<String>(), "Doorward");
+        }
     }
 
     #[tokio::test]
