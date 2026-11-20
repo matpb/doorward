@@ -1,10 +1,28 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use url::{Host, Url};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Text,
+    Listen,
+    Path,
+    Ranges,
+    Bool,
+    Whole,
+}
+
+pub struct Setting {
+    pub variable: &'static str,
+    pub path: &'static str,
+    pub kind: Kind,
+}
+
+pub const SETTINGS: &[Setting] = &[];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Public origin of the gateway: scheme, host and optional port only.
@@ -24,7 +42,7 @@ pub struct Config {
     pub mail: MailConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Lifetimes {
     pub invitation_days: u64,
@@ -39,7 +57,7 @@ pub struct Lifetimes {
     pub refresh_replay_seconds: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Limits {
     pub body_bytes: u64,
@@ -51,7 +69,7 @@ pub struct Limits {
     pub dcr_per_hour: u64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct MailConfig {
     pub smtp_ca_file: Option<PathBuf>,
@@ -104,6 +122,19 @@ fn default_listen() -> SocketAddr {
 }
 
 impl Config {
+    /// Round 1 stub: the environment layer is not built yet.
+    pub fn from_sources(
+        _file: Option<&Path>,
+        _vars: &[(String, String)],
+    ) -> Result<Config, ConfigError> {
+        Err(ConfigError::Invalid("not built".to_owned()))
+    }
+
+    /// Round 1 stub: the statement 42 check is not built yet.
+    pub fn start_check(&self) -> Result<Option<String>, ConfigError> {
+        Ok(None)
+    }
+
     /// Reads, parses and validates the config file at `path`.
     pub fn load(path: &Path) -> Result<Config, ConfigError> {
         let text = std::fs::read_to_string(path)

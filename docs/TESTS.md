@@ -930,8 +930,8 @@ seconds; "refuses" means the process exits non-zero within 5 seconds.
    `DOORWARD_LISTEN` and `DOORWARD_DATABASE` set: starts, and the setup code is printed.
 2. `a_variable_beats_the_file`: the file says one `listen` port, `DOORWARD_LISTEN` another:
    the gateway answers on the variable's port and not on the file's.
-3. `an_empty_variable_is_unset`: `DOORWARD_LIMITS_BODY_BYTES=""` with a file that sets
-   `body_bytes = 2000`: a 3000 byte POST to `/oauth/token` is `413`.
+3. `an_empty_variable_is_unset`: `DOORWARD_LISTEN=""` with a file that sets `listen`:
+   starts, and answers on the file's port.
 4. `an_unknown_variable_is_refused_and_named`: `DOORWARD_LIMIT_BODY_BYTES=1` (misspelt):
    refuses, and the output names that variable.
 5. `a_bad_value_is_refused_without_echoing_it`: `DOORWARD_LIMITS_BODY_BYTES=hunter2-not-a-number`:
@@ -949,8 +949,9 @@ seconds; "refuses" means the process exits non-zero within 5 seconds.
 9. `the_key_never_reaches_the_output`: `DOORWARD_KEY` set to a valid random key and an
    unknown variable beside it: refuses, and neither stdout nor stderr contains the key.
 10. `subcommands_use_the_same_settings`: with variables only, `doorward health` exits 0
-    while the gateway runs and 1 after it stopped; `doorward unlock` for an unknown email
-    exits non-zero with a message and creates no key file in an empty directory.
+    while the gateway runs and 1 after it stopped; `doorward unlock` for an email with a
+    login block, given the database by variable and no `--config`, exits 0, prints
+    `unlocked {email}` and removes the block.
 11. `health_opens_nothing`: `doorward health` against a closed port, with
     `DOORWARD_DATABASE` pointing into an empty directory: exit 1 and the directory is still
     empty.
@@ -969,7 +970,7 @@ seconds; "refuses" means the process exits non-zero within 5 seconds.
    `README.md`, the Compose files and `.env.example` is a `SETTINGS` variable, `DOORWARD_KEY`
    or `DOORWARD_CONFIG`.
 3. `the_example_env_file_starts_a_gateway`: `.env.example` with its placeholders filled is
-   accepted by the loader (`config::from_env` over those pairs).
+   accepted by the loader (`Config::from_sources` with no file, over those pairs).
 
 ## s42_proxy_start.rs (statement 42)
 

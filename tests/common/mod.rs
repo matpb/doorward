@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod admin;
+pub mod binary;
 pub mod cimd;
 pub mod client;
 pub mod mail;
