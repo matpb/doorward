@@ -1,0 +1,205 @@
+//! The gateway's HTTP client for upstream servers: one request, the relay rule, a capped body.
+
+use std::time::Duration;
+
+use axum::body::Bytes;
+use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method};
+
+use crate::app::AppState;
+use crate::db::DbError;
+use crate::servers;
+
+const USER_AGENT_VALUE: &str = concat!("doorward/", env!("CARGO_PKG_VERSION"));
+
+/// What the gateway needs to contact one server.
+pub struct Target {
+    pub server_id: i64,
+    pub slug: String,
+    pub url: String,
+    pub secret: Option<(HeaderName, HeaderValue)>,
+}
+
+#[derive(Debug)]
+pub enum TargetError {
+    Db(DbError),
+    /// Stored, but it cannot be opened or is not a valid header.
+    Secret,
+}
+
+/// None when no server has the id. The sealed text is read in `db.call`, opened outside it.
+pub async fn target(state: &AppState, server_id: i64) -> Result<Option<Target>, TargetError> {
+    let stored = state
+        .db
+        .call(move |conn| servers::load_upstream(conn, server_id))
+        .await
+        .map_err(TargetError::Db)?;
+    let Some(stored) = stored else {
+        return Ok(None);
+    };
+    let secret = stored
+        .sealed_secret
+        .map(|sealed| open_header(state, server_id, &stored.secret_header_name, &sealed))
+        .transpose()?;
+    Ok(Some(Target {
+        server_id,
+        slug: stored.slug,
+        url: stored.upstream_url,
+        secret,
+    }))
+}
+
+/// The secret header of a stored value; every failure is the same error, so no text leaks.
+fn open_header(
+    state: &AppState,
+    server_id: i64,
+    name: &str,
+    sealed: &str,
+) -> Result<(HeaderName, HeaderValue), TargetError> {
+    let value =
+        servers::open_secret(&state.keys, server_id, sealed).map_err(|_| TargetError::Secret)?;
+    let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| TargetError::Secret)?;
+    let value = HeaderValue::from_str(&value).map_err(|_| TargetError::Secret)?;
+    Ok((name, value))
+}
+
+/// Every upstream fault looks the same to the client.
+#[derive(Debug)]
+pub struct Fault;
+
+pub struct Outgoing {
+    pub method: Method,
+    /// Sent as given; the caller has already filtered them.
+    pub headers: HeaderMap,
+    pub body: Bytes,
+    /// False only for the lock-down probe.
+    pub with_secret: bool,
+}
+
+/// Sends one request to the stored URL, with the secret when `with_secret`.
+/// Err only when no response headers arrive within `limits.upstream_timeout_seconds`.
+pub async fn send(
+    state: &AppState,
+    target: &Target,
+    outgoing: Outgoing,
+) -> Result<reqwest::Response, Fault> {
+    let Outgoing {
+        method,
+        mut headers,
+        body,
+        with_secret,
+    } = outgoing;
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
+    if with_secret && let Some((name, value)) = &target.secret {
+        headers.insert(name.clone(), value.clone());
+    }
+    let request = state
+        .http
+        .request(method, target.url.as_str())
+        .headers(headers)
+        .body(body);
+    match tokio::time::timeout(time_limit(state), request.send()).await {
+        Ok(Ok(response)) => Ok(response),
+        _ => Err(Fault),
+    }
+}
+
+/// What a relayed answer is: JSON, an event stream, or no body.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Kind {
+    Json,
+    Stream,
+    Empty,
+}
+
+/// The relay rule: statuses 200, 202, 400, 404 and 405 with a JSON or event-stream body, or
+/// with no body. Every other status, and every other content type, is a `Fault`.
+pub fn accept(response: &reqwest::Response) -> Result<Kind, Fault> {
+    if !matches!(response.status().as_u16(), 200 | 202 | 400 | 404 | 405) {
+        return Err(Fault);
+    }
+    let headers = response.headers();
+    let Some(content_type) = headers.get(CONTENT_TYPE) else {
+        let declared = headers
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|text| text.parse::<u64>().ok())
+            .unwrap_or(0);
+        return if declared == 0 {
+            Ok(Kind::Empty)
+        } else {
+            Err(Fault)
+        };
+    };
+    let essence = content_type
+        .to_str()
+        .ok()
+        .and_then(|text| text.split(';').next())
+        .map(|essence| essence.trim().to_ascii_lowercase());
+    match essence.as_deref() {
+        Some("application/json") => Ok(Kind::Json),
+        Some("text/event-stream") => Ok(Kind::Stream),
+        _ => Err(Fault),
+    }
+}
+
+/// The whole body, at most `cap` bytes, within `limits.upstream_timeout_seconds`.
+pub async fn body(state: &AppState, response: reqwest::Response, cap: u64) -> Result<Bytes, Fault> {
+    read_body(state, response, cap).await.map_err(|_| Fault)
+}
+
+/// Why a body was not read: a fault, or more bytes than the cap allows.
+pub(crate) enum BodyError {
+    Fault,
+    TooLarge,
+}
+
+/// Reads chunk by chunk under the cap and the time limit, handing each chunk to `feed`.
+/// `feed` returns true to stop early; the result is the number of bytes read.
+pub(crate) async fn read_stream<F>(
+    state: &AppState,
+    mut response: reqwest::Response,
+    cap: u64,
+    mut feed: F,
+) -> Result<u64, BodyError>
+where
+    F: FnMut(&[u8]) -> bool,
+{
+    let read = async {
+        let mut total: u64 = 0;
+        while let Some(chunk) = response.chunk().await.map_err(|_| BodyError::Fault)? {
+            total = total.saturating_add(chunk.len() as u64);
+            if total > cap {
+                return Err(BodyError::TooLarge);
+            }
+            if feed(chunk.as_ref()) {
+                break;
+            }
+        }
+        Ok::<u64, BodyError>(total)
+    };
+    match tokio::time::timeout(time_limit(state), read).await {
+        Ok(result) => result,
+        Err(_) => Err(BodyError::Fault),
+    }
+}
+
+/// The whole body, read under the cap and the time limit.
+pub(crate) async fn read_body(
+    state: &AppState,
+    response: reqwest::Response,
+    cap: u64,
+) -> Result<Bytes, BodyError> {
+    let mut bytes: Vec<u8> = Vec::new();
+    read_stream(state, response, cap, |chunk| {
+        bytes.extend_from_slice(chunk);
+        false
+    })
+    .await?;
+    Ok(Bytes::from(bytes))
+}
+
+/// `limits.upstream_timeout_seconds` as a duration.
+pub(crate) fn time_limit(state: &AppState) -> Duration {
+    Duration::from_secs(state.config.limits.upstream_timeout_seconds)
+}

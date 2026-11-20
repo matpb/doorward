@@ -254,6 +254,8 @@ pub struct Server {
     pub pass_resources: bool,
     pub pass_prompts: bool,
     pub lockdown: String,
+    /// The fixed message of the last failed tool refresh, until a refresh succeeds.
+    pub catalog_error: Option<String>,
 }
 
 /// A server's id, name and path, for lists.
@@ -281,12 +283,46 @@ pub struct UserChoice {
     pub assigned: bool,
 }
 
+/// The context a secret value is sealed under, bound to its row id.
+fn secret_context(id: i64) -> String {
+    format!("servers.secret_header_value:{id}")
+}
+
 /// The sealed text of a secret value, bound to its row id.
 pub fn seal(keys: &Keys, id: i64, value: &str) -> Result<String, CryptoError> {
-    keys.seal(
-        &format!("servers.secret_header_value:{id}"),
-        value.as_bytes(),
+    keys.seal(&secret_context(id), value.as_bytes())
+}
+
+/// The secret value of a sealed text, bound to its row id (the context `seal` uses).
+pub fn open_secret(keys: &Keys, id: i64, sealed: &str) -> Result<String, CryptoError> {
+    let bytes = keys.open(&secret_context(id), sealed)?;
+    String::from_utf8(bytes).map_err(|_| CryptoError::Open)
+}
+
+/// What the proxy needs of one server; the sealed secret is opened only by `open_secret`.
+pub struct Upstream {
+    pub slug: String,
+    pub upstream_url: String,
+    pub secret_header_name: String,
+    pub sealed_secret: Option<String>,
+}
+
+/// The proxy's view of one server, or None when no row has the id.
+pub fn load_upstream(conn: &Connection, id: i64) -> rusqlite::Result<Option<Upstream>> {
+    conn.query_row(
+        "SELECT slug, upstream_url, secret_header_name, secret_header_value \
+         FROM servers WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(Upstream {
+                slug: row.get(0)?,
+                upstream_url: row.get(1)?,
+                secret_header_name: row.get(2)?,
+                sealed_secret: row.get(3)?,
+            })
+        },
     )
+    .optional()
 }
 
 /// True when a user with this id exists.
@@ -324,7 +360,7 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<ServerRef>> {
 pub fn load(conn: &Connection, id: i64) -> rusqlite::Result<Option<Server>> {
     conn.query_row(
         "SELECT id, name, slug, upstream_url, secret_header_name, \
-         secret_header_value IS NOT NULL, pass_resources, pass_prompts, lockdown \
+         secret_header_value IS NOT NULL, pass_resources, pass_prompts, lockdown, catalog_error \
          FROM servers WHERE id = ?1",
         params![id],
         |row| {
@@ -338,6 +374,7 @@ pub fn load(conn: &Connection, id: i64) -> rusqlite::Result<Option<Server>> {
                 pass_resources: row.get(6)?,
                 pass_prompts: row.get(7)?,
                 lockdown: row.get(8)?,
+                catalog_error: row.get(9)?,
             })
         },
     )

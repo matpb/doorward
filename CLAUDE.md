@@ -181,7 +181,7 @@ K. Added for container installs
     setup code is in the logs, and stopping and starting the stack keeps its data. Every
     container runs with all capabilities dropped, no privilege escalation, and memory and
     process limits.
-40. The gateway limits request rates itself, so the protection is the same with or without
+40. (replaced by 43) The gateway limits request rates itself, so the protection is the same with or without
     Caddy: per client address on every endpoint, tighter on the sign-in, password reset,
     registration, authorization and token endpoints, and per user on tool calls. A request
     over a limit gets `429` with `Retry-After` and reaches no upstream. Every limit is a
@@ -190,6 +190,35 @@ K. Added for container installs
 41. The README and `docs/DOCKER.md` cover both Compose files, the first start, every
     environment variable with its default, backup and restore, upgrading, and what each
     hardening setting is for. A test fails when a setting has no documented variable.
+42. A gateway whose public address is https refuses to start when no trusted proxy is set,
+    with a message that says how to fix it, unless the setting `shared_client_address` is
+    true; then it starts with a warning. Plain http on a loopback address is exempt.
+43. The gateway limits request rates itself, so the protection is the same with or without
+    Caddy. Anonymous and refused requests are counted per client address (IPv6 by /64) on
+    every endpoint, tighter on the sign-in, reset, invitation, registration, authorization
+    and token endpoints. Requests that pass the bearer check are counted per user, and a
+    user's open streams are capped. A request over a limit gets `429` with `Retry-After`,
+    changes no state, reaches no upstream, and on MCP paths carries no `WWW-Authenticate`.
+    Counters live in a table of bounded size: a flood of new addresses neither grows it
+    nor resets an existing counter. Every limit is a setting. Behind the shipped Caddy two
+    different callers land in different buckets, and a forged forwarding header does not
+    move a caller.
+
+L. Added after the owner's auth review
+
+44. Wrong passwords are counted per account and client address together: five in a row
+    from one address block that account for that address only, so the same account still
+    signs in from another address with the right password. A higher ceiling per account,
+    whatever the address, blocks the account for everyone (default 50 inside the window).
+    Both numbers are settings. This narrows the "per account" half of statement 6.
+45. Activity rows older than a set number of days are deleted by the housekeeping run
+    (default 90, a setting). Newer rows are never touched.
+46. Every consent page, for local and for web clients alike, says "Approve only if you
+    started this sign-in yourself."
+47. A grant for the combined endpoint means everything the user may use at the moment of
+    each request: a server assigned later is listed and callable without a new consent,
+    and a server unassigned is gone from the list at once and a call to it is refused
+    without the upstream seeing it.
 
 ### Proof
 
@@ -207,12 +236,14 @@ into the test harness. In addition:
 - 27: one transcript and one screenshot per client under `proof/`, by hand-driven runs.
 - 30: `scripts/hygiene.sh` scans tracked files and commit messages.
 - 31: by the project owner.
-- 38, 39, 40: `scripts/prove-docker.sh` builds the image, starts each Compose file on the
+- 38, 39, 43: `scripts/prove-docker.sh` builds the image, starts each Compose file on the
   local machine, and checks health, the setup code in the logs, the user, the read-only
   root, the dropped capabilities, that the gateway's port is closed on the host in the
-  Caddy stack, a sign-up and a streamed tool call through Caddy's HTTPS, a forged
-  forwarding header against the rate limit, and data kept across a restart. `./check.sh`
-  does not run it, so that Check passes on a machine without Docker.
+  Caddy stack, a sign-up and a streamed tool call through Caddy's HTTPS (its internal
+  certificate authority for `localhost`), a forged forwarding header against the rate
+  limit, two callers in separate buckets, data kept across a restart, and a backup and
+  restore that still decrypts a stored upstream secret. `./check.sh` does not run it, so
+  that Check passes on a machine without Docker.
 
 ### Assumptions
 

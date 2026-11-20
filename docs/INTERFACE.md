@@ -183,7 +183,7 @@ controls outgoing mail can read every password reset link.
 | `POST /admin/servers/{id}` | same as create | `303`. A changed `upstream_url` clears the stored secret unless a new `secret_header_value` is sent in the same post |
 | `POST /admin/servers/{id}/delete` | | server, its assignments, rules, and token families gone; `303 /admin/servers` |
 | `POST /admin/servers/{id}/refresh-tools` | | fetches the upstream tool list; always `303` to the server page. A failed fetch keeps the previous list, and the server page shows the failure as its error until the next successful refresh |
-| `POST /admin/servers/{id}/check-lockdown` | | sends one request without the secret; `303` |
+| `POST /admin/servers/{id}/check-lockdown` | | asks the upstream for its tool list without the secret (the stateless form, then the session form's `initialize` when the first was neither refused nor answered); `ok` when refused with 401 or 403, `open` when answered, else `unknown`; `303` |
 | `GET /admin/users` | | `data-page="users"`; rows `data-user-id`, `data-email` |
 | `GET /admin/users/{id}` | | `data-page="user"`: role, status; one `input[name="server_id"]` checkbox per server, `checked` when assigned; effective tools, one element per tool of each assigned server with `data-server` (slug), `data-tool`, `data-verdict="allow|deny"` |
 | `POST /admin/users/{id}/servers` | `server_id` (repeated) | replaces the user's assignments; the user's token families for each removed server are revoked, combined endpoint families stay valid and lose those servers' tools; `303` |

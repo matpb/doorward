@@ -62,6 +62,10 @@ pub fn router(state: AppState) -> Router<AppState> {
             "/servers/{id}/refresh-tools",
             post(servers::post_refresh_tools),
         )
+        .route(
+            "/servers/{id}/check-lockdown",
+            post(servers::post_check_lockdown),
+        )
         // Routes are added above this line: route_layer covers only routes that already exist.
         .route_layer(middleware::from_fn_with_state(state, require_admin))
 }

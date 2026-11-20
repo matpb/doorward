@@ -3,21 +3,26 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::http::StatusCode;
 use reqwest::Method;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, ORIGIN, SET_COOKIE};
 use rusqlite::OptionalExtension;
 use scraper::{Html, Selector};
+use serde_json::json;
 use tokio::net::TcpListener;
 use url::form_urlencoded::Serializer;
 
+use super::servers::{Stored, store_lockdown};
 use crate::app::{Deps, assemble, serve};
 use crate::audit::{self, Event};
 use crate::config::Config;
 use crate::crypto::{Keys, PasswordHasher, token_hash};
+use crate::db::Db;
+use crate::proxy::tests::{TestUpstream, answer};
 use crate::servers::{Scope, set_assignments};
-use crate::web::SESSION_COOKIE;
+use crate::web::{Role, SESSION_COOKIE, SessionUser};
 
 const PASSWORD: &str = "correct horse battery staple";
 const OWNER: &str = "owner@example.com";
@@ -2274,8 +2279,19 @@ async fn unknown_server_and_user_ids_answer_404() {
     assert_eq!(refresh.status, 404);
 }
 
+/// The fixed message of a refresh that the upstream did not answer.
+const UNAVAILABLE: &str = "The last refresh failed: the upstream did not answer with a tool list.";
+
+/// The tool names on a server page, in order.
+fn catalog_of(body: &str) -> Vec<String> {
+    elements(body, "[data-catalog-tool]")
+        .iter()
+        .filter_map(|tool| tool.get("data-catalog-tool").cloned())
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn refresh_tools_answers_303_and_changes_nothing() {
+async fn refresh_tools_answers_303_and_records_a_failed_fetch() {
     let dir = tempfile::tempdir().expect("dir");
     let (_base, mut owner) = owner_gateway(dir.path()).await;
     add(&mut owner, "demo", SERVER_URL, Some(("x-key", "v1"))).await;
@@ -2286,14 +2302,248 @@ async fn refresh_tools_answers_303_and_changes_nothing() {
     let page = owner
         .submit(&path, &format!("{path}/refresh-tools"), &[])
         .await;
-    assert_eq!(page.status, 303, "refresh-tools answers 303");
+    assert_eq!(
+        page.status, 303,
+        "refresh-tools answers 303 when the fetch fails"
+    );
     assert_eq!(page.location(), Some(path.as_str()));
-    assert_eq!(secret_row(dir.path(), id), before, "nothing is changed");
+    assert_eq!(
+        secret_row(dir.path(), id),
+        before,
+        "the stored secret is not touched"
+    );
+    assert_eq!(
+        count(
+            dir.path(),
+            "SELECT COUNT(*) FROM activity WHERE kind = 'admin_change' AND detail = 'tool refresh failed'"
+        ),
+        1,
+        "the failed refresh is recorded"
+    );
     assert_eq!(
         count(dir.path(), "SELECT COUNT(*) FROM activity"),
-        rows_before,
-        "no activity row is written"
+        rows_before + 1,
+        "one row is written"
     );
+    let shown = owner.get(&path).await;
+    assert_eq!(shown.error().as_deref(), Some(UNAVAILABLE));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_refresh_shows_its_error_beside_the_old_tools_until_one_succeeds() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let healthy = Arc::new(AtomicBool::new(true));
+    let switch = Arc::clone(&healthy);
+    let upstream = TestUpstream::start(move |seen| {
+        if !switch.load(Ordering::SeqCst) {
+            return answer(401, None, None, "");
+        }
+        if seen.header("mcp-protocol-version") != Some("2026-07-28") {
+            return answer(400, None, None, "");
+        }
+        let listed = json!({"jsonrpc": "2.0", "id": seen.json()["id"].clone(),
+            "result": {"tools": [{"name": "alpha"}]}});
+        answer(200, None, Some("application/json"), &listed.to_string())
+    })
+    .await;
+    add(&mut owner, "demo", &upstream.url, None).await;
+    let id = server_id_of(dir.path(), "demo");
+    let path = format!("/admin/servers/{id}");
+    let refresh = format!("{path}/refresh-tools");
+    assert_eq!(owner.submit(&path, &refresh, &[]).await.status, 303);
+    assert_eq!(catalog_of(&owner.get(&path).await.body), vec!["alpha"]);
+    healthy.store(false, Ordering::SeqCst);
+    assert_eq!(owner.submit(&path, &refresh, &[]).await.status, 303);
+    let shown = owner.get(&path).await;
+    assert_eq!(shown.error().as_deref(), Some(UNAVAILABLE));
+    assert_eq!(
+        catalog_of(&shown.body),
+        vec!["alpha"],
+        "a failed refresh keeps the old tools listed"
+    );
+    healthy.store(true, Ordering::SeqCst);
+    assert_eq!(owner.submit(&path, &refresh, &[]).await.status, 303);
+    let shown = owner.get(&path).await;
+    assert!(
+        shown.error().is_none(),
+        "a successful refresh removes the message"
+    );
+    assert_eq!(catalog_of(&shown.body), vec!["alpha"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_lockdown_stores_open_for_an_upstream_that_answers_without_the_secret() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let open = TestUpstream::start(|seen| {
+        if seen.header("mcp-protocol-version") != Some("2026-07-28") {
+            return answer(400, None, None, "");
+        }
+        let listed = json!({"jsonrpc": "2.0", "id": seen.json()["id"].clone(),
+            "result": {"tools": []}});
+        answer(200, None, Some("application/json"), &listed.to_string())
+    })
+    .await;
+    add(&mut owner, "demo", &open.url, Some(("x-key", "v1"))).await;
+    let id = server_id_of(dir.path(), "demo");
+    let path = format!("/admin/servers/{id}");
+    let page = owner
+        .submit(&path, &format!("{path}/check-lockdown"), &[])
+        .await;
+    assert_eq!(page.status, 303, "the lock-down check answers 303");
+    assert_eq!(page.location(), Some(path.as_str()));
+    assert_eq!(lockdown_of(dir.path(), id), "open");
+    assert_eq!(
+        attr_of(&owner.get(&path).await.body, "main", "data-lockdown").as_deref(),
+        Some("open")
+    );
+    assert!(
+        open.seen()
+            .iter()
+            .all(|request| request.header("x-key").is_none()),
+        "the probe carries no secret"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_lockdown_stores_unknown_for_an_upstream_that_does_not_answer() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let id = server_id_of(dir.path(), "demo");
+    let path = format!("/admin/servers/{id}");
+    let page = owner
+        .submit(&path, &format!("{path}/check-lockdown"), &[])
+        .await;
+    assert_eq!(page.status, 303);
+    assert_eq!(lockdown_of(dir.path(), id), "unknown");
+    assert_eq!(
+        count(
+            dir.path(),
+            "SELECT COUNT(*) FROM activity WHERE kind = 'admin_change' AND detail = 'lock-down checked: unknown'"
+        ),
+        1,
+        "the check is recorded"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_verdict_is_stored_only_for_the_address_that_was_probed() {
+    let dir = tempfile::tempdir().expect("dir");
+    let db = Db::open(&dir.path().join("doorward.db")).expect("database");
+    add_user(dir.path(), PLAIN, "user").await;
+    let id = db
+        .call(|conn| {
+            conn.execute(
+                "INSERT INTO servers (name, slug, upstream_url, created_at) \
+                 VALUES ('demo', 'demo', ?1, 0)",
+                rusqlite::params![SERVER_URL],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await
+        .expect("server row");
+    let actor = SessionUser {
+        id: user_id_of(dir.path(), PLAIN),
+        email: PLAIN.to_owned(),
+        role: Role::User,
+    };
+    let (other, right, gone) = (actor.clone(), actor.clone(), actor);
+    let moved = db
+        .call(move |conn| store_lockdown(conn, id, "ok", "http://127.0.0.1:9/other", &other, AT))
+        .await
+        .expect("the store");
+    assert!(matches!(moved, Stored::Changed));
+    assert_eq!(lockdown_of(dir.path(), id), "unknown");
+    assert_eq!(
+        count(
+            dir.path(),
+            "SELECT COUNT(*) FROM activity WHERE kind = 'admin_change'"
+        ),
+        0,
+        "no row for an address that changed"
+    );
+    let saved = db
+        .call(move |conn| store_lockdown(conn, id, "ok", SERVER_URL, &right, AT))
+        .await
+        .expect("the store");
+    assert!(matches!(saved, Stored::Saved));
+    assert_eq!(lockdown_of(dir.path(), id), "ok");
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!(
+                "SELECT COUNT(*) FROM activity WHERE kind = 'admin_change' \
+                 AND server_id = {id} AND detail = 'lock-down checked: ok'"
+            ),
+        ),
+        1
+    );
+    let missing = db
+        .call(move |conn| store_lockdown(conn, id + 100, "open", SERVER_URL, &gone, AT))
+        .await
+        .expect("the store");
+    assert!(matches!(missing, Stored::Missing));
+    assert_eq!(
+        count(
+            dir.path(),
+            "SELECT COUNT(*) FROM activity WHERE kind = 'admin_change'"
+        ),
+        1,
+        "a server that is gone gets no row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lockdown_note_says_what_the_stored_result_means() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let id = server_id_of(dir.path(), "demo");
+    let path = format!("/admin/servers/{id}");
+    let cases = [
+        ("ok", "The upstream refused a request without the secret."),
+        (
+            "open",
+            "The upstream answered a request without the secret: anyone who can reach its address can use it.",
+        ),
+        (
+            "unknown",
+            "Not checked yet, or the upstream did not answer the check.",
+        ),
+    ];
+    for (verdict, words) in cases {
+        open_db(dir.path())
+            .execute(
+                "UPDATE servers SET lockdown = ?1 WHERE id = ?2",
+                rusqlite::params![verdict, id],
+            )
+            .expect("store the verdict");
+        let body = owner.get(&path).await.body;
+        assert_eq!(
+            text_of(&body, "p[data-lockdown-note]").as_deref(),
+            Some(words),
+            "{verdict}"
+        );
+        assert!(
+            attr_of(&body, "p[data-lockdown-note]", "class").is_none(),
+            "{verdict}: the note is not an error"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_lockdown_of_a_missing_server_answers_404() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let id = server_id_of(dir.path(), "demo");
+    let form = owner.get(&format!("/admin/servers/{id}")).await;
+    let csrf = attr_of(&form.body, r#"input[name="csrf"]"#, "value").expect("the csrf field");
+    let gone = format!("/admin/servers/{}/check-lockdown", id + 100);
+    let page = owner.post(&gone, &[("csrf", csrf.as_str())]).await;
+    assert_eq!(page.status, 404);
 }
 
 #[tokio::test(flavor = "multi_thread")]

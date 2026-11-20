@@ -6,13 +6,15 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use maud::{Markup, html};
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::crypto::{CryptoError, Keys};
 use crate::db::DbError;
 use crate::oauth::families;
+use crate::proxy::catalog::{self, RefreshError};
+use crate::proxy::upstream::{self, TargetError};
 use crate::servers::{
     self, Draft, Refusal, Scope, SecretChange, Server, ServerRef, Settings, UserChoice,
 };
@@ -435,36 +437,171 @@ async fn server_page(
     let id = server.id;
     match state
         .db
-        .call(move |conn| servers::user_choices(conn, id))
+        .call(move |conn| {
+            let users = servers::user_choices(conn, id)?;
+            let tools = catalog::names(conn, id)?;
+            Ok((users, tools))
+        })
         .await
     {
-        Ok(users) => {
+        Ok((users, tools)) => {
             let data = MainData {
                 lockdown: Some(&server.lockdown),
                 ..MainData::default()
             };
             form_page_with(viewer, status, "server", "Server", &data, |csrf| {
-                server_body(csrf, server, draft, &users, refusal)
+                server_body(csrf, server, draft, &users, &tools, refusal)
             })
         }
         Err(_) => internal_error(),
     }
 }
 
-/// Refreshing the tool list gets its work in a later slice; this one changes nothing.
+/// Refreshes the tool list. A failure is recorded and still answers 303 to the server page.
 pub async fn post_refresh_tools(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    _form: VerifiedForm,
+    form: VerifiedForm,
 ) -> Response {
+    let Some(actor) = form.viewer.user.clone() else {
+        return forbidden();
+    };
     let Some(id) = parse_id(&id) else {
         return not_found();
     };
-    match load(&state, id).await {
-        Ok(Some(_)) => redirect(&format!("/admin/servers/{id}")),
-        Ok(None) => not_found(),
+    let server = match load(&state, id).await {
+        Ok(Some(server)) => server,
+        Ok(None) => return not_found(),
+        Err(_) => return internal_error(),
+    };
+    let outcome = match upstream::target(&state, id).await {
+        Ok(Some(target)) => catalog::refresh(&state, &target).await.map(|_| ()),
+        Ok(None) => return not_found(),
+        Err(TargetError::Secret) => catalog::fail(&state, id, RefreshError::Unavailable).await,
+        Err(TargetError::Db(_)) => return internal_error(),
+    };
+    let detail = match outcome {
+        Ok(()) => "tools refreshed",
+        Err(RefreshError::Db) => return internal_error(),
+        Err(_) => "tool refresh failed",
+    };
+    match record_change(&state, &actor, id, &server.slug, detail).await {
+        Ok(()) => redirect(&format!("/admin/servers/{id}")),
         Err(_) => internal_error(),
     }
+}
+
+/// Probes the upstream without the secret, stores the verdict and answers 303 to the server page.
+pub async fn post_check_lockdown(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    form: VerifiedForm,
+) -> Response {
+    let Some(actor) = form.viewer.user.clone() else {
+        return forbidden();
+    };
+    let Some(id) = parse_id(&id) else {
+        return not_found();
+    };
+    let server = match load(&state, id).await {
+        Ok(Some(server)) => server,
+        Ok(None) => return not_found(),
+        Err(_) => return internal_error(),
+    };
+    // The probe carries no secret, so the stored secret is not opened for it.
+    let probed_url = server.upstream_url;
+    let probe = upstream::Target {
+        server_id: id,
+        slug: server.slug,
+        url: probed_url.clone(),
+        secret: None,
+    };
+    let verdict = catalog::lockdown(&state, &probe).await;
+    let at = state.clock.now().unix_timestamp();
+    match state
+        .db
+        .call(move |conn| store_lockdown(conn, id, verdict, &probed_url, &actor, at))
+        .await
+    {
+        Ok(Stored::Missing) => not_found(),
+        Ok(_) => redirect(&format!("/admin/servers/{id}")),
+        Err(_) => internal_error(),
+    }
+}
+
+/// The outcome of storing a probe result.
+pub(super) enum Stored {
+    Saved,
+    /// The address changed during the probe, so the result belongs to another address.
+    Changed,
+    Missing,
+}
+
+/// One transaction: stores the verdict and its admin_change row while `url` is still the address.
+/// Otherwise nothing is written, and a server that is gone is Missing.
+pub(super) fn store_lockdown(
+    conn: &mut Connection,
+    id: i64,
+    verdict: &str,
+    url: &str,
+    actor: &SessionUser,
+    at: i64,
+) -> rusqlite::Result<Stored> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let slug: Option<String> = tx
+        .query_row(
+            "SELECT slug FROM servers WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(slug) = slug else {
+        return Ok(Stored::Missing);
+    };
+    let updated = tx.execute(
+        "UPDATE servers SET lockdown = ?1 WHERE id = ?2 AND upstream_url = ?3",
+        params![verdict, id, url],
+    )?;
+    if updated == 0 {
+        return Ok(Stored::Changed);
+    }
+    let detail = format!("lock-down checked: {verdict}");
+    record(&tx, at, actor, Some(id), &slug, &detail)?;
+    tx.commit()?;
+    Ok(Stored::Saved)
+}
+
+/// What the stored lock-down result means, in words.
+fn lockdown_note(verdict: &str) -> &'static str {
+    match verdict {
+        "ok" => "The upstream refused a request without the secret.",
+        "open" => {
+            "The upstream answered a request without the secret: anyone who can reach its address can use it."
+        }
+        _ => "Not checked yet, or the upstream did not answer the check.",
+    }
+}
+
+/// Writes one admin_change row for a server in its own transaction.
+async fn record_change(
+    state: &AppState,
+    actor: &SessionUser,
+    server_id: i64,
+    slug: &str,
+    detail: &str,
+) -> Result<(), DbError> {
+    let at = state.clock.now().unix_timestamp();
+    let actor = actor.clone();
+    let slug = slug.to_owned();
+    let detail = detail.to_owned();
+    state
+        .db
+        .call(move |conn| {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            record(&tx, at, &actor, Some(server_id), &slug, &detail)?;
+            tx.commit()
+        })
+        .await
 }
 
 fn servers_body(csrf: &str, rows: &[ServerRef], draft: &Draft, refusal: Option<Refusal>) -> Markup {
@@ -498,14 +635,19 @@ fn server_body(
     server: &Server,
     draft: &Draft,
     users: &[UserChoice],
+    tools: &[String],
     refusal: Option<Refusal>,
 ) -> Markup {
     let path = format!("/admin/servers/{}", server.id);
+    let note = lockdown_note(&server.lockdown);
     html! {
         h1 { (server.name) }
         p { "Path: " (server.slug) }
         @if let Some(refusal) = refusal {
             p.error { (refusal) }
+        }
+        @if let Some(message) = &server.catalog_error {
+            p.error { (message) }
         }
         form method="post" action=(path) {
             input type="hidden" name="csrf" value=(csrf);
@@ -518,6 +660,25 @@ fn server_body(
                 }
             }
             button type="submit" { "Save server" }
+        }
+        h2 { "Tools" }
+        @if tools.is_empty() {
+            p { "No tools yet. Refresh the list to fetch them from the upstream." }
+        }
+        ul.catalog {
+            @for tool in tools {
+                li data-catalog-tool=(tool) { (tool) }
+            }
+        }
+        form method="post" action=(format!("{path}/refresh-tools")) {
+            input type="hidden" name="csrf" value=(csrf);
+            button type="submit" { "Refresh tools" }
+        }
+        h2 { "Lock-down" }
+        p data-lockdown-note=(note) { (note) }
+        form method="post" action=(format!("{path}/check-lockdown")) {
+            input type="hidden" name="csrf" value=(csrf);
+            button type="submit" { "Check lock-down" }
         }
         h2 { "Users" }
         p {
