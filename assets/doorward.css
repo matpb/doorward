@@ -472,6 +472,10 @@ a.count {
   border-radius: 0.5rem;
 }
 
+h1 + .notice {
+  margin-top: 0.75rem;
+}
+
 .notice[data-notice="ok"] {
   color: var(--ok);
   background: var(--ok-bg);
