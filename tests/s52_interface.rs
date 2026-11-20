@@ -610,8 +610,8 @@ async fn a_status_is_a_word_with_a_marker() {
     let rows = all(doc.root_element(), "li[data-tool]");
     assert_eq!(
         rows.len(),
-        3,
-        "bob's page must list the three tools of demo"
+        6,
+        "bob's page must list the three tools of each of his two servers"
     );
     for row in rows {
         let tool = row.value().attr("data-tool").unwrap_or("");

@@ -3522,3 +3522,307 @@ async fn the_user_page_lists_no_tool_of_a_server_the_user_is_not_assigned_to() {
         "no tool of the unassigned server is listed, even under an allow"
     );
 }
+
+/// The text of the first element under `row` that matches `css`, or panics when there is none.
+fn text_under(body: &str, row: &str, css: &str) -> String {
+    text_of(body, &format!("{row} {css}")).unwrap_or_else(|| panic!("{row} must hold {css}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_list_counts_tools_and_assigned_users_and_shows_the_lock_down_state() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    add(&mut owner, "other", SERVER_URL, None).await;
+    let demo = server_id_of(dir.path(), "demo");
+    let other = server_id_of(dir.path(), "other");
+    seed_catalog(dir.path(), demo, &["alpha", "beta", "gamma"]);
+    seed_catalog(dir.path(), other, &["alpha"]);
+    let bob = user_id_of(dir.path(), BOB);
+    let bob_text = bob.to_string();
+    let assigned = owner
+        .submit(
+            &format!("/admin/servers/{demo}"),
+            &format!("/admin/servers/{demo}/users"),
+            &[("user_id", bob_text.as_str())],
+        )
+        .await;
+    assert_eq!(assigned.status, 303, "bob must be assigned to demo");
+
+    let body = owner.get("/admin/servers").await.body;
+    let demo_row = r#"li[data-slug="demo"]"#;
+    let other_row = r#"li[data-slug="other"]"#;
+    assert_eq!(text_under(&body, demo_row, "[data-tool-count]"), "3 tools");
+    assert_eq!(text_under(&body, demo_row, "[data-user-count]"), "1 user");
+    assert_eq!(text_under(&body, other_row, "[data-tool-count]"), "1 tool");
+    assert_eq!(text_under(&body, other_row, "[data-user-count]"), "0 users");
+    assert_eq!(text_under(&body, demo_row, "code"), "demo");
+    assert_eq!(text_under(&body, demo_row, "[data-pill]"), "Not checked");
+    assert_eq!(
+        attr_of(&body, &format!("{demo_row} [data-pill]"), "data-tone").as_deref(),
+        Some("warn")
+    );
+    assert_eq!(elements(&body, &format!("{demo_row} [data-pill]")).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lock_down_pill_names_the_stored_state_on_the_list_and_the_page() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let demo = server_id_of(dir.path(), "demo");
+    let path = format!("/admin/servers/{demo}");
+    let cases = [
+        ("ok", "Locked down", "ok"),
+        ("open", "Answers without the gateway", "bad"),
+        ("unknown", "Not checked", "warn"),
+    ];
+    for (verdict, word, tone) in cases {
+        open_db(dir.path())
+            .execute(
+                "UPDATE servers SET lockdown = ?1 WHERE id = ?2",
+                rusqlite::params![verdict, demo],
+            )
+            .expect("store the verdict");
+        let list = owner.get("/admin/servers").await.body;
+        let row = r#"li[data-slug="demo"]"#;
+        assert_eq!(text_under(&list, row, "[data-pill]"), word, "{verdict}");
+        assert_eq!(
+            attr_of(&list, &format!("{row} [data-pill]"), "data-tone").as_deref(),
+            Some(tone),
+            "{verdict}"
+        );
+        let detail = owner.get(&path).await.body;
+        assert_eq!(elements(&detail, "[data-pill]").len(), 1, "{verdict}");
+        assert_eq!(
+            text_of(&detail, "[data-pill]").as_deref(),
+            Some(word),
+            "{verdict}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_user_list_counts_assigned_servers_and_shows_active_or_disabled() {
+    const CAROL: &str = "carol@example.com";
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    add_user(dir.path(), CAROL, "user").await;
+    open_db(dir.path())
+        .execute(
+            "UPDATE users SET disabled = 1 WHERE email = ?1",
+            rusqlite::params![CAROL],
+        )
+        .expect("disable carol");
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let demo = server_id_of(dir.path(), "demo");
+    let bob = user_id_of(dir.path(), BOB);
+    let demo_text = demo.to_string();
+    owner
+        .submit(
+            &format!("/admin/users/{bob}"),
+            &format!("/admin/users/{bob}/servers"),
+            &[("server_id", demo_text.as_str())],
+        )
+        .await;
+
+    let body = owner.get("/admin/users").await.body;
+    let bob_row = format!(r#"li[data-email="{BOB}"]"#);
+    let carol_row = format!(r#"li[data-email="{CAROL}"]"#);
+    assert_eq!(
+        text_under(&body, &bob_row, "[data-server-count]"),
+        "1 server"
+    );
+    assert_eq!(text_under(&body, &bob_row, "[data-pill]"), "Active");
+    assert_eq!(
+        attr_of(&body, &format!("{bob_row} [data-pill]"), "data-tone").as_deref(),
+        Some("ok")
+    );
+    assert_eq!(
+        text_under(&body, &carol_row, "[data-server-count]"),
+        "0 servers"
+    );
+    assert_eq!(text_under(&body, &carol_row, "[data-pill]"), "Disabled");
+    assert_eq!(
+        attr_of(&body, &format!("{carol_row} [data-pill]"), "data-tone").as_deref(),
+        Some("muted")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rule_row_holds_one_pill_and_names_its_target_in_words() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let added = add_rule(
+        &mut owner,
+        &[
+            ("subject", "everyone"),
+            ("effect", "deny"),
+            ("scope", "all"),
+        ],
+    )
+    .await;
+    assert_eq!(added.status, 303, "the everyone deny rule must be saved");
+    let body = owner.get("/admin/rules").await.body;
+    let row = "li[data-rule-id]";
+    assert_eq!(elements(&body, row).len(), 1);
+    assert_eq!(text_under(&body, row, ".row-title"), "Everyone");
+    assert_eq!(text_under(&body, row, "p.row-meta"), "Applies to all tools");
+    assert_eq!(text_under(&body, row, "[data-pill]"), "Deny");
+    assert_eq!(
+        attr_of(&body, &format!("{row} [data-pill]"), "data-tone").as_deref(),
+        Some("bad")
+    );
+    assert_eq!(elements(&body, &format!("{row} [data-pill]")).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_allowed_address_shows_enabled_or_disabled_and_its_toggle_is_secondary() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let body = owner.get("/admin/redirects").await.body;
+    let first = elements(&body, "li[data-redirect-id]");
+    assert!(!first.is_empty(), "the shipped addresses must be listed");
+    let id = first[0]["data-redirect-id"].clone();
+    let row = format!(r#"li[data-redirect-id="{id}"]"#);
+    assert_eq!(text_under(&body, &row, "[data-pill]"), "Enabled");
+    assert_eq!(
+        attr_of(&body, &format!("{row} [data-pill]"), "data-tone").as_deref(),
+        Some("ok")
+    );
+    assert_eq!(
+        attr_of(&body, &format!(r#"{row} button"#), "data-kind").as_deref(),
+        Some("secondary")
+    );
+    let disabled = owner
+        .submit(
+            "/admin/redirects",
+            &format!("/admin/redirects/{id}/disable"),
+            &[],
+        )
+        .await;
+    assert_eq!(disabled.status, 303, "the address must be disabled");
+    let body = owner.get("/admin/redirects").await.body;
+    assert_eq!(text_under(&body, &row, "[data-pill]"), "Disabled");
+    assert_eq!(
+        attr_of(&body, &format!("{row} [data-pill]"), "data-tone").as_deref(),
+        Some("muted")
+    );
+    assert_eq!(text_under(&body, &row, "button"), "Enable");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_invitation_link_after_a_failed_send_sits_in_a_copy_code() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner
+        .submit(
+            "/admin/invitations",
+            "/admin/invitations",
+            &[("email", BOB), ("role", "user")],
+        )
+        .await;
+    assert_eq!(page.kind().as_deref(), Some("invitation-created"));
+    assert_eq!(elements(&page.body, "code.copy[data-invite-link]").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_button_on_the_in_scope_pages_says_its_kind() {
+    const DANGER: [&str; 4] = ["Delete", "Revoke", "Remove", "Disconnect"];
+    const SECONDARY: [&str; 5] = [
+        "Disable",
+        "Enable",
+        "Refresh tools",
+        "Check lock-down",
+        "Allow this address",
+    ];
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let demo = server_id_of(dir.path(), "demo");
+    let bob = user_id_of(dir.path(), BOB);
+    let pages = [
+        "/admin/servers".to_string(),
+        format!("/admin/servers/{demo}"),
+        "/admin/users".to_string(),
+        format!("/admin/users/{bob}"),
+        "/admin/rules".to_string(),
+        "/admin/redirects".to_string(),
+        "/admin/invitations".to_string(),
+    ];
+    let primary = Selector::parse(r#"button[data-kind="primary"]"#).expect("selector");
+    let forms = Selector::parse("form").expect("selector");
+    let buttons = Selector::parse("button").expect("selector");
+    for path in pages {
+        let body = owner.get(&path).await.body;
+        let doc = Html::parse_document(&body);
+        for form in doc.select(&forms) {
+            let count = form.select(&primary).count();
+            assert!(count <= 1, "{path}: a form holds {count} primary buttons");
+        }
+        for button in doc.select(&buttons) {
+            let text = button.text().collect::<String>();
+            let text = text.trim();
+            let kind = button.value().attr("data-kind").unwrap_or("");
+            assert!(
+                matches!(kind, "primary" | "secondary" | "danger"),
+                "{path}: the button {text:?} must carry a kind, got {kind:?}"
+            );
+            if DANGER.iter().any(|word| text.starts_with(word)) {
+                assert_eq!(kind, "danger", "{path}: the button {text:?}");
+            }
+            if SECONDARY.iter().any(|word| text.starts_with(word)) {
+                assert_eq!(kind, "secondary", "{path}: the button {text:?}");
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_row_of_the_user_page_holds_one_allow_or_deny_pill_by_its_verdict() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let demo = server_id_of(dir.path(), "demo");
+    seed_catalog(dir.path(), demo, &["alpha", "beta"]);
+    let bob = user_id_of(dir.path(), BOB);
+    let (demo_text, bob_text) = (demo.to_string(), bob.to_string());
+    owner
+        .submit(
+            &format!("/admin/users/{bob}"),
+            &format!("/admin/users/{bob}/servers"),
+            &[("server_id", demo_text.as_str())],
+        )
+        .await;
+    let denied = add_rule(
+        &mut owner,
+        &[
+            ("subject", bob_text.as_str()),
+            ("effect", "deny"),
+            ("scope", "tool"),
+            ("server_id", demo_text.as_str()),
+            ("tool", "alpha"),
+        ],
+    )
+    .await;
+    assert_eq!(denied.status, 303, "the deny rule must be saved");
+
+    let body = owner.get(&format!("/admin/users/{bob}")).await.body;
+    let alpha = r#"li[data-tool="alpha"]"#;
+    let beta = r#"li[data-tool="beta"]"#;
+    assert_eq!(text_under(&body, alpha, "[data-pill]"), "Deny");
+    assert_eq!(
+        attr_of(&body, &format!("{alpha} [data-pill]"), "data-tone").as_deref(),
+        Some("bad")
+    );
+    assert_eq!(text_under(&body, beta, "[data-pill]"), "Allow");
+    assert_eq!(
+        attr_of(&body, &format!("{beta} [data-pill]"), "data-tone").as_deref(),
+        Some("ok")
+    );
+    assert_eq!(elements(&body, "li[data-tool] [data-pill]").len(), 2);
+}

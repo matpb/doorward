@@ -16,10 +16,11 @@ use crate::proxy::catalog;
 use crate::servers::{self, Scope, ServerChoice};
 use crate::web::{
     Role, SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, not_found, page,
-    redirect,
+    redirect, ui,
 };
 
 use super::panel_nav;
+use super::servers::counted;
 
 const OWNER: &str = "owner";
 const OWNER_MESSAGE: &str = "The owner account cannot be changed this way.";
@@ -248,10 +249,44 @@ fn user_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
     })
 }
 
-fn list_in(conn: &Connection) -> rusqlite::Result<Vec<User>> {
-    let mut statement = conn.prepare("SELECT id, email, role, disabled FROM users ORDER BY id")?;
-    let rows = statement.query_map([], user_from_row)?;
+/// A user of the list with the number of servers assigned to them.
+struct Listed {
+    user: User,
+    servers: i64,
+}
+
+/// Every user with the count of assigned servers, in one query, oldest first.
+fn list_in(conn: &Connection) -> rusqlite::Result<Vec<Listed>> {
+    let mut statement = conn.prepare(
+        "SELECT id, email, role, disabled, \
+         (SELECT COUNT(*) FROM user_servers WHERE user_servers.user_id = users.id) \
+         FROM users ORDER BY id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(Listed {
+            user: user_from_row(row)?,
+            servers: row.get(4)?,
+        })
+    })?;
     rows.collect()
+}
+
+/// The account status as a pill: Active in ok, Disabled in muted.
+fn status_pill(disabled: bool) -> Markup {
+    if disabled {
+        ui::pill("muted", "Disabled")
+    } else {
+        ui::pill("ok", "Active")
+    }
+}
+
+/// The verdict of a tool as a pill: Allow in ok, Deny in bad.
+fn verdict_pill(verdict: &str) -> Markup {
+    if verdict == "allow" {
+        ui::pill("ok", "Allow")
+    } else {
+        ui::pill("bad", "Deny")
+    }
 }
 
 fn load_in(conn: &Connection, id: i64) -> rusqlite::Result<Option<User>> {
@@ -473,85 +508,121 @@ fn user_body(
     let owner_target = user.role == OWNER;
     let may_set_role = viewer.is_owner() && !owner_target;
     let may_act = !owner_target && (viewer.is_owner() || user.role == "user");
-    let status = if user.disabled { "disabled" } else { "active" };
     let path = format!("/admin/users/{}", user.id);
     html! {
-        h1 { (user.email) }
-        input type="hidden" name="csrf" value=(csrf);
-        @if let Some(message) = error {
-            p.error { (message) }
-        }
-        p { "Role: " (user.role) }
-        p { "Status: " (status) }
-        p {
-            a href=(format!("/admin/activity?user={}", user.id)) data-link="activity" { "Activity" }
-        }
-        h2 { "Servers" }
-        form method="post" action=(format!("{path}/servers")) {
+        div.stack {
+            div.page-head {
+                h1 { (user.email) }
+                a href=(format!("/admin/activity?user={}", user.id)) data-link="activity" { "Activity" }
+            }
             input type="hidden" name="csrf" value=(csrf);
-            @for choice in choices {
-                label {
-                    input type="checkbox" name="server_id" value=(choice.id) checked[choice.assigned];
-                    " " (choice.name) " (" (choice.slug) ")"
+            @if let Some(message) = error {
+                p.error { (message) }
+            }
+            section.card {
+                dl.facts {
+                    dt { "Role" }
+                    dd { (user.role) }
+                    dt { "Status" }
+                    dd { (status_pill(user.disabled)) }
+                }
+                @if may_act {
+                    form method="post" action=(format!("{path}/{}", if user.disabled { "enable" } else { "disable" })) {
+                        input type="hidden" name="csrf" value=(csrf);
+                        @if user.disabled {
+                            button type="submit" data-kind="secondary" { "Enable account" }
+                        } @else {
+                            button type="submit" data-kind="secondary" { "Disable account" }
+                        }
+                    }
                 }
             }
-            button type="submit" { "Save servers" }
-        }
-        h2 { "Tools" }
-        ul.tools {
-            @for tool in tools {
-                li data-server=(tool.server) data-tool=(tool.tool) data-verdict=(tool.verdict)
-                    data-rule=(tool.rule) {
-                    (tool.server) " " (tool.tool) ": " (tool.verdict)
+            @if may_set_role {
+                section.card {
+                    form method="post" action=(format!("{path}/role")) {
+                        input type="hidden" name="csrf" value=(csrf);
+                        div.fields {
+                            div {
+                                label for="user-role" { "Role" }
+                                select id="user-role" name="role" {
+                                    option value="admin" selected[user.role == "admin"] { "Admin" }
+                                    option value="user" selected[user.role == "user"] { "User" }
+                                }
+                            }
+                        }
+                        button type="submit" data-kind="primary" { "Save role" }
+                    }
                 }
             }
-        }
-        @if may_set_role {
-            form method="post" action=(format!("{path}/role")) {
-                input type="hidden" name="csrf" value=(csrf);
-                label for="user-role" { "Role" }
-                select id="user-role" name="role" {
-                    option value="admin" selected[user.role == "admin"] { "Admin" }
-                    option value="user" selected[user.role == "user"] { "User" }
-                }
-                button type="submit" { "Save role" }
-            }
-        }
-        @if may_act {
-            @if user.disabled {
-                form method="post" action=(format!("{path}/enable")) {
+            section.card {
+                h2 { "Servers" }
+                form method="post" action=(format!("{path}/servers")) {
                     input type="hidden" name="csrf" value=(csrf);
-                    button type="submit" { "Enable account" }
-                }
-            } @else {
-                form method="post" action=(format!("{path}/disable")) {
-                    input type="hidden" name="csrf" value=(csrf);
-                    button type="submit" { "Disable account" }
+                    @for choice in choices {
+                        label.check {
+                            input type="checkbox" name="server_id" value=(choice.id) checked[choice.assigned];
+                            " " (choice.name) " (" (choice.slug) ")"
+                        }
+                    }
+                    button type="submit" data-kind="primary" { "Save servers" }
                 }
             }
-            form method="post" action=(format!("{path}/delete")) {
-                input type="hidden" name="csrf" value=(csrf);
-                button type="submit" { "Delete account" }
+            section.card {
+                h2 { "Tools" }
+                ul.tools.rows {
+                    @for tool in tools {
+                        li data-server=(tool.server) data-tool=(tool.tool) data-verdict=(tool.verdict)
+                            data-rule=(tool.rule) {
+                            div.row-main {
+                                code { (tool.tool) }
+                                p.row-meta { "on " code { (tool.server) } }
+                            }
+                            div.row-actions { (verdict_pill(tool.verdict)) }
+                        }
+                    }
+                }
+            }
+            @if may_act {
+                section.card.danger-zone {
+                    h2 { "Delete" }
+                    details data-confirm {
+                        summary { "Delete this account (cannot be undone)" }
+                        div.confirm-body {
+                            form method="post" action=(format!("{path}/delete")) {
+                                input type="hidden" name="csrf" value=(csrf);
+                                button type="submit" data-kind="danger" { "Delete account" }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 }
 
-fn users_page(viewer: &Viewer, rows: &[User]) -> Response {
+fn users_page(viewer: &Viewer, rows: &[Listed]) -> Response {
     page(
         StatusCode::OK,
         "users",
         "Users",
         html! {
             (panel_nav(viewer, "/admin/users"))
-            h1 { "Users" }
-            ul.users {
-                @for user in rows {
-                    li data-user-id=(user.id) data-email=(user.email) {
-                        p { a href=(format!("/admin/users/{}", user.id)) { (user.email) } }
-                        p {
-                            (user.role) " "
-                            @if user.disabled { "disabled" } @else { "active" }
+            div.stack {
+                h1 { "Users" }
+                section.card {
+                    ul.users.rows {
+                        @for row in rows {
+                            li data-user-id=(row.user.id) data-email=(row.user.email) {
+                                div.row-main {
+                                    a.row-title href=(format!("/admin/users/{}", row.user.id)) { (row.user.email) }
+                                    p.row-meta {
+                                        (row.user.role)
+                                        " · "
+                                        span data-server-count { (counted(row.servers, "server", "servers")) }
+                                    }
+                                }
+                                div.row-actions { (status_pill(row.user.disabled)) }
+                            }
                         }
                     }
                 }

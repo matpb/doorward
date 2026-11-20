@@ -15,12 +15,10 @@ use crate::db::DbError;
 use crate::oauth::families;
 use crate::proxy::catalog::{self, RefreshError};
 use crate::proxy::upstream::{self, TargetError};
-use crate::servers::{
-    self, Draft, Refusal, Scope, SecretChange, Server, ServerRef, Settings, UserChoice,
-};
+use crate::servers::{self, Draft, Refusal, Scope, SecretChange, Server, Settings, UserChoice};
 use crate::web::{
     FormFields, MainData, SessionUser, VerifiedForm, Viewer, forbidden, form_page, form_page_with,
-    internal_error, not_found, redirect,
+    internal_error, not_found, redirect, ui,
 };
 
 use super::panel_nav;
@@ -420,7 +418,7 @@ async fn servers_page(
     draft: &Draft,
     refusal: Option<Refusal>,
 ) -> Response {
-    match state.db.call(|conn| servers::list(conn)).await {
+    match state.db.call(|conn| list_in(conn)).await {
         Ok(rows) => {
             let nav = panel_nav(viewer, "/admin/servers");
             form_page(viewer, status, "servers", "Servers", |csrf| {
@@ -624,28 +622,88 @@ async fn record_change(
         .await
 }
 
-fn servers_body(csrf: &str, rows: &[ServerRef], draft: &Draft, refusal: Option<Refusal>) -> Markup {
+/// One server as the list shows it: its path, its lock-down state and its two counts.
+struct ServerRow {
+    id: i64,
+    name: String,
+    slug: String,
+    lockdown: String,
+    tools: i64,
+    users: i64,
+}
+
+/// Every server with its tool count and its assigned-user count, in one query, oldest first.
+fn list_in(conn: &Connection) -> rusqlite::Result<Vec<ServerRow>> {
+    let mut statement = conn.prepare(
+        "SELECT id, name, slug, lockdown, \
+         (SELECT COUNT(*) FROM tool_catalog WHERE tool_catalog.server_id = servers.id), \
+         (SELECT COUNT(*) FROM user_servers WHERE user_servers.server_id = servers.id) \
+         FROM servers ORDER BY id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(ServerRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            slug: row.get(2)?,
+            lockdown: row.get(3)?,
+            tools: row.get(4)?,
+            users: row.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// A count with its word in the singular for one and the plural otherwise: "1 tool", "0 tools".
+pub(super) fn counted(count: i64, one: &str, many: &str) -> String {
+    let word = if count == 1 { one } else { many };
+    format!("{count} {word}")
+}
+
+/// The lock-down state as a pill: a word and a marker tone.
+fn lockdown_pill(verdict: &str) -> Markup {
+    match verdict {
+        "ok" => ui::pill("ok", "Locked down"),
+        "open" => ui::pill("bad", "Answers without the gateway"),
+        _ => ui::pill("warn", "Not checked"),
+    }
+}
+
+fn servers_body(csrf: &str, rows: &[ServerRow], draft: &Draft, refusal: Option<Refusal>) -> Markup {
     html! {
-        h1 { "Servers" }
-        @if let Some(refusal) = refusal {
-            p.error { (refusal) }
-        }
-        @if rows.is_empty() {
-            p { "No servers yet." }
-        }
-        ul.servers {
-            @for row in rows {
-                li data-server-id=(row.id) data-slug=(row.slug) {
-                    p { a href=(format!("/admin/servers/{}", row.id)) { (row.name) } }
-                    p { (row.slug) }
+        div.stack {
+            h1 { "Servers" }
+            @if let Some(refusal) = refusal {
+                p.error { (refusal) }
+            }
+            div.split {
+                section.card.main {
+                    @if rows.is_empty() {
+                        p { "No servers yet." }
+                    }
+                    ul.servers.rows {
+                        @for row in rows {
+                            li data-server-id=(row.id) data-slug=(row.slug) {
+                                div.row-main {
+                                    a.row-title href=(format!("/admin/servers/{}", row.id)) { (row.name) }
+                                    p.row-meta { code { (row.slug) } }
+                                    p.row-meta {
+                                        span data-tool-count { (counted(row.tools, "tool", "tools")) }
+                                        " · "
+                                        span data-user-count { (counted(row.users, "user", "users")) }
+                                    }
+                                }
+                                div.row-actions { (lockdown_pill(&row.lockdown)) }
+                            }
+                        }
+                    }
+                }
+                form.card.side method="post" action="/admin/servers" {
+                    h2 { "Add a server" }
+                    input type="hidden" name="csrf" value=(csrf);
+                    (fields(draft, "Secret header value (optional)", false))
+                    button type="submit" data-kind="primary" { "Add server" }
                 }
             }
-        }
-        h2 { "Add a server" }
-        form method="post" action="/admin/servers" {
-            input type="hidden" name="csrf" value=(csrf);
-            (fields(draft, "Secret header value (optional)"))
-            button type="submit" { "Add server" }
         }
     }
 }
@@ -661,88 +719,127 @@ fn server_body(
     let path = format!("/admin/servers/{}", server.id);
     let note = lockdown_note(&server.lockdown);
     html! {
-        h1 { (server.name) }
-        p { "Path: " (server.slug) }
-        p {
-            a href=(format!("/admin/activity?server={}", server.id)) data-link="activity" { "Activity" }
-        }
-        @if let Some(refusal) = refusal {
-            p.error { (refusal) }
-        }
-        @if let Some(message) = &server.catalog_error {
-            p.error { (message) }
-        }
-        form method="post" action=(path) {
-            input type="hidden" name="csrf" value=(csrf);
-            (fields(draft, "Secret header value (empty keeps the stored one)"))
-            @if server.has_secret {
-                p { "A secret is stored. Its value is never shown again." }
-                label {
-                    input type="checkbox" name="remove_secret";
-                    " Remove the stored secret"
+        div.stack {
+            h1 { (server.name) }
+            p { "Path: " code { (server.slug) } }
+            p {
+                a href=(format!("/admin/activity?server={}", server.id)) data-link="activity" { "Activity" }
+            }
+            @if let Some(refusal) = refusal {
+                p.error { (refusal) }
+            }
+            @if let Some(message) = &server.catalog_error {
+                p.error { (message) }
+            }
+            section.card {
+                h2 { "Settings" }
+                form method="post" action=(path) {
+                    input type="hidden" name="csrf" value=(csrf);
+                    (fields(draft, "Secret header value (empty keeps the stored one)", server.has_secret))
+                    button type="submit" data-kind="primary" { "Save server" }
                 }
             }
-            button type="submit" { "Save server" }
-        }
-        h2 { "Tools" }
-        @if tools.is_empty() {
-            p { "No tools yet. Refresh the list to fetch them from the upstream." }
-        }
-        ul.catalog {
-            @for tool in tools {
-                li data-catalog-tool=(tool) { (tool) }
-            }
-        }
-        form method="post" action=(format!("{path}/refresh-tools")) {
-            input type="hidden" name="csrf" value=(csrf);
-            button type="submit" { "Refresh tools" }
-        }
-        h2 { "Lock-down" }
-        p data-lockdown-note=(note) { (note) }
-        form method="post" action=(format!("{path}/check-lockdown")) {
-            input type="hidden" name="csrf" value=(csrf);
-            button type="submit" { "Check lock-down" }
-        }
-        h2 { "Users" }
-        p {
-            "Every user reaches this server under the same identity, so anything the server caches or remembers per caller is shared."
-        }
-        form method="post" action=(format!("{path}/users")) {
-            input type="hidden" name="csrf" value=(csrf);
-            @for user in users {
-                label {
-                    input type="checkbox" name="user_id" value=(user.id) checked[user.assigned];
-                    " " (user.email)
+            section.card {
+                h2 { "Tools" }
+                @if tools.is_empty() {
+                    p { "No tools yet. Refresh the list to fetch them from the upstream." }
+                }
+                ul.catalog.rows {
+                    @for tool in tools {
+                        li data-catalog-tool=(tool) { code { (tool) } }
+                    }
+                }
+                form method="post" action=(format!("{path}/refresh-tools")) {
+                    input type="hidden" name="csrf" value=(csrf);
+                    button type="submit" data-kind="secondary" { "Refresh tools" }
                 }
             }
-            button type="submit" { "Save users" }
-        }
-        h2 { "Delete" }
-        form method="post" action=(format!("{path}/delete")) {
-            input type="hidden" name="csrf" value=(csrf);
-            button type="submit" { "Delete server" }
+            section.card {
+                h2 { "Lock-down" }
+                p { (lockdown_pill(&server.lockdown)) }
+                p data-lockdown-note=(note) { (note) }
+                form method="post" action=(format!("{path}/check-lockdown")) {
+                    input type="hidden" name="csrf" value=(csrf);
+                    button type="submit" data-kind="secondary" { "Check lock-down" }
+                }
+            }
+            section.card {
+                h2 { "Users" }
+                p {
+                    "Every user reaches this server under the same identity, so anything the server caches or remembers per caller is shared."
+                }
+                form method="post" action=(format!("{path}/users")) {
+                    input type="hidden" name="csrf" value=(csrf);
+                    @for user in users {
+                        label.check {
+                            input type="checkbox" name="user_id" value=(user.id) checked[user.assigned];
+                            " " (user.email)
+                        }
+                    }
+                    button type="submit" data-kind="primary" { "Save users" }
+                }
+            }
+            section.card.danger-zone {
+                h2 { "Delete" }
+                details data-confirm {
+                    summary { "Delete this server (cannot be undone)" }
+                    div.confirm-body {
+                        form method="post" action=(format!("{path}/delete")) {
+                            input type="hidden" name="csrf" value=(csrf);
+                            button type="submit" data-kind="danger" { "Delete server" }
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
 /// The settings inputs of the create and the edit form. The secret value is never filled in.
-fn fields(draft: &Draft, value_hint: &str) -> Markup {
+/// `stored` is true when the server holds a secret, which the edit form may remove.
+fn fields(draft: &Draft, value_hint: &str, stored: bool) -> Markup {
     html! {
-        label for="server-name" { "Name" }
-        input id="server-name" name="name" type="text" value=(draft.name) required;
-        label for="server-slug" { "Path (letters, digits and hyphens, at most 24 characters)" }
-        input id="server-slug" name="slug" type="text" value=(draft.slug) required;
-        label for="server-url" { "Upstream address (http or https)" }
-        input id="server-url" name="upstream_url" type="url" value=(draft.upstream_url) required;
-        label for="secret-name" { "Secret header name (optional)" }
-        input id="secret-name" name="secret_header_name" type="text" value=(draft.secret_header_name);
-        label for="secret-value" { (value_hint) }
-        input id="secret-value" name="secret_header_value" type="password" autocomplete="new-password";
-        label {
+        div.fields {
+            div {
+                label for="server-name" { "Name" }
+                input id="server-name" name="name" type="text" value=(draft.name) required;
+            }
+            div {
+                label for="server-slug" { "Path (letters, digits and hyphens, at most 24 characters)" }
+                input id="server-slug" name="slug" type="text" value=(draft.slug) required;
+            }
+            div {
+                label for="server-url" { "Upstream address (http or https)" }
+                input id="server-url" name="upstream_url" type="url" value=(draft.upstream_url) required;
+            }
+        }
+        fieldset {
+            legend { "Secret header" }
+            div.fields {
+                div {
+                    label for="secret-name" { "Secret header name (optional)" }
+                    input id="secret-name" name="secret_header_name" type="text" value=(draft.secret_header_name);
+                }
+                div {
+                    label for="secret-value" { (value_hint) }
+                    input id="secret-value" name="secret_header_value" type="password" autocomplete="new-password";
+                    @if stored {
+                        p.hint { "A secret is stored. Its value is never shown again." }
+                    }
+                }
+            }
+            @if stored {
+                label.check {
+                    input type="checkbox" name="remove_secret";
+                    " Remove the stored secret"
+                }
+            }
+        }
+        label.check {
             input type="checkbox" name="pass_resources" checked[draft.pass_resources];
             " Pass resources to the upstream (off: empty list)"
         }
-        label {
+        label.check {
             input type="checkbox" name="pass_prompts" checked[draft.pass_prompts];
             " Pass prompts to the upstream (off: empty list)"
         }

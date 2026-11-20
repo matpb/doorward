@@ -11,7 +11,7 @@ use crate::audit::{self, Event};
 use crate::proxy::catalog;
 use crate::servers::{self, ServerRef};
 use crate::web::{
-    SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, redirect,
+    SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, redirect, ui,
 };
 
 use super::panel_nav;
@@ -351,64 +351,119 @@ fn rules_body(
     refused: Option<&str>,
 ) -> Markup {
     html! {
-        h1 { "Rules" }
-        p { "A deny stands unless an allow is at least as specific in scope and subject, and more specific in one." }
-        @if let Some(message) = refused {
-            p.error { (message) }
-        }
-        h2 { "Stored rules" }
-        ul.rules {
-            @for rule in rules {
-                li data-rule-id=(rule.id) data-subject=(rule.subject) data-effect=(rule.effect)
-                    data-scope=(rule.scope()) data-server=(rule.server.as_deref().unwrap_or(""))
-                    data-tool=(rule.tool.as_deref().unwrap_or(""))
-                    data-stale=(yes_or_no(rule.stale)) {
-                    p { (rule.text()) }
-                    @if rule.stale {
-                        p { "The tool is not in the server's tool list." }
+        div.stack {
+            h1 { "Rules" }
+            p.lede { "A deny stands unless an allow is at least as specific in scope and subject, and more specific in one." }
+            @if let Some(message) = refused {
+                p.error { (message) }
+            }
+            div.split {
+                section.card.main {
+                    h2 { "Stored rules" }
+                    ul.rules.rows {
+                        @for rule in rules {
+                            li data-rule-id=(rule.id) data-subject=(rule.subject) data-effect=(rule.effect)
+                                data-scope=(rule.scope()) data-server=(rule.server.as_deref().unwrap_or(""))
+                                data-tool=(rule.tool.as_deref().unwrap_or(""))
+                                data-stale=(yes_or_no(rule.stale)) {
+                                div.row-main {
+                                    span.row-title { (subject_text(&rule.subject)) }
+                                    p.row-meta { "Applies to " (target_markup(rule)) }
+                                    @if rule.stale {
+                                        p.row-meta { "The tool is not in the server's tool list." }
+                                    }
+                                }
+                                div.row-actions {
+                                    (effect_pill(&rule.effect))
+                                    form method="post" action=(format!("/admin/rules/{}/delete", rule.id)) {
+                                        input type="hidden" name="csrf" value=(csrf);
+                                        button type="submit" data-kind="danger" { "Delete rule" }
+                                    }
+                                }
+                            }
+                        }
                     }
-                    form method="post" action=(format!("/admin/rules/{}/delete", rule.id)) {
-                        input type="hidden" name="csrf" value=(csrf);
-                        button type="submit" { "Delete rule" }
+                }
+                form.card.side method="post" action="/admin/rules" {
+                    h2 { "Add a rule" }
+                    input type="hidden" name="csrf" value=(csrf);
+                    div.fields {
+                        div {
+                            label for="rule-subject" { "Subject" }
+                            select id="rule-subject" name="subject" {
+                                option value="everyone" { "Everyone" }
+                                @for (id, email) in users {
+                                    option value=(id) { (email) }
+                                }
+                            }
+                        }
+                        div {
+                            label for="rule-effect" { "Effect" }
+                            select id="rule-effect" name="effect" {
+                                option value="allow" { "Allow" }
+                                option value="deny" { "Deny" }
+                            }
+                        }
+                        div {
+                            label for="rule-scope" { "Scope" }
+                            select id="rule-scope" name="scope" {
+                                option value="all" { "All tools" }
+                                option value="server" { "One server" }
+                                option value="tool" { "One tool" }
+                            }
+                        }
+                        div {
+                            label for="rule-server" { "Server (for scope server or tool)" }
+                            select id="rule-server" name="server_id" {
+                                @for server in servers {
+                                    option value=(server.id) { (server.name) " (" (server.slug) ")" }
+                                }
+                            }
+                        }
+                        div {
+                            label for="rule-tool" { "Tool name (for scope one tool)" }
+                            input id="rule-tool" name="tool" type="text" list="rule-tools";
+                            datalist id="rule-tools" {
+                                @for (slug, tool) in tools {
+                                    option value=(tool) label=(slug);
+                                }
+                            }
+                        }
                     }
+                    button type="submit" data-kind="primary" { "Add rule" }
                 }
             }
         }
-        h2 { "Add a rule" }
-        form method="post" action="/admin/rules" {
-            input type="hidden" name="csrf" value=(csrf);
-            label for="rule-subject" { "Subject" }
-            select id="rule-subject" name="subject" {
-                option value="everyone" { "Everyone" }
-                @for (id, email) in users {
-                    option value=(id) { (email) }
-                }
-            }
-            label for="rule-effect" { "Effect" }
-            select id="rule-effect" name="effect" {
-                option value="allow" { "Allow" }
-                option value="deny" { "Deny" }
-            }
-            label for="rule-scope" { "Scope" }
-            select id="rule-scope" name="scope" {
-                option value="all" { "All tools" }
-                option value="server" { "One server" }
-                option value="tool" { "One tool" }
-            }
-            label for="rule-server" { "Server (for scope server or tool)" }
-            select id="rule-server" name="server_id" {
-                @for server in servers {
-                    option value=(server.id) { (server.name) " (" (server.slug) ")" }
-                }
-            }
-            label for="rule-tool" { "Tool name (for scope one tool)" }
-            input id="rule-tool" name="tool" type="text" list="rule-tools";
-            datalist id="rule-tools" {
-                @for (slug, tool) in tools {
-                    option value=(tool) label=(slug);
-                }
-            }
-            button type="submit" { "Add rule" }
+    }
+}
+
+/// The effect of a rule as a pill: Allow in ok, Deny in bad.
+fn effect_pill(effect: &str) -> Markup {
+    if effect == "allow" {
+        ui::pill("ok", "Allow")
+    } else {
+        ui::pill("bad", "Deny")
+    }
+}
+
+/// The subject as the page reads it: "everyone" is shown with a capital.
+fn subject_text(subject: &str) -> &str {
+    if subject == "everyone" {
+        "Everyone"
+    } else {
+        subject
+    }
+}
+
+/// What the rule applies to, with the server and tool names in code.
+fn target_markup(rule: &Stored) -> Markup {
+    html! {
+        @if let (Some(server), Some(tool)) = (rule.server.as_deref(), rule.tool.as_deref()) {
+            "tool " code { (tool) } " on server " code { (server) }
+        } @else if let Some(server) = rule.server.as_deref() {
+            "server " code { (server) }
+        } @else {
+            "all tools"
         }
     }
 }

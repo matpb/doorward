@@ -253,43 +253,63 @@ fn invitations_page(
 
 fn invitations_body(csrf: &str, owner: bool, rows: &[Row], error: Option<&str>) -> Markup {
     html! {
-        h1 { "Invitations" }
-        @if let Some(message) = error {
-            p.error { (message) }
-        }
-        @if rows.is_empty() {
-            p { "No open invitations." }
-        }
-        ul.invitations {
-            @for row in rows {
-                li data-invitation-id=(row.id) data-email=(row.email) {
-                    p { strong { (row.email) } " as " (row.role) }
-                    @if let Some(inviter) = &row.inviter {
-                        span data-invited-by { "invited by " (inviter) }
-                    } @else {
-                        span data-invited-by { "invited by a removed account" }
+        div.stack {
+            h1 { "Invitations" }
+            @if let Some(message) = error {
+                p.error { (message) }
+            }
+            div.split {
+                section.card.main {
+                    @if rows.is_empty() {
+                        p { "No open invitations." }
                     }
-                    p { "Expires " (row.expires) }
-                    form method="post" action=(format!("/admin/invitations/{}/revoke", row.id)) {
-                        input type="hidden" name="csrf" value=(csrf);
-                        button type="submit" { "Revoke" }
+                    ul.invitations.rows {
+                        @for row in rows {
+                            li data-invitation-id=(row.id) data-email=(row.email) {
+                                div.row-main {
+                                    span.row-title { (row.email) }
+                                    p.row-meta {
+                                        "as " (row.role) " · Expires " (row.expires)
+                                    }
+                                    p.row-meta {
+                                        @if let Some(inviter) = &row.inviter {
+                                            span data-invited-by { "invited by " (inviter) }
+                                        } @else {
+                                            span data-invited-by { "invited by a removed account" }
+                                        }
+                                    }
+                                }
+                                div.row-actions {
+                                    form method="post" action=(format!("/admin/invitations/{}/revoke", row.id)) {
+                                        input type="hidden" name="csrf" value=(csrf);
+                                        button type="submit" data-kind="danger" { "Revoke" }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-            }
-        }
-        h2 { "Invite someone" }
-        form method="post" action="/admin/invitations" {
-            input type="hidden" name="csrf" value=(csrf);
-            label for="invite-email" { "Email" }
-            input id="invite-email" name="email" type="email" required;
-            label for="invite-role" { "Role" }
-            select id="invite-role" name="role" {
-                option value="user" selected { "User" }
-                @if owner {
-                    option value="admin" { "Admin" }
+                form.card.side method="post" action="/admin/invitations" {
+                    h2 { "Invite someone" }
+                    input type="hidden" name="csrf" value=(csrf);
+                    div.fields {
+                        div {
+                            label for="invite-email" { "Email" }
+                            input id="invite-email" name="email" type="email" required;
+                        }
+                        div {
+                            label for="invite-role" { "Role" }
+                            select id="invite-role" name="role" {
+                                option value="user" selected { "User" }
+                                @if owner {
+                                    option value="admin" { "Admin" }
+                                }
+                            }
+                        }
+                    }
+                    button type="submit" data-kind="primary" { "Send invitation" }
                 }
             }
-            button type="submit" { "Send invitation" }
         }
     }
 }
@@ -302,11 +322,13 @@ fn invitation_created(viewer: &Viewer, error: &str, link: &str) -> Response {
         "Invitation created",
         html! {
             (panel_nav(viewer, "/admin/invitations"))
-            h1 { "The invitation is stored but the email was not sent" }
-            p.error { (error) }
-            p { "Copy this link and send it by hand:" }
-            p { code data-invite-link=(link) { (link) } }
-            p { a href="/admin/invitations" { "Back to invitations" } }
+            div.stack {
+                h1 { "The invitation is stored but the email was not sent" }
+                p.error { (error) }
+                p { "Copy this link and send it by hand:" }
+                p { code.copy data-invite-link=(link) { (link) } }
+                p { a href="/admin/invitations" { "Back to invitations" } }
+            }
         },
     )
 }
