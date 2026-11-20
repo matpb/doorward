@@ -20,6 +20,8 @@ use crate::web::{
     SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, page, redirect,
 };
 
+use super::panel_nav;
+
 const EMAIL_MESSAGE: &str = "Enter a valid email address.";
 const ROLE_MESSAGE: &str = "Choose the role user or admin.";
 const TAKEN_MESSAGE: &str = "An account already has that email address.";
@@ -89,7 +91,7 @@ pub async fn post_invitation(State(state): State<AppState>, form: VerifiedForm) 
     let message = templates::invitation(&link).to(email);
     match mail::send(&state, message).await {
         Ok(()) => redirect("/admin/invitations"),
-        Err(error) => invitation_created(&error.0, &link),
+        Err(error) => invitation_created(&form.viewer, &error.0, &link),
     }
 }
 
@@ -235,8 +237,12 @@ fn invitations_page(
     rows: &[Row],
     error: Option<&str>,
 ) -> Response {
+    let nav = panel_nav(viewer, "/admin/invitations");
     form_page(viewer, status, "invitations", "Invitations", |csrf| {
-        invitations_body(csrf, viewer.is_owner(), rows, error)
+        html! {
+            (nav)
+            (invitations_body(csrf, viewer.is_owner(), rows, error))
+        }
     })
 }
 
@@ -279,12 +285,13 @@ fn invitations_body(csrf: &str, owner: bool, rows: &[Row], error: Option<&str>) 
 }
 
 /// The answer when the mail did not leave: the error, and the link once for copying by hand.
-fn invitation_created(error: &str, link: &str) -> Response {
+fn invitation_created(viewer: &Viewer, error: &str, link: &str) -> Response {
     page(
         StatusCode::OK,
         "invitation-created",
         "Invitation created",
         html! {
+            (panel_nav(viewer, "/admin/invitations"))
             h1 { "The invitation is stored but the email was not sent" }
             p.error { (error) }
             p { "Copy this link and send it by hand:" }

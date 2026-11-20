@@ -16,7 +16,7 @@ use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::{get, post};
-use maud::html;
+use maud::{Markup, html};
 
 use crate::app::AppState;
 use crate::web::{Viewer, forbidden, page, redirect};
@@ -79,22 +79,41 @@ async fn panel(viewer: Viewer) -> Response {
         "admin",
         "Admin",
         html! {
+            (panel_nav(&viewer, "/admin"))
             h1 { "Admin" }
-            nav {
-                ul {
-                    li { a href="/admin/users" { "Users" } }
-                    li { a href="/admin/invitations" { "Invitations" } }
-                    li { a href="/admin/servers" { "Servers" } }
-                    li { a href="/admin/rules" { "Rules" } }
-                    li { a href="/admin/redirects" { "Redirects" } }
-                    li { a href="/admin/activity" { "Activity" } }
-                    @if viewer.is_owner() {
-                        li { a href="/admin/mail" { "Mail" } }
+        },
+    )
+}
+
+/// The links of the panel navigation: label, path, and whether only the owner sees it.
+const PANEL_LINKS: [(&str, &str, bool); 9] = [
+    ("Admin", "/admin", false),
+    ("Users", "/admin/users", false),
+    ("Invitations", "/admin/invitations", false),
+    ("Servers", "/admin/servers", false),
+    ("Rules", "/admin/rules", false),
+    ("Redirects", "/admin/redirects", false),
+    ("Activity", "/admin/activity", false),
+    ("Mail", "/admin/mail", true),
+    ("Your account", "/account", false),
+];
+
+/// The navigation of every page of the panel, first in main. `current` is the path of the
+/// section shown; its link is marked as the current page.
+fn panel_nav(viewer: &Viewer, current: &str) -> Markup {
+    html! {
+        nav data-nav="panel" {
+            ul {
+                @for (label, href, owner_only) in PANEL_LINKS {
+                    @if !owner_only || viewer.is_owner() {
+                        li {
+                            a href=(href) aria-current=[(href == current).then_some("page")] { (label) }
+                        }
                     }
                 }
             }
-        },
-    )
+        }
+    }
 }
 
 /// Anonymous: sign-in page. A plain user: forbidden. Owner and admins pass.

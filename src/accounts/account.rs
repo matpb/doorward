@@ -33,13 +33,22 @@ pub fn account_page(
         return redirect("/login");
     };
     form_page(viewer, status, "account", "Your account", |csrf| {
-        account_body(csrf, &user.email, error, clients)
+        account_body(csrf, &user.email, viewer.is_admin(), error, clients)
     })
 }
 
-fn account_body(csrf: &str, email: &str, error: Option<&str>, clients: &[Connected]) -> Markup {
+fn account_body(
+    csrf: &str,
+    email: &str,
+    admin: bool,
+    error: Option<&str>,
+    clients: &[Connected],
+) -> Markup {
     html! {
         h1 { "Your account" }
+        @if admin {
+            p { a href="/admin" data-nav="to-panel" { "Admin panel" } }
+        }
         p { "Signed in as " (email) }
         h2 { "Connected clients" }
         @if clients.is_empty() {

@@ -16,6 +16,8 @@ use crate::web::{
     FormFields, SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, redirect,
 };
 
+use super::panel_nav;
+
 const PLAIN_KEYS: [&str; 9] = [
     "mail.provider",
     "mail.from",
@@ -318,8 +320,12 @@ fn mail_page(
     error: Option<&str>,
     notice: Option<&str>,
 ) -> Response {
+    let nav = panel_nav(viewer, "/admin/mail");
     form_page(viewer, status, "mail", "Mail settings", |csrf| {
-        mail_forms(csrf, view, error, notice)
+        html! {
+            (nav)
+            (mail_forms(csrf, view, error, notice))
+        }
     })
 }
 

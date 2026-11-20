@@ -114,6 +114,35 @@ async fn covered_pages(w: &World) -> Vec<(&'static str, Page)> {
     pages
 }
 
+/// The rules of a stylesheet as (selectors, declarations), each with spaces collapsed.
+fn css_rules(css: &str) -> Vec<(Vec<String>, Vec<String>)> {
+    let collapse = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    css.split('}')
+        .filter_map(|block| {
+            let (selectors, body) = block.split_once('{')?;
+            let selectors = selectors.split(',').map(collapse).collect();
+            let declarations = body
+                .split(';')
+                .map(collapse)
+                .filter(|declaration| !declaration.is_empty())
+                .collect();
+            Some((selectors, declarations))
+        })
+        .collect()
+}
+
+/// True when some rule with `selector` among its selectors has `declaration` (or, for a
+/// prefix ending in ":", a declaration starting with it).
+fn declares(rules: &[(Vec<String>, Vec<String>)], selector: &str, declaration: &str) -> bool {
+    rules.iter().any(|(selectors, declarations)| {
+        selectors.iter().any(|shown| shown == selector)
+            && declarations.iter().any(|shown| {
+                shown == declaration
+                    || (declaration.ends_with(':') && shown.starts_with(declaration))
+            })
+    })
+}
+
 /// The family id of the connected client named like the test app on the account page.
 async fn app_family(browser: &TestClient) -> String {
     let page = browser.get("/account").await;
@@ -584,4 +613,34 @@ async fn a_refused_form_keeps_the_navigation() {
         &OWNER_LINKS,
         "/admin/servers",
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_stylesheet_wraps_the_nav_row_and_long_text() {
+    let w = World::start().await;
+    let page = w.owner.get("/admin").await;
+    let href = page
+        .attr(r#"link[rel=stylesheet]"#, "href")
+        .expect("the admin page must link a stylesheet");
+    let path = href.strip_prefix(w.base()).unwrap_or(href.as_str());
+    let css = w.owner.get(path).await.body;
+    let rules = css_rules(&css);
+    let nav = r#"nav[data-nav="panel"] ul"#;
+    for declaration in [
+        "display: flex",
+        "flex-wrap: wrap",
+        "gap:",
+        "list-style: none",
+    ] {
+        assert!(
+            declares(&rules, nav, declaration),
+            "the panel nav list must carry {declaration:?} in the stylesheet"
+        );
+    }
+    for element in ["li", "p", "td", "th"] {
+        assert!(
+            declares(&rules, element, "overflow-wrap: anywhere"),
+            "{element} must wrap long unbroken text"
+        );
+    }
 }

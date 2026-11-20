@@ -201,6 +201,8 @@ Anonymous: `303 /login`. Signed in without the owner or admin role: `403`
 `/admin/mail/test`) are for the owner alone and answer an admin `403` as well: whoever
 controls outgoing mail can read every password reset link.
 
+Every full page of the panel (status 200, and the 400 pages that re-render a form) starts `main` with `nav[data-nav="panel"]`: the links Admin, Users, Invitations, Servers, Rules, Redirects, Activity, Mail (owner only) and Your account, the section shown marked `aria-current="page"`. `/account` links to `/admin` with `a[data-nav="to-panel"]` for an owner or admin.
+
 | Route | Fields | Outcome |
 |---|---|---|
 | `GET /admin` | | `data-page="admin"` |
@@ -230,6 +232,8 @@ controls outgoing mail can read every password reset link.
 | `POST /admin/mail` | `provider` (`smtp`, `resend`, `mailgun`), `from`; smtp: `smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`, `smtp_tls` (`off`, `starttls` or `implicit`); resend: `resend_api_key`, `resend_base_url`; mailgun: `mailgun_api_key`, `mailgun_domain`, `mailgun_base_url` | `303`. An empty secret field keeps the stored one, unless the server it is sent to changed in the same post (SMTP host, port, username or TLS mode; Resend base URL; Mailgun domain or base URL): then the stored secret is deleted. An empty base URL means the provider's own address. A field with a control character: `400`. Requests to Resend carry `User-Agent: doorward/<version>` |
 | `POST /admin/mail/test` | `to` | `200` `data-page="mail"` with `class="notice"` "Test email sent." or `class="error"` holding the provider's error |
 | `GET /admin/activity` | query `user`, `server` | `data-page="activity"`; rows `data-kind`, `data-user`, `data-server`, `data-tool`, `data-decision`, `data-outcome` |
+
+The tool name field of the rule form is `input#rule-tool[list="rule-tools"]` with `datalist#rule-tools` holding one option per stored tool of every server: `value` the tool's name, `label` the server's slug, ordered by slug then name.
 
 Activity rows: `data-user` is the user's email (empty when there is none), `data-server`
 the server's slug, `data-tool` the tool's name on its server. For `tool_call` rows,

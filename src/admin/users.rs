@@ -19,6 +19,8 @@ use crate::web::{
     redirect,
 };
 
+use super::panel_nav;
+
 const OWNER: &str = "owner";
 const OWNER_MESSAGE: &str = "The owner account cannot be changed this way.";
 const ROLE_MESSAGE: &str = "Choose the role admin or user.";
@@ -70,9 +72,9 @@ enum AssignVerdict {
     Done,
 }
 
-pub async fn get_users(State(state): State<AppState>) -> Response {
+pub async fn get_users(viewer: Viewer, State(state): State<AppState>) -> Response {
     match state.db.call(|conn| list_in(conn)).await {
-        Ok(rows) => users_page(&rows),
+        Ok(rows) => users_page(&viewer, &rows),
         Err(_) => internal_error(),
     }
 }
@@ -412,9 +414,15 @@ async fn user_page(
         })
         .await;
     match loaded {
-        Ok((choices, tools)) => form_page(viewer, status, "user", "User", |csrf| {
-            user_body(csrf, viewer, &user, &choices, &tools, error)
-        }),
+        Ok((choices, tools)) => {
+            let nav = panel_nav(viewer, "/admin/users");
+            form_page(viewer, status, "user", "User", |csrf| {
+                html! {
+                    (nav)
+                    (user_body(csrf, viewer, &user, &choices, &tools, error))
+                }
+            })
+        }
         Err(_) => internal_error(),
     }
 }
@@ -515,12 +523,13 @@ fn user_body(
     }
 }
 
-fn users_page(rows: &[User]) -> Response {
+fn users_page(viewer: &Viewer, rows: &[User]) -> Response {
     page(
         StatusCode::OK,
         "users",
         "Users",
         html! {
+            (panel_nav(viewer, "/admin/users"))
             h1 { "Users" }
             ul.users {
                 @for user in rows {

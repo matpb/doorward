@@ -14,6 +14,7 @@ use crate::web::{
     SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, not_found, redirect,
 };
 
+use super::panel_nav;
 use super::users::parse_id;
 
 const BLOCKED_LIMIT: i64 = 50;
@@ -172,9 +173,15 @@ async fn redirects_page(
         .call(|conn| Ok((policy::list(conn)?, blocked_rows(conn)?)))
         .await;
     match loaded {
-        Ok((entries, blocked)) => form_page(viewer, status, "redirects", "Redirects", |csrf| {
-            redirects_body(csrf, &entries, &blocked, refused)
-        }),
+        Ok((entries, blocked)) => {
+            let nav = panel_nav(viewer, "/admin/redirects");
+            form_page(viewer, status, "redirects", "Redirects", |csrf| {
+                html! {
+                    (nav)
+                    (redirects_body(csrf, &entries, &blocked, refused))
+                }
+            })
+        }
         Err(_) => internal_error(),
     }
 }

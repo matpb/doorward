@@ -58,6 +58,26 @@ nav li {
   margin: 0.25rem 0;
 }
 
+nav[data-nav="panel"] ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+}
+
+nav[data-nav="panel"] li {
+  margin: 0;
+}
+
+li,
+p,
+td,
+th {
+  overflow-wrap: anywhere;
+}
+
 a {
   color: var(--accent);
 }

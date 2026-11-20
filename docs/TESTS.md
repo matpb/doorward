@@ -743,6 +743,10 @@ stateless `tools/call` body for that tool, sent with `raw` and explicit headers.
 17. `a_refused_form_keeps_the_navigation`: the owner's `/admin/servers` form with the slug
     `Not A Slug!` answers 400 with an error and still carries the navigation, with the
     Servers link current.
+18. `the_stylesheet_wraps_the_nav_row_and_long_text`: the served stylesheet has a rule for
+    `nav[data-nav="panel"] ul` with `display: flex`, `flex-wrap: wrap`, a `gap` and
+    `list-style: none`, and rules for `li`, `p`, `td` and `th` with
+    `overflow-wrap: anywhere`.
 
 ## s29_state_survives.rs (statement 29)
 

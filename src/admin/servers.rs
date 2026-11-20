@@ -23,6 +23,7 @@ use crate::web::{
     internal_error, not_found, redirect,
 };
 
+use super::panel_nav;
 use super::users::parse_id;
 
 /// The outcome of a create, decided inside its transaction.
@@ -418,9 +419,15 @@ async fn servers_page(
     refusal: Option<Refusal>,
 ) -> Response {
     match state.db.call(|conn| servers::list(conn)).await {
-        Ok(rows) => form_page(viewer, status, "servers", "Servers", |csrf| {
-            servers_body(csrf, &rows, draft, refusal)
-        }),
+        Ok(rows) => {
+            let nav = panel_nav(viewer, "/admin/servers");
+            form_page(viewer, status, "servers", "Servers", |csrf| {
+                html! {
+                    (nav)
+                    (servers_body(csrf, &rows, draft, refusal))
+                }
+            })
+        }
         Err(_) => internal_error(),
     }
 }
@@ -449,8 +456,12 @@ async fn server_page(
                 lockdown: Some(&server.lockdown),
                 ..MainData::default()
             };
+            let nav = panel_nav(viewer, "/admin/servers");
             form_page_with(viewer, status, "server", "Server", &data, |csrf| {
-                server_body(csrf, server, draft, &users, &tools, refusal)
+                html! {
+                    (nav)
+                    (server_body(csrf, server, draft, &users, &tools, refusal))
+                }
             })
         }
         Err(_) => internal_error(),

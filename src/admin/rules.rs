@@ -14,6 +14,7 @@ use crate::web::{
     SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, redirect,
 };
 
+use super::panel_nav;
 use super::users::parse_id;
 
 const EFFECT: &str = "Choose the effect allow or deny.";
@@ -292,6 +293,17 @@ fn rules_in(conn: &Connection, only: Option<i64>) -> rusqlite::Result<Vec<Stored
     rows.collect()
 }
 
+/// Every stored tool with its server's path, by path then name, for the tool name choice.
+fn tools_in(conn: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut statement = conn.prepare(
+        "SELECT servers.slug, tool_catalog.name FROM tool_catalog \
+         JOIN servers ON servers.id = tool_catalog.server_id \
+         ORDER BY servers.slug, tool_catalog.name",
+    )?;
+    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect()
+}
+
 /// Every user as an id and an email, for the subject choice.
 fn users_in(conn: &Connection) -> rusqlite::Result<Vec<(i64, String)>> {
     let mut statement = conn.prepare("SELECT id, email FROM users ORDER BY id")?;
@@ -307,12 +319,25 @@ async fn rules_page(
 ) -> Response {
     let loaded = state
         .db
-        .call(|conn| Ok((rules_in(conn, None)?, users_in(conn)?, servers::list(conn)?)))
+        .call(|conn| {
+            Ok((
+                rules_in(conn, None)?,
+                users_in(conn)?,
+                servers::list(conn)?,
+                tools_in(conn)?,
+            ))
+        })
         .await;
     match loaded {
-        Ok((rules, users, server_list)) => form_page(viewer, status, "rules", "Rules", |csrf| {
-            rules_body(csrf, &rules, &users, &server_list, refused)
-        }),
+        Ok((rules, users, server_list, tools)) => {
+            let nav = panel_nav(viewer, "/admin/rules");
+            form_page(viewer, status, "rules", "Rules", |csrf| {
+                html! {
+                    (nav)
+                    (rules_body(csrf, &rules, &users, &server_list, &tools, refused))
+                }
+            })
+        }
         Err(_) => internal_error(),
     }
 }
@@ -322,6 +347,7 @@ fn rules_body(
     rules: &[Stored],
     users: &[(i64, String)],
     servers: &[ServerRef],
+    tools: &[(String, String)],
     refused: Option<&str>,
 ) -> Markup {
     html! {
@@ -376,7 +402,12 @@ fn rules_body(
                 }
             }
             label for="rule-tool" { "Tool name (for scope one tool)" }
-            input id="rule-tool" name="tool" type="text";
+            input id="rule-tool" name="tool" type="text" list="rule-tools";
+            datalist id="rule-tools" {
+                @for (slug, tool) in tools {
+                    option value=(tool) label=(slug);
+                }
+            }
             button type="submit" { "Add rule" }
         }
     }

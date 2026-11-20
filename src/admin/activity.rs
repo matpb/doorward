@@ -11,7 +11,9 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::app::AppState;
 use crate::db::DbError;
-use crate::web::{internal_error, page};
+use crate::web::{Viewer, internal_error, page};
+
+use super::panel_nav;
 
 const ROW_LIMIT: i64 = 500;
 
@@ -60,6 +62,7 @@ struct Row {
 
 /// The newest 500 rows that match, newest first.
 pub async fn get_activity(
+    viewer: Viewer,
     State(state): State<AppState>,
     Query(query): Query<ActivityQuery>,
 ) -> Response {
@@ -75,7 +78,7 @@ pub async fn get_activity(
         }
     };
     match rows {
-        Ok(rows) => activity_page(&rows),
+        Ok(rows) => activity_page(&viewer, &rows),
         Err(_) => internal_error(),
     }
 }
@@ -120,12 +123,13 @@ where
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Integer, Box::new(err))
 }
 
-fn activity_page(rows: &[Row]) -> Response {
+fn activity_page(viewer: &Viewer, rows: &[Row]) -> Response {
     page(
         StatusCode::OK,
         "activity",
         "Activity",
         html! {
+            (panel_nav(viewer, "/admin/activity"))
             h1 { "Activity" }
             @if rows.is_empty() {
                 p { "No activity matches." }
