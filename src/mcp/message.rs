@@ -4,6 +4,7 @@ use serde_json::Value;
 use time::{Date, Month};
 
 const META_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+const META_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
 /// The first revision of the stateless rules; well-formed dates compare as strings.
 const STATELESS_FROM: &str = "2026-07-28";
 
@@ -97,6 +98,11 @@ pub(crate) fn param<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
 /// The protocol version the body carries in `params._meta`, of any JSON type.
 pub(crate) fn meta_version(value: &Value) -> Option<&Value> {
     param(value, "_meta")?.get(META_VERSION)
+}
+
+/// The client capabilities the body carries in `params._meta`, of any JSON type.
+pub(crate) fn meta_capabilities(value: &Value) -> Option<&Value> {
+    param(value, "_meta")?.get(META_CAPABILITIES)
 }
 
 /// True when the version header is a well-formed date from 2026-07-28 on.

@@ -146,7 +146,7 @@ fn stateless_post(name: &str) -> Request {
     let body = json!({"jsonrpc": "2.0", "id": 41, "method": "tools/call", "params": {
         "name": name,
         "arguments": {},
-        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}},
     }});
     let headers = [
         ("MCP-Protocol-Version", "2026-07-28"),

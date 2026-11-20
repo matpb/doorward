@@ -11,9 +11,11 @@ use crate::app::AppState;
 use crate::mcp::answer;
 use crate::mcp::headers::{HeaderRefusal, check_stateless};
 use crate::mcp::json::{JsonRefusal, parse_strict};
-use crate::mcp::message::{Generation, Message, Refusal, classify, meta_version};
+use crate::mcp::message::{
+    Generation, Message, Refusal, Shape, classify, meta_capabilities, meta_version,
+};
 
-const MISSING_META: &str = "Invalid params: missing _meta or protocol version";
+const MISSING_META: &str = "Invalid params: missing _meta, protocol version or client capabilities";
 
 /// A POST that passed intake: its classified message and its body bytes.
 pub(super) struct Intake {
@@ -80,12 +82,13 @@ pub(super) async fn intake(
             .and_then(Value::as_str)
             .is_none()
     {
-        return Err(answer::error(
-            StatusCode::BAD_REQUEST,
-            message.id.as_ref(),
-            -32602,
-            MISSING_META,
-        ));
+        return Err(missing_meta(&message));
+    }
+    if message.generation == Generation::Stateless
+        && message.shape == Shape::Request
+        && !meta_capabilities(&message.value).is_some_and(Value::is_object)
+    {
+        return Err(missing_meta(&message));
     }
     if let Err(HeaderRefusal(text)) = check_stateless(headers, &message) {
         return Err(answer::error(
@@ -96,6 +99,16 @@ pub(super) async fn intake(
         ));
     }
     Ok(Intake { message, bytes })
+}
+
+/// The -32602 refusal of a stateless body without its protocol version or client capabilities.
+fn missing_meta(message: &Message) -> Response {
+    answer::error(
+        StatusCode::BAD_REQUEST,
+        message.id.as_ref(),
+        -32602,
+        MISSING_META,
+    )
 }
 
 /// The client's Content-Type values are all readable and name no charset but UTF-8.

@@ -372,7 +372,8 @@ both; token for the slug `mcp`.
     `resources/list` are 404 with `-32601` and the request's id; session `/mcp`
     `resources/list` and session `tasks/get` are 200 with `-32601`; a stateless body without
     `_meta` (on a server path) or with `_meta` lacking the version (on `/mcp`) is 400 with
-    `-32602` and `Invalid params: missing _meta or protocol version`; a `_meta` version
+    `-32602` and `Invalid params: missing _meta, protocol version or client capabilities`
+    (a request without `clientCapabilities` on either endpoint); a `_meta` version
     `2025-11-25` under header `2026-07-28` is 400 with `-32020`.
 16. `stateless_subscriptions_are_refused_and_not_advertised`: a stateless `subscriptions/listen`
     on `/demo` and on `/mcp` is 404 with `-32601` and the request's id, and the upstream

@@ -944,7 +944,7 @@ pub(super) fn session_body(id: i64, method: &str, params: Value) -> String {
 
 pub(super) fn stateless_body(id: i64, method: &str, params: Value) -> String {
     let mut params = params;
-    params["_meta"] = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28"});
+    params["_meta"] = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}});
     session_body(id, method, params)
 }
 
@@ -1412,7 +1412,7 @@ async fn a_response_without_a_session_or_under_stateless_rules_is_refused() {
     assert_eq!(reply.status, 400);
     assert_eq!(reply.error_code(), Some(-32600));
     let body = json!({"jsonrpc": "2.0", "id": 5, "result": {}, "params": {
-        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}})
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}}}})
     .to_string();
     let reply = demo
         .gw
@@ -1555,7 +1555,7 @@ async fn a_stateless_body_without_a_protocol_version_is_invalid_params() {
         assert_eq!(reply.error_code(), Some(-32602));
         assert_eq!(
             reply.error_message().as_deref(),
-            Some("Invalid params: missing _meta or protocol version")
+            Some("Invalid params: missing _meta, protocol version or client capabilities")
         );
         assert_eq!(reply.json()["id"], json!(3), "the id is the request's id");
     }
@@ -1578,11 +1578,113 @@ async fn a_stateless_body_without_a_protocol_version_is_invalid_params() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_stateless_request_without_client_capabilities_is_invalid_params() {
+    let demo = demo().await;
+    let before = demo.fake.count();
+    let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "0"}});
+    for method in ["server/discover", "tools/list"] {
+        let body = json!({"jsonrpc": "2.0", "id": 11, "method": method,
+            "params": {"_meta": meta}})
+        .to_string();
+        let reply = demo
+            .gw
+            .post("demo", &demo.token, stateless_headers(method, None), body)
+            .await;
+        assert_eq!(reply.status, 400, "{method} without client capabilities");
+        assert_eq!(reply.error_code(), Some(-32602));
+        assert_eq!(
+            reply.error_message().as_deref(),
+            Some("Invalid params: missing _meta, protocol version or client capabilities")
+        );
+        assert_eq!(reply.json()["id"], json!(11), "the id is the request's");
+    }
+    assert_eq!(demo.fake.count(), before, "the upstream sees no request");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn client_capabilities_that_are_not_an_object_are_invalid_params() {
+    let demo = demo().await;
+    let before = demo.fake.count();
+    for capabilities in [json!("x"), json!(null), json!([]), json!(true)] {
+        let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": capabilities});
+        let body = json!({"jsonrpc": "2.0", "id": 12, "method": "tools/list",
+            "params": {"_meta": meta}})
+        .to_string();
+        let reply = demo
+            .gw
+            .post(
+                "demo",
+                &demo.token,
+                stateless_headers("tools/list", None),
+                body,
+            )
+            .await;
+        assert_eq!(reply.status, 400, "{capabilities} is not an object");
+        assert_eq!(reply.error_code(), Some(-32602));
+        assert_eq!(reply.json()["id"], json!(12));
+    }
+    assert_eq!(demo.fake.count(), before, "the upstream sees no request");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_client_capabilities_without_client_info_are_accepted() {
+    let demo = demo().await;
+    let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {}});
+    for method in ["server/discover", "tools/list"] {
+        let body = json!({"jsonrpc": "2.0", "id": 13, "method": method,
+            "params": {"_meta": meta}})
+        .to_string();
+        let reply = demo
+            .gw
+            .post("demo", &demo.token, stateless_headers(method, None), body)
+            .await;
+        assert_eq!(
+            reply.status, 200,
+            "{method} with empty capabilities is answered"
+        );
+        assert!(
+            reply.json()["result"].is_object(),
+            "{method} answers a result"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stateless_notification_without_client_capabilities_is_still_accepted() {
+    let demo = demo().await;
+    let before = demo.fake.count();
+    let body = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}})
+    .to_string();
+    let reply = demo
+        .gw
+        .post(
+            "demo",
+            &demo.token,
+            stateless_headers("notifications/cancelled", None),
+            body,
+        )
+        .await;
+    assert_eq!(
+        reply.status, 202,
+        "a notification needs no client capabilities"
+    );
+    assert_eq!(
+        demo.fake.count(),
+        before + 1,
+        "the notification is forwarded"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_meta_version_that_differs_from_the_header_stays_32020() {
     let demo = demo().await;
     let before = demo.fake.count();
     let body = json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {
-        "_meta": {"io.modelcontextprotocol/protocolVersion": "2025-11-25"}}})
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2025-11-25", "io.modelcontextprotocol/clientCapabilities": {}}}})
     .to_string();
     let reply = demo
         .gw

@@ -307,7 +307,7 @@ async fn combined_refuses_an_unknown_stateless_revision() {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "tools/list",
-        "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2031-01-01"}},
+        "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2031-01-01", "io.modelcontextprotocol/clientCapabilities": {}}},
     })
     .to_string();
     let reply = client
@@ -543,7 +543,7 @@ async fn stateless_refusals_have_the_specified_shapes() {
     let mcp_tokens = w.token(&bob, "mcp").await;
     let demo = McpClient::stateless(&w.resource("demo"), Some(&demo_tokens.access_token));
     let mcp = McpClient::stateless(&w.resource("mcp"), Some(&mcp_tokens.access_token));
-    let stateless_meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28"});
+    let stateless_meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}});
     let with_meta = |params: Value| {
         let mut params = params;
         params["_meta"] = stateless_meta.clone();
@@ -623,7 +623,7 @@ async fn stateless_refusals_have_the_specified_shapes() {
     assert_eq!(missing_meta.error_code(), Some(-32602));
     assert_eq!(
         missing_meta.error_message().as_deref(),
-        Some("Invalid params: missing _meta or protocol version")
+        Some("Invalid params: missing _meta, protocol version or client capabilities")
     );
     assert_eq!(id_of(&missing_meta), json!(9));
 
@@ -647,7 +647,7 @@ async fn stateless_refusals_have_the_specified_shapes() {
     assert_eq!(missing_version.error_code(), Some(-32602));
     assert_eq!(
         missing_version.error_message().as_deref(),
-        Some("Invalid params: missing _meta or protocol version")
+        Some("Invalid params: missing _meta, protocol version or client capabilities")
     );
     assert_eq!(id_of(&missing_version), json!(10));
 
@@ -656,7 +656,7 @@ async fn stateless_refusals_have_the_specified_shapes() {
             &request(
                 11,
                 "tools/list",
-                json!({"_meta": {"io.modelcontextprotocol/protocolVersion": "2025-11-25"}}),
+                json!({"_meta": {"io.modelcontextprotocol/protocolVersion": "2025-11-25", "io.modelcontextprotocol/clientCapabilities": {}}}),
             ),
             &[
                 ("MCP-Protocol-Version", "2026-07-28"),
@@ -674,6 +674,54 @@ async fn stateless_refusals_have_the_specified_shapes() {
         Some("Header mismatch: MCP-Protocol-Version")
     );
     assert_eq!(id_of(&other_version), json!(11));
+
+    let no_capabilities = demo
+        .raw(
+            &request(
+                12,
+                "tools/list",
+                json!({"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}),
+            ),
+            &[
+                ("MCP-Protocol-Version", "2026-07-28"),
+                ("Mcp-Method", "tools/list"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        no_capabilities.status, 400,
+        "a stateless request without client capabilities is 400 on a server path"
+    );
+    assert_eq!(no_capabilities.error_code(), Some(-32602));
+    assert_eq!(
+        no_capabilities.error_message().as_deref(),
+        Some("Invalid params: missing _meta, protocol version or client capabilities")
+    );
+    assert_eq!(id_of(&no_capabilities), json!(12));
+
+    let no_capabilities = mcp
+        .raw(
+            &request(
+                13,
+                "server/discover",
+                json!({"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}),
+            ),
+            &[
+                ("MCP-Protocol-Version", "2026-07-28"),
+                ("Mcp-Method", "server/discover"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        no_capabilities.status, 400,
+        "a stateless request without client capabilities is 400 on /mcp"
+    );
+    assert_eq!(no_capabilities.error_code(), Some(-32602));
+    assert_eq!(
+        no_capabilities.error_message().as_deref(),
+        Some("Invalid params: missing _meta, protocol version or client capabilities")
+    );
+    assert_eq!(id_of(&no_capabilities), json!(13));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -690,7 +738,7 @@ async fn stateless_subscriptions_are_refused_and_not_advertised() {
     let mcp = McpClient::stateless(&w.resource("mcp"), Some(&mcp_tokens.access_token));
     let body = json!({"jsonrpc": "2.0", "id": 4, "method": "subscriptions/listen", "params": {
         "notifications": {},
-        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}},
     }})
     .to_string();
     let headers = [

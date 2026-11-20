@@ -904,7 +904,7 @@ async fn list_and_ping_follow_the_generation() {
             ("mcp-method", "tools/list"),
         ],
         Some(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list",
-            "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}})),
+            "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}}}})),
     )
     .await;
     assert_eq!(stateless_list.status, 200, "the stateless list must be 200");
@@ -943,7 +943,7 @@ async fn list_and_ping_follow_the_generation() {
             ("mcp-method", "ping"),
         ],
         Some(json!({"jsonrpc": "2.0", "id": 4, "method": "ping",
-            "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}})),
+            "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}}}})),
     )
     .await;
     assert_eq!(stateless_ping.status, 404, "the stateless ping must be 404");
@@ -1198,7 +1198,7 @@ fn stateless_call_body(id: i64, name: &str) -> String {
     json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
         "name": name,
         "arguments": {},
-        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}},
     }})
     .to_string()
 }
@@ -1950,7 +1950,7 @@ async fn an_upstream_json_rpc_error_is_returned_under_the_clients_id_with_an_err
 async fn stateless_methods_the_endpoint_does_not_serve_are_404_and_the_session_form_200() {
     let fx = fixture().await;
     user(&fx.state, 1, vec![fx.server_id]).await;
-    let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28"});
+    let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}});
     let stateless = [
         ("MCP-Protocol-Version", "2026-07-28"),
         ("Mcp-Method", "resources/list"),
@@ -2019,7 +2019,7 @@ async fn a_stateless_list_without_a_protocol_version_is_invalid_params_on_mcp() 
     assert_eq!(
         reply.json,
         Some(json!({"jsonrpc": "2.0", "id": 5, "error": {"code": -32602,
-            "message": "Invalid params: missing _meta or protocol version"}}))
+            "message": "Invalid params: missing _meta, protocol version or client capabilities"}}))
     );
 }
 
@@ -2041,7 +2041,7 @@ async fn a_tool_listed_only_on_the_stateless_form_is_called_through_mcp() {
     .await;
     point(&fx, &up.url).await;
     user(&fx.state, 1, vec![fx.server_id]).await;
-    let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28"});
+    let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}});
     let listed = send(
         &fx.state,
         1,
@@ -2090,4 +2090,93 @@ async fn a_tool_listed_only_on_the_stateless_form_is_called_through_mcp() {
     let seen = calls(&up);
     assert_eq!(seen.len(), 1, "the call reaches the upstream once");
     assert_eq!(seen[0].json()["params"]["name"], "extra");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stateless_requests_need_client_capabilities_on_mcp() {
+    let fx = fixture().await;
+    let up = stateless_up(vec![tool("echo")]).await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let info = json!({"name": "test", "version": "0"});
+    let headers = |method: &'static str| {
+        [
+            ("MCP-Protocol-Version", "2026-07-28"),
+            ("Mcp-Method", method),
+        ]
+    };
+    for (id, method) in [(21, "server/discover"), (22, "tools/list")] {
+        let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": info});
+        let reply = send(
+            &fx.state,
+            1,
+            "POST",
+            &headers(method),
+            Some(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": {"_meta": meta}})),
+        )
+        .await;
+        assert_eq!(
+            reply.status, 400,
+            "{method} without client capabilities on /mcp"
+        );
+        assert_eq!(
+            reply.json,
+            Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602,
+                "message": "Invalid params: missing _meta, protocol version or client capabilities"}}))
+        );
+    }
+    assert_eq!(rpc_count(&up, "tools/list"), 0, "the upstream sees no list");
+    for capabilities in [json!("x"), json!(null)] {
+        let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": capabilities});
+        let reply = send(
+            &fx.state,
+            1,
+            "POST",
+            &headers("server/discover"),
+            Some(json!({"jsonrpc": "2.0", "id": 23, "method": "server/discover", "params": {"_meta": meta}})),
+        )
+        .await;
+        assert_eq!(reply.status, 400, "{capabilities} is not an object");
+        assert_eq!(
+            reply
+                .json
+                .as_ref()
+                .map(|json| json["error"]["code"].clone()),
+            Some(json!(-32602))
+        );
+    }
+    let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {}});
+    let discovered = send(
+        &fx.state,
+        1,
+        "POST",
+        &headers("server/discover"),
+        Some(json!({"jsonrpc": "2.0", "id": 24, "method": "server/discover", "params": {"_meta": meta}})),
+    )
+    .await;
+    assert_eq!(discovered.status, 200, "empty capabilities are accepted");
+    assert!(
+        discovered
+            .json
+            .as_ref()
+            .is_some_and(|json| json["result"].is_object())
+    );
+    let note = send(
+        &fx.state,
+        1,
+        "POST",
+        &headers("notifications/cancelled"),
+        Some(
+            json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        note.status, 202,
+        "a notification needs no client capabilities"
+    );
 }

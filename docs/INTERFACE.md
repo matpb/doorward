@@ -384,8 +384,10 @@ Stateless header rules: `MCP-Protocol-Version` must be present once and equal th
 `params.name`) and for `resources/read` (equal to `params.uri`). A value of the form
 `=?base64?...?=` is decoded before comparing. Any failure: `400`, `-32020`, message
 starting `Header mismatch:`. A stateless body with no `params._meta` object, or with no string
-`io.modelcontextprotocol/protocolVersion` in it, is refused before these rules: `400`, `-32602`,
-message `Invalid params: missing _meta or protocol version`. GET and DELETE under the stateless rules: `405`.
+`io.modelcontextprotocol/protocolVersion` in it, or with no JSON object as
+`io.modelcontextprotocol/clientCapabilities` (a request only, not a notification), is refused before
+these rules: `400`, `-32602`, message `Invalid params: missing _meta, protocol version or client capabilities`.
+`io.modelcontextprotocol/clientInfo` is not required. GET and DELETE under the stateless rules: `405`.
 
 Relayed `tools/list` results keep the upstream's fields, minus denied tools and entries
 without a text name, on every page, and under the
@@ -486,7 +488,7 @@ Answers that both endpoints share:
 | JSON array, `tools/call` without an `id`, a client-sent response under the stateless rules or without a session of the caller | `400`, JSON-RPC `-32600` |
 | Method outside the allowlist, `tasks/*`, `params.task` present | `404` under the stateless rules, else `200`; JSON-RPC `-32601`, upstream not contacted |
 | `tools/call` for a tool that is not in the server's list or is denied | `200`, JSON-RPC `-32602` with message `Unknown tool: {name}`, upstream not contacted |
-| Stateless body with no `params._meta` or no string protocol version in it | `400`, JSON-RPC `-32602`, message `Invalid params: missing _meta or protocol version` |
+| Stateless body with no `params._meta`, no string protocol version, or (request only) no object client capabilities in it | `400`, JSON-RPC `-32602`, message `Invalid params: missing _meta, protocol version or client capabilities` |
 | Header and body disagree (2026-07-28), or a required header is missing or repeated | `400`, JSON-RPC `-32020` |
 | Session id not issued to this user, family and server | `404`, upstream not contacted |
 | Upstream unreachable, timed out, answered 401 or 403, redirected, or sent an unexpected content type | `502`, JSON-RPC `-32000` with message `Upstream {slug} is unavailable` |
