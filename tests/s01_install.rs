@@ -2,8 +2,20 @@ mod common;
 
 use std::os::unix::fs::PermissionsExt;
 
+use std::path::Path;
+
 use common::TestGateway;
+use common::binary::{Run, free_port, http, lines_containing};
 use common::world::{OWNER_EMAIL, PASSWORD};
+
+/// Renames `from` to `to` in the database, which makes reads of the old name fail.
+fn rename_table(database: &Path, from: &str, to: &str) {
+    let conn = rusqlite::Connection::open(database).expect("open the database");
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .expect("set the busy timeout");
+    conn.execute_batch(&format!("ALTER TABLE {from} RENAME TO {to};"))
+        .expect("rename the table");
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn s01_health_answers() {
@@ -84,6 +96,53 @@ async fn the_root_address_leads_to_setup_then_to_sign_in() {
         unknown.status, 401,
         "GET /nothing-here must keep its answer of 401, the answer of a server path"
     );
+}
+
+#[test]
+fn health_says_unavailable_when_the_database_fails() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let port = free_port();
+    let url = format!("http://127.0.0.1:{port}");
+    let listen = format!("127.0.0.1:{port}");
+    let database = dir.path().join("doorward.db");
+    let database_text = database.display().to_string();
+    let env = [
+        ("DOORWARD_PUBLIC_URL", url.as_str()),
+        ("DOORWARD_LISTEN", listen.as_str()),
+        ("DOORWARD_DATABASE", database_text.as_str()),
+    ];
+    let mut gateway = Run::spawn(&[], &env);
+    gateway.wait_until_healthy(port);
+
+    let ok = http(port, "GET", "/healthz", &[], &[]);
+    assert_eq!(
+        ok.status, 200,
+        "healthz must answer 200 on a working database"
+    );
+    assert_eq!(ok.body, r#"{"status":"ok"}"#);
+
+    rename_table(&database, "settings", "settings_hidden");
+    let failed = http(port, "GET", "/healthz", &[], &[]);
+    assert_eq!(
+        failed.status, 503,
+        "healthz must answer 503 while the database cannot be read"
+    );
+    assert_eq!(failed.body, r#"{"status":"unavailable"}"#);
+    let stderr = gateway.stderr();
+    let lines = lines_containing(&stderr, "doorward: health check failed: ");
+    assert_eq!(
+        lines.len(),
+        1,
+        "a failed health check must write one line; stderr:\n{stderr}"
+    );
+
+    rename_table(&database, "settings_hidden", "settings");
+    let repaired = http(port, "GET", "/healthz", &[], &[]);
+    assert_eq!(
+        repaired.status, 200,
+        "healthz must answer 200 again once the database works"
+    );
+    assert_eq!(repaired.body, r#"{"status":"ok"}"#);
 }
 
 #[tokio::test(flavor = "multi_thread")]

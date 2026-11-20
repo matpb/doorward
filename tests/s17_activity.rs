@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use common::admin::{self, ServerSpec};
 use common::client::Page;
-use common::mail::link_with_prefix;
+use common::mail::{Fail, link_with_prefix};
 use common::upstream::{FakeUpstream, Mode, UpstreamOptions};
 use common::world::{OWNER_EMAIL, PASSWORD, SECRET_HEADER, World, secret_for};
 use serde_json::json;
@@ -312,6 +312,143 @@ async fn a_combined_call_is_recorded_under_the_real_server_and_tool() {
         rows.iter()
             .map(|row| (row.kind.clone(), row.server.clone(), row.tool.clone()))
             .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owner_creation_and_password_change_have_their_kinds() {
+    let w = World::start().await;
+    let rows = admin::activity(&w.owner, None, None).await;
+    let created: Vec<&admin::ActivityRow> = rows
+        .iter()
+        .filter(|row| row.kind == "owner_created")
+        .collect();
+    assert_eq!(
+        created.len(),
+        1,
+        "setup must write one owner_created row, kinds were {:?}",
+        kinds(&rows)
+    );
+    assert_eq!(
+        created[0].user, OWNER_EMAIL,
+        "the owner_created row must name the new owner"
+    );
+
+    let bob = w.user(BOB).await;
+    let page = bob.change_password(PASSWORD, NEW_PASSWORD).await;
+    assert_eq!(page.status, 303, "a signed-in change must answer 303");
+    let rows = admin::activity(&w.owner, None, None).await;
+    let changes = rows
+        .iter()
+        .filter(|row| row.kind == "password_change" && row.user == BOB)
+        .count();
+    assert_eq!(
+        changes,
+        1,
+        "a signed-in change must write one password_change row, kinds were {:?}",
+        kinds(&rows)
+    );
+    assert!(
+        rows.iter()
+            .all(|row| !(row.kind == "reset" && row.user == BOB)),
+        "a signed-in change must not be recorded as a reset"
+    );
+
+    w.mail.clear();
+    let anonymous = w.client();
+    let page = anonymous
+        .submit("/forgot", "/forgot", &[("email", BOB)])
+        .await;
+    assert_eq!(page.status, 200, "a reset request must answer 200");
+    let mail = w
+        .mail
+        .wait_to(BOB, Duration::from_secs(5))
+        .await
+        .expect("the reset mail must arrive within 5 seconds");
+    let prefix = format!("{}/reset/", w.base());
+    let link = link_with_prefix(&mail.text, &prefix)
+        .unwrap_or_else(|| panic!("the reset mail must hold a link starting with {prefix}"));
+    let page = anonymous
+        .reset_password(&link, "a third long password")
+        .await;
+    assert_eq!(page.status, 303, "the reset by link must set the password");
+    let rows = admin::activity(&w.owner, None, None).await;
+    let resets = rows
+        .iter()
+        .filter(|row| row.kind == "reset" && row.user == BOB)
+        .count();
+    assert_eq!(
+        resets,
+        1,
+        "a reset by link must still be recorded as reset, kinds were {:?}",
+        kinds(&rows)
+    );
+    let changes = rows
+        .iter()
+        .filter(|row| row.kind == "password_change")
+        .count();
+    assert_eq!(changes, 1, "the reset must not add a password_change row");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_mail_says_which_mail() {
+    let w = World::start().await;
+    w.mail.fail_next(Fail::SmtpReject);
+    let page = admin::invite(&w.owner, BOB, "user").await;
+    assert_eq!(
+        page.kind().as_deref(),
+        Some("invitation-created"),
+        "a failed invitation mail must show the invitation-created page"
+    );
+    let rows = admin::activity_with_details(&w.owner, None, None).await;
+    let failed: Vec<&(admin::ActivityRow, String)> = rows
+        .iter()
+        .filter(|(row, _)| row.kind == "mail_failed")
+        .collect();
+    assert_eq!(failed.len(), 1, "one mail_failed row must be written");
+    let detail = &failed[0].1;
+    let reason = detail.strip_prefix("invitation: ").unwrap_or_else(|| {
+        panic!("the mail_failed detail must start with its kind, invitation: {detail:?}")
+    });
+    assert!(
+        !reason.is_empty(),
+        "the error text must follow the kind in the detail"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_reset_mail_says_reset() {
+    let w = World::start().await;
+    w.user(BOB).await;
+    w.mail.fail_next(Fail::SmtpReject);
+    let anonymous = w.client();
+    let page = anonymous
+        .submit("/forgot", "/forgot", &[("email", BOB)])
+        .await;
+    assert_eq!(
+        page.status, 200,
+        "a reset request must answer 200 either way"
+    );
+    let mut detail = None;
+    for _ in 0..100 {
+        let rows = admin::activity_with_details(&w.owner, None, None).await;
+        detail = rows
+            .into_iter()
+            .find(|(row, _)| row.kind == "mail_failed")
+            .map(|(_, detail)| detail);
+        if detail.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let detail = detail.expect("the failed reset mail must be logged within 5 seconds");
+    assert!(
+        detail.starts_with("reset: "),
+        "the mail_failed detail must start with its kind, reset: {detail:?}"
+    );
+    assert!(
+        detail.len() > "reset: ".len(),
+        "the error text must follow the kind in the detail"
     );
 }
 

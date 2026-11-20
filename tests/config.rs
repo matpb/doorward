@@ -260,6 +260,52 @@ fn unknown_section_key_is_parse_error() {
 }
 
 #[test]
+fn a_proxy_range_of_every_address_is_refused() {
+    for entry in ["0.0.0.0/0", "::/0"] {
+        let err = load_text(&format!("{BASE}trusted_proxies = [\"{entry}\"]\n"))
+            .expect_err("a range of every address is refused");
+        refused_with(
+            err,
+            &format!("trusted_proxies: {entry} would trust every address"),
+        );
+    }
+    let vars = [
+        ("DOORWARD_PUBLIC_URL", "https://gateway.example.com"),
+        ("DOORWARD_DATABASE", "doorward.db"),
+        ("DOORWARD_TRUSTED_PROXIES", "0.0.0.0/0"),
+    ]
+    .map(|(name, value)| (name.to_owned(), value.to_owned()));
+    let err = Config::from_sources(None, &vars)
+        .expect_err("the same range is refused from the environment");
+    refused_with(err, "trusted_proxies: 0.0.0.0/0 would trust every address");
+    // Built from numbers, as docs/TESTS.md asks for addresses outside loopback.
+    let private = format!("{}.0.0.0/8", 10);
+    for entry in [private.as_str(), "127.0.0.1"] {
+        let config = load_text(&format!("{BASE}trusted_proxies = [\"{entry}\"]\n"))
+            .expect("a range or an address with a prefix from 1 up is accepted");
+        assert_eq!(
+            config.trusted_proxies,
+            vec![entry.parse::<Range>().expect("a range")],
+            "{entry} must be kept as the trusted proxy"
+        );
+    }
+}
+
+#[test]
+fn a_day_is_the_longest_upstream_timeout() {
+    let config = load_text(&format!(
+        "{BASE}[limits]\nupstream_timeout_seconds = 86400\n"
+    ))
+    .expect("a day is accepted");
+    assert_eq!(config.limits.upstream_timeout_seconds, 86_400);
+    let err = load_text(&format!(
+        "{BASE}[limits]\nupstream_timeout_seconds = 86401\n"
+    ))
+    .expect_err("a second over a day is refused");
+    refused_with(err, "limits.upstream_timeout_seconds must be at most 86400");
+}
+
+#[test]
 fn mail_ca_file_is_read() {
     let config =
         load_text(&format!("{BASE}[mail]\nsmtp_ca_file = \"roots.pem\"\n")).expect("config loads");

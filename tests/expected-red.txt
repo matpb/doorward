@@ -1,1 +1,8 @@
 # Test files written before their code. Each must compile and fail; remove a name when its code lands.
+cli_unlock
+config
+s01_install
+s03_invitations
+s16_tool_list
+s17_activity
+s29_restart

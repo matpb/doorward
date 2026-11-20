@@ -260,6 +260,45 @@ async fn a_failed_refresh_keeps_the_old_list() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_refresh_that_cannot_read_the_secret_is_recorded_as_failed() {
+    let w = World::start().await;
+    let (_up, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    let server_id: i64 = id.parse().expect("a numeric server id");
+    let tools_refreshed = |rows: &[(admin::ActivityRow, String)]| {
+        rows.iter()
+            .filter(|(row, detail)| row.kind == "admin_change" && detail == "tools refreshed")
+            .count()
+    };
+    let before = tools_refreshed(&admin::activity_with_details(&w.owner, None, None).await);
+
+    let conn = rusqlite::Connection::open(w.gw.db_path()).expect("open the database");
+    conn.execute(
+        "UPDATE servers SET secret_header_value = 'not a sealed value' WHERE id = ?1",
+        [server_id],
+    )
+    .expect("replace the stored secret");
+    let page = admin::refresh_tools(&w.owner, &id).await;
+    assert_eq!(page.status, 303, "refreshing the tools must answer 303");
+
+    let rows = admin::activity_with_details(&w.owner, None, None).await;
+    let failed = rows
+        .iter()
+        .filter(|(row, detail)| {
+            row.kind == "admin_change" && row.server == "demo" && detail == "tool refresh failed"
+        })
+        .count();
+    assert_eq!(
+        failed, 1,
+        "a refresh whose secret cannot be read must be recorded as tool refresh failed"
+    );
+    assert_eq!(
+        tools_refreshed(&rows),
+        before,
+        "a refresh whose secret cannot be read must not be recorded as tools refreshed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_new_tool_is_usable_without_a_manual_refresh() {
     let w = World::start().await;
     let bob = w.user(BOB).await;

@@ -29,11 +29,54 @@ exists. `docs/INTERFACE.md` gives the routes, fields, statuses and attributes us
   test source (`Ipv4Addr::new(10, 0, 0, 1)`), never written as dotted text.
 - Assertions carry a message that says what was expected.
 
+## cli_unlock.rs (review findings O1 and O7)
+
+Real binary, with a config file in a temp dir and the database beside it. Two tests predate
+the findings: `unlock_removes_the_block_and_prints_the_line` and
+`unlock_succeeds_when_no_block_exists` create no account, which the refusal of O1 changes.
+
+1. `unlock_removes_the_block_and_prints_the_line`: five failures for `bob@example.com`:
+   exit 0, `unlocked bob@example.com` on standard output, no failures left.
+2. `unlock_succeeds_when_no_block_exists`: no account and no block: exit 0 and the
+   unlocked line.
+3. `unlock_does_not_create_a_missing_database`: no database file: exit 1, standard error
+   `doorward: no database at {path}`, the file is not created, and the directory holds
+   only the config file.
+4. `unlock_refuses_an_email_no_account_has`: exit 1, standard error
+   `doorward: no account has that email address`, nothing on standard output, the failures
+   stay, and no activity row is written.
+5. `unlock_writes_an_activity_row`: an account with a block: exit 0; one `unlock` row
+   holds the account's id and email and the detail `from the command line`.
+
+## config.rs (review findings O2 and O5)
+
+The other tests of this file check other settings and are not listed here.
+
+1. `a_proxy_range_of_every_address_is_refused`: `0.0.0.0/0` and `::/0` in the file, and
+   `0.0.0.0/0` in `DOORWARD_TRUSTED_PROXIES`, are refused with
+   `trusted_proxies: {entry} would trust every address`; a range with prefix 8 in the 10
+   network and `127.0.0.1` are kept.
+2. `a_day_is_the_longest_upstream_timeout`: `upstream_timeout_seconds` 86400 is accepted;
+   86401 is refused with `limits.upstream_timeout_seconds must be at most 86400`.
+
+## In-crate tests (review finding O9)
+
+1. `crypto::tests::the_dummy_password_never_signs_in_an_unknown_account`: `verify` with the
+   dummy password and no hash is false. With `&& known` removed from `verify` this test
+   fails (checked on a scratch copy).
+2. `accounts::tests_races::an_unknown_account_reaches_the_equal_cost_check`: an attempt for
+   an unknown address is counted with no user, hash or epoch, so sign-in continues to the
+   equal-cost check. It does not count hashes; that needs a counter the code does not have.
+
 ## s01_install.rs (statement 1)
 
 1. `the_root_address_leads_to_setup_then_to_sign_in`: on a fresh gateway `GET /` is 303
    `/setup`; after the owner is created, `GET /` is 303 `/login`; `GET /nothing-here` is
    still 401, the answer of a server path.
+2. `health_says_unavailable_when_the_database_fails`: a spawned gateway answers `200` with
+   `{"status":"ok"}` on `/healthz`; with the table `settings` renamed away it answers `503`
+   with `{"status":"unavailable"}` and one line starts `doorward: health check failed: `;
+   with the name restored it answers `200` again.
 
 ## s02_first_owner.rs (statement 2)
 
@@ -92,6 +135,15 @@ Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
 13. `an_admin_cannot_invite_an_admin`: alice is an admin. Her invitation for carol with the
     role `admin` is 403 forbidden and sends no mail; with the role `user` it is 303 and the
     mail arrives. The owner's invitation for dave with the role `admin` is 303.
+
+14. `a_removed_admin_takes_their_pending_invitations_along`: carol, an admin, invites alice
+    and dave; alice accepts. The owner then disables carol, changes her role to user, or
+    deletes her, one run each. Dave's unused link is 404 `link-invalid` on GET and 404 on
+    POST, his invitation is gone from the invitations page, and alice still signs in (303).
+15. `the_invitations_page_says_who_invited`: bob's row holds `[data-invited-by]` reading
+    `invited by owner@example.com` and dave's reads `invited by carol@example.com`; with the
+    inviter of bob's invitation cleared in the database, his row reads
+    `invited by a removed account`.
 
 ## s04_reset.rs (statement 4)
 
@@ -506,6 +558,10 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
 10. `the_rule_form_lists_every_servers_tools_by_slug_then_name`: servers `demo` (`alpha`,
     `beta`) and `aaa` (`zeta`): the option values are `zeta`, `alpha`, `beta`, labelled
     `aaa`, `demo`, `demo`.
+11. `a_refresh_that_cannot_read_the_secret_is_recorded_as_failed`: the stored secret of
+    `demo` is replaced by text that cannot be opened; the refresh answers 303, one
+    `admin_change` row has the detail `tool refresh failed`, and no `tools refreshed` row
+    is added.
 12. `a_refused_call_says_why`: a deny rule on `delete_db` for everyone. The call to it
     has detail `rule {id}` of that rule; a call to `nope` has `not in the tool list`.
 13. `a_tool_error_is_marked`: the upstream answers `isError` true. The client gets that
@@ -541,6 +597,14 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
 11. `the_user_and_server_pages_link_to_their_activity`: bob's page has one
     `a[data-link="activity"]` reading Activity with href `/admin/activity?user={id}`; the
     server page has one with href `/admin/activity?server={id}`.
+14. `owner_creation_and_password_change_have_their_kinds`: setup writes one `owner_created`
+    row naming the owner; bob's signed-in password change writes one `password_change` row;
+    a reset by link then writes a `reset` row and no second `password_change`.
+15. `a_failed_mail_says_which_mail`: the invitation mail fails; the `mail_failed` row's
+    detail starts with `invitation: ` and holds the error text after it.
+16. `a_failed_reset_mail_says_reset`: bob exists and the reset mail fails; the `mail_failed`
+    row, polled for 5 seconds because the mail is sent in the background, starts with
+    `reset: `.
 
 ## s18_unauthorized.rs (statement 18)
 
@@ -803,6 +867,21 @@ stateless `tools/call` body for that tool, sent with `raw` and explicit headers.
    server and the rule are still listed.
 2. `a_live_mcp_session_survives_a_restart`: bob's session client, initialised before the
    restart, still lists tools after it.
+
+## s29_restart.rs (statement 29)
+
+1. `s29_restart_keeps_data`: a settings row written before `gateway.restart()` is still there
+   after it, and `/healthz` answers 200.
+2. `s29_migrations_apply_once`: the migration rows are versions 1 upward at the first start
+   and are identical after a restart.
+3. `a_start_up_failure_names_the_file_and_the_cause`: the real binary, four starts, each
+   exit 2 with one line on standard error. A config file that does not exist:
+   `doorward: cannot read the config file {path}: No such file or directory (os error 2)`.
+   A database in a directory that does not exist: `doorward: cannot open the database
+   {path}: ...` with the OS error, and the directory is not created. A key file in a
+   directory that does not exist: `doorward: cannot create the key file {path}: No such
+   file or directory (os error 2)`, and no key file is made. A key file that is a directory:
+   `doorward: cannot read the key file {path}: Is a directory (os error 21)`.
 
 ## s32_rules.rs (statement 32)
 

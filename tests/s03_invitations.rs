@@ -398,3 +398,109 @@ async fn an_admin_cannot_invite_an_admin() {
         "the owner must be able to invite with the role admin"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removed_admin_takes_their_pending_invitations_along() {
+    for change in ["disable", "role changed to user", "deleted"] {
+        removed_admin_takes_invitations_along(change).await;
+    }
+}
+
+/// Carol, an admin, invites alice and dave; alice accepts and dave's link stays unused. The owner
+/// then makes the change named by `change`: dave's link must stop working, alice must still sign in.
+async fn removed_admin_takes_invitations_along(change: &str) {
+    let w = World::start().await;
+    let carol = w.admin(CAROL).await;
+    let page = admin::invite(&carol, ALICE, "user").await;
+    assert_eq!(page.status, 303, "{change}: carol must invite alice");
+    let alice_link = invitation_link(&w, &invitation_mail(&w, ALICE).await);
+    let page = admin::invite(&carol, DAVE, "user").await;
+    assert_eq!(page.status, 303, "{change}: carol must invite dave");
+    let dave_link = invitation_link(&w, &invitation_mail(&w, DAVE).await);
+    let page = w.client().accept_invite(&alice_link, PASSWORD).await;
+    assert_eq!(page.status, 303, "{change}: alice's link must accept her");
+
+    let carol_id = w.user_id(CAROL).await;
+    let page = match change {
+        "disable" => admin::user_action(&w.owner, &carol_id, "disable").await,
+        "role changed to user" => admin::set_role(&w.owner, &carol_id, "user").await,
+        "deleted" => admin::user_action(&w.owner, &carol_id, "delete").await,
+        other => panic!("no such change in this test: {other}"),
+    };
+    assert_eq!(
+        page.status, 303,
+        "{change}: the owner's change must answer 303"
+    );
+
+    let stranger = w.client();
+    let page = stranger.get(&dave_link).await;
+    assert_eq!(
+        page.status, 404,
+        "{change}: dave's unused link must be refused on GET"
+    );
+    assert_eq!(
+        page.kind().as_deref(),
+        Some("link-invalid"),
+        "{change}: dave's unused link must show link-invalid"
+    );
+    let second = w.client();
+    let csrf = login_csrf(&second).await;
+    let page = second
+        .post(
+            &dave_link,
+            &[("csrf", csrf.as_str()), ("password", PASSWORD)],
+        )
+        .await;
+    assert_eq!(
+        page.status, 404,
+        "{change}: dave's unused link must not accept a password"
+    );
+    assert_eq!(
+        admin::invitation_id(&w.owner, DAVE).await,
+        None,
+        "{change}: dave's invitation must be gone from the invitations page"
+    );
+    let page = w.client().login(ALICE, PASSWORD).await;
+    assert_eq!(
+        page.status, 303,
+        "{change}: alice, who accepted, must still sign in"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_invitations_page_says_who_invited() {
+    let w = World::start().await;
+    let page = admin::invite(&w.owner, BOB, "user").await;
+    assert_eq!(page.status, 303, "the owner must invite bob");
+    let carol = w.admin(CAROL).await;
+    let page = admin::invite(&carol, DAVE, "user").await;
+    assert_eq!(page.status, 303, "carol, an admin, must invite dave");
+
+    let page = w.owner.get("/admin/invitations").await;
+    assert_eq!(
+        page.text(&format!(r#"[data-email="{BOB}"] [data-invited-by]"#))
+            .as_deref(),
+        Some(format!("invited by {OWNER_EMAIL}").as_str()),
+        "bob's invitation must say the owner made it"
+    );
+    assert_eq!(
+        page.text(&format!(r#"[data-email="{DAVE}"] [data-invited-by]"#))
+            .as_deref(),
+        Some(format!("invited by {CAROL}").as_str()),
+        "dave's invitation must say carol made it"
+    );
+
+    let conn = rusqlite::Connection::open(w.gw.db_path()).expect("open the database");
+    conn.execute(
+        "UPDATE invitations SET invited_by = NULL WHERE email = ?1",
+        [BOB],
+    )
+    .expect("clear the inviter of bob's invitation");
+    let page = w.owner.get("/admin/invitations").await;
+    assert_eq!(
+        page.text(&format!(r#"[data-email="{BOB}"] [data-invited-by]"#))
+            .as_deref(),
+        Some("invited by a removed account"),
+        "an invitation with no inviter must say so"
+    );
+}

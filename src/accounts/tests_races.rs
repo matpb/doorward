@@ -58,6 +58,34 @@ async fn reserve_counted(db: &Db) -> (String, i64) {
     }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_account_reaches_the_equal_cost_check() {
+    let dir = tempfile::tempdir().expect("dir");
+    let db = Db::open(&dir.path().join("doorward.db")).expect("open");
+    let input = Reserve {
+        account: token_hash("nobody@example.com"),
+        address: "127.0.0.1".to_owned(),
+        email: "nobody@example.com".to_owned(),
+        now: NOW,
+        block_seconds: BLOCK_SECONDS,
+        account_failures: 5,
+        account_ceiling: 50,
+        address_failures: 5,
+    };
+    let attempt = throttle::reserve(&db, input).await.expect("reserve");
+    assert!(
+        matches!(
+            attempt,
+            Attempt::Counted {
+                user_id: None,
+                phc: None,
+                epoch: None
+            }
+        ),
+        "an unknown account must be counted and sent to the equal-cost check, not refused early"
+    );
+}
+
 fn success_for(user_id: i64, phc: String, epoch: i64) -> Success {
     Success {
         account: token_hash(EMAIL),

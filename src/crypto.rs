@@ -811,6 +811,16 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_dummy_password_never_signs_in_an_unknown_account() {
+        let hasher = PasswordHasher::new().await.expect("hasher");
+        let slot = hasher.try_slot().expect("slot");
+        assert!(
+            !hasher.verify(slot, DUMMY_PASSWORD.to_owned(), None).await,
+            "the dummy password against no hash must be refused"
+        );
+    }
+
     fn key_file_config(dir: &Path, name: &str) -> Config {
         config_in(dir.join("doorward.db"), Some(dir.join(name)))
     }
