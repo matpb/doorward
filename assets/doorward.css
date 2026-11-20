@@ -71,6 +71,11 @@ nav[data-nav="panel"] li {
   margin: 0;
 }
 
+nav[data-nav="panel"] a[aria-current="page"] {
+  font-weight: 700;
+  text-decoration: none;
+}
+
 li,
 p,
 td,
