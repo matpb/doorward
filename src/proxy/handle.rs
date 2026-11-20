@@ -23,6 +23,7 @@ use crate::mcp::message::{
     Decision, Generation, Message, Refusal, Shape, Switches, classify, decide, stateless_version,
 };
 use crate::oauth::guard::Caller;
+use crate::policy;
 use crate::servers;
 
 const MCP_PROTOCOL_VERSION: HeaderName = HeaderName::from_static("mcp-protocol-version");
@@ -166,7 +167,11 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
         Err(refusal) => return refusal,
     };
     if let Some(name) = call.as_deref() {
-        match listed(ctx, &target, name).await {
+        let permitted = match listed(ctx, &target, name).await {
+            Ok(true) => allowed(ctx, name).await,
+            other => other,
+        };
+        match permitted {
             Ok(true) => {}
             Ok(false) => {
                 record(ctx, name, "deny", "refused").await;
@@ -428,6 +433,49 @@ async fn listed(ctx: &Ctx<'_>, target: &Target, name: &str) -> Result<bool, Resp
     })
 }
 
+/// The stored rules that can match the caller on this server. A rule that cannot be read is an internal error.
+async fn rules_of(ctx: &Ctx<'_>) -> Result<Vec<policy::Rule>, Response> {
+    let user = ctx.caller.user_id;
+    let server = ctx.server_id;
+    match ctx
+        .state
+        .db
+        .call(move |conn| policy::load(conn, user, server))
+        .await
+    {
+        Ok(rules) => Ok(rules),
+        Err(err) => {
+            eprintln!("doorward: the tool rules cannot be read: {err}");
+            Err(bare(StatusCode::INTERNAL_SERVER_ERROR))
+        }
+    }
+}
+
+/// True when the caller's rules allow the tool `name` on this server.
+async fn allowed(ctx: &Ctx<'_>, name: &str) -> Result<bool, Response> {
+    let rules = rules_of(ctx).await?;
+    Ok(policy::decide(&rules, ctx.caller.user_id, ctx.server_id, name).allowed)
+}
+
+/// Removes from a tools/list result every tool the caller may not use, and every entry without a name; true when one was removed.
+async fn hide_refused(ctx: &Ctx<'_>, value: &mut Value) -> Result<bool, Response> {
+    let rules = rules_of(ctx).await?;
+    let (user, server) = (ctx.caller.user_id, ctx.server_id);
+    let Some(tools) = value
+        .pointer_mut("/result/tools")
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(false);
+    };
+    let before = tools.len();
+    tools.retain(|tool| {
+        tool.get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| policy::decide(&rules, user, server, name).allowed)
+    });
+    Ok(tools.len() != before)
+}
+
 /// The headers sent upstream: built from nothing, with the client's allowed ones copied.
 fn outgoing_headers(
     client: &HeaderMap,
@@ -525,6 +573,10 @@ async fn relay_post(
             Ok(Some(tools)) => replace_catalog(ctx, tools).await,
             Ok(None) => {}
             Err(Fault) => return fault(ctx, call).await,
+        }
+        match hide_refused(ctx, &mut value).await {
+            Ok(removed) => changed |= removed,
+            Err(refusal) => return refusal,
         }
     }
     let session =

@@ -3040,3 +3040,480 @@ async fn a_blocked_client_name_is_shown_as_a_claim_and_escaped() {
         "the markup of the name is escaped"
     );
 }
+
+/// Stores the tool list the gateway would keep for the server, as a successful refresh does.
+fn seed_catalog(dir: &Path, server: i64, names: &[&str]) {
+    let tools: Vec<serde_json::Value> = names.iter().map(|name| json!({"name": name})).collect();
+    let mut conn = open_db(dir);
+    crate::proxy::catalog::replace(&mut conn, server, &tools, AT).expect("catalog");
+}
+
+/// Posts the add-rule form as the owner's browser and answers the page.
+async fn add_rule(owner: &mut Browser, fields: &[(&str, &str)]) -> Answer {
+    owner.submit("/admin/rules", "/admin/rules", fields).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rule_is_listed_with_its_subject_effect_scope_and_target() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let server = server_id_of(dir.path(), "demo").to_string();
+    seed_catalog(dir.path(), server.parse().expect("id"), &["alpha", "beta"]);
+    let bob = user_id_of(dir.path(), BOB).to_string();
+    let tool_rule = add_rule(
+        &mut owner,
+        &[
+            ("subject", &bob),
+            ("effect", "deny"),
+            ("scope", "tool"),
+            ("server_id", &server),
+            ("tool", "alpha"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        tool_rule.status, 303,
+        "a tool rule on a listed tool is saved"
+    );
+    let everyone = add_rule(
+        &mut owner,
+        &[
+            ("subject", "everyone"),
+            ("effect", "allow"),
+            ("scope", "all"),
+        ],
+    )
+    .await;
+    assert_eq!(everyone.status, 303, "an all-tools rule is saved");
+
+    let page = owner.get("/admin/rules").await;
+    assert_eq!(page.kind().as_deref(), Some("rules"));
+    let rows = elements(&page.body, "li[data-rule-id]");
+    assert_eq!(rows.len(), 2, "both rules are listed");
+    let tool = elements(&page.body, r#"li[data-scope="tool"]"#);
+    assert_eq!(tool.len(), 1);
+    assert_eq!(tool[0]["data-subject"], BOB);
+    assert_eq!(tool[0]["data-effect"], "deny");
+    assert_eq!(tool[0]["data-server"], "demo");
+    assert_eq!(tool[0]["data-tool"], "alpha");
+    assert_eq!(tool[0]["data-stale"], "no");
+    let all = elements(&page.body, r#"li[data-scope="all"]"#);
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0]["data-subject"], "everyone");
+    assert_eq!(all[0]["data-effect"], "allow");
+    assert_eq!(all[0]["data-server"], "");
+    assert_eq!(all[0]["data-tool"], "");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_rule_for_a_tool_that_left_the_list_is_flagged_stale() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let server = server_id_of(dir.path(), "demo");
+    seed_catalog(dir.path(), server, &["alpha"]);
+    let server_text = server.to_string();
+    let tool = add_rule(
+        &mut owner,
+        &[
+            ("subject", "everyone"),
+            ("effect", "deny"),
+            ("scope", "tool"),
+            ("server_id", &server_text),
+            ("tool", "alpha"),
+        ],
+    )
+    .await;
+    assert_eq!(tool.status, 303);
+    let whole = add_rule(
+        &mut owner,
+        &[
+            ("subject", "everyone"),
+            ("effect", "deny"),
+            ("scope", "server"),
+            ("server_id", &server_text),
+        ],
+    )
+    .await;
+    assert_eq!(whole.status, 303);
+    seed_catalog(dir.path(), server, &["beta"]);
+
+    let page = owner.get("/admin/rules").await;
+    let stale = elements(&page.body, r#"li[data-scope="tool"]"#);
+    assert_eq!(stale[0]["data-stale"], "yes", "the tool left the list");
+    let whole = elements(&page.body, r#"li[data-scope="server"]"#);
+    assert_eq!(
+        whole[0]["data-stale"], "no",
+        "a server rule never goes stale"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_refused_rule_answers_400_with_its_message_and_stores_nothing() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), PLAIN, "user").await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let server = server_id_of(dir.path(), "demo").to_string();
+    seed_catalog(dir.path(), server.parse().expect("id"), &["alpha"]);
+    let plain = user_id_of(dir.path(), PLAIN).to_string();
+    let valid = add_rule(
+        &mut owner,
+        &[
+            ("subject", "everyone"),
+            ("effect", "deny"),
+            ("scope", "tool"),
+            ("server_id", &server),
+            ("tool", "alpha"),
+        ],
+    )
+    .await;
+    assert_eq!(valid.status, 303, "the first rule is saved");
+    let refused: [(&[(&str, &str)], &str); 9] = [
+        (
+            &[
+                ("subject", "everyone"),
+                ("effect", "maybe"),
+                ("scope", "all"),
+            ],
+            "Choose the effect allow or deny.",
+        ),
+        (
+            &[
+                ("subject", "everyone"),
+                ("effect", "deny"),
+                ("scope", "some"),
+            ],
+            "Choose the scope all tools, one server or one tool.",
+        ),
+        (
+            &[
+                ("subject", "no-such-user"),
+                ("effect", "deny"),
+                ("scope", "all"),
+            ],
+            "Choose everyone or a user that exists.",
+        ),
+        (
+            &[("subject", "9999"), ("effect", "deny"), ("scope", "all")],
+            "Choose everyone or a user that exists.",
+        ),
+        (
+            &[
+                ("subject", "everyone"),
+                ("effect", "deny"),
+                ("scope", "server"),
+            ],
+            "A server or tool rule needs a server that exists.",
+        ),
+        (
+            &[
+                ("subject", "everyone"),
+                ("effect", "deny"),
+                ("scope", "server"),
+                ("server_id", "9999"),
+            ],
+            "A server or tool rule needs a server that exists.",
+        ),
+        (
+            &[
+                ("subject", "everyone"),
+                ("effect", "deny"),
+                ("scope", "tool"),
+                ("server_id", &server),
+            ],
+            "A tool rule needs the tool name.",
+        ),
+        (
+            &[
+                ("subject", "everyone"),
+                ("effect", "deny"),
+                ("scope", "tool"),
+                ("server_id", &server),
+                ("tool", "nope"),
+            ],
+            "The server's tool list has no tool with that name.",
+        ),
+        (
+            &[
+                ("subject", "everyone"),
+                ("effect", "deny"),
+                ("scope", "tool"),
+                ("server_id", &server),
+                ("tool", "alpha"),
+            ],
+            "A rule for that subject and target already exists.",
+        ),
+    ];
+    for (fields, message) in refused {
+        let page = add_rule(&mut owner, fields).await;
+        assert_eq!(page.status, 400, "{fields:?} must be refused");
+        assert_eq!(
+            page.kind().as_deref(),
+            Some("rules"),
+            "the refusal is the rules page"
+        );
+        assert_eq!(
+            page.error().as_deref(),
+            Some(message),
+            "{fields:?} shows its message"
+        );
+    }
+    let duplicate = add_rule(
+        &mut owner,
+        &[
+            ("subject", "everyone"),
+            ("effect", "allow"),
+            ("scope", "tool"),
+            ("server_id", &server),
+            ("tool", "alpha"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        duplicate.status, 400,
+        "the other effect for the same target is a duplicate"
+    );
+    assert_eq!(
+        elements(&owner.get("/admin/rules").await.body, "li[data-rule-id]").len(),
+        1,
+        "no refused rule is stored"
+    );
+    let other_user = add_rule(
+        &mut owner,
+        &[
+            ("subject", &plain),
+            ("effect", "deny"),
+            ("scope", "tool"),
+            ("server_id", &server),
+            ("tool", "alpha"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        other_user.status, 303,
+        "the same target for another subject is a new rule"
+    );
+    assert_eq!(
+        elements(&owner.get("/admin/rules").await.body, "li[data-rule-id]").len(),
+        2,
+        "the other subject's rule is stored"
+    );
+    assert_eq!(
+        rows_of(dir.path(), "admin_change").len(),
+        3,
+        "the server add and the two saved rules are recorded, nothing refused"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rule_ignores_the_fields_its_scope_does_not_use() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let server = server_id_of(dir.path(), "demo").to_string();
+    seed_catalog(dir.path(), server.parse().expect("id"), &["alpha"]);
+    let all = add_rule(
+        &mut owner,
+        &[
+            ("subject", "everyone"),
+            ("effect", "deny"),
+            ("scope", "all"),
+            ("server_id", "9999"),
+            ("tool", "nope"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        all.status, 303,
+        "an all-tools rule ignores its server and tool"
+    );
+    let whole = add_rule(
+        &mut owner,
+        &[
+            ("subject", "everyone"),
+            ("effect", "allow"),
+            ("scope", "server"),
+            ("server_id", &server),
+            ("tool", "nope"),
+        ],
+    )
+    .await;
+    assert_eq!(whole.status, 303, "a server rule ignores its tool");
+    let page = owner.get("/admin/rules").await;
+    let all = elements(&page.body, r#"li[data-scope="all"]"#);
+    assert_eq!(all[0]["data-server"], "");
+    assert_eq!(all[0]["data-tool"], "");
+    let whole = elements(&page.body, r#"li[data-scope="server"]"#);
+    assert_eq!(whole[0]["data-server"], "demo");
+    assert_eq!(whole[0]["data-tool"], "");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rule_is_deleted_and_recorded_and_an_unknown_id_changes_nothing() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let added = add_rule(
+        &mut owner,
+        &[
+            ("subject", "everyone"),
+            ("effect", "deny"),
+            ("scope", "all"),
+        ],
+    )
+    .await;
+    assert_eq!(added.status, 303);
+    let page = owner.get("/admin/rules").await;
+    let id = elements(&page.body, "li[data-rule-id]")[0]["data-rule-id"].clone();
+    let changes = rows_of(dir.path(), "admin_change");
+    assert_eq!(changes.len(), 1, "the add is recorded once");
+    assert_eq!(changes[0].1, OWNER);
+    assert_eq!(changes[0].2, "added rule 1: everyone deny all tools");
+
+    let deleted = owner
+        .submit("/admin/rules", &format!("/admin/rules/{id}/delete"), &[])
+        .await;
+    assert_eq!(deleted.status, 303, "the delete answers 303");
+    assert_eq!(deleted.location(), Some("/admin/rules"));
+    assert!(
+        elements(&owner.get("/admin/rules").await.body, "li[data-rule-id]").is_empty(),
+        "the rule is gone"
+    );
+    let changes = rows_of(dir.path(), "admin_change");
+    assert_eq!(changes.len(), 2, "the delete is recorded");
+    assert_eq!(changes[1].2, "deleted rule 1: everyone deny all tools");
+
+    for path in ["/admin/rules/9999/delete", "/admin/rules/abc/delete"] {
+        let page = owner.submit("/admin/rules", path, &[]).await;
+        assert_eq!(page.status, 303, "{path} answers 303");
+        assert_eq!(page.location(), Some("/admin/rules"));
+    }
+    assert_eq!(
+        rows_of(dir.path(), "admin_change").len(),
+        2,
+        "an unknown id records nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_user_page_names_the_deciding_rule_for_each_tool() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    let server = server_id_of(dir.path(), "demo");
+    seed_catalog(dir.path(), server, &["alpha", "beta"]);
+    let bob = user_id_of(dir.path(), BOB);
+    let (server_text, bob_text) = (server.to_string(), bob.to_string());
+    let assigned = owner
+        .submit(
+            &format!("/admin/users/{bob}"),
+            &format!("/admin/users/{bob}/servers"),
+            &[("server_id", server_text.as_str())],
+        )
+        .await;
+    assert_eq!(assigned.status, 303, "bob is assigned to demo");
+    let deny_all = add_rule(
+        &mut owner,
+        &[
+            ("subject", "everyone"),
+            ("effect", "deny"),
+            ("scope", "all"),
+        ],
+    )
+    .await;
+    assert_eq!(deny_all.status, 303);
+    let allow_alpha = add_rule(
+        &mut owner,
+        &[
+            ("subject", &bob_text),
+            ("effect", "allow"),
+            ("scope", "tool"),
+            ("server_id", &server_text),
+            ("tool", "alpha"),
+        ],
+    )
+    .await;
+    assert_eq!(allow_alpha.status, 303);
+    let rule_ids: Vec<String> = elements(&owner.get("/admin/rules").await.body, "li[data-rule-id]")
+        .iter()
+        .map(|row| row["data-rule-id"].clone())
+        .collect();
+
+    let page = owner.get(&format!("/admin/users/{bob}")).await;
+    let tools = elements(&page.body, "li[data-tool]");
+    assert_eq!(
+        tools.len(),
+        2,
+        "one element per tool of the assigned server"
+    );
+    let alpha = elements(&page.body, r#"li[data-tool="alpha"]"#);
+    assert_eq!(alpha[0]["data-server"], "demo");
+    assert_eq!(alpha[0]["data-verdict"], "allow");
+    assert_eq!(
+        alpha[0]["data-rule"], rule_ids[1],
+        "the user's allow decides alpha"
+    );
+    let beta = elements(&page.body, r#"li[data-tool="beta"]"#);
+    assert_eq!(beta[0]["data-verdict"], "deny");
+    assert_eq!(
+        beta[0]["data-rule"], rule_ids[0],
+        "the everyone deny decides beta"
+    );
+    assert_eq!(page.kind().as_deref(), Some("user"));
+    let panel = owner.get("/admin").await;
+    assert!(
+        panel.body.contains(r#"href="/admin/rules""#),
+        "the panel links to the rules page"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_user_page_lists_no_tool_of_a_server_the_user_is_not_assigned_to() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    add(&mut owner, "other", SERVER_URL, None).await;
+    let demo = server_id_of(dir.path(), "demo");
+    let other = server_id_of(dir.path(), "other");
+    seed_catalog(dir.path(), demo, &["alpha", "beta"]);
+    seed_catalog(dir.path(), other, &["gamma"]);
+    let bob = user_id_of(dir.path(), BOB);
+    let other_text = other.to_string();
+    let assigned = owner
+        .submit(
+            &format!("/admin/users/{bob}"),
+            &format!("/admin/users/{bob}/servers"),
+            &[("server_id", other_text.as_str())],
+        )
+        .await;
+    assert_eq!(assigned.status, 303, "bob is assigned to other only");
+    let allow = add_rule(
+        &mut owner,
+        &[
+            ("subject", "everyone"),
+            ("effect", "allow"),
+            ("scope", "server"),
+            ("server_id", &demo.to_string()),
+        ],
+    )
+    .await;
+    assert_eq!(allow.status, 303, "the everyone allow on demo is saved");
+
+    let page = owner.get(&format!("/admin/users/{bob}")).await;
+    let tools = elements(&page.body, "li[data-tool]");
+    assert_eq!(
+        tools.len(),
+        1,
+        "only the tool of the assigned server is listed"
+    );
+    assert_eq!(tools[0]["data-server"], "other");
+    assert_eq!(tools[0]["data-tool"], "gamma");
+    assert!(
+        elements(&page.body, r#"li[data-server="demo"]"#).is_empty(),
+        "no tool of the unassigned server is listed, even under an allow"
+    );
+}

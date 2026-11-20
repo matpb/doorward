@@ -213,16 +213,16 @@ controls outgoing mail can read every password reset link.
 | `POST /admin/servers/{id}/refresh-tools` | | fetches the upstream tool list; always `303` to the server page. A failed fetch keeps the previous list, and the server page shows the failure as its error until the next successful refresh |
 | `POST /admin/servers/{id}/check-lockdown` | | asks the upstream for its tool list without the secret (the stateless form, then the session form's `initialize` when the first was neither refused nor answered); `ok` when refused with 401 or 403, `open` when answered, else `unknown`; `303` |
 | `GET /admin/users` | | `data-page="users"`; rows `data-user-id`, `data-email` |
-| `GET /admin/users/{id}` | | `data-page="user"`: role, status; one `input[name="server_id"]` checkbox per server, `checked` when assigned; effective tools, one element per tool of each assigned server with `data-server` (slug), `data-tool`, `data-verdict="allow|deny"` |
+| `GET /admin/users/{id}` | | `data-page="user"`: role, status; one `input[name="server_id"]` checkbox per server, `checked` when assigned; effective tools, one element per tool of each assigned server with `data-server` (slug), `data-tool`, `data-verdict="allow|deny"` and `data-rule` (the id of the rule that decided, empty when no deny matched) |
 | `POST /admin/users/{id}/servers` | `server_id` (repeated) | replaces the user's assignments; the user's token families for each removed server are revoked, combined endpoint families stay valid and lose those servers' tools; `303` |
 | `POST /admin/users/{id}/role` | `role` (`admin` or `user`) | owner only; `303` |
 | `POST /admin/users/{id}/disable`, `/enable`, `/delete` | | disable and delete revoke sessions and families at once; `303`. The owner cannot be disabled or deleted: `400`. An admin may act on accounts with the role `user` only (`403` otherwise); the owner on anyone else |
 | `GET /admin/invitations` | | `data-page="invitations"`; open invitations as rows with `data-invitation-id`, `data-email` |
 | `POST /admin/invitations` | `email`, `role` | invitation stored and mailed; `303`. An address that already has an account: `400`. Only the owner may invite with the role `admin` (`403` for an admin who asks). A new invitation for an address replaces an open one. If mailing fails: `200` `data-page="invitation-created"` with the error and the link once in `data-invite-link` |
 | `POST /admin/invitations/{id}/revoke` | | `303` |
-| `GET /admin/rules` | | `data-page="rules"`; rows `data-rule-id` |
-| `POST /admin/rules` | `subject` (`everyone` or a user id), `effect` (`allow` or `deny`), `scope` (`all`, `server`, `tool`), `server_id`, `tool` | `303`. `400` for a duplicate subject and target, a `server` or `tool` scope without `server_id`, a `tool` scope without `tool`, or a tool that is not in the server's cached list |
-| `POST /admin/rules/{id}/delete` | | `303` |
+| `GET /admin/rules` | | `data-page="rules"`; rows `data-rule-id`, `data-subject` (`everyone` or the user's email), `data-effect`, `data-scope` (`all`, `server`, `tool`), `data-server` (slug or empty), `data-tool` (name or empty), `data-stale="yes|no"` (`yes` when the rule names a tool that is no longer in its server's cached list) |
+| `POST /admin/rules` | `subject` (`everyone` or a user id), `effect` (`allow` or `deny`), `scope` (`all`, `server`, `tool`), `server_id`, `tool` | `303`. `400` for an unknown effect or scope, a subject that is neither `everyone` nor an existing user id, a duplicate subject and target (whatever the effect), a `server` or `tool` scope without an existing `server_id`, a `tool` scope without `tool`, or a tool that is not in the server's cached list. Fields the scope does not use are ignored |
+| `POST /admin/rules/{id}/delete` | | `303`, also for an unknown id |
 | `GET /admin/redirects` | | `data-page="redirects"`: entries as rows with `data-redirect-id`, `data-scheme`, `data-host`, `data-path-prefix`, `data-source="shipped|added"`, `data-enabled="yes|no"`; blocked attempts |
 | `POST /admin/redirects` | `scheme`, `host`, `path_prefix` | `303` |
 | `POST /admin/redirects/{id}/disable`, `/enable` | | `303` |
@@ -382,7 +382,8 @@ Stateless header rules: `MCP-Protocol-Version` must be present once and equal th
 `=?base64?...?=` is decoded before comparing. Any failure: `400`, `-32020`, message
 starting `Header mismatch:`. GET and DELETE under the stateless rules: `405`.
 
-Relayed `tools/list` results keep the upstream's fields, minus denied tools, and under the
+Relayed `tools/list` results keep the upstream's fields, minus denied tools and entries
+without a text name, on every page, and under the
 stateless rules always carry `"cacheScope": "private"`, because the list is per user.
 
 Session rules: an `Mcp-Session-Id` from a relayed `initialize` response is recorded for

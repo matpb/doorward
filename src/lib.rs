@@ -10,6 +10,7 @@ pub mod db;
 pub mod mail;
 pub mod mcp;
 pub mod oauth;
+pub mod policy;
 pub mod proxy;
 pub mod rate;
 pub mod servers;

@@ -4,10 +4,6 @@ s11_generations
 s12_streaming
 s13_upstream_faults
 s14_assignment
-s16_tool_list
 s17_activity
 s20_cimd_fetcher
-s24_trick_requests
-s26_panel
-s29_state_survives
 s32_rules

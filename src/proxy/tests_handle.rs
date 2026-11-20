@@ -268,6 +268,23 @@ impl Gw {
         catalog::names(&self.conn(), server).expect("names")
     }
 
+    /// A stored rule written straight to the table: `user` None is everyone, `tool` None is the server.
+    pub(super) fn add_rule(
+        &self,
+        user: Option<i64>,
+        effect: &str,
+        server: i64,
+        tool: Option<&str>,
+    ) {
+        self.conn()
+            .execute(
+                "INSERT INTO rules (user_id, effect, server_id, tool, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, 0)",
+                params![user, effect, server, tool],
+            )
+            .expect("rule");
+    }
+
     /// Sends one request; `headers` are added as given.
     pub(super) async fn send(
         &self,
@@ -2524,4 +2541,179 @@ async fn a_session_id_of_256_characters_is_kept_and_one_of_257_is_dropped() {
     .await;
     assert_eq!(reply.status, 404, "a client-sent 257-character id is 404");
     assert_eq!(demo.fake.count(), before, "and reaches no upstream");
+}
+
+/// The tool names of a tools/list answer, in order.
+fn listed_names(reply: &Reply) -> Vec<String> {
+    reply.json()["result"]["tools"]
+        .as_array()
+        .expect("a tools array")
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("a name").to_owned())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_call_is_refused_as_unknown_and_never_reaches_the_upstream() {
+    let demo = demo().await;
+    demo.gw.seed(demo.server, &["echo", "delete_db"]);
+    demo.gw
+        .add_rule(None, "deny", demo.server, Some("delete_db"));
+    let reply = session_post(&demo, None, call_body(4, "delete_db")).await;
+    assert_eq!(reply.status, 200, "a refused call is answered in the body");
+    assert_eq!(reply.error_code(), Some(-32602));
+    assert_eq!(
+        reply.error_message().as_deref(),
+        Some("Unknown tool: delete_db")
+    );
+    assert_eq!(reply.json()["id"], json!(4));
+    let reply = demo
+        .gw
+        .post(
+            "demo",
+            &demo.token,
+            stateless_headers("tools/call", Some("delete_db")),
+            stateless_body(
+                5,
+                "tools/call",
+                json!({"name": "delete_db", "arguments": {}}),
+            ),
+        )
+        .await;
+    assert_eq!(
+        reply.error_code(),
+        Some(-32602),
+        "the stateless call is refused too"
+    );
+    assert_eq!(
+        demo.fake.calls("tools/call"),
+        0,
+        "the upstream never sees the denied call"
+    );
+    let rows = demo.gw.tool_calls();
+    assert_eq!(rows.len(), 2, "one activity row for each refused call");
+    for row in &rows {
+        assert_eq!(row.tool, "delete_db");
+        assert_eq!(row.decision, "deny");
+        assert_eq!(row.outcome, "refused");
+    }
+    let reply = session_post(&demo, None, call_body(6, "echo")).await;
+    assert_eq!(
+        reply.text_of_call().as_deref(),
+        Some("called: echo"),
+        "an allowed tool still reaches the upstream"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_tool_is_absent_from_both_generations_and_the_catalog_keeps_it() {
+    let demo = demo().await;
+    demo.fake.set_tools(&["echo", "search", "delete_db"]);
+    demo.gw
+        .add_rule(None, "deny", demo.server, Some("delete_db"));
+    let session = session_post(&demo, None, session_body(2, "tools/list", json!({}))).await;
+    assert_eq!(session.status, 200);
+    assert_eq!(
+        listed_names(&session),
+        ["echo", "search"],
+        "the session list lacks the denied tool"
+    );
+    let stateless = demo
+        .gw
+        .post(
+            "demo",
+            &demo.token,
+            stateless_headers("tools/list", None),
+            stateless_body(3, "tools/list", json!({})),
+        )
+        .await;
+    assert_eq!(stateless.status, 200);
+    assert_eq!(
+        listed_names(&stateless),
+        ["echo", "search"],
+        "the stateless list lacks the denied tool"
+    );
+    assert_eq!(
+        demo.gw.catalog_names(demo.server),
+        ["echo", "search", "delete_db"],
+        "the stored catalog is not filtered"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_tool_is_absent_from_a_later_page_of_a_list() {
+    let demo = demo().await;
+    demo.gw
+        .add_rule(None, "deny", demo.server, Some("delete_db"));
+    demo.fake.set(Mode::Raw(
+        r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"echo"},{"name":"delete_db"}],"nextCursor":"n"}}"#,
+    ));
+    let first = session_post(&demo, None, session_body(2, "tools/list", json!({}))).await;
+    assert_eq!(
+        listed_names(&first),
+        ["echo"],
+        "the first page lacks the denied tool"
+    );
+    demo.fake.set(Mode::Raw(
+        r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"delete_db"},{"name":"search"}]}}"#,
+    ));
+    let second = session_post(
+        &demo,
+        None,
+        session_body(3, "tools/list", json!({"cursor": "n"})),
+    )
+    .await;
+    assert_eq!(second.status, 200);
+    assert_eq!(
+        listed_names(&second),
+        ["search"],
+        "a later page lacks the denied tool"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rule_that_cannot_be_read_is_an_internal_error_and_never_an_allow() {
+    let demo = demo().await;
+    demo.gw.seed(demo.server, &["echo"]);
+    demo.gw
+        .conn()
+        .execute_batch("DROP TABLE rules")
+        .expect("drop");
+    let reply = session_post(&demo, None, call_body(2, "echo")).await;
+    assert_eq!(reply.status, 500, "the call is an internal error");
+    assert_eq!(
+        demo.fake.calls("tools/call"),
+        0,
+        "the upstream never sees the call"
+    );
+    let reply = session_post(&demo, None, session_body(3, "tools/list", json!({}))).await;
+    assert_eq!(reply.status, 500, "the list is an internal error");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_entry_without_a_string_name_is_removed_from_every_page_under_no_rules() {
+    let demo = demo().await;
+    let page = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"description":"no name"},{"name":"echo"},{"name":7}]}}"#;
+    demo.fake.set(Mode::Raw(page));
+    let first = session_post(&demo, None, session_body(2, "tools/list", json!({}))).await;
+    assert_eq!(first.status, 200);
+    assert_eq!(
+        first.json()["result"]["tools"],
+        json!([{"name": "echo"}]),
+        "the first page holds only the named tool"
+    );
+    let with_cursor = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"description":"no name"},{"name":"echo"},{"name":7}],"nextCursor":"n"}}"#;
+    demo.fake.set(Mode::Raw(with_cursor));
+    let later = session_post(
+        &demo,
+        None,
+        session_body(3, "tools/list", json!({"cursor": "c1"})),
+    )
+    .await;
+    assert_eq!(later.status, 200);
+    assert_eq!(
+        later.json()["result"]["tools"],
+        json!([{"name": "echo"}]),
+        "a later page holds only the named tool"
+    );
 }

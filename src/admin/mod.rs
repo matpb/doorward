@@ -4,6 +4,7 @@ mod activity;
 mod invitations;
 mod mail;
 mod redirects;
+mod rules;
 mod servers;
 #[cfg(test)]
 mod tests;
@@ -36,6 +37,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         )
         .route("/redirects/{id}/disable", post(redirects::post_disable))
         .route("/redirects/{id}/enable", post(redirects::post_enable))
+        .route("/rules", get(rules::get_rules).post(rules::post_add))
+        .route("/rules/{id}/delete", post(rules::post_delete))
         .route(
             "/invitations",
             get(invitations::get_invitations).post(invitations::post_invitation),
@@ -82,6 +85,7 @@ async fn panel(viewer: Viewer) -> Response {
                     li { a href="/admin/users" { "Users" } }
                     li { a href="/admin/invitations" { "Invitations" } }
                     li { a href="/admin/servers" { "Servers" } }
+                    li { a href="/admin/rules" { "Rules" } }
                     li { a href="/admin/redirects" { "Redirects" } }
                     li { a href="/admin/activity" { "Activity" } }
                     @if viewer.is_owner() {

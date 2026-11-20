@@ -11,6 +11,8 @@ use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::db::DbError;
 use crate::oauth::families;
+use crate::policy;
+use crate::proxy::catalog;
 use crate::servers::{self, Scope, ServerChoice};
 use crate::web::{
     Role, SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, not_found, page,
@@ -28,6 +30,14 @@ struct User {
     email: String,
     role: String,
     disabled: bool,
+}
+
+/// One tool of an assigned server, with the verdict and the deciding rule ("" when none).
+struct Effective {
+    server: String,
+    tool: String,
+    verdict: &'static str,
+    rule: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -393,16 +403,42 @@ async fn user_page(
         Ok(None) => return not_found(),
         Err(_) => return internal_error(),
     };
-    match state
+    let loaded = state
         .db
-        .call(move |conn| servers::server_choices(conn, id))
-        .await
-    {
-        Ok(choices) => form_page(viewer, status, "user", "User", |csrf| {
-            user_body(csrf, viewer, &user, &choices, error)
+        .call(move |conn| {
+            let choices = servers::server_choices(conn, id)?;
+            let tools = effective_in(conn, id, &choices)?;
+            Ok((choices, tools))
+        })
+        .await;
+    match loaded {
+        Ok((choices, tools)) => form_page(viewer, status, "user", "User", |csrf| {
+            user_body(csrf, viewer, &user, &choices, &tools, error)
         }),
         Err(_) => internal_error(),
     }
+}
+
+/// The tools of the user's assigned servers, from each cached list, with the verdict of the rules.
+fn effective_in(
+    conn: &Connection,
+    user_id: i64,
+    choices: &[ServerChoice],
+) -> rusqlite::Result<Vec<Effective>> {
+    let mut tools = Vec::new();
+    for choice in choices.iter().filter(|choice| choice.assigned) {
+        let rules = policy::load(conn, user_id, choice.id)?;
+        for name in catalog::names(conn, choice.id)? {
+            let verdict = policy::decide(&rules, user_id, choice.id, &name);
+            tools.push(Effective {
+                server: choice.slug.clone(),
+                tool: name,
+                verdict: if verdict.allowed { "allow" } else { "deny" },
+                rule: verdict.rule.map(|id| id.to_string()).unwrap_or_default(),
+            });
+        }
+    }
+    Ok(tools)
 }
 
 /// The role form and the action forms appear only where the viewer may use them. The csrf
@@ -412,6 +448,7 @@ fn user_body(
     viewer: &Viewer,
     user: &User,
     choices: &[ServerChoice],
+    tools: &[Effective],
     error: Option<&str>,
 ) -> Markup {
     let owner_target = user.role == OWNER;
@@ -437,6 +474,15 @@ fn user_body(
                 }
             }
             button type="submit" { "Save servers" }
+        }
+        h2 { "Tools" }
+        ul.tools {
+            @for tool in tools {
+                li data-server=(tool.server) data-tool=(tool.tool) data-verdict=(tool.verdict)
+                    data-rule=(tool.rule) {
+                    (tool.server) " " (tool.tool) ": " (tool.verdict)
+                }
+            }
         }
         @if may_set_role {
             form method="post" action=(format!("{path}/role")) {

@@ -202,7 +202,8 @@ tool T on server S: with no matching deny, allowed. A matching deny stands unles
 matching allow is at least as specific as it on both scope and subject, and strictly more
 specific on one. An allow on an unassigned server grants nothing. The panel shows each
 user's effective tool list with the deciding rule, flags rules whose target no longer
-exists, and logs tools that newly appear on a server.
+exists, and logs tools that newly appear on a server. Rules are read on every request, so a
+change applies to tokens already issued. A rule that cannot be read refuses the request.
 
 ## Storage
 
