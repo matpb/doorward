@@ -1554,3 +1554,95 @@ by the request.
     one line reads `doorward: access check failed: database error: no such table: access_tokens`, and
     the one `tool_call` row is `allow` / `unavailable` with the detail `the access check could not be done`.
     It is red before the change, since the old check wrote `access was lost` and no line.
+
+## s52_interface.rs (statements 52 to 58)
+
+`covered(..)` is the list of pages the tests read, each with the layout it must carry: the
+sign-in, forgot and account pages, the owner's panel pages, one server page, one user page
+(bob) and one disabled user's page, the two consent pages (a local client and a web client,
+the web one from the client metadata document `APP_ID` put at `CLAUDE_CALLBACK`), the
+invitation acceptance page, the reset page reached from a mailed link, the 403 page a plain
+user gets on `/admin`, and the "link is not valid" 404 page. `seeded()` gives the world:
+one server `demo` with the tools `echo`, `search`, `delete_db` and bob granted, a second
+server `refuser` whose upstream refuses every call, an everyone-allow and an everyone-deny
+rule, an open invitation for dave, carol disabled, one redirect entry disabled, and a
+activity of allowed, denied and failed tool calls.
+
+1. `every_page_has_the_header_and_its_layout`: each covered page holds one
+   `body > header[data-brand]` naming Doorward with an `svg[aria-hidden="true"]`, before
+   `main`; `body[data-layout]` is `panel` on the panel pages, `page` on `/account`, `card`
+   on the others. It is red before the change.
+2. `a_rate_limited_page_has_the_header_and_the_card_layout`: with a general burst of 2, a
+   browser request (`Accept: text/html`) to `/login` that is limited answers 429 HTML with
+   the header, `h1` "Too many requests" and `data-layout="card"`. It is red before the change.
+3. `every_button_says_its_kind`: every button on every covered page has `data-kind` primary,
+   secondary or danger; no form holds two primary buttons; `Delete`, `Revoke`, `Remove` and
+   `Disconnect` are danger; `Disable`, `Enable`, `Deny`, `Filter`, `Refresh tools`,
+   `Check lock-down`, `Send test email` and `Sign out` are secondary. It is red before the change.
+4. `deleting_a_server_or_an_account_takes_two_steps`: the server and user pages each hold
+   one closed `details[data-confirm]` whose summary says "cannot be undone" and holds the
+   `/delete` form with csrf, and no other `/delete` form. Posting that form without csrf is
+   403 forbidden and deletes nothing; with csrf it is 303 and the row is gone. It is red
+   before the change.
+5. `a_status_is_a_word_with_a_marker`: every `[data-pill]` on the covered pages has a tone
+   of ok, bad, warn or muted and text; each rule row holds `Allow` (ok) or `Deny` (bad) by
+   its effect; each user row holds `Active` (ok) or `Disabled` (muted); each tool row of
+   bob's page holds `Allow` or `Deny` by its verdict; each redirect row holds `Enabled` (ok)
+   or `Disabled` (muted). It is red before the change.
+6. `the_lock_down_state_is_a_word_with_a_marker`: three servers, one checked as ok (the
+   upstream refuses without the secret), one open (answers without it), one unchecked. Each
+   server page holds one pill with tone ok, bad and warn. It is red before the change.
+7. `an_activity_row_reads_in_plain_words`: every `[data-kind]` row on the activity page has
+   `data-time`, one `[data-label]` that is not the raw kind, and one `time` whose `datetime`
+   is `data-time` and whose text reads `20 Nov 2026 19:25:09 UTC`. The labels are `Tool call`,
+   `Tool call refused`, `Tool call failed`, `Sign-in`, `Client connected`, `Admin change`,
+   `Invitation`, `Mail not sent` and `Owner created`. Seeded: a sign-in, a failed sign-in, a
+   failed invitation mail. It is red before the change.
+8. `the_mail_page_shows_one_provider_at_a_time`: the mail page has one `details[data-provider]`
+   for each of `smtp`, `resend`, `mailgun`, each holding its form; with smtp in use, only smtp
+   is open and marked `[data-in-use]`. It is red before the change.
+9. `the_mail_page_with_no_provider_shows_all_three_closed`: on a gateway with no mail
+   settings, all three disclosures are closed and the page says `No provider is in use.`
+   It is red before the change.
+10. `a_refused_provider_form_is_open_with_its_reason`: a resend form with a control character
+    in its from address is refused with 400; the resend disclosure is open and holds
+    `p.error` "A field contains a control character.". It is red before the change.
+11. `consent_has_one_primary_button`: on the local-client and the web-client consent pages,
+    one primary button reads Approve, Deny is secondary, the sentence "Approve only if you
+    started this sign-in yourself." is present; on the local-client page `p.local-app` sits
+    in `[data-notice="warning"]`. It is red before the change.
+12. `the_stylesheet_meets_contrast_and_size`: the stylesheet defines the thirteen theme
+    properties as six-digit hex values in `:root` and in the dark media block; the 13 text
+    pairs reach 4.5 to 1 in both themes; `min-height: 2.75rem` applies to `button`,
+    `summary`, `nav[data-nav="panel"] a`, to inputs (not checkboxes) and to `select`. It is
+    red before the change.
+13. `pages_carry_no_inline_style`: no covered page holds ` style=` or `<style`. It passes
+    before the change, since no page carries one today; it guards the restyle.
+
+## s59_counts_paging.rs (statements 59 to 61)
+
+Each test builds its own world. The overview test has three users (owner, bob, and carol as an admin),
+two servers (`demo` with three tools and bob granted, and `other` with one tool), four rules,
+one open invitation (dave) next to one revoked (eve) and one accepted (bob), and the
+activity rows the harness writes. Activity rows beyond those are inserted straight into the
+gateway's database file (`activity` table), one second apart, which is the cheapest route to
+more than 100 rows; the expected order and counts come from the same table.
+
+1. `the_overview_counts_and_shows_the_latest_activity`: `a[data-count]` links for `servers`
+   (2), `users` (3), `invitations` (1) and `rules` (4), each to its page and holding
+   `[data-count-value]` with that number, for the owner and for an admin; the
+   `[data-latest-activity]` section holds the five newest rows, newest first, and links to
+   `/admin/activity`. It is red before the change.
+2. `the_lists_show_counts_and_states`: each `li[data-server-id]` holds `[data-tool-count]`
+   (3 tools for demo, 1 for other), `[data-user-count]` (1 user for demo, 0 for other), its
+   path and one lock-down pill; each `li[data-user-id]` holds `[data-server-count]` (0, 1
+   or 0), its role and one pill, `Active` (ok) or `Disabled` (muted) for carol. It is red
+   before the change.
+3. `activity_is_paged`: `Rows 1 to 50 of N` with N the stored row count, 50 rows per page
+   newest first, older and newer links that carry `page=`, no newer link on page 1 and no
+   older link on the last page; the filtered view counts and keeps the user and server
+   filters in its links; `page=0`, `page=abc` and `page=-1` show page 1; a page past the end
+   is 200 with no rows, `No activity matches.` and a newer link. It is red before the change.
+4. `filters_reset_to_the_first_page`: the filter form holds no `page` field, and a submit
+   built from its user and server fields shows page 1 of the filtered rows. It is red before
+   the change.

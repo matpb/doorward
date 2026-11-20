@@ -239,6 +239,42 @@ L. Added after the owner's auth review
     for a code or token that exists) writes one line to standard error that says what failed
     and why, with no token, code, cookie, password, email or full address in it. A database
     error in the bearer check answers 503, not 401.
+52. Every page, error pages included, carries a header with the Doorward name. Panel pages
+    show the navigation as one row of tabs that wraps on a narrow screen and marks the
+    current section. Pages for signing in, setting a password, consent and errors show their
+    content in one centered card; panel pages use the wide layout.
+53. Every button says what kind it is: a form has at most one primary button, an action that
+    deletes, revokes, removes or disconnects is marked destructive, and every other button
+    is secondary. Deleting a server or an account takes two steps: the delete button sits
+    inside a closed disclosure that says it cannot be undone, and the delete itself still
+    needs the form token.
+54. A status is a word with a marker, never a color alone: allow and deny on rules and on a
+    user's tools, active and disabled on users, enabled and disabled on redirects, and the
+    lock-down state of a server.
+55. An activity row reads as a label in plain words (for example "Tool call refused",
+    "Client connected") and a time written like `20 Nov 2026 19:25:09 UTC`, and keeps its
+    machine-readable kind and time. Every kind the gateway records has a label.
+56. The mail page shows one provider form at a time: each provider is a disclosure, the one
+    in use is open and marked as in use, and the others are closed. With no provider in use
+    the page says so and all three are closed. A provider whose form was just refused is
+    open, with the reason.
+57. The consent page has Approve as its one primary button and Deny as a secondary button,
+    and the sentence about a client whose description cannot be confirmed is shown as a
+    warning. Its wording is unchanged.
+58. Text in the stylesheet's two themes has a contrast of at least 4.5 to 1 against the
+    background it sits on, buttons, fields and tabs are at least 44 px tall, the pages make
+    no request outside the gateway and carry no script and no inline style, and at 390 px
+    wide no page scrolls sideways.
+59. The admin overview shows how many servers, users, open invitations and rules exist, each
+    count linking to its page, and the five latest activity rows with a link to the whole
+    activity page.
+60. The servers list shows, per server, its path, how many tools it has, how many users are
+    assigned to it and its lock-down state. The users list shows, per user, the role, how
+    many servers are assigned and whether the account is active or disabled.
+61. The activity page shows 50 rows per page, newest first, says which rows of how many it
+    shows, and links to older and newer pages that keep the chosen filters. A page number
+    that is not a positive number shows the first page, and a page past the end shows no
+    rows and still links back to newer ones.
 
 ### Proof
 
@@ -270,6 +306,11 @@ into the test harness. In addition:
 - 50: the advisor's reports, kept under `proof/review/` (not tracked), and the commits that
   fix its findings.
 - 51: `tests/s51_failure_log.rs`, which drives the built binary and reads its standard error.
+- 59 to 61: `tests/s59_counts_paging.rs`.
+- 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
+  a walk-through of every page in a real browser at 390 px and desktop width in both
+  themes, which also measures control heights and sideways scroll; screenshots kept under
+  `proof/` (not tracked).
 
 ### Assumptions
 
