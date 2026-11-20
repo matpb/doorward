@@ -404,9 +404,9 @@ in the query string is never read. A database error during the check answers `50
 
 The token's expiry and its family's expiry are compared with the admission time of the request,
 so a POST answer keeps the access it was admitted with for the whole call. That answer may outlive
-its token by at most one hour: the housekeeping run removes an access token once it has been
-expired for an hour, and a call still running then is ended. A GET stream compares with the clock
-as it runs.
+its token by about one hour: the housekeeping run, every ten minutes, removes an access token once
+it has been expired for an hour, and a call still running then is ended. A GET stream compares with
+the clock as it runs.
 
 ## MCP paths
 
