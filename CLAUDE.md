@@ -234,6 +234,11 @@ L. Added after the owner's auth review
     and performance; every finding is fixed or listed with its reason. The owner is not asked
     to read code (the owner's decision of 2026-11-20). v1 is not called done before that
     review signs off.
+51. A request that fails inside the gateway (a 500 page, a failed session lookup, a failed
+    fetch of client metadata, a database error in the bearer check, a refused token exchange
+    for a code or token that exists) writes one line to standard error that says what failed
+    and why, with no token, code, cookie, password, email or full address in it. A database
+    error in the bearer check answers 503, not 401.
 
 ### Proof
 
@@ -264,6 +269,7 @@ into the test harness. In addition:
   runs against the stack of `scripts/prove-clients.sh`.
 - 50: the advisor's reports, kept under `proof/review/` (not tracked), and the commits that
   fix its findings.
+- 51: `tests/s51_failure_log.rs`, which drives the built binary and reads its standard error.
 
 ### Assumptions
 

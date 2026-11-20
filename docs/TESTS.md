@@ -1241,3 +1241,34 @@ refusal body, and no `WWW-Authenticate`. Foreign origin is `https://evil.example
 10. `unknown_paths_follow_the_same_rule`: `GET /zzz` and `POST /zzz` (bob's demo token, a
    slug that does not exist) with no `Origin` are `401`; with the foreign origin they are
    refused. The upstream saw no request.
+
+## s51_failure_log.rs (statement 51)
+
+Real binary, as in s42, started with a temp config and waited on until `/healthz` answers.
+The owner is made with the setup code the binary prints. The database fails in one of two
+ways: `WriteLock` holds `BEGIN EXCLUSIVE`, so writers wait out the 5 second busy timeout and
+fail; `hide_table` renames a table away, so a read of it fails with "no such table". A lock
+does not stop readers in WAL mode. "One line" means exactly one line added to standard error
+by the request.
+
+1. `a_failed_sign_in_writes_one_line`: a fresh browser gets the sign-in form, the write lock
+   is taken, and the form is posted with the owner's email and password: `500`; one line
+   starts `doorward: sign-in failed: ` and contains neither the password nor the email.
+2. `a_failed_session_lookup_writes_one_line`: the owner is signed in, `sessions` is renamed
+   away, `GET /account` is `303` to `/login` (the request is anonymous); one line starts
+   `doorward: session lookup failed: ` and holds no session token.
+3. `a_database_error_in_the_bearer_check_answers_503`: `access_tokens` is renamed away;
+   `POST /demo` with `Authorization: Bearer` and a token of valid shape is `503` with
+   `Retry-After: 1`, no `WWW-Authenticate` and an empty body; one line starts
+   `doorward: bearer check failed: ` and holds no token. Restored, the same request is `401`
+   with `WWW-Authenticate`.
+4. `a_failed_metadata_fetch_writes_one_line`: `GET /oauth/authorize` with the client ID
+   `https://client.example.invalid/dw-probe/metadata.json` and a loopback redirect is `303`
+   to consent; consent is `400` with kind `error`; one line starts
+   `doorward: client metadata for client.example.invalid failed: ` and has no `dw-probe`
+   path and no query.
+5. `a_refused_code_writes_one_line_and_an_unknown_code_writes_none`: the owner registers a
+   client (`201`), authorizes and approves. A code exchanged with a wrong verifier is `400`
+   `invalid_grant`, and one line starts `doorward: token refused: ` with a reason and holds
+   neither the code nor a verifier. A code of valid shape that matches no row is `400`
+   `invalid_grant` and adds no line.
