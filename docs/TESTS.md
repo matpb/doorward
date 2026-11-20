@@ -67,6 +67,12 @@ The other tests of this file check other settings and are not listed here.
 2. `accounts::tests_races::an_unknown_account_reaches_the_equal_cost_check`: an attempt for
    an unknown address is counted with no user, hash or epoch, so sign-in continues to the
    equal-cost check. It does not count hashes; that needs a counter the code does not have.
+3. `admin::tests::a_newer_link_past_the_end_goes_to_the_last_page_with_rows`: with 120
+   activity rows, pages 4, 6 and 40 answer 200 with no rows, and each newer link goes to
+   `page=3`, the last page with rows. It is red before the change.
+4. `oauth::consent::tests::a_confirmed_publisher_is_a_plain_line`: the document line of a
+   client published by an https host is `p[data-client="document"]`, and no element with
+   `data-notice` holds it. It is red before the change.
 
 ## s01_install.rs (statement 1)
 
@@ -636,6 +642,10 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
 17. `a_header_refusal_says_so`: a stateless upstream whose tools carry an `x-mcp-header`
     key, on `/mcp`: `demo__echo` is `-32602`, and its `tool_call` row for echo on demo has
     the detail `the request headers do not match the call`.
+18. `the_activity_helper_reads_every_page`: 55 `echo` calls by bob; the helper
+    `activity_with_details` returns the 55 `tool_call` rows, and its row count equals the
+    total the activity page shows in `[data-range]`, so rows past the first page are read. It
+    is red before the change.
 
 ## s18_unauthorized.rs (statement 18)
 
@@ -1611,17 +1621,45 @@ activity of allowed, denied and failed tool calls.
     one primary button reads Approve, Deny is secondary, the sentence "Approve only if you
     started this sign-in yourself." is present; on the local-client page `p.local-app` sits
     in `[data-notice="warning"]`. It is red before the change.
-12. `the_stylesheet_meets_contrast_and_size`: the stylesheet defines the thirteen theme
+12. `the_stylesheet_meets_contrast_and_size`: the stylesheet defines the fourteen theme
     properties as six-digit hex values in `:root` and in the dark media block; the 13 text
-    pairs reach 4.5 to 1 in both themes; `min-height: 2.75rem` applies to `button`,
-    `summary`, `nav[data-nav="panel"] a`, to inputs (not checkboxes) and to `select`. It is
-    red before the change.
+    pairs reach 4.5 to 1 in both themes; `--field-line` reaches 3 to 1 against `--bg` in both
+    themes, and the borders of `input`, `select` and `textarea` take it; `min-height: 2.75rem`
+    applies to `button`, `summary`, `nav[data-nav="panel"] a`, to inputs (not checkboxes) and
+    to `select`. It is red before the change.
 13. `pages_carry_no_inline_style`: no covered page holds ` style=` or `<style`. It passes
     before the change, since no page carries one today; it guards the restyle.
 14. `the_current_tab_is_marked_by_the_stylesheet`: the stylesheet holds a rule with the
     selector `nav[data-nav="panel"] a[aria-current="page"]` that declares
     `border-bottom-color: var(--accent)`, `color: var(--ink)` and `font-weight: 600`, so the
     current tab outranks `nav[data-nav="panel"] a`. It is red before the change.
+15. `a_registered_client_line_is_a_warning`: a registered client redirecting to
+    `https://app.example.com/oauth/cb`, an address the allow list holds, has its
+    `p[data-client="registered"]` directly inside `[data-notice="warning"]`. It is red before
+    the change.
+16. `a_loopback_document_line_is_a_warning`: the document client on its loopback redirect has
+    its `p[data-client="document-loopback"]` directly inside `[data-notice="warning"]`. It is
+    red before the change.
+17. `the_mail_providers_sit_in_one_wrapper`: the mail page holds the three
+    `details[data-provider]` directly in one `div.providers`. It is red before the change.
+18. `a_test_email_sent_is_an_ok_notice`: after a test email, the mail page holds
+    `p.notice[data-notice="ok"]` reading "Test email sent.". It is red before the change.
+19. `the_panel_navigation_is_labelled_admin`: each panel page of the covered set holds one
+    `nav[data-nav="panel"][aria-label="Admin"]`. It is red before the change.
+20. `no_covered_page_holds_a_script`: no covered page holds `<script`, in any case. It passes
+    before the change, since no page carries one; it guards statement 58.
+21. `every_src_and_href_is_a_same_site_path`: every `src` and `href` on every covered page
+    starts with `/` and not `//`, so no page names an address outside the gateway. It passes
+    before the change, since no page does; it guards statement 58.
+22. `the_stylesheet_loads_no_url_and_no_import`: the stylesheet, without its comments, holds
+    no `url(` and no `@import`. It passes before the change; it guards statement 58.
+23. `every_tone_has_a_marker_rule_with_content`: the stylesheet declares `content` in a rule
+    with the selector `.pill[data-tone="<tone>"]::before` for each of ok, bad, warn and muted,
+    the marker of statement 54. It passes before the change, since each marker is declared
+    today.
+24. `every_post_form_carries_the_csrf_field`: on every covered page, each
+    `form[method="post"]` holds an `input[name="csrf"]`. It passes before the change, since
+    every form carries one today; it guards the anti-forgery rule of statement 33.
 
 ## s59_counts_paging.rs (statements 59 to 61)
 

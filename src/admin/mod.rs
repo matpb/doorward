@@ -166,7 +166,7 @@ const PANEL_LINKS: [(&str, &str, bool); 9] = [
 /// section shown; its link is marked as the current page.
 fn panel_nav(viewer: &Viewer, current: &str) -> Markup {
     html! {
-        nav data-nav="panel" {
+        nav data-nav="panel" aria-label="Admin" {
             ul {
                 @for (label, href, owner_only) in PANEL_LINKS {
                     @if !owner_only || viewer.is_owner() {

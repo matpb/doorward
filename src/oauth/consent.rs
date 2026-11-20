@@ -449,25 +449,28 @@ fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
 /// from a host for a document on a redirect that is not an https address.
 fn client_line(client: &Shown, claim: bool) -> Markup {
     match client.client_host.as_deref() {
-        None => html! {
-            p data-client="registered" {
-                "An app that calls itself " q.client-name { (client.name) } ". Doorward cannot check this name."
-            }
-        },
-        Some(host) if claim => html! {
-            p data-client="document-loopback" {
-                "Says it is " q.client-name { (client.name) } " from " span.client-host { (host) }
-                ". Any program on this computer can use that description."
-            }
-        },
-        Some(host) => ui::notice(
-            "ok",
+        None => ui::notice(
+            "warning",
             html! {
-                p data-client="document" {
-                    q.client-name { (client.name) } ", published by " span.client-host { (host) } "."
+                p data-client="registered" {
+                    "An app that calls itself " q.client-name { (client.name) } ". Doorward cannot check this name."
                 }
             },
         ),
+        Some(host) if claim => ui::notice(
+            "warning",
+            html! {
+                p data-client="document-loopback" {
+                    "Says it is " q.client-name { (client.name) } " from " span.client-host { (host) }
+                    ". Any program on this computer can use that description."
+                }
+            },
+        ),
+        Some(host) => html! {
+            p data-client="document" {
+                q.client-name { (client.name) } ", published by " span.client-host { (host) } "."
+            }
+        },
     }
 }
 
@@ -758,15 +761,14 @@ mod tests {
     }
 
     #[test]
-    fn a_confirmed_publisher_sits_in_an_ok_notice() {
+    fn a_confirmed_publisher_is_a_plain_line() {
         let page = consent(false, Some("example.com"));
         let doc = Html::parse_fragment(&consent_body("token", "req", &page).into_string());
+        assert_eq!(count(&doc, r#"p[data-client="document"]"#), 1);
         assert_eq!(
-            count(
-                &doc,
-                r#"div.notice[data-notice="ok"] > p[data-client="document"]"#
-            ),
-            1
+            count(&doc, r#"[data-notice] p[data-client="document"]"#),
+            0,
+            "the publisher line must not sit inside any notice"
         );
         assert_eq!(
             text(&doc, "p[data-client=document] span.client-host"),

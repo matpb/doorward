@@ -354,9 +354,22 @@ pub(super) async fn latest(db: &Db, limit: i64) -> Result<Markup, DbError> {
     })
 }
 
+/// The page the newer link names: the one before this, or the last page with rows when this page
+/// lies past the end.
+fn newer_page(number: u64, total: i64) -> u64 {
+    let last = u64::try_from(total)
+        .unwrap_or(0)
+        .div_ceil(PAGE_SIZE.unsigned_abs());
+    if total > 0 && number > last {
+        last
+    } else {
+        number.saturating_sub(1)
+    }
+}
+
 /// The links to the pages before and after this one. Each keeps the filters as the filter form
 /// submits them, with the page number.
-fn pager(query: &ActivityQuery, number: u64, older: bool) -> Markup {
+fn pager(query: &ActivityQuery, number: u64, total: i64, older: bool) -> Markup {
     let user = query.user.as_deref().unwrap_or("");
     let server = query.server.as_deref().unwrap_or("");
     let link = |target: u64| {
@@ -372,7 +385,7 @@ fn pager(query: &ActivityQuery, number: u64, older: bool) -> Markup {
         @if newer || older {
             nav.pager aria-label="Pages" {
                 @if newer {
-                    a.button data-kind="secondary" data-page-link="newer" href=(link(number - 1)) { "Newer" }
+                    a.button data-kind="secondary" data-page-link="newer" href=(link(newer_page(number, total))) { "Newer" }
                 }
                 @if older {
                     a.button data-kind="secondary" data-page-link="older" href=(link(number.saturating_add(1))) { "Older" }
@@ -411,7 +424,7 @@ fn activity_page(
                     }
                     (rows_list(rows))
                 }
-                (pager(query, number, older))
+                (pager(query, number, listing.total, older))
             }
         },
     )

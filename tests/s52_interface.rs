@@ -36,7 +36,7 @@ const SECONDARY_WORDS: [&str; 8] = [
 ];
 const PROVIDERS: [&str; 3] = ["smtp", "resend", "mailgun"];
 const DARK_MEDIA: &str = "@media (prefers-color-scheme: dark)";
-const VARIABLES: [&str; 13] = [
+const VARIABLES: [&str; 14] = [
     "--bg",
     "--surface",
     "--ink",
@@ -50,6 +50,7 @@ const VARIABLES: [&str; 13] = [
     "--bad-bg",
     "--warn",
     "--warn-bg",
+    "--field-line",
 ];
 /// (text colour, background colour) pairs that must reach 4.5 to 1 in both themes.
 const PAIRS: [(&str, &str); 13] = [
@@ -979,6 +980,63 @@ async fn consent_has_one_primary_button() {
     assert_consent(&page, "the consent page of a web client", false);
 }
 
+/// The https redirect a registered client uses, which the allow list holds in the tests below.
+const REGISTERED_CALLBACK: &str = "https://app.example.com/oauth/cb";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_registered_client_line_is_a_warning() {
+    let w = World::start().await;
+    let (_up, demo) = w.upstream("demo", UpstreamOptions::default()).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[demo.as_str()]).await;
+    let page = admin::add_redirect(&w.owner, "https", "app.example.com", "/oauth/").await;
+    assert_eq!(page.status, 303, "the redirect address must be saved");
+    let registered = w
+        .client()
+        .register("Registered App", &[REGISTERED_CALLBACK])
+        .await;
+    assert_eq!(
+        registered.status, 201,
+        "registering the client must answer 201"
+    );
+    let client_id = registered
+        .json()
+        .and_then(|json| json["client_id"].as_str().map(str::to_string))
+        .expect("the registration answer must carry a client_id");
+    let app = OAuthApp {
+        client_id,
+        redirect_uri: REGISTERED_CALLBACK.into(),
+    };
+    let page = consent_page(&bob, &app, &w.resource("demo")).await;
+    assert_eq!(
+        page.status, 200,
+        "the consent page must load for a registered client"
+    );
+    assert_eq!(
+        page.count(r#"[data-notice="warning"] > p[data-client="registered"]"#),
+        1,
+        "the registered line must sit directly in a warning notice"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_loopback_document_line_is_a_warning() {
+    let w = World::start().await;
+    let (_up, demo) = w.upstream("demo", UpstreamOptions::default()).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[demo.as_str()]).await;
+    let page = consent_page(&bob, &w.app(), &w.resource("demo")).await;
+    assert_eq!(
+        page.status, 200,
+        "the consent page must load for a document client"
+    );
+    assert_eq!(
+        page.count(r#"[data-notice="warning"] > p[data-client="document-loopback"]"#),
+        1,
+        "the loopback document line must sit directly in a warning notice"
+    );
+}
+
 /// Removes the /* ... */ comments of a stylesheet.
 fn strip_comments(css: &str) -> String {
     let mut out = String::new();
@@ -1130,6 +1188,24 @@ async fn the_stylesheet_meets_contrast_and_size() {
                 "{text} on {background} in the {theme} theme must reach 4.5 to 1, got {ratio:.2}"
             );
         }
+        let field = contrast(&vars["--field-line"], &vars["--bg"]);
+        assert!(
+            field >= 3.0,
+            "--field-line on --bg, the field background, in the {theme} theme must reach 3 to 1, got {field:.2}"
+        );
+    }
+    for element in ["input", "select", "textarea"] {
+        assert!(
+            decls.iter().any(|decl| {
+                matches!(decl.name.as_str(), "border" | "border-color")
+                    && decl.value.contains("var(--field-line)")
+                    && decl
+                        .selector
+                        .split(',')
+                        .any(|shown| shown.trim() == element)
+            }),
+            "the border of {element} must take the --field-line colour"
+        );
     }
 
     let sized = sized_selectors(&decls);
@@ -1183,6 +1259,128 @@ async fn pages_carry_no_inline_style() {
         assert!(
             !shot.page.body.contains(" style=") && !shot.page.body.contains("<style"),
             "{} must carry no inline style",
+            shot.name
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_mail_providers_sit_in_one_wrapper() {
+    let w = World::start().await;
+    let page = w.owner.get("/admin/mail").await;
+    assert_eq!(
+        page.status, 200,
+        "the mail page must answer 200 to the owner"
+    );
+    assert_eq!(
+        page.count("div.providers > details[data-provider]"),
+        3,
+        "the three provider disclosures must sit directly in one div.providers"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_test_email_sent_is_an_ok_notice() {
+    let w = World::start().await;
+    let page = admin::mail_test(&w.owner, BOB).await;
+    assert_eq!(page.status, 200, "the test mail must be answered with 200");
+    assert_eq!(
+        page.text(r#"p.notice[data-notice="ok"]"#).as_deref(),
+        Some("Test email sent."),
+        "the sent sentence must be a p.notice carrying data-notice ok"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_panel_navigation_is_labelled_admin() {
+    let s = seeded().await;
+    for shot in covered(&s).await.iter().filter(|shot| shot.layout == PANEL) {
+        assert_eq!(
+            shot.page
+                .count(r#"nav[data-nav="panel"][aria-label="Admin"]"#),
+            1,
+            "the panel navigation of {} must be labelled Admin",
+            shot.name
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_covered_page_holds_a_script() {
+    let s = seeded().await;
+    for shot in covered(&s).await {
+        assert!(
+            !shot.page.body.to_ascii_lowercase().contains("<script"),
+            "{} must carry no script",
+            shot.name
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_src_and_href_is_a_same_site_path() {
+    let s = seeded().await;
+    for shot in covered(&s).await {
+        let doc = Html::parse_document(&shot.page.body);
+        for element in all(doc.root_element(), "[src], [href]") {
+            for attribute in ["src", "href"] {
+                if let Some(value) = element.value().attr(attribute) {
+                    assert!(
+                        value.starts_with('/') && !value.starts_with("//"),
+                        "{} holds a {attribute} that is not a same-site path: {value:?}",
+                        shot.name
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_stylesheet_loads_no_url_and_no_import() {
+    let w = World::start().await;
+    let css = strip_comments(&stylesheet(&w).await);
+    assert!(
+        !css.contains("url("),
+        "the stylesheet must not name a url()"
+    );
+    assert!(
+        !css.contains("@import"),
+        "the stylesheet must not import another sheet"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_tone_has_a_marker_rule_with_content() {
+    let w = World::start().await;
+    let decls = declarations(&stylesheet(&w).await);
+    for tone in TONES {
+        let selector = format!(r#".pill[data-tone="{tone}"]::before"#);
+        assert!(
+            decls
+                .iter()
+                .any(|decl| decl.selector == selector && decl.name == "content"),
+            "the stylesheet must declare content in a rule with the selector {selector}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_post_form_carries_the_csrf_field() {
+    let s = seeded().await;
+    for shot in covered(&s).await {
+        let doc = Html::parse_document(&shot.page.body);
+        let mut posts = 0;
+        let mut guarded = 0;
+        for form in all(doc.root_element(), r#"form[method="post"]"#) {
+            posts += 1;
+            if !all(form, r#"input[name="csrf"]"#).is_empty() {
+                guarded += 1;
+            }
+        }
+        assert_eq!(
+            guarded, posts,
+            "every post form on {} must carry input[name=csrf]",
             shot.name
         );
     }

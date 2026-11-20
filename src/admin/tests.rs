@@ -4078,6 +4078,32 @@ async fn the_activity_pages_hold_fifty_rows_and_link_with_the_filters() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_newer_link_past_the_end_goes_to_the_last_page_with_rows() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    // With the sign-in row that the owner's visit writes, the log holds 120 rows: three pages.
+    insert_activity(dir.path(), 119);
+    let mut owner = sign_in(&base, OWNER).await;
+
+    for number in [4, 6, 40] {
+        let past = owner
+            .get(&format!("/admin/activity?page={number}"))
+            .await
+            .body;
+        assert!(
+            elements(&past, "li[data-kind]").is_empty(),
+            "page {number} holds no rows"
+        );
+        assert_eq!(
+            attr_of(&past, r#"a[data-page-link="newer"]"#, "href").as_deref(),
+            Some("/admin/activity?user=&server=&page=3"),
+            "the newer link of page {number} must go to the last page with rows"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_overview_counts_its_rows_and_shows_the_newest_five_activity_rows() {
     let dir = tempfile::tempdir().expect("dir");
     let (base, _) = start(dir.path()).await;

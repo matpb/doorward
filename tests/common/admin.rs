@@ -261,7 +261,11 @@ pub async fn activity(
         .collect()
 }
 
+/// The most activity pages the helper reads before it gives up.
+const ACTIVITY_PAGE_LIMIT: usize = 200;
+
 /// The activity rows, each with the text of its detail paragraph (empty when the row has none).
+/// Every page is read, following the older link, until a page has none.
 pub async fn activity_with_details(
     c: &TestClient,
     user: Option<&str>,
@@ -275,17 +279,19 @@ pub async fn activity_with_details(
         query.append_pair("server", server);
     }
     let query = query.finish();
-    let target = if query.is_empty() {
+    let mut target = if query.is_empty() {
         "/admin/activity".to_string()
     } else {
         format!("/admin/activity?{query}")
     };
-    let page = c.get(&target).await;
-    let doc = Html::parse_document(&page.body);
     let selector = Selector::parse("li[data-kind]").expect("static selector");
     let detail = Selector::parse("p.detail").expect("static selector");
-    doc.select(&selector)
-        .map(|row| {
+    let older = Selector::parse(r#"a[data-page-link="older"]"#).expect("static selector");
+    let mut rows = Vec::new();
+    for _ in 0..ACTIVITY_PAGE_LIMIT {
+        let page = c.get(&target).await;
+        let doc = Html::parse_document(&page.body);
+        rows.extend(doc.select(&selector).map(|row| {
             let row_detail = row
                 .select(&detail)
                 .next()
@@ -300,8 +306,19 @@ pub async fn activity_with_details(
                 outcome: attribute(row, "data-outcome"),
             };
             (entry, row_detail)
-        })
-        .collect()
+        }));
+        let next = doc
+            .select(&older)
+            .next()
+            .and_then(|link| link.value().attr("href"));
+        match next {
+            Some(href) => target = href.to_string(),
+            None => return rows,
+        }
+    }
+    panic!(
+        "activity_with_details: the activity has more than {ACTIVITY_PAGE_LIMIT} pages, the helper stops there"
+    );
 }
 
 pub async fn invitation_id(c: &TestClient, email: &str) -> Option<String> {

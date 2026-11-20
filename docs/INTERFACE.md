@@ -10,6 +10,7 @@ what. `PUB` is the configured `public_url`.
   `card`, `page` or `panel`. The outermost `<main>` has a `data-page` attribute naming the
   page (`login`, `consent`, `error`, ...). Error text sits in an element with `class="error"`, notices in
   `class="notice"`.
+- The stylesheet `assets/doorward.css` sets its colours as custom properties in `:root` and in the dark media block. Field borders (`input`, `select`, `textarea`) use `--field-line`, which reaches 3 to 1 against the field background `--bg`.
 - Every form has `<input type="hidden" name="csrf" value="...">`. Forms are
   `application/x-www-form-urlencoded`. A successful POST answers `303` with `Location`.
 - A form POST with a missing, repeated or wrong `csrf`, or whose `Origin` header is absent,
@@ -220,7 +221,7 @@ Anonymous: `303 /login`. Signed in without the owner or admin role: `403`
 `/admin/mail/test`) are for the owner alone and answer an admin `403` as well: whoever
 controls outgoing mail can read every password reset link.
 
-Every full page of the panel (status 200, and the 400 pages that re-render a form) starts `main` with `nav[data-nav="panel"]`: the links Admin, Users, Invitations, Servers, Rules, Redirects, Activity, Mail (owner only) and Your account, the section shown marked `aria-current="page"`. `/account` links to `/admin` with `a[data-nav="to-panel"]` for an owner or admin.
+Every full page of the panel (status 200, and the 400 pages that re-render a form) starts `main` with `nav[data-nav="panel"]`, labelled `aria-label="Admin"`: the links Admin, Users, Invitations, Servers, Rules, Redirects, Activity, Mail (owner only) and Your account, the section shown marked `aria-current="page"`. `/account` links to `/admin` with `a[data-nav="to-panel"]` for an owner or admin.
 
 | Route | Fields | Outcome |
 |---|---|---|
@@ -247,9 +248,9 @@ Every full page of the panel (status 200, and the 400 pages that re-render a for
 | `GET /admin/redirects` | | `data-page="redirects"`: entries as rows with `data-redirect-id`, `data-scheme`, `data-host`, `data-path-prefix`, `data-source="shipped|added"`, `data-enabled="yes|no"`; blocked attempts |
 | `POST /admin/redirects` | `scheme`, `host`, `path_prefix` | `303` |
 | `POST /admin/redirects/{id}/disable`, `/enable` | | `303` |
-| `GET /admin/mail` | | `data-page="mail"`; stored secrets never rendered; one `details[data-provider]` per provider (`smtp`, `resend`, `mailgun`), each holding its own form with the hidden `provider` field; the provider in use is open with `class="in-use"` and `[data-in-use]`, the others are closed; with none in use the page says `No provider is in use.` and all three are closed |
+| `GET /admin/mail` | | `data-page="mail"`; stored secrets never rendered; one `details[data-provider]` per provider (`smtp`, `resend`, `mailgun`) directly in one `div.providers`, each holding its own form with the hidden `provider` field; the provider in use is open with `class="in-use"` and `[data-in-use]`, the others are closed; with none in use the page says `No provider is in use.` and all three are closed |
 | `POST /admin/mail` | `provider` (`smtp`, `resend`, `mailgun`), `from`; smtp: `smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`, `smtp_tls` (`off`, `starttls` or `implicit`); resend: `resend_api_key`, `resend_base_url`; mailgun: `mailgun_api_key`, `mailgun_domain`, `mailgun_base_url` | `303`. An empty secret field keeps the stored one, unless the server it is sent to changed in the same post (SMTP host, port, username or TLS mode; Resend base URL; Mailgun domain or base URL): then the stored secret is deleted. An empty base URL means the provider's own address. A field with a control character: `400`. Requests to Resend carry `User-Agent: doorward/<version>` |
-| `POST /admin/mail/test` | `to` | `200` `data-page="mail"` with `class="notice"` "Test email sent." or `class="error"` holding the provider's error |
+| `POST /admin/mail/test` | `to` | `200` `data-page="mail"` with `class="notice" data-notice="ok"` "Test email sent." or `class="error"` holding the provider's error |
 | `GET /admin/activity` | query `user`, `server`; an empty value means any, a value that is not an id matches no row; query `page` (1-based): a missing, empty, zero, negative or non-numeric value is page 1, a number too large for u64 is the largest one | `data-page="activity"`; a GET form `form[data-form="activity-filter"]` with `select#filter-user` (`Any user`, then every user by email, `value` the user id) and `select#filter-server` (`Any server`, then every server by slug, text `{name} ({slug})`, `value` the server id), each with the current filter's option `selected`, and a `Filter` button, the form carries no `page` field; 50 rows per page (`PAGE_SIZE`), newest first, in `ol.activity.rows`; rows `data-kind`, `data-user`, `data-server`, `data-tool`, `data-decision`, `data-outcome`, `data-time` (RFC 3339), with `time[datetime]` equal to `data-time` and the plain time `20 Nov 2026 19:25:09 UTC`, and `[data-label]` holding the row's label; `p[data-range]` reads `Rows {first} to {last} of {total}` when rows are shown; `nav.pager` holds `a[data-page-link="newer"]` (page above 1) and `a[data-page-link="older"]` (rows after this page), whose `href` keeps `user` and `server` as the form submits them and sets `page` |
 
 The tool name field of the rule form is `input#rule-tool[list="rule-tools"]` with `datalist#rule-tools` holding one option per stored tool of every server: `value` the tool's name, `label` the server's slug, ordered by slug then name.
@@ -363,7 +364,9 @@ client is `p[data-client="registered"]` reading "An app that calls itself
 `<q class="client-name">` NAME. Doorward cannot check this name."; a document with a web
 redirect is `p[data-client="document"]`, "NAME, published by `<span class="client-host">`
 HOST."; a document with a redirect that is not https, loopback or private scheme, is `p[data-client="document-loopback"]`, "Says it
-is NAME from HOST. Any program on this computer can use that description." A page for a
+is NAME from HOST. Any program on this computer can use that description." The registered line and the
+loopback document line each sit in `div.notice[data-notice="warning"]`, as does the local-app sentence;
+the https document line is plain. A page for a
 loopback redirect address, of any client kind, also holds `p.local-app` reading "The sign-in
 will be handed to whatever program is listening on this computer." A page for a private-scheme
 redirect of any client kind holds `p.local-app` reading "The sign-in will be handed to whatever program on this computer opens addresses of this kind."

@@ -621,7 +621,7 @@ async fn the_activity_page_offers_a_user_and_a_server_filter() {
 
     let by_bob = w.owner.get(&format!("/admin/activity?user={bob_id}")).await;
     assert_eq!(by_bob.status, 200, "the filtered page must answer 200");
-    let users = by_bob.attrs("[data-kind]", "data-user");
+    let users = by_bob.attrs("li[data-kind]", "data-user");
     assert!(!users.is_empty(), "bob's activity must not be empty");
     assert!(
         users.iter().all(|user| user == BOB),
@@ -636,16 +636,16 @@ async fn the_activity_page_offers_a_user_and_a_server_filter() {
     let every = w.owner.get("/admin/activity").await;
     let empty = w.owner.get("/admin/activity?user=&server=").await;
     assert_eq!(empty.status, 200, "the empty filters must answer 200");
-    let every_time = every.attrs("[data-kind]", "data-time");
+    let every_time = every.attrs("li[data-kind]", "data-time");
     assert!(!every_time.is_empty(), "the activity page must hold rows");
     assert_eq!(
-        empty.attrs("[data-kind]", "data-time"),
+        empty.attrs("li[data-kind]", "data-time"),
         every_time,
         "empty user and server filters must show every row"
     );
     assert_eq!(
-        empty.attrs("[data-kind]", "data-user"),
-        every.attrs("[data-kind]", "data-user"),
+        empty.attrs("li[data-kind]", "data-user"),
+        every.attrs("li[data-kind]", "data-user"),
         "empty user and server filters must show the rows of every user"
     );
 }
@@ -681,6 +681,49 @@ async fn the_user_and_server_pages_link_to_their_activity() {
         server_page.texts(ACTIVITY_LINK),
         vec!["Activity".to_string()],
         "the link on the server page must read Activity"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_activity_helper_reads_every_page() {
+    let w = World::start().await;
+    let bob = w.user(BOB).await;
+    let (_up, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    w.grant(BOB, &[id.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let mcp = w.session_mcp("demo", &tokens);
+    assert_eq!(
+        mcp.initialize().await.status,
+        200,
+        "initialize must answer 200"
+    );
+    for _ in 0..55 {
+        let reply = mcp.call_tool("echo", json!({"text": "hi"})).await;
+        assert_eq!(reply.status, 200, "the allowed call must answer 200");
+    }
+
+    let rows = admin::activity_with_details(&w.owner, None, None).await;
+    let calls = rows
+        .iter()
+        .filter(|(row, _)| row.kind == "tool_call")
+        .count();
+    assert_eq!(
+        calls, 55,
+        "the helper must return the 55 tool calls, past the first page"
+    );
+    let first = w.owner.get("/admin/activity").await;
+    let shown = first
+        .text("[data-range]")
+        .unwrap_or_else(|| panic!("the activity page must say which rows it shows"));
+    let total: usize = shown
+        .rsplit(' ')
+        .next()
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("the range must end with the total, got {shown:?}"));
+    assert_eq!(
+        rows.len(),
+        total,
+        "the helper must return every row the log holds, got {shown:?}"
     );
 }
 

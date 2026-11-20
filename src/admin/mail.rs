@@ -379,13 +379,15 @@ fn mail_forms(
             @if let Some(message) = unplaced {
                 p.error { (message) }
             }
-            (provider_disclosure("smtp", "Raw SMTP", in_use == Some("smtp"), refusal_of("smtp"), smtp_form(csrf, view)))
-            (provider_disclosure("resend", "Resend", in_use == Some("resend"), refusal_of("resend"), resend_form(csrf, view)))
-            (provider_disclosure("mailgun", "Mailgun", in_use == Some("mailgun"), refusal_of("mailgun"), mailgun_form(csrf, view)))
+            div.providers {
+                (provider_disclosure("smtp", "Raw SMTP", in_use == Some("smtp"), refusal_of("smtp"), smtp_form(csrf, view)))
+                (provider_disclosure("resend", "Resend", in_use == Some("resend"), refusal_of("resend"), resend_form(csrf, view)))
+                (provider_disclosure("mailgun", "Mailgun", in_use == Some("mailgun"), refusal_of("mailgun"), mailgun_form(csrf, view)))
+            }
             section.card {
                 h2 { "Test email" }
                 @if let Some(message) = notice {
-                    p.notice { (message) }
+                    p.notice data-notice="ok" { (message) }
                 }
                 @if let Some(message) = error {
                     p.error { (message) }
