@@ -247,6 +247,9 @@ fn redirects_body(
             }
             section.card {
                 h2 { "Blocked attempts" }
+                @if blocked.is_empty() {
+                    p.muted { "No blocked attempts." }
+                }
                 ol.blocked.rows {
                     @for row in blocked {
                         li data-blocked="yes" {
