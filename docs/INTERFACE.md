@@ -234,7 +234,8 @@ controls outgoing mail can read every password reset link.
 Activity rows: `data-user` is the user's email (empty when there is none), `data-server`
 the server's slug, `data-tool` the tool's name on its server. For `tool_call` rows,
 `data-decision` is `allow` or `deny` and `data-outcome` is `ok`, `error` (the upstream
-answered an error, or the client left a streamed call before its answer), `unavailable`
+answered an error, or the client left before the answer of a call that went upstream:
+that call is still recorded, and the upstream request is closed), `unavailable`
 (the upstream could not be reached, answered garbage, or stopped before the answer) or
 `refused` (denied, stopped by the gateway before the upstream, or a streamed call cut
 off because the caller lost access). Each row

@@ -15,7 +15,8 @@ use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use time::OffsetDateTime;
-use tokio::net::TcpListener;
+use tokio::io::AsyncWriteExt;
+use tokio::net::{TcpListener, TcpStream};
 
 use super::catalog;
 use super::tests::{Plan, Seen, TestUpstream};
@@ -91,6 +92,7 @@ pub(super) struct Row {
     pub(super) client: String,
     pub(super) decision: String,
     pub(super) outcome: String,
+    pub(super) detail: String,
     pub(super) duration: Option<i64>,
 }
 
@@ -369,7 +371,7 @@ impl Gw {
         let mut statement = conn
             .prepare(
                 "SELECT user_id, user_email, server_id, server_slug, tool, client, decision, \
-                 outcome, duration_ms FROM activity WHERE kind = 'tool_call' ORDER BY id",
+                 outcome, detail, duration_ms FROM activity WHERE kind = 'tool_call' ORDER BY id",
             )
             .expect("activity");
         let rows = statement
@@ -383,7 +385,8 @@ impl Gw {
                     client: row.get(5)?,
                     decision: row.get(6)?,
                     outcome: row.get(7)?,
-                    duration: row.get(8)?,
+                    detail: row.get(8)?,
+                    duration: row.get(9)?,
                 })
             })
             .expect("rows");
@@ -408,6 +411,8 @@ pub(super) enum Mode {
     Stream(Vec<(&'static str, &'static str)>),
     /// A notice, then the answer one second later.
     Progress,
+    /// Answers as the inner mode does, with the headers held back for the wait.
+    Held(Duration, Box<Mode>),
     /// A notice and then no answer; the stream stays open.
     StreamNoAnswer,
     /// JSON answers with this exact body.
@@ -590,6 +595,10 @@ fn respond(mode: &Mode, tools: &[String], seen: &Seen) -> Plan {
                     )
                 }
             },
+        },
+        Mode::Held(wait, inner) => match respond(inner, tools, seen) {
+            Plan::Reply(response) => Plan::Late(*wait, response),
+            other => other,
         },
         Mode::Progress => match message {
             None => build(202, None, None, &[], Body::empty()),
@@ -2716,4 +2725,177 @@ async fn an_entry_without_a_string_name_is_removed_from_every_page_under_no_rule
         json!([{"name": "echo"}]),
         "a later page holds only the named tool"
     );
+}
+
+/// Sends one complete POST to `/demo` on a raw connection, then closes it 100 ms later unread.
+async fn abandon(gw: &Gw, token: &str, session: &str, body: &str) {
+    let mut stream = TcpStream::connect(gw.config.listen)
+        .await
+        .expect("the gateway accepts a connection");
+    let request = format!(
+        "POST /demo HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\n\
+         Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\n\
+         MCP-Protocol-Version: 2025-11-25\r\nMcp-Session-Id: {session}\r\n\
+         Content-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("the request is written");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(stream);
+}
+
+/// The tool_call rows, polled for up to 3 seconds until there are `wanted` of them.
+async fn wait_for_rows(gw: &Gw, wanted: usize) -> Vec<Row> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let rows = gw.tool_calls();
+        if rows.len() >= wanted || Instant::now() >= deadline {
+            return rows;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_is_recorded_when_the_client_leaves_before_the_answer() {
+    let demo = demo().await;
+    demo.gw.seed(demo.server, &["echo"]);
+    let session = initialized(&demo).await;
+    demo.fake.set(Mode::Held(
+        Duration::from_secs(1),
+        Box::new(Mode::Json(Vec::new())),
+    ));
+    abandon(&demo.gw, &demo.token, &session, &call_body(2, "echo")).await;
+    let rows = wait_for_rows(&demo.gw, 1).await;
+    assert_eq!(
+        demo.fake.calls("tools/call"),
+        1,
+        "the upstream must have received the call once"
+    );
+    assert_eq!(
+        rows.len(),
+        1,
+        "exactly one tool_call row must be written when the client left, got {rows:?}"
+    );
+    let row = &rows[0];
+    assert_eq!(
+        row.user_id,
+        Some(demo.bob),
+        "the row must be recorded under bob"
+    );
+    assert_eq!(row.email, BOB);
+    assert_eq!(row.server_id, Some(demo.server));
+    assert_eq!(row.slug, "demo");
+    assert_eq!(row.tool, "echo");
+    assert_eq!(row.decision, "allow", "the row must have decision allow");
+    assert_eq!(row.outcome, "error", "the row must have outcome error");
+    assert_eq!(
+        row.detail, "the client left before the answer",
+        "the row must say that the client left"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        demo.gw.tool_calls().len(),
+        1,
+        "the row must still be the only one 500 ms later"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_open_request_slot_is_freed_when_the_client_leaves() {
+    let demo = demo_with(|config| config.limits.mcp_open = 1, (false, false)).await;
+    demo.gw.seed(demo.server, &["echo"]);
+    let session = initialized(&demo).await;
+    demo.fake.set(Mode::Held(
+        Duration::from_secs(30),
+        Box::new(Mode::Json(Vec::new())),
+    ));
+    abandon(&demo.gw, &demo.token, &session, &call_body(2, "echo")).await;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while demo.fake.calls("tools/call") < 1 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        demo.fake.calls("tools/call"),
+        1,
+        "the upstream must have received the abandoned call"
+    );
+    demo.fake.set(Mode::Json(Vec::new()));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let reply = loop {
+        let reply = session_post(&demo, Some(&session), call_body(3, "echo")).await;
+        if reply.status == 200 || Instant::now() >= deadline {
+            break reply;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(
+        reply.status, 200,
+        "another request of the user must be answered within 3 seconds of the client leaving"
+    );
+    assert_eq!(
+        reply.text_of_call(),
+        Some("called: echo".to_string()),
+        "the request after the client left must answer its result"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_that_is_answered_has_exactly_one_row() {
+    let demo = demo().await;
+    demo.gw.seed(demo.server, &["echo"]);
+    let session = initialized(&demo).await;
+    let reply = session_post(&demo, Some(&session), call_body(2, "echo")).await;
+    assert_eq!(reply.status, 200, "an ordinary call must answer 200");
+    assert_eq!(
+        reply.text_of_call(),
+        Some("called: echo".to_string()),
+        "an ordinary call must answer the upstream's result"
+    );
+    demo.fake.set(Mode::Status(500, None, ""));
+    let reply = session_post(&demo, Some(&session), call_body(3, "echo")).await;
+    assert_eq!(
+        reply.status, 502,
+        "a call the upstream fails must answer 502"
+    );
+    let rows = demo.gw.tool_calls();
+    let outcomes: Vec<(&str, &str, &str)> = rows
+        .iter()
+        .map(|row| {
+            (
+                row.tool.as_str(),
+                row.decision.as_str(),
+                row.outcome.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [("echo", "allow", "ok"), ("echo", "allow", "unavailable")],
+        "each answered call must leave exactly one row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_streamed_call_still_writes_its_own_single_row() {
+    let demo = demo().await;
+    demo.gw.seed(demo.server, &["echo"]);
+    let session = initialized(&demo).await;
+    demo.fake.set(Mode::Progress);
+    let reply = session_post(&demo, Some(&session), call_body(2, "echo")).await;
+    assert_eq!(reply.status, 200, "a streamed call must answer 200");
+    let rows = demo.gw.tool_calls();
+    assert_eq!(
+        rows.len(),
+        1,
+        "a streamed call must leave exactly one row, got {rows:?}"
+    );
+    assert_eq!(
+        rows[0].decision, "allow",
+        "the row must have decision allow"
+    );
+    assert_eq!(rows[0].outcome, "ok", "the row must have outcome ok");
 }

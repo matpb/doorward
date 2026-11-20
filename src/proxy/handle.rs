@@ -194,9 +194,10 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
         body: bytes,
         with_secret: true,
     };
+    let owed = call.as_deref().map(|name| Owed::new(ctx, name));
     match upstream::send(ctx.state, &target, outgoing).await {
-        Ok(response) => relay_post(ctx, &message, call.as_deref(), switches, response).await,
-        Err(Fault) => fault(ctx, call.as_deref()).await,
+        Ok(response) => relay_post(ctx, &message, owed, switches, response).await,
+        Err(Fault) => fault(ctx, owed).await,
     }
 }
 
@@ -513,11 +514,12 @@ fn copy_all(from: &HeaderMap, to: &mut HeaderMap, name: &HeaderName) {
     }
 }
 
-/// The relay of a POST answer: the JSON and stream rules, and the three rewritten methods.
+/// The relay of a POST answer: the JSON and stream rules, and the three rewritten methods. A rewritten
+/// answer is never a tools/call, so `owed` is None on that path.
 async fn relay_post(
     ctx: &Ctx<'_>,
     message: &Message,
-    call: Option<&str>,
+    owed: Option<Owed>,
     switches: Switches,
     response: reqwest::Response,
 ) -> Response {
@@ -525,36 +527,39 @@ async fn relay_post(
     let issued = response.headers().get(MCP_SESSION_ID).cloned();
     let kind = match upstream::accept(&response) {
         Ok(kind) => kind,
-        Err(Fault) => return fault(ctx, call).await,
+        Err(Fault) => return fault(ctx, owed).await,
     };
     let method = message.method.as_deref().unwrap_or("");
     let rewritten = message.shape == Shape::Request
         && matches!(method, "initialize" | "server/discover" | "tools/list");
     if matches!(kind, Kind::Empty) {
         if message.shape == Shape::Request && matches!(status.as_u16(), 200 | 202) {
-            return fault(ctx, call).await;
+            return fault(ctx, owed).await;
         }
-        if let Some(name) = call {
-            record(ctx, name, "allow", "error").await;
+        if let Some(owed) = owed {
+            owed.settle("error").await;
         }
         return relayed(status, None, Body::empty(), None);
     }
     if matches!(kind, Kind::Stream) && !rewritten {
         let watch = Watch {
-            call: call.map(str::to_owned),
+            call: owed.as_ref().map(|owed| owed.tool.clone()),
             id: message.id.clone().unwrap_or(Value::Null),
         };
+        if let Some(owed) = owed {
+            owed.hand_over();
+        }
         let body = stream::relay(ctx.owned(), response, watch);
         return relayed(status, Some("text/event-stream"), body, None);
     }
     let id = message.id.clone().unwrap_or(Value::Null);
     let (mut value, raw) = match read_answer(ctx, response, kind, &id).await {
         Ok(read) => read,
-        Err(Fault) => return fault(ctx, call).await,
+        Err(Fault) => return fault(ctx, owed).await,
     };
     if !rewritten {
-        if let Some(name) = call {
-            record(ctx, name, "allow", stream::outcome_of(&value)).await;
+        if let Some(owed) = owed {
+            owed.settle(stream::outcome_of(&value)).await;
         }
         return relayed(
             status,
@@ -572,7 +577,7 @@ async fn relay_post(
         match first_page(&value, &message.value) {
             Ok(Some(tools)) => replace_catalog(ctx, tools).await,
             Ok(None) => {}
-            Err(Fault) => return fault(ctx, call).await,
+            Err(Fault) => return fault(ctx, owed).await,
         }
         match hide_refused(ctx, &mut value).await {
             Ok(removed) => changed |= removed,
@@ -665,9 +670,9 @@ async fn relay_plain(ctx: &Ctx<'_>, response: reqwest::Response) -> Response {
 }
 
 /// The fault answer; a tools/call that faults is recorded as allowed and unavailable.
-async fn fault(ctx: &Ctx<'_>, call: Option<&str>) -> Response {
-    if let Some(name) = call {
-        record(ctx, name, "allow", "unavailable").await;
+async fn fault(ctx: &Ctx<'_>, owed: Option<Owed>) -> Response {
+    if let Some(owed) = owed {
+        owed.settle("unavailable").await;
     }
     answer::unavailable(ctx.slug)
 }
@@ -767,6 +772,63 @@ async fn record_session(ctx: &Ctx<'_>, issued: Option<HeaderValue>) -> Option<He
 /// One tool_call row. A failed write is reported and never changes the answer.
 async fn record(ctx: &Ctx<'_>, tool: &str, decision: &str, outcome: &str) {
     stream::record(&ctx.owned(), tool, decision, outcome, "").await;
+}
+
+/// The detail of the row of a call whose client left before the answer.
+const LEFT: &str = "the client left before the answer";
+
+/// The activity row a tools/call owes once it went upstream. Dropped unsettled, because the client
+/// left, it writes the row from its own task.
+struct Owed {
+    ctx: Option<Owned>,
+    tool: String,
+}
+
+impl Owed {
+    fn new(ctx: &Ctx<'_>, tool: &str) -> Owed {
+        Owed {
+            ctx: Some(ctx.owned()),
+            tool: tool.to_owned(),
+        }
+    }
+
+    /// Writes the row with `outcome` in its own task and waits for it, so a dropped waiter writes nothing more.
+    async fn settle(mut self, outcome: &str) {
+        let Some(owned) = self.ctx.take() else {
+            return;
+        };
+        let tool = std::mem::take(&mut self.tool);
+        let outcome = outcome.to_owned();
+        let written = tokio::spawn(async move {
+            stream::record(&owned, &tool, "allow", &outcome, "").await;
+        });
+        if let Err(err) = written.await {
+            eprintln!("doorward: the activity row cannot be written: {err}");
+        }
+    }
+
+    /// Gives the row to the stream relay, which writes it when the stream ends.
+    fn hand_over(mut self) {
+        self.ctx = None;
+    }
+}
+
+impl Drop for Owed {
+    // Unsettled only when the handler was dropped, so the client left before the answer.
+    fn drop(&mut self) {
+        let Some(owned) = self.ctx.take() else {
+            return;
+        };
+        let tool = std::mem::take(&mut self.tool);
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    stream::record(&owned, &tool, "allow", "error", LEFT).await;
+                });
+            }
+            Err(err) => eprintln!("doorward: the activity row cannot be written: {err}"),
+        }
+    }
 }
 
 /// `text` cut to at most `limit` bytes, on a character boundary.
