@@ -90,6 +90,7 @@ impl Gateway {
             database: db.clone(),
             key_file: None,
             trusted_proxies: Vec::new(),
+            shared_client_address: false,
             lifetimes: Lifetimes::default(),
             limits: Limits::default(),
             mail: Default::default(),

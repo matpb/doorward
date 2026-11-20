@@ -522,6 +522,7 @@ mod tests {
             database,
             key_file,
             trusted_proxies: Vec::new(),
+            shared_client_address: false,
             lifetimes: Default::default(),
             limits: Default::default(),
             mail: Default::default(),

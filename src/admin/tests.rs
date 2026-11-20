@@ -176,6 +176,7 @@ fn config_in(dir: &Path, base: &str) -> Config {
         database: dir.join("doorward.db"),
         key_file: None,
         trusted_proxies: Vec::new(),
+        shared_client_address: false,
         lifetimes: Default::default(),
         limits: Default::default(),
         mail: Default::default(),

@@ -9,7 +9,7 @@ use crate::accounts::session;
 use crate::app::AppState;
 use crate::crypto::{CsrfBinding, Keys, random_token};
 
-use super::address::client_address;
+use super::address::{client_address, log_warnings};
 use super::cookies::{CSRF_COOKIE, SESSION_COOKIE, cookie_value};
 
 const ANON_PREFIX: &str = "dw_cs_";
@@ -85,7 +85,15 @@ impl Viewer {
             .extensions
             .get::<ConnectInfo<SocketAddr>>()
             .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |info| info.0.ip());
-        let address = client_address(peer, &parts.headers, &state.config.trusted_proxies);
+        let trusted = &state.config.trusted_proxies;
+        let address = client_address(peer, &parts.headers, trusted);
+        log_warnings(
+            peer,
+            &parts.headers,
+            trusted,
+            state.config.https_public(),
+            address,
+        );
         let now = state.clock.now().unix_timestamp();
         let mut user = None;
         let mut binding = None;

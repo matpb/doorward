@@ -938,6 +938,7 @@ async fn gateway(dir: &Path, dcr_per_hour: u64) -> String {
         database: dir.join("doorward.db"),
         key_file: None,
         trusted_proxies: Vec::new(),
+        shared_client_address: false,
         lifetimes: Default::default(),
         limits: Limits {
             dcr_per_hour,

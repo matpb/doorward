@@ -1,7 +1,7 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use doorward::config::{Lifetimes, Limits};
+use doorward::config::{Lifetimes, Limits, Range};
 use doorward::{Config, ConfigError};
 
 fn config_with_url(url: &str) -> Config {
@@ -11,6 +11,7 @@ fn config_with_url(url: &str) -> Config {
         database: "doorward.db".into(),
         key_file: None,
         trusted_proxies: Vec::new(),
+        shared_client_address: false,
         lifetimes: Default::default(),
         limits: Default::default(),
         mail: Default::default(),
@@ -130,7 +131,7 @@ fn defaults_apply() {
     let config = Config::load(&path).expect("config loads");
     assert_eq!(config.listen, SocketAddr::from(([127, 0, 0, 1], 8717)));
     assert_eq!(config.key_file, None);
-    assert_eq!(config.trusted_proxies, Vec::<IpAddr>::new());
+    assert_eq!(config.trusted_proxies, Vec::<Range>::new());
 }
 
 #[test]

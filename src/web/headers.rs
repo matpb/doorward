@@ -1,10 +1,13 @@
-use axum::extract::Request;
+use axum::extract::{Request, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, REFERRER_POLICY, X_CONTENT_TYPE_OPTIONS,
+    CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, REFERRER_POLICY,
+    STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::{HeaderName, HeaderValue};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+
+use crate::app::AppState;
 
 const STYLESHEET: &str = include_str!("../../assets/doorward.css");
 
@@ -20,9 +23,20 @@ pub fn content_security_policy(form_target: Option<&str>) -> String {
 }
 
 /// Adds the browser-page headers to every response of an HTML route.
-pub async fn security_headers(request: Request, next: Next) -> Response {
+pub async fn security_headers(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
     let mut response = next.run(request).await;
+    let https = state.config.https_public();
     let headers = response.headers_mut();
+    if https {
+        headers.insert(
+            STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000"),
+        );
+    }
     // A policy a handler set itself (the consent page) is kept.
     if !headers.contains_key(CONTENT_SECURITY_POLICY) {
         // The policy text is ASCII, so the fallback is never taken; it is the strictest policy.

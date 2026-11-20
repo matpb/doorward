@@ -148,7 +148,10 @@ fn routes(state: AppState) -> Router {
             get(oauth::connected::get_disconnect_link).post(oauth::connected::post_disconnect_link),
         )
         .nest("/admin", admin::router(state.clone()))
-        .layer(middleware::from_fn(web::security_headers));
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            web::security_headers,
+        ));
     Router::new()
         .route("/healthz", get(healthz))
         .route("/assets/doorward.css", get(web::stylesheet))

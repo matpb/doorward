@@ -1,11 +1,12 @@
 //! Helpers for the tests that run the real `doorward` binary and read its settings.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use doorward::Config;
@@ -16,10 +17,19 @@ use tempfile::TempDir;
 pub const DEADLINE: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(50);
 
-/// A port that was free a moment ago: bound on loopback, then released.
+/// Every port handed out by this test process, so that no port is handed out twice.
+static HANDED: Mutex<BTreeSet<u16>> = Mutex::new(BTreeSet::new());
+
+/// A port that was free a moment ago: bound on loopback, then released. Never repeated.
 pub fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a free port");
-    listener.local_addr().expect("local address").port()
+    loop {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a free port");
+        let port = listener.local_addr().expect("local address").port();
+        drop(listener);
+        if HANDED.lock().expect("port record").insert(port) {
+            return port;
+        }
+    }
 }
 
 /// Writes `text` to `dir/name` and returns the path.

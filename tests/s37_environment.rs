@@ -1,7 +1,7 @@
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::{Ipv4Addr, TcpStream};
+use std::net::Ipv4Addr;
 use std::path::Path;
 
 use common::binary::{
@@ -87,9 +87,16 @@ fn a_variable_beats_the_file() {
         &[("DOORWARD_LISTEN", site.listen.as_str())],
     );
     run.wait_until_healthy(site.port);
+    let stderr = run.stderr();
+    let listening = format!("doorward listening on http://127.0.0.1:{}", site.port);
     assert!(
-        TcpStream::connect(("127.0.0.1", file_port)).is_err(),
-        "the port named in the file must not answer when DOORWARD_LISTEN names another"
+        stderr.lines().any(|line| line == listening),
+        "the variable's port must be the one listened on; stderr:\n{stderr}"
+    );
+    let file_listening = format!("doorward listening on http://127.0.0.1:{file_port}");
+    assert!(
+        !stderr.lines().any(|line| line == file_listening),
+        "the port named in the file must not be listened on; stderr:\n{stderr}"
     );
 }
 

@@ -10,6 +10,7 @@ use common::cimd::FakeCimd;
 use common::client::{Page, TestClient};
 use common::mail::link_with_prefix;
 use common::world::{OWNER_EMAIL, PASSWORD, World};
+use doorward::config::Range;
 use doorward::{Config, Deps, build};
 use futures_util::future::join_all;
 
@@ -95,6 +96,7 @@ fn config_with_key(dir: &Path, key: PathBuf) -> Config {
         database: dir.join("doorward.db"),
         key_file: Some(key),
         trusted_proxies: Vec::new(),
+        shared_client_address: false,
         lifetimes: Default::default(),
         limits: Default::default(),
         mail: Default::default(),
@@ -287,7 +289,7 @@ async fn forwarded_for_is_ignored_without_a_trusted_proxy() {
 #[tokio::test(flavor = "multi_thread")]
 async fn forwarded_for_counts_behind_a_trusted_proxy() {
     let w = World::start_with(|c| {
-        c.trusted_proxies = vec![IpAddr::V4(Ipv4Addr::LOCALHOST)];
+        c.trusted_proxies = vec![Range::from(IpAddr::V4(Ipv4Addr::LOCALHOST))];
         c.limits.address_failures = 6;
     })
     .await;

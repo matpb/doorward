@@ -309,6 +309,7 @@ async fn start(cimd: Arc<dyn CimdFetcher>) -> Gateway {
         database: db.clone(),
         key_file: None,
         trusted_proxies: Vec::new(),
+        shared_client_address: false,
         lifetimes: Default::default(),
         limits: Limits::default(),
         mail: Default::default(),

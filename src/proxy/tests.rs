@@ -378,6 +378,7 @@ pub async fn fixture_with(edit: impl FnOnce(&mut Config)) -> Fixture {
         database: dir.path().join("doorward.db"),
         key_file: Some(dir.path().join("doorward.key")),
         trusted_proxies: Vec::new(),
+        shared_client_address: false,
         lifetimes: Default::default(),
         limits: Default::default(),
         mail: Default::default(),

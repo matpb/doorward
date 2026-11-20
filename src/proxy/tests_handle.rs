@@ -136,6 +136,7 @@ impl Gw {
             database: db.clone(),
             key_file: Some(dir.path().join("doorward.key")),
             trusted_proxies: Vec::new(),
+            shared_client_address: false,
             lifetimes: Lifetimes::default(),
             limits: Limits::default(),
             mail: Default::default(),
