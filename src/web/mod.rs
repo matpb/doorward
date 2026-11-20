@@ -2,6 +2,7 @@
 
 mod address;
 mod cookies;
+pub mod drain;
 mod form;
 mod headers;
 pub mod limit;
@@ -20,3 +21,6 @@ pub use page::{
     not_found_link, page, page_with, redirect,
 };
 pub use viewer::{Role, SessionUser, Viewer};
+
+#[cfg(test)]
+mod tests_drain;

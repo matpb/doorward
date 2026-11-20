@@ -196,7 +196,13 @@ fn routes(state: AppState) -> Router {
                 .post(oauth::guard::server_path)
                 .delete(oauth::guard::server_path),
         );
-    api.merge(pages).merge(bearer).with_state(state)
+    api.merge(pages)
+        .merge(bearer)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            web::drain::unread_body,
+        ))
+        .with_state(state)
 }
 
 /// Runs the housekeeping at once and then every ten minutes. A failure goes to standard error.
