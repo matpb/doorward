@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use doorward::app::UnlockError;
 use doorward::{Config, Deps, build, serve, unlock};
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
@@ -57,9 +58,21 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn Error>> {
     match cli.command {
         Some(Command::Unlock { config, email }) => {
             let config = load(config.or(top).as_deref())?;
-            unlock(&config, &email).await?;
-            println!("unlocked {email}");
-            Ok(ExitCode::SUCCESS)
+            match unlock(&config, &email).await {
+                Ok(()) => {
+                    println!("unlocked {email}");
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(UnlockError::NoDatabase(path)) => {
+                    eprintln!("doorward: no database at {}", path.display());
+                    Ok(ExitCode::from(1))
+                }
+                Err(UnlockError::NoAccount) => {
+                    eprintln!("doorward: no account has that email address");
+                    Ok(ExitCode::from(1))
+                }
+                Err(err) => Err(err.into()),
+            }
         }
         Some(Command::Health { config }) => {
             let config = load(config.or(top).as_deref())?;

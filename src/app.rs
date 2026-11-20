@@ -1,12 +1,13 @@
 use std::future::Future;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::middleware;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -14,11 +15,12 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
-use crate::accounts::input::to_i64;
+use crate::accounts::input::{normalize_email, to_i64};
 use crate::accounts::{
     self, account, housekeeping, invite, login, password, reset, setup, throttle,
 };
 use crate::admin;
+use crate::audit::{self, Event};
 use crate::cimd::{CimdFetcher, HttpCimdFetcher};
 use crate::clock::{Clock, SystemClock};
 use crate::config::{Config, ConfigError};
@@ -318,12 +320,59 @@ fn stored_key_id(conn: &Connection) -> rusqlite::Result<Option<String>> {
         .transpose()
 }
 
-/// Clears the login block of one account, whether or not one existed.
-pub async fn unlock(config: &Config, email: &str) -> Result<(), DbError> {
+/// Why `unlock` did nothing.
+#[derive(Debug, thiserror::Error)]
+pub enum UnlockError {
+    #[error("no database at {}", .0.display())]
+    NoDatabase(PathBuf),
+    #[error("no account has that email address")]
+    NoAccount,
+    #[error(transparent)]
+    Db(#[from] DbError),
+}
+
+/// Clears the login block of one account and records it. Refuses, and creates nothing, when the
+/// database file is missing or no account has the address.
+pub async fn unlock(config: &Config, email: &str) -> Result<(), UnlockError> {
+    if !config.database.exists() {
+        return Err(UnlockError::NoDatabase(config.database.clone()));
+    }
     let db = Db::open(&config.database)?;
-    let email = email.to_owned();
-    db.call(move |conn| throttle::lift_block(conn, &email))
-        .await
+    let email = normalize_email(email);
+    let at = SystemClock.now().unix_timestamp();
+    let found = db.call(move |conn| unlock_in(conn, &email, at)).await?;
+    if found {
+        Ok(())
+    } else {
+        Err(UnlockError::NoAccount)
+    }
+}
+
+/// One transaction: the account must exist; its block is lifted and the activity row written.
+/// False, with nothing changed, when no account has the address.
+fn unlock_in(conn: &mut Connection, email: &str, at: i64) -> rusqlite::Result<bool> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let account: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM users WHERE email = ?1",
+            params![email],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(user_id) = account else {
+        return Ok(false);
+    };
+    throttle::lift_block(&tx, email)?;
+    let unlocked = Event {
+        kind: "unlock",
+        user_id: Some(user_id),
+        user_email: email,
+        detail: "from the command line",
+        ..Default::default()
+    };
+    audit::record(&tx, at, &unlocked)?;
+    tx.commit()?;
+    Ok(true)
 }
 
 /// Serves `router` until `shutdown` resolves; handlers can read the peer address.
@@ -339,8 +388,27 @@ where
     .await
 }
 
-async fn healthz() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok" }))
+/// Reads the settings table: 200 when the database answers, else 503 and one line on standard error.
+async fn healthz(State(state): State<AppState>) -> Response {
+    let read = state
+        .db
+        .call(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM settings", [], |row| {
+                row.get::<_, i64>(0)
+            })
+        })
+        .await;
+    match read {
+        Ok(_) => Json(json!({ "status": "ok" })).into_response(),
+        Err(err) => {
+            report::failure("health check", &err);
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "status": "unavailable" })),
+            )
+                .into_response()
+        }
+    }
 }
 
 /// Leads to sign-up while no owner exists, and to sign-in after that.

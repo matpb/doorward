@@ -113,7 +113,7 @@ pub async fn post_test(State(state): State<AppState>, form: VerifiedForm) -> Res
         text: TEST_TEXT.to_owned(),
         html: TEST_HTML.to_owned(),
     };
-    match mail::send(&state, message).await {
+    match mail::send(&state, "test", message).await {
         Ok(()) => test_answer(&state, &form.viewer, StatusCode::OK, Some(TEST_SENT), None).await,
         Err(error) => {
             test_answer(

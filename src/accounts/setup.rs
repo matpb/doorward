@@ -5,6 +5,7 @@ use maud::{Markup, html};
 use rusqlite::{Connection, ErrorCode, TransactionBehavior, params};
 
 use crate::app::AppState;
+use crate::audit::{self, Event};
 use crate::crypto::constant_time_eq;
 use crate::db::{Db, DbError};
 use crate::web::{
@@ -127,6 +128,13 @@ fn create_owner_in(
         Err(err) => return Err(err),
     }
     let user_id = tx.last_insert_rowid();
+    let created = Event {
+        kind: "owner_created",
+        user_id: Some(user_id),
+        user_email: email,
+        ..Default::default()
+    };
+    audit::record(&tx, now, &created)?;
     if let Some(previous) = previous {
         session::delete(&tx, previous)?;
     }

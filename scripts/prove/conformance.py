@@ -47,7 +47,7 @@ SCOPE_FILE = os.path.join(PROVE_DIR, "conformance-combined-scope.txt")
 SIDECAR_FILE = os.path.join(PROVE_DIR, "conformance-expected.tsv")
 SIDECAR_HEADER = ["revision", "target", "scenario", "check", "class", "substring", "approval", "reason"]
 SIDECAR_CLASSES = ("scope decision", "reference quirk")
-APPROVAL_RE = re.compile(r"pending|approved by the owner on [0-9]{4}-[0-9]{2}-[0-9]{2}")
+APPROVAL_RE = re.compile(r"pending|approved by the owner(?:'s reviewer)? on [0-9]{4}-[0-9]{2}-[0-9]{2}")
 YAML_ENTRY_RE = re.compile(r"  - ([A-Za-z0-9._/-]+):([A-Za-z0-9._-]+)")
 STATUSES = ("SUCCESS", "FAILURE", "WARNING", "SKIPPED", "INFO")
 # The run name prefix of each target, and the sidecar's name for it.

@@ -32,13 +32,13 @@ exists. `docs/INTERFACE.md` gives the routes, fields, statuses and attributes us
 ## cli_unlock.rs (review findings O1 and O7)
 
 Real binary, with a config file in a temp dir and the database beside it. Two tests predate
-the findings: `unlock_removes_the_block_and_prints_the_line` and
-`unlock_succeeds_when_no_block_exists` create no account, which the refusal of O1 changes.
+the findings and now create an account first, as the refusal of O1 requires.
 
-1. `unlock_removes_the_block_and_prints_the_line`: five failures for `bob@example.com`:
-   exit 0, `unlocked bob@example.com` on standard output, no failures left.
-2. `unlock_succeeds_when_no_block_exists`: no account and no block: exit 0 and the
-   unlocked line.
+1. `unlock_removes_the_block_and_prints_the_line`: an account for `bob@example.com` with five
+   failures: exit 0, `unlocked bob@example.com` on standard output, no failures left. (It
+   changed in phase B: the account is created first.)
+2. `unlock_succeeds_when_no_block_exists`: an account and no block: exit 0 and the
+   unlocked line. (It changed in phase B: the account is created first.)
 3. `unlock_does_not_create_a_missing_database`: no database file: exit 1, standard error
    `doorward: no database at {path}`, the file is not created, and the directory holds
    only the config file.
@@ -562,10 +562,6 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
     `demo` is replaced by text that cannot be opened; the refresh answers 303, one
     `admin_change` row has the detail `tool refresh failed`, and no `tools refreshed` row
     is added.
-12. `a_refused_call_says_why`: a deny rule on `delete_db` for everyone. The call to it
-    has detail `rule {id}` of that rule; a call to `nope` has `not in the tool list`.
-13. `a_tool_error_is_marked`: the upstream answers `isError` true. The client gets that
-    answer as sent; the row is `allow` / `ok` with detail `the tool reported an error`.
 
 ## s17_activity.rs (statement 17)
 
@@ -597,9 +593,15 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
 11. `the_user_and_server_pages_link_to_their_activity`: bob's page has one
     `a[data-link="activity"]` reading Activity with href `/admin/activity?user={id}`; the
     server page has one with href `/admin/activity?server={id}`.
+12. `a_refused_call_says_why`: a deny rule on `delete_db` for everyone. The call to it
+    has detail `rule {id}` of that rule; a call to `nope` has `not in the tool list`.
+13. `a_tool_error_is_marked`: the upstream answers `isError` true. The client gets that
+    answer as sent; the row is `allow` / `ok` with detail `the tool reported an error`.
 14. `owner_creation_and_password_change_have_their_kinds`: setup writes one `owner_created`
     row naming the owner; bob's signed-in password change writes one `password_change` row;
-    a reset by link then writes a `reset` row and no second `password_change`.
+    a reset by link then writes a `reset` row with the detail `completed` and no second
+    `password_change`. (The reset writes two `reset` rows, `requested` and `completed`; the
+    first version of this test counted exactly one, which was wrong.)
 15. `a_failed_mail_says_which_mail`: the invitation mail fails; the `mail_failed` row's
     detail starts with `invitation: ` and holds the error text after it.
 16. `a_failed_reset_mail_says_reset`: bob exists and the reset mail fails; the `mail_failed`
@@ -1158,9 +1160,11 @@ seconds; "refuses" means the process exits non-zero within 5 seconds.
 9. `the_key_never_reaches_the_output`: `DOORWARD_KEY` set to a valid random key and an
    unknown variable beside it: refuses, and neither stdout nor stderr contains the key.
 10. `subcommands_use_the_same_settings`: with variables only, `doorward health` exits 0
-    while the gateway runs and 1 after it stopped; `doorward unlock` for an email with a
-    login block, given the database by variable and no `--config`, exits 0, prints
-    `unlocked {email}` and removes the block.
+    while the gateway runs and 1 after it stopped. `doorward unlock` for an email no account
+    has, with five failures for it in the database given by variable and no `--config`,
+    exits 1 with standard error `doorward: no account has that email address` and empty
+    standard output; the five failures stay. (It changed in phase B: the refusal shows that
+    the database given by variable was opened.)
 11. `health_opens_nothing`: `doorward health` against a closed port, with
     `DOORWARD_DATABASE` pointing into an empty directory: exit 1 and the directory is still
     empty.

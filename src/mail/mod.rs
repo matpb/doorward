@@ -91,11 +91,12 @@ enum ReadError {
     Mail(#[from] MailError),
 }
 
-/// Sends through the stored settings. On failure records `mail_failed` and returns the error.
-pub async fn send(state: &AppState, message: Message) -> Result<(), MailError> {
+/// Sends through the stored settings. On failure records `mail_failed` with `kind` and returns the
+/// error. `kind` is one of `invitation`, `reset`, `new_connection` and `test`.
+pub async fn send(state: &AppState, kind: &'static str, message: Message) -> Result<(), MailError> {
     match deliver(state, &message).await {
         Ok(()) => Ok(()),
-        Err(error) => Err(record_failure(state, error).await),
+        Err(error) => Err(record_failure(state, kind, error).await),
     }
 }
 
@@ -232,12 +233,13 @@ fn secret_or_empty(
     Ok(secret(conn, keys, key)?.unwrap_or_else(|| Zeroizing::new(String::new())))
 }
 
-/// Writes the `mail_failed` row. The returned text is the one the owner sees and the row holds.
-async fn record_failure(state: &AppState, error: MailError) -> MailError {
+/// Writes the `mail_failed` row, its detail `<kind>: <text>`. The returned text is the one the owner
+/// sees; the row holds the same text after the kind.
+async fn record_failure(state: &AppState, kind: &'static str, error: MailError) -> MailError {
     let shown = limit(&error.0);
     let event = OwnedEvent {
         kind: "mail_failed".to_owned(),
-        detail: shown.clone(),
+        detail: format!("{kind}: {shown}"),
         ..Default::default()
     };
     match audit::record_now(state, event).await {

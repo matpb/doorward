@@ -391,19 +391,22 @@ fn subcommands_use_the_same_settings() {
     let unlock = Run::spawn(&["unlock", EMAIL], &env).wait_for_exit();
     assert_eq!(
         unlock.code,
-        Some(0),
-        "doorward unlock must exit 0 with the database given by variable; stderr:\n{}",
+        Some(1),
+        "doorward unlock of an address no account has must exit 1; stderr:\n{}",
         unlock.stderr
     );
     assert_eq!(
-        unlock.stdout,
-        format!("unlocked {EMAIL}\n"),
-        "doorward unlock must print the unlocked line"
+        unlock.stderr, "doorward: no account has that email address\n",
+        "the refusal comes from the database given by variable, so it was opened"
+    );
+    assert!(
+        unlock.stdout.is_empty(),
+        "a refused unlock must print nothing on standard output"
     );
     assert_eq!(
         block_count(database),
-        0,
-        "doorward unlock must remove the login block"
+        5,
+        "a refused unlock must leave the login block in place"
     );
 }
 

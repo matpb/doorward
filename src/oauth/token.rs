@@ -691,7 +691,7 @@ fn send_welcome(state: &AppState, welcome: Welcome) {
         );
         let message = templates::new_connection(&link).to(welcome.email);
         // mail::send has already recorded any failure in the activity log.
-        let _ = mail::send(&state, message).await;
+        let _ = mail::send(&state, "new_connection", message).await;
     });
 }
 

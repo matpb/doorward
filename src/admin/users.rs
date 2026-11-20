@@ -267,6 +267,12 @@ async fn load(state: &AppState, id: i64) -> Result<Option<User>, DbError> {
     state.db.call(move |conn| load_in(conn, id)).await
 }
 
+/// Deletes the unused invitations the user made, so that they stop working with the user's access.
+fn revoke_invitations(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM invitations WHERE invited_by = ?1", params![id])?;
+    Ok(())
+}
+
 /// One transaction: the role changes unless the target is the owner or the role is not valid.
 fn set_role_in(
     conn: &mut Connection,
@@ -289,6 +295,9 @@ fn set_role_in(
         "UPDATE users SET role = ?1 WHERE id = ?2",
         params![role, id],
     )?;
+    if role != "admin" {
+        revoke_invitations(&tx, id)?;
+    }
     let detail = format!("role of {} set to {role}", target.email);
     let changed = Event {
         kind: "admin_change",
@@ -325,6 +334,7 @@ fn change_in(
         Action::Disable => {
             tx.execute("UPDATE users SET disabled = 1 WHERE id = ?1", params![id])?;
             session::revoke_all(&tx, id)?;
+            revoke_invitations(&tx, id)?;
             format!("disabled {}", target.email)
         }
         Action::Enable => {
@@ -333,6 +343,7 @@ fn change_in(
         }
         Action::Delete => {
             session::revoke_all(&tx, id)?;
+            revoke_invitations(&tx, id)?;
             tx.execute("DELETE FROM users WHERE id = ?1", params![id])?;
             format!("deleted {}", target.email)
         }

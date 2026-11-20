@@ -32,6 +32,8 @@ struct Row {
     email: String,
     role: String,
     expires: String,
+    /// The email of the admin who made it; None when that account no longer exists.
+    inviter: Option<String>,
 }
 
 /// What creating an invitation writes.
@@ -89,7 +91,7 @@ pub async fn post_invitation(State(state): State<AppState>, form: VerifiedForm) 
     }
     let link = format!("{}/invite/{token}", state.config.public_url);
     let message = templates::invitation(&link).to(email);
-    match mail::send(&state, message).await {
+    match mail::send(&state, "invitation", message).await {
         Ok(()) => redirect("/admin/invitations"),
         Err(error) => invitation_created(&form.viewer, &error.0, &link),
     }
@@ -124,7 +126,9 @@ async fn load_open(db: &Db, now: i64) -> Result<Vec<Row>, DbError> {
 
 fn open_rows_in(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Row>> {
     let mut statement = conn.prepare(
-        "SELECT id, email, role, expires_at FROM invitations WHERE expires_at > ?1 ORDER BY id",
+        "SELECT i.id, i.email, i.role, i.expires_at, u.email FROM invitations i \
+         LEFT JOIN users u ON u.id = i.invited_by \
+         WHERE i.expires_at > ?1 ORDER BY i.id",
     )?;
     let rows = statement.query_map(params![now], |row| {
         let expires_at: i64 = row.get(3)?;
@@ -133,6 +137,7 @@ fn open_rows_in(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Row>> {
             email: row.get(1)?,
             role: row.get(2)?,
             expires: rfc3339(expires_at)?,
+            inviter: row.get(4)?,
         })
     })?;
     rows.collect()
@@ -259,6 +264,11 @@ fn invitations_body(csrf: &str, owner: bool, rows: &[Row], error: Option<&str>) 
             @for row in rows {
                 li data-invitation-id=(row.id) data-email=(row.email) {
                     p { strong { (row.email) } " as " (row.role) }
+                    @if let Some(inviter) = &row.inviter {
+                        span data-invited-by { "invited by " (inviter) }
+                    } @else {
+                        span data-invited-by { "invited by a removed account" }
+                    }
                     p { "Expires " (row.expires) }
                     form method="post" action=(format!("/admin/invitations/{}/revoke", row.id)) {
                         input type="hidden" name="csrf" value=(csrf);

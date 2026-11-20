@@ -89,7 +89,16 @@ file that group or others can read, or that is malformed, refuses the start. The
 file is created with mode 0600 as well. The database remembers the id of its key: once it
 does, a start without a key never makes a new one, and a start with a different key is
 refused, both with a message that asks for the original key.
-`doorward unlock --config <path> <email>` clears login blocks for one account.
+`doorward unlock --config <path> <email>` clears login blocks for one account and writes an
+`unlock` activity row. When the database file is missing it exits 1 with
+`doorward: no database at <path>` and creates nothing; when no account has the address it
+exits 1 with `doorward: no account has that email address` and changes nothing.
+
+Start-up failures exit 2 with one line on standard error that names the file and the cause:
+`doorward: cannot read the config file <path>: <error>`,
+`doorward: cannot open the database <path>: <error>`,
+`doorward: cannot read the key file <path>: <error>`, and
+`doorward: cannot create the key file <path>: <error>`.
 
 ## Config additions
 
@@ -110,7 +119,7 @@ refresh_replay_seconds = 30
 [limits]
 body_bytes = 1048576
 tools_list_bytes = 4194304
-upstream_timeout_seconds = 300
+upstream_timeout_seconds = 300 # at most 86400 (one day)
 account_failures = 5          # wrong passwords for one account from one address inside the window
 account_ceiling = 50          # wrong passwords for one account from all addresses inside the window
 address_failures = 30         # wrong passwords per address, for any accounts, inside the window
@@ -186,6 +195,10 @@ The address is the socket peer. When the peer is in `trusted_proxies`, it is the
 means the peer is used. IPv4-mapped addresses count as IPv4, and an IPv6 address counts as
 its /64 network.
 
+A range with prefix 0 (`0.0.0.0/0` or `::/0`) would trust every address, so it is a
+configuration error: `trusted_proxies: <entry> would trust every address`. Single addresses and
+prefixes from 1 up are accepted.
+
 Emails (plain text and HTML parts, links built from `PUB`):
 
 | Mail | Subject | Link |
@@ -218,9 +231,9 @@ Every full page of the panel (status 200, and the 400 pages that re-render a for
 | `GET /admin/users` | | `data-page="users"`; rows `data-user-id`, `data-email` |
 | `GET /admin/users/{id}` | | `data-page="user"`: role, status; one `input[name="server_id"]` checkbox per server, `checked` when assigned; effective tools, one element per tool of each assigned server with `data-server` (slug), `data-tool`, `data-verdict="allow|deny"` and `data-rule` (the id of the rule that decided, empty when no deny matched); a link `a[data-link="activity"]` reading Activity, `href` `/admin/activity?user={id}` |
 | `POST /admin/users/{id}/servers` | `server_id` (repeated) | replaces the user's assignments; the user's token families for each removed server are revoked, combined endpoint families stay valid and lose those servers' tools; `303` |
-| `POST /admin/users/{id}/role` | `role` (`admin` or `user`) | owner only; `303` |
-| `POST /admin/users/{id}/disable`, `/enable`, `/delete` | | disable and delete revoke sessions and families at once; `303`. The owner cannot be disabled or deleted: `400`. An admin may act on accounts with the role `user` only (`403` otherwise); the owner on anyone else |
-| `GET /admin/invitations` | | `data-page="invitations"`; open invitations as rows with `data-invitation-id`, `data-email` |
+| `POST /admin/users/{id}/role` | `role` (`admin` or `user`) | owner only; `303`. Changing the role to `user` deletes the open invitations that user made |
+| `POST /admin/users/{id}/disable`, `/enable`, `/delete` | | disable and delete revoke sessions and families at once, and delete the open invitations the user made; `303`. The owner cannot be disabled or deleted: `400`. An admin may act on accounts with the role `user` only (`403` otherwise); the owner on anyone else |
+| `GET /admin/invitations` | | `data-page="invitations"`; open invitations as rows with `data-invitation-id`, `data-email`; each row holds `<span data-invited-by>invited by EMAIL</span>`, or `invited by a removed account` when the inviter no longer exists |
 | `POST /admin/invitations` | `email`, `role` | invitation stored and mailed; `303`. An address that already has an account: `400`. Only the owner may invite with the role `admin` (`403` for an admin who asks). A new invitation for an address replaces an open one. If mailing fails: `200` `data-page="invitation-created"` with the error and the link once in `data-invite-link` |
 | `POST /admin/invitations/{id}/revoke` | | `303` |
 | `GET /admin/rules` | | `data-page="rules"`; rows `data-rule-id`, `data-subject` (`everyone` or the user's email), `data-effect`, `data-scope` (`all`, `server`, `tool`), `data-server` (slug or empty), `data-tool` (name or empty), `data-stale="yes|no"` (`yes` when the rule names a tool that is no longer in its server's cached list) |
@@ -250,7 +263,13 @@ and `server` filters take ids. Newest rows come first.
 
 Activity kinds: `tool_call`, `login`, `login_failed`, `invitation`, `reset`, `admin_change`,
 `client_connected`, `client_disconnected`, `redirect_blocked`, `mail_failed`,
-`tool_appeared`.
+`tool_appeared`, `owner_created` (setup made the owner), `unlock` (`doorward unlock`, detail
+`from the command line`) and `password_change` (a signed-in user changed the password; a reset
+by link stays `reset`).
+
+A `mail_failed` row's detail is `<kind>: <error>`. The kind is the mail that failed:
+`invitation`, `reset`, `new_connection` (a client connected to the account) or `test` (the
+send-test button). The row never holds an address or a message body.
 
 Retention: the housekeeping run, at start and every ten minutes, deletes every activity
 row older than `activity_days` days, whatever its kind.
@@ -547,6 +566,14 @@ Headers sent upstream: `Content-Type`, `Accept`, `MCP-Protocol-Version`, `Mcp-Se
 Responses to the client carry `X-Content-Type-Options: nosniff` and
 `Content-Security-Policy: sandbox`; of the upstream's headers only `Content-Type` and
 `Mcp-Session-Id` pass.
+
+## Health
+
+`GET /healthz` reads the settings table of the database. It answers `200` with
+`{"status":"ok"}` when the read works, and `503` with `{"status":"unavailable"}` when it does
+not; a failed read also writes one line, `doorward: health check failed: <error>`. `doorward
+health` asks this route on the listen address: it exits 0 on `200` and 1 otherwise, with one
+line on standard error.
 
 ## Rate limits
 

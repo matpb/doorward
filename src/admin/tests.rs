@@ -1051,7 +1051,7 @@ async fn a_send_with_no_provider_is_shown_and_logged() {
     assert_eq!(page.error().as_deref(), Some("Mail is not set up."));
     let rows = rows_of(dir.path(), "mail_failed");
     assert_eq!(rows.len(), 1, "one mail_failed row must be written");
-    assert_eq!(rows[0].2, "Mail is not set up.");
+    assert_eq!(rows[0].2, "test: Mail is not set up.");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1166,7 +1166,7 @@ async fn a_server_that_never_answers_is_timed_out() {
     );
     let logged = rows_of(dir.path(), "mail_failed");
     assert_eq!(logged.len(), 1, "the timed out send must be logged");
-    assert_eq!(logged[0].2, "The mail server did not answer in time.");
+    assert_eq!(logged[0].2, "test: The mail server did not answer in time.");
 }
 
 /// A local listener that answers every request with 500 and a 1 MiB body.
@@ -1218,7 +1218,11 @@ async fn a_provider_answer_of_one_mebibyte_is_shown_within_300_characters() {
     );
     let logged = rows_of(dir.path(), "mail_failed");
     assert_eq!(logged.len(), 1);
-    assert!(logged[0].2.chars().count() <= 300);
+    let text = logged[0]
+        .2
+        .strip_prefix("test: ")
+        .expect("the detail starts with its kind");
+    assert!(text.chars().count() <= 300);
 }
 
 #[tokio::test(flavor = "multi_thread")]

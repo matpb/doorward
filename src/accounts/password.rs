@@ -140,7 +140,7 @@ pub(super) fn change_in(
     session::revoke_all(&tx, change.user_id)?;
     let token = session::insert(&tx, change.user_id, change.now, change.lifetime)?;
     let changed = Event {
-        kind: "reset",
+        kind: "password_change",
         user_id: Some(change.user_id),
         user_email: &change.email,
         detail: "password changed",

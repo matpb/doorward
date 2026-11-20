@@ -350,7 +350,7 @@ impl Default for Limits {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("cannot read config file {}: {}", .0.display(), .1)]
+    #[error("cannot read the config file {}: {}", .0.display(), .1)]
     Read(PathBuf, #[source] std::io::Error),
     #[error("invalid config file: {0}")]
     Parse(#[from] toml::de::Error),
@@ -672,10 +672,24 @@ impl Config {
             .to_owned();
         self.lifetimes.validate()?;
         self.limits.validate()?;
+        check_trusted_proxies(&self.trusted_proxies)?;
         check_allowed_origins(&self.allowed_origins)?;
         Ok(())
     }
 }
+
+/// Refuses a range that holds every address: it would let any client set the visitor address.
+fn check_trusted_proxies(ranges: &[Range]) -> Result<(), ConfigError> {
+    match ranges.iter().find(|range| range.prefix == 0) {
+        Some(range) => Err(ConfigError::Invalid(format!(
+            "trusted_proxies: {range} would trust every address"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// The longest `limits.upstream_timeout_seconds`: one day.
+const UPSTREAM_TIMEOUT_MAX: u64 = 86_400;
 
 /// Refuses an `allowed_origins` list that breaks statement 48.
 fn check_allowed_origins(entries: &[String]) -> Result<(), ConfigError> {
@@ -788,6 +802,11 @@ impl Limits {
             return Err(ConfigError::Invalid(
                 "limits.account_ceiling must be at least limits.account_failures".to_owned(),
             ));
+        }
+        if self.upstream_timeout_seconds > UPSTREAM_TIMEOUT_MAX {
+            return Err(ConfigError::Invalid(format!(
+                "limits.upstream_timeout_seconds must be at most {UPSTREAM_TIMEOUT_MAX}"
+            )));
         }
         Ok(())
     }

@@ -1,5 +1,5 @@
 use std::fs::OpenOptions;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 #[cfg(unix)]
@@ -26,8 +26,8 @@ const MIGRATIONS: [(i64, &str); 11] = [
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
-    #[error("cannot create database file: {0}")]
-    File(#[from] std::io::Error),
+    #[error("cannot open the database {}: {}", .0.display(), .1)]
+    Open(PathBuf, String),
     #[error("database error: {0}")]
     Sql(#[from] rusqlite::Error),
     #[error("database task failed: {0}")]
@@ -42,12 +42,7 @@ pub struct Db {
 impl Db {
     /// Opens or creates the database at `path` and applies pending migrations.
     pub fn open(path: &Path) -> Result<Db, DbError> {
-        create_private_file(path)?;
-        let mut conn = Connection::open(path)?;
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; \
-             PRAGMA secure_delete=ON;",
-        )?;
+        let mut conn = connect(path)?;
         migrate(&mut conn)?;
         Ok(Db {
             conn: Arc::new(Mutex::new(conn)),
@@ -106,6 +101,22 @@ pub fn setting_text(conn: &Connection, key: &str) -> rusqlite::Result<Option<Str
             })
         })
         .transpose()
+}
+
+/// The connection to the file at `path` with its pragmas. A failure names the path and the cause.
+fn connect(path: &Path) -> Result<Connection, DbError> {
+    let opened = create_private_file(path)
+        .map_err(|err| err.to_string())
+        .and_then(|()| Connection::open(path).map_err(|err| err.to_string()))
+        .and_then(|conn| {
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; \
+                 PRAGMA secure_delete=ON;",
+            )
+            .map_err(|err| err.to_string())?;
+            Ok(conn)
+        });
+    opened.map_err(|cause| DbError::Open(path.to_path_buf(), cause))
 }
 
 /// Creates the file with mode 0600 if missing; an existing file keeps its mode.

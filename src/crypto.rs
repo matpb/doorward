@@ -49,8 +49,10 @@ pub enum KeyError {
     Mode,
     #[error("the key is not 64 hexadecimal characters")]
     Malformed,
-    #[error("cannot read or create the key file")]
-    Io(#[source] std::io::Error),
+    #[error("cannot read the key file {}: {}", .0.display(), .1)]
+    Read(PathBuf, #[source] std::io::Error),
+    #[error("cannot create the key file {}: {}", .0.display(), .1)]
+    Create(PathBuf, #[source] std::io::Error),
     #[error(
         "the database was encrypted with a key that is not present: supply the original key in DOORWARD_KEY or in the key file"
     )]
@@ -391,12 +393,13 @@ impl PasswordHasher {
 fn read_key_file(path: &Path, stored_key_id: Option<&str>) -> Result<Zeroizing<String>, KeyError> {
     match OpenOptions::new().read(true).open(path) {
         Ok(mut file) => {
-            let mode = file.metadata().map_err(KeyError::Io)?.permissions().mode();
+            let read = |err| KeyError::Read(path.to_path_buf(), err);
+            let mode = file.metadata().map_err(read)?.permissions().mode();
             if mode & 0o077 != 0 {
                 return Err(KeyError::Mode);
             }
             let mut text = Zeroizing::new(String::new());
-            file.read_to_string(&mut text).map_err(KeyError::Io)?;
+            file.read_to_string(&mut text).map_err(read)?;
             Ok(text)
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -405,7 +408,7 @@ fn read_key_file(path: &Path, stored_key_id: Option<&str>) -> Result<Zeroizing<S
             }
             create_key_file(path)
         }
-        Err(err) => Err(KeyError::Io(err)),
+        Err(err) => Err(KeyError::Read(path.to_path_buf(), err)),
     }
 }
 
@@ -414,15 +417,16 @@ fn create_key_file(path: &Path) -> Result<Zeroizing<String>, KeyError> {
     let mut bytes = Zeroizing::new([0u8; 32]);
     fill_random(&mut bytes[..]);
     let text = Zeroizing::new(hex::encode(&bytes[..]));
+    let create = |err| KeyError::Create(path.to_path_buf(), err);
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(path)
-        .map_err(KeyError::Io)?;
-    file.write_all(text.as_bytes()).map_err(KeyError::Io)?;
-    file.write_all(b"\n").map_err(KeyError::Io)?;
-    file.sync_all().map_err(KeyError::Io)?;
+        .map_err(create)?;
+    file.write_all(text.as_bytes()).map_err(create)?;
+    file.write_all(b"\n").map_err(create)?;
+    file.sync_all().map_err(create)?;
     Ok(text)
 }
 

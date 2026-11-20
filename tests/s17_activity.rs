@@ -372,17 +372,16 @@ async fn owner_creation_and_password_change_have_their_kinds() {
         .reset_password(&link, "a third long password")
         .await;
     assert_eq!(page.status, 303, "the reset by link must set the password");
-    let rows = admin::activity(&w.owner, None, None).await;
-    let resets = rows
+    let details = admin::activity_with_details(&w.owner, None, None).await;
+    let completed = details
         .iter()
-        .filter(|row| row.kind == "reset" && row.user == BOB)
+        .filter(|(row, detail)| row.kind == "reset" && row.user == BOB && detail == "completed")
         .count();
     assert_eq!(
-        resets,
-        1,
-        "a reset by link must still be recorded as reset, kinds were {:?}",
-        kinds(&rows)
+        completed, 1,
+        "a reset by link must still be recorded as reset, with the detail completed"
     );
+    let rows = admin::activity(&w.owner, None, None).await;
     let changes = rows
         .iter()
         .filter(|row| row.kind == "password_change")

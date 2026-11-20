@@ -67,7 +67,7 @@ message names the variable and never prints the value.
 | `DOORWARD_LISTEN` | `127.0.0.1:8717` | Address and port the gateway listens on. The containers set `0.0.0.0:8717`. |
 | `DOORWARD_DATABASE` | required | Path of the SQLite database file. The containers set `/data/doorward.db`. |
 | `DOORWARD_KEY_FILE` | (none) | File that holds the encryption key. When unset, the key file is the database path with `.key` added. |
-| `DOORWARD_TRUSTED_PROXIES` | (none) | Addresses or CIDR ranges of proxies whose `X-Forwarded-For` is believed. See Client addresses. |
+| `DOORWARD_TRUSTED_PROXIES` | (none) | Addresses or CIDR ranges of proxies whose `X-Forwarded-For` is believed. A range that holds every address (prefix 0) refuses the start. See Client addresses. |
 | `DOORWARD_SHARED_CLIENT_ADDRESS` | `false` | Set to `true` to accept that every visitor shares one address when no trusted proxy is set. |
 | `DOORWARD_ALLOWED_ORIGINS` | (none) | Comma separated origins, other than the public address, that may call the MCP paths, for a browser client served from another origin such as an extension. Each entry is `scheme://host[:port]` and is compared exactly. |
 | `DOORWARD_LIFETIMES_INVITATION_DAYS` | `7` | Days an invitation link works. |
@@ -81,7 +81,7 @@ message names the variable and never prints the value.
 | `DOORWARD_LIFETIMES_REFRESH_REPLAY_SECONDS` | `30` | Seconds in which a just-used refresh token may be presented again. `0` turns this off. |
 | `DOORWARD_LIMITS_BODY_BYTES` | `1048576` | Largest request body in bytes. Caddy uses the same limit. |
 | `DOORWARD_LIMITS_TOOLS_LIST_BYTES` | `4194304` | Largest tool list or stream event in bytes that a server may send. |
-| `DOORWARD_LIMITS_UPSTREAM_TIMEOUT_SECONDS` | `300` | Seconds an upstream server may stay silent before the call ends. |
+| `DOORWARD_LIMITS_UPSTREAM_TIMEOUT_SECONDS` | `300` | Seconds an upstream server may stay silent before the call ends. At most `86400` (one day); a larger value refuses the start. |
 | `DOORWARD_LIMITS_ACCOUNT_FAILURES` | `5` | Wrong passwords for one account from one client address, inside `DOORWARD_LIMITS_BLOCK_MINUTES`, after which a sign-in to that account from that address answers `429`, right password included. Other addresses are not affected. |
 | `DOORWARD_LIMITS_ACCOUNT_CEILING` | `50` | Wrong passwords for one account from all client addresses together, inside `DOORWARD_LIMITS_BLOCK_MINUTES`, that block the account for every address. Must be at least `DOORWARD_LIMITS_ACCOUNT_FAILURES`. |
 | `DOORWARD_LIMITS_ADDRESS_FAILURES` | `30` | More than this many wrong passwords from one client address, for any accounts, inside `block_minutes` make that address answer `429`. |
@@ -212,8 +212,11 @@ The image has no shell, but the binary runs directly:
 docker compose -f compose.caddy.yaml exec doorward /usr/local/bin/doorward unlock user@example.com
 ```
 
-It prints `unlocked user@example.com` and exits 0. It also exits 0 when no account has that
-address, so check the address yourself. For `compose.yaml`, use that file name.
+It prints `unlocked user@example.com` and exits 0, and the unlock is written to the activity
+log. When no account has that address it exits 1 with
+`doorward: no account has that email address` and changes nothing. When the database file
+does not exist it exits 1 with `doorward: no database at <path>` and creates nothing. For
+`compose.yaml`, use that file name.
 
 ## Rate limits
 
@@ -260,6 +263,13 @@ entry that is not itself a trusted proxy.
 - Hosts without IPv6 must remove `enable_ipv6: true` from the `edge` network in
   `compose.caddy.yaml`.
 
+## Health
+
+The image's health check runs `doorward health` every 30 seconds. It asks `/healthz` on the
+listen address, which reads the database: the check passes only while the database answers.
+A failing check exits 1 with one line on standard error, and the gateway's own line
+`doorward: health check failed: <error>` names the cause.
+
 ## Logs
 
 The gateway writes to standard error. A failure inside it writes one line, in one of these
@@ -277,6 +287,12 @@ shapes:
   that matches no row writes nothing.
 - `doorward: client metadata for <host> failed: <error>`, when a client metadata document
   cannot be fetched. Only the host of the client ID is written, never its path or query.
+- `doorward: health check failed: <error>`, when `/healthz` cannot read the database.
+- At start-up, a file that cannot be used exits 2 with the file's path and the cause:
+  `doorward: cannot read the config file <path>: <error>`,
+  `doorward: cannot open the database <path>: <error>`,
+  `doorward: cannot read the key file <path>: <error>` or
+  `doorward: cannot create the key file <path>: <error>`.
 
 No failure line holds a password, an email address, a token, a code, a cookie, a request
 body or a full URL. The setup code printed at first start is the one secret line, and it is

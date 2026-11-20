@@ -490,7 +490,12 @@ pub async fn post_refresh_tools(
     let outcome = match upstream::target(&state, id).await {
         Ok(Some(target)) => catalog::refresh(&state, &target).await.map(|_| ()),
         Ok(None) => return not_found(),
-        Err(TargetError::Secret) => catalog::fail(&state, id, RefreshError::Unavailable).await,
+        Err(TargetError::Secret) => {
+            match catalog::fail(&state, id, RefreshError::Unavailable).await {
+                Ok(()) => Err(RefreshError::Unavailable),
+                Err(err) => Err(err),
+            }
+        }
         Err(TargetError::Db(err)) => return internal_error("tool refresh", &err),
     };
     let detail = match outcome {

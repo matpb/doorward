@@ -7,7 +7,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 RED_LIST=tests/expected-red.txt
 
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --locked -- -D warnings
 
 red=()
 if [[ -f "$RED_LIST" ]]; then
@@ -28,14 +28,14 @@ for file in tests/*.rs; do
     [[ $skip -eq 0 ]] && green+=(--test "$name")
 done
 
-cargo test --lib --bins
-cargo test "${green[@]}"
+cargo test --locked --lib --bins
+cargo test --locked "${green[@]}"
 
 # A listed file must still compile and still fail; one that passes has to leave the list.
 for name in "${red[@]:-}"; do
     [[ -z "$name" ]] && continue
-    cargo test --test "$name" --no-run
-    if cargo test --test "$name" >/dev/null 2>&1; then
+    cargo test --locked --test "$name" --no-run
+    if cargo test --locked --test "$name" >/dev/null 2>&1; then
         echo "check: tests/$name.rs passes now: remove it from $RED_LIST" >&2
         exit 1
     fi

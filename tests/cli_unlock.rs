@@ -82,6 +82,7 @@ fn unlock_removes_the_block_and_prints_the_line() {
     let config = write_config(dir.path());
     let database = dir.path().join("doorward.db");
     Db::open(&database).expect("create the database");
+    insert_account(&database);
     insert_block(&database);
     assert_eq!(
         block_count(&database),
@@ -182,6 +183,7 @@ fn unlock_succeeds_when_no_block_exists() {
     let config = write_config(dir.path());
     let database = dir.path().join("doorward.db");
     Db::open(&database).expect("create the database");
+    insert_account(&database);
 
     let output = unlock(&config, EMAIL);
     assert_eq!(output.status.code(), Some(0), "stderr: {:?}", output.stderr);
