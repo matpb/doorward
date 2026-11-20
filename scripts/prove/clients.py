@@ -556,7 +556,8 @@ def command_rule(action):
     return 0
 
 
-def slow_ok_rows(owner, bob_id):
+def allowed_call_rows(owner, bob_id, tool):
+    """Bob's finished allowed calls of one tool, oldest first; the owner session is reused by the caller."""
     page = owner.get(f"/admin/activity?{urlencode({'user': bob_id})}")
     cf.need(page.status == 200 and page.kind() == "activity", f"the activity page answered {page.status}")
     parser = ActivityRows()
@@ -564,7 +565,7 @@ def slow_ok_rows(owner, bob_id):
     return [
         row
         for row in reversed(parser.rows)
-        if row["kind"] == "tool_call" and row["tool"] == DENIED_TOOL and row["outcome"] == "ok"
+        if row["kind"] == "tool_call" and row["tool"] == tool and row["outcome"] == "ok"
     ]
 
 
@@ -575,7 +576,7 @@ def positive_seconds(text):
     return value
 
 
-def command_deny_after_first_call(timeout):
+def command_deny_after_first_call(timeout, tool):
     state = read_stack()
     owner = owner_client(state)
     bob_id, _ = rule_targets(owner)
@@ -584,7 +585,7 @@ def command_deny_after_first_call(timeout):
     deadline = time.monotonic() + timeout
     seen = None
     while seen is None:
-        newer = [row for row in slow_ok_rows(owner, bob_id) if row["time"] >= started]
+        newer = [row for row in allowed_call_rows(owner, bob_id, tool) if row["time"] >= started]
         if newer:
             seen = newer[-1]
         elif time.monotonic() >= deadline:
@@ -592,7 +593,7 @@ def command_deny_after_first_call(timeout):
         else:
             time.sleep(POLL_SECONDS)
     if seen is None:
-        print(f"FAIL deny-after-first-call: no allowed {DENIED_TOOL} call by {BOB_EMAIL} finished within {timeout} seconds")
+        print(f"FAIL deny-after-first-call: no allowed {tool} call by {BOB_EMAIL} finished within {timeout} seconds")
         return 1
     print(f"row seen: {format_row(seen)}")
     text, created_at = rule_on(owner)
@@ -848,8 +849,9 @@ def build_parser():
     selfcheck.add_argument("--toggle", action="store_true", help="also allow, call, deny and call slow")
     rule = sub.add_parser("rule", help="delete (off) or create (on) the deny rule for slow")
     rule.add_argument("action", choices=["off", "on"])
-    first = sub.add_parser("deny-after-first-call", help="deny slow once bob's first allowed call finishes")
+    first = sub.add_parser("deny-after-first-call", help="deny slow once bob's first allowed call of a tool finishes")
     first.add_argument("--timeout", type=positive_seconds, default=300)
+    first.add_argument("--tool", default=DENIED_TOOL, help="the tool whose first finished allowed call triggers rule on")
     down = sub.add_parser("down", help="stop this stack by its marker")
     down.add_argument("--wipe", action="store_true")
     serve = sub.add_parser("upstream", help="serve the fake upstream on loopback (used by up)")
@@ -884,7 +886,7 @@ def main(argv):
         if args.cmd == "rule":
             return command_rule(args.action)
         if args.cmd == "deny-after-first-call":
-            return command_deny_after_first_call(args.timeout)
+            return command_deny_after_first_call(args.timeout, args.tool)
         if args.cmd == "down":
             return command_down(args.wipe)
         return run_upstream(args.port)

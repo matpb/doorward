@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HELPER="$ROOT/scripts/prove/clients.py"
 
 usage() {
-    echo "usage: [PROVE_CLIENTS_DIR=<dir>] scripts/prove-clients.sh up|status|activity [--user <email>] [--out <file>]|selfcheck [--toggle]|rule off|rule on|deny-after-first-call [--timeout <seconds>]|down [--wipe]" >&2
+    echo "usage: [PROVE_CLIENTS_DIR=<dir>] scripts/prove-clients.sh up|status|activity [--user <email>] [--out <file>]|selfcheck [--toggle]|rule off|rule on|deny-after-first-call [--timeout <seconds>] [--tool <name>]|down [--wipe]" >&2
     exit 2
 }
 
@@ -37,8 +37,20 @@ case "$command" in
         python3 -I "$HELPER" rule "$1"
         ;;
     deny-after-first-call)
-        [[ $# -eq 0 || ( $# -eq 2 && "$1" == "--timeout" ) ]] || usage
-        python3 -I "$HELPER" deny-after-first-call "$@"
+        forward=()
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --timeout | --tool)
+                    [[ $# -ge 2 ]] || usage
+                    forward+=("$1" "$2")
+                    shift 2
+                    ;;
+                *)
+                    usage
+                    ;;
+            esac
+        done
+        python3 -I "$HELPER" deny-after-first-call "${forward[@]}"
         ;;
     activity)
         python3 -I "$HELPER" activity "$@"
