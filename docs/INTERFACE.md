@@ -438,7 +438,8 @@ The combined endpoint `/mcp` is its own MCP server:
 - Before the answer is returned the caller's token and its assignment to the server are
   checked again; when either fails the answer is the refusal above and the row is
   `allow` / `refused`. A call that reached an upstream writes one row: `allow` with outcome
-  `ok`, `error` (a JSON-RPC error or a tool error result), or `unavailable`, or, when the
+  `ok` (any result, also one the tool itself marks as an error), `error` (a JSON-RPC error,
+  or a result replaced because it asked for input), or `unavailable`, or, when the
   client leaves before the answer, `error` with the detail `the client left before the answer`.
 - An upstream that is unreachable, answers another id, or faults: `502`, `-32000`,
   `Upstream {slug} is unavailable`, row `unavailable`.
