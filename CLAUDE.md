@@ -119,6 +119,7 @@ H. Real clients
     refused a denied one, and the call shows in the activity log under the right user: Claude
     Code, Codex, Cursor, Grok Build, Claude Desktop, ChatGPT desktop, ChatGPT.com and
     claude.ai. Copilot is tried and reported, and does not gate v1.
+    Replaced by 49.
 
 I. Keeps working
 
@@ -224,6 +225,10 @@ L. Added after the owner's auth review
     setting, is refused with a 403 before its token is looked at; it reaches no upstream,
     costs the user nothing and is not logged as activity. A request with no `Origin`
     header is unaffected, and the sign-in endpoints that programs call are not covered.
+49. Claude Code and Codex each sign in through the gateway, list tools, call an allowed
+    tool, are refused a denied one, and the calls show in the activity log under the right
+    user. No other client gates v1 (the owner's decision of 2026-11-20); a run made with
+    another client is reported.
 
 ### Proof
 
@@ -238,7 +243,7 @@ into the test harness. In addition:
   kept under `proof/` (not tracked).
 - 25: `scripts/prove-tests-first.sh` prints, per abuse test, its first commit and the first
   commit of the code it covers, with the saved failing run.
-- 27: one transcript and one screenshot per client under `proof/`, by hand-driven runs.
+- 27: replaced by 49.
 - 30: `scripts/hygiene.sh` scans tracked files and commit messages.
 - 31: by the project owner.
 - 38, 39, 43: `scripts/prove-docker.sh` builds the image, starts each Compose file on the
@@ -250,6 +255,8 @@ into the test harness. In addition:
   restore that still decrypts a stored upstream secret. `./check.sh` does not run it, so
   that Check passes on a machine without Docker.
 - 48: `tests/s48_origin.rs`.
+- 49: one transcript and one screenshot per client under `proof/clients/`, by hand-driven
+  runs against the stack of `scripts/prove-clients.sh`.
 
 ### Assumptions
 

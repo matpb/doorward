@@ -107,40 +107,40 @@ def environ_entries(pid):
         return []
 
 
-def has_marker(pid, marker):
-    return f"{MARK_KEY}={marker}".encode() in environ_entries(pid)
+def has_marker(pid, marker, key=MARK_KEY):
+    return f"{key}={marker}".encode() in environ_entries(pid)
 
 
-def marked_pids(marker):
+def marked_pids(marker, key=MARK_KEY):
     """The pids whose environment holds this stack's marker, exactly; no other process matches."""
     found = []
     for name in os.listdir("/proc"):
-        if name.isdigit() and has_marker(int(name), marker):
+        if name.isdigit() and has_marker(int(name), marker, key):
             found.append(int(name))
     return sorted(found)
 
 
-def signal_marked(pid, sig, marker):
-    if has_marker(pid, marker):
+def signal_marked(pid, sig, marker, key=MARK_KEY):
+    if has_marker(pid, marker, key):
         try:
             os.kill(pid, sig)
         except ProcessLookupError:
             pass
 
 
-def stop_marked(marker):
+def stop_marked(marker, key=MARK_KEY):
     """TERM to the marked processes, KILL after five seconds; returns the pids still alive."""
-    for pid in marked_pids(marker):
-        signal_marked(pid, signal.SIGTERM, marker)
+    for pid in marked_pids(marker, key):
+        signal_marked(pid, signal.SIGTERM, marker, key)
     deadline = time.monotonic() + STOP_SECONDS
-    while marked_pids(marker) and time.monotonic() < deadline:
+    while marked_pids(marker, key) and time.monotonic() < deadline:
         time.sleep(0.1)
-    for pid in marked_pids(marker):
-        signal_marked(pid, signal.SIGKILL, marker)
+    for pid in marked_pids(marker, key):
+        signal_marked(pid, signal.SIGKILL, marker, key)
     deadline = time.monotonic() + 2
-    while marked_pids(marker) and time.monotonic() < deadline:
+    while marked_pids(marker, key) and time.monotonic() < deadline:
         time.sleep(0.1)
-    return marked_pids(marker)
+    return marked_pids(marker, key)
 
 
 def read_marker():
@@ -179,13 +179,13 @@ def set_stack_rule(text):
     write_private(STACK_FILE, "\n".join(out) + "\n")
 
 
-def launch(argv, env, name):
+def launch(argv, env, name, run=RUN):
     """Starts a process in its own session, so it outlives this command; its output goes to the work directory."""
-    out = open(os.path.join(RUN, f"{name}.out"), "ab")
-    err = open(os.path.join(RUN, f"{name}.err"), "ab")
+    out = open(os.path.join(run, f"{name}.out"), "ab")
+    err = open(os.path.join(run, f"{name}.err"), "ab")
     try:
         proc = subprocess.Popen(
-            argv, cwd=RUN, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True
+            argv, cwd=run, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True
         )
     finally:
         out.close()
@@ -203,13 +203,13 @@ def run_upstream(port):
     return 0
 
 
-def write_config(gw_port):
+def write_config(gw_port, run=RUN):
     text = (
         f'public_url = "http://127.0.0.1:{gw_port}"\n'
         f'listen = "127.0.0.1:{gw_port}"\n'
-        f'database = "{os.path.join(RUN, "doorward.db")}"\n'
+        f'database = "{os.path.join(run, "doorward.db")}"\n'
     )
-    write_private(os.path.join(RUN, "doorward.toml"), text)
+    write_private(os.path.join(run, "doorward.toml"), text)
 
 
 def drive(gw_port, up_port, secret, setup_log):
