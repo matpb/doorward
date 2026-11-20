@@ -1001,7 +1001,6 @@ async fn the_upstream_sees_only_the_allowed_headers() {
         ("mcp-method", "tools/call"),
         ("mcp-name", "echo"),
         ("x-trace", "t"),
-        ("origin", "https://example.com"),
         ("referer", "https://example.com/x"),
     ];
     let mut headers = session_headers(None);
@@ -1011,6 +1010,7 @@ async fn the_upstream_sees_only_the_allowed_headers() {
             .map(|(name, value)| (*name, (*value).to_owned())),
     );
     headers.push(("host", "example.com".to_owned()));
+    headers.push(("origin", demo.gw.config.public_url.clone()));
     let reply = demo
         .gw
         .post("demo", &demo.token, headers, initialize_body())

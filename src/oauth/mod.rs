@@ -7,6 +7,7 @@ pub mod consent;
 pub mod families;
 pub mod guard;
 pub mod metadata;
+pub mod origin;
 pub mod policy;
 pub mod register;
 pub mod token;
@@ -18,5 +19,7 @@ mod tests;
 mod tests_consent;
 #[cfg(test)]
 mod tests_guard;
+#[cfg(test)]
+mod tests_origin;
 #[cfg(test)]
 mod tests_token;

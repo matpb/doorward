@@ -1159,17 +1159,20 @@ refusal body, and no `WWW-Authenticate`. Foreign origin is `https://evil.example
 
 1. `a_foreign_origin_is_refused_before_anything_else`: `initialize` and stateless
    `tools/list` on `/demo` and `/mcp` with the foreign origin are refused; the upstream
-   saw no request and bob has no new activity row.
-2. `refused_origin_forms`: the refused forms (another origin, `null`, empty, trailing
-   slash, uppercase host, explicit default port, other scheme, other port, look-alike,
-   non-visible ASCII, own origin beside a foreign one, two own origins) are each refused
-   on `/demo` and `/mcp`; the upstream saw no request.
+   saw no request and bob has no new activity row. With `general_burst` at 3, six refused
+   requests leave the address bucket intact: a normal `tools/list` on `/demo` is `200`.
+2. `refused_origin_forms`: the refused forms (another origin, an uppercase scheme of the
+   own origin, `null`, empty, trailing slash, uppercase host, explicit default port, other
+   scheme, other port, look-alike, non-visible ASCII, own origin beside a foreign one, two
+   own origins) are each refused on `/demo` and `/mcp`; the upstream saw no request.
 3. `the_gateways_own_origin_and_no_origin_pass`: no `Origin`, and the public address as
    `Origin`, are both `200` on `/demo` and `/mcp`.
 4. `a_foreign_origin_is_refused_without_a_token_too`: without a token, no `Origin` gives
    `401` with a challenge; a foreign origin gives the refusal with no challenge.
-5. `get_and_delete_are_covered`: `GET`, `DELETE`, `PUT` and `OPTIONS` on `/demo` with the
-   foreign origin are refused; the upstream saw no request.
+5. `get_and_delete_are_covered`: `GET`, `DELETE`, `PUT` and `OPTIONS` on `/demo` and on
+   `/mcp` with the foreign origin are refused; the upstream saw no request. `PUT` and
+   `OPTIONS` with no `Origin` and with the own origin are `405` with an empty body on both
+   paths, as they were at commit 964606d.
 6. `an_allowed_origin_passes`: with `allowed_origins` holding
    `chrome-extension://abcdefghijklmnop`, that origin is `200` on both paths and
    `chrome-extension://other` is refused.
@@ -1182,4 +1185,9 @@ refusal body, and no `WWW-Authenticate`. Foreign origin is `https://evil.example
 9. `the_non_rules_hold`: a foreign `Host` alone is `200`; `/oauth/token` and
    `/oauth/register` answer a foreign origin with the same status and body as without it;
    no response on these paths, nor an `OPTIONS` preflight to `/mcp`, carries an
-   `Access-Control-*` header.
+   `Access-Control-*` header. `/login`, `/.well-known/oauth-authorization-server` and
+   `/.well-known/oauth-protected-resource/demo` answer a foreign origin with the same status
+   as without it, and carry no `Access-Control-*` header.
+10. `unknown_paths_follow_the_same_rule`: `GET /zzz` and `POST /zzz` (bob's demo token, a
+   slug that does not exist) with no `Origin` are `401`; with the foreign origin they are
+   refused. The upstream saw no request.

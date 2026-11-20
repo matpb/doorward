@@ -143,7 +143,8 @@ Browser pages:
 Enforcement is by positive match: a request is forwarded only when the gateway recognises
 it and allows it.
 
-1. `guard`.
+1. Origin (statement 48), then `guard`: a foreign `Origin` is refused `403` before the address
+   limiter, the database, the token or the upstream, for every method. No `Origin` passes.
 2. Body: size cap; UTF-8 only, no byte order mark, no `Content-Encoding`; strict JSON
    (duplicate keys refused at every depth on decoded keys, lone surrogates refused, trailing
    data refused). Arrays (batches) get HTTP 400, -32600.

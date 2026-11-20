@@ -361,6 +361,15 @@ A request is handled by the stateless rules (revision 2026-07-28 and later) when
 `params._meta["io.modelcontextprotocol/protocolVersion"]`. Otherwise the session rules
 (revisions up to 2025-11-25) apply.
 
+Origin (statement 48): on `/mcp` and `/{slug}`, for every method, a request with an `Origin`
+header is checked before the address limiter, the database, the token or any upstream. It
+passes when it has exactly one `Origin` header whose bytes equal the gateway's own origin
+(`public_url`, normalised: lowercase scheme and host, default port dropped, no trailing slash)
+or one entry of `allowed_origins`. Anything else is refused with the row below. A request with
+no `Origin` is unaffected. The gateway sends no CORS headers and answers no preflight. Each
+refusal writes one stderr line holding the value (bytes outside visible ASCII shown as `?`, cut
+at 200 bytes); a value is logged at most once a minute, at most 20 lines are written in any one-minute window whatever the values, refusals past that are counted and reported in one line when the next window opens, and at most 64 values are remembered.
+
 Forwarded methods on `/{slug}`; everything else is refused:
 
 | Group | Session rules | Stateless rules |
@@ -491,6 +500,7 @@ Answers that both endpoints share:
 
 | Case | Answer |
 |---|---|
+| `Origin` present and not exactly one header equal to the own origin or an `allowed_origins` entry, any method | `403`, `Content-Type: application/json`, no `WWW-Authenticate`, JSON-RPC `-32000` with message `Origin not allowed` and a null id; nothing else is checked, no upstream contacted |
 | Body over `body_bytes` | `413` |
 | `Content-Encoding` present, charset other than UTF-8, byte order mark | `400`, JSON-RPC `-32600` |
 | Not valid JSON, duplicate key at any depth (compared after unescaping), lone surrogate, trailing data, nesting deeper than 64 | `400`, JSON-RPC `-32700` |

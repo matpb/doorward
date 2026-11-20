@@ -57,10 +57,13 @@ fn assert_no_cors(headers: &HeaderMap, case: &str) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_foreign_origin_is_refused_before_anything_else() {
-    let w = World::start().await;
+    let mut w = World::start().await;
     let (upstream, paths) = bob_on_demo(&w).await;
     let bob_id = w.user_id(BOB).await;
     let rows_before = admin::activity(&w.owner, Some(&bob_id), None).await.len();
+    // The owner's reads share the address bucket: after this restart only one read and one
+    // normal request are left to spend from a burst of three.
+    w.tighten(|c| c.limits.general_burst = 3).await;
     upstream.clear();
     for (slug, tokens) in &paths {
         let reply = w
@@ -74,6 +77,13 @@ async fn a_foreign_origin_is_refused_before_anything_else() {
             .await;
         assert_refused(&reply, &format!("tools/list on /{slug}"));
     }
+    for _ in 0..2 {
+        let reply = w
+            .stateless_mcp("demo", &paths[0].1)
+            .list_tools_with(&[("Origin", FOREIGN)])
+            .await;
+        assert_refused(&reply, "a sixth refused tools/list on /demo");
+    }
     assert!(
         upstream.requests().is_empty(),
         "the upstream must see no request, saw {}",
@@ -83,6 +93,12 @@ async fn a_foreign_origin_is_refused_before_anything_else() {
         admin::activity(&w.owner, Some(&bob_id), None).await.len(),
         rows_before,
         "a refused request must write no activity row"
+    );
+    let normal = w.stateless_mcp("demo", &paths[0].1).list_tools().await;
+    assert_eq!(
+        normal.status, 200,
+        "a normal request after six refusals must be answered: body {}",
+        normal.body
     );
 }
 
@@ -107,6 +123,7 @@ async fn refused_origin_forms() {
             vec!["http://127.0.0.1:80".to_owned()],
         ),
         ("another scheme", vec![format!("https://127.0.0.1:{port}")]),
+        ("an uppercase scheme", vec![own.replacen("http", "HTTP", 1)]),
         (
             "another port",
             vec![format!("http://127.0.0.1:{}", u32::from(port) + 1)],
@@ -194,15 +211,68 @@ async fn get_and_delete_are_covered() {
     let w = World::start().await;
     let (upstream, paths) = bob_on_demo(&w).await;
     upstream.clear();
-    let client = w.stateless_mcp("demo", &paths[0].1);
-    for method in [Method::GET, Method::DELETE, Method::PUT, Method::OPTIONS] {
-        let name = method.to_string();
-        let reply = client.bodiless(method, &[("Origin", FOREIGN)]).await;
-        assert_refused(&reply, &format!("{name} with a foreign origin on /demo"));
+    for (slug, tokens) in &paths {
+        let client = w.stateless_mcp(slug, tokens);
+        for method in [Method::GET, Method::DELETE, Method::PUT, Method::OPTIONS] {
+            let name = method.to_string();
+            let reply = client.bodiless(method, &[("Origin", FOREIGN)]).await;
+            assert_refused(&reply, &format!("{name} with a foreign origin on /{slug}"));
+        }
+    }
+    let own = w.gw.config().public_url.clone();
+    for (slug, tokens) in &paths {
+        let client = w.stateless_mcp(slug, tokens);
+        for method in [Method::PUT, Method::OPTIONS] {
+            let name = method.to_string();
+            let plain = client.bodiless(method.clone(), &[]).await;
+            let good = client
+                .bodiless(method.clone(), &[("Origin", own.as_str())])
+                .await;
+            assert_eq!(plain.status, 405, "{name} with no Origin on /{slug}");
+            assert!(
+                plain.body.is_empty(),
+                "{name} with no Origin on /{slug}: body"
+            );
+            assert_eq!(good.status, 405, "{name} with the own origin on /{slug}");
+            assert!(
+                good.body.is_empty(),
+                "{name} with the own origin on /{slug}: body"
+            );
+        }
     }
     assert!(
         upstream.requests().is_empty(),
         "no refused method may reach the upstream, {} did",
+        upstream.requests().len()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unknown_paths_follow_the_same_rule() {
+    let w = World::start().await;
+    let (upstream, paths) = bob_on_demo(&w).await;
+    upstream.clear();
+    // Bob's demo token is valid for /demo only, so /zzz is an unknown slug he cannot pass.
+    let zzz = w.stateless_mcp("zzz", &paths[0].1);
+    let plain = zzz.bodiless(Method::GET, &[]).await;
+    assert_eq!(
+        plain.status, 401,
+        "GET /zzz with no Origin: body {}",
+        plain.body
+    );
+    let foreign = zzz.bodiless(Method::GET, &[("Origin", FOREIGN)]).await;
+    assert_refused(&foreign, "GET /zzz with a foreign origin");
+    let plain = zzz.raw(INITIALIZE.as_bytes(), &[]).await;
+    assert_eq!(
+        plain.status, 401,
+        "POST /zzz with no Origin: body {}",
+        plain.body
+    );
+    let foreign = zzz.raw(INITIALIZE.as_bytes(), &[("Origin", FOREIGN)]).await;
+    assert_refused(&foreign, "POST /zzz with a foreign origin");
+    assert!(
+        upstream.requests().is_empty(),
+        "no request to an unknown slug may reach the upstream, {} did",
         upstream.requests().len()
     );
 }
@@ -223,6 +293,13 @@ async fn an_allowed_origin_passes() {
             .list_tools_with(&[("Origin", "chrome-extension://other")])
             .await;
         assert_refused(&other, &format!("an origin not listed, on /{slug}"));
+        let appended = client
+            .list_tools_with(&[("Origin", "chrome-extension://abcdefghijklmnopq")])
+            .await;
+        assert_refused(
+            &appended,
+            &format!("an allowed origin with a character appended, on /{slug}"),
+        );
     }
 }
 
@@ -487,4 +564,23 @@ async fn the_non_rules_hold() {
         own.body
     );
     assert_no_cors(&own.headers, "the own origin on /mcp");
+
+    for path in [
+        "/login",
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-protected-resource/demo",
+    ] {
+        let url = w.gw.url(path);
+        let plain = McpClient::session(&url, None)
+            .bodiless(Method::GET, &[])
+            .await;
+        let foreign = McpClient::session(&url, None)
+            .bodiless(Method::GET, &[("Origin", FOREIGN)])
+            .await;
+        assert_eq!(
+            foreign.status, plain.status,
+            "{path} answers a foreign origin as without it"
+        );
+        assert_no_cors(&foreign.headers, path);
+    }
 }

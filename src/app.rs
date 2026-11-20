@@ -203,7 +203,11 @@ fn routes(state: AppState) -> Router {
             get(oauth::guard::server_path)
                 .post(oauth::guard::server_path)
                 .delete(oauth::guard::server_path),
-        );
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            oauth::origin::guard,
+        ));
     api.merge(pages)
         .merge(bearer)
         .layer(middleware::from_fn_with_state(
