@@ -675,3 +675,62 @@ async fn stateless_refusals_have_the_specified_shapes() {
     );
     assert_eq!(id_of(&other_version), json!(11));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stateless_subscriptions_are_refused_and_not_advertised() {
+    let w = World::start().await;
+    let options = UpstreamOptions {
+        mode: Mode::DeclaresFlags,
+        ..Default::default()
+    };
+    let (bob, upstream, _) = bob_on(&w, "demo", options).await;
+    let demo_tokens = w.token(&bob, "demo").await;
+    let mcp_tokens = w.token(&bob, "mcp").await;
+    let demo = McpClient::stateless(&w.resource("demo"), Some(&demo_tokens.access_token));
+    let mcp = McpClient::stateless(&w.resource("mcp"), Some(&mcp_tokens.access_token));
+    let body = json!({"jsonrpc": "2.0", "id": 4, "method": "subscriptions/listen", "params": {
+        "notifications": {},
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+    }})
+    .to_string();
+    let headers = [
+        ("MCP-Protocol-Version", "2026-07-28"),
+        ("Mcp-Method", "subscriptions/listen"),
+    ];
+    for (label, client) in [("/demo", &demo), ("/mcp", &mcp)] {
+        let refused = client.raw(body.as_bytes(), &headers).await;
+        assert_eq!(
+            refused.status, 404,
+            "a stateless subscriptions/listen on {label} is 404"
+        );
+        assert_eq!(refused.error_code(), Some(-32601), "on {label}");
+        assert_eq!(
+            id_of(&refused),
+            json!(4),
+            "on {label} the id is the request's"
+        );
+    }
+    assert_eq!(
+        upstream.rpc_count("subscriptions/listen"),
+        0,
+        "no subscription reaches the upstream"
+    );
+
+    let discovered = demo.discover().await;
+    assert_eq!(
+        discovered
+            .result()
+            .map(|result| result["capabilities"].clone()),
+        Some(json!({"tools": {"extra": 1}})),
+        "a stateless discover drops listChanged and subscribe and keeps the other members"
+    );
+
+    let initialized = w.session_mcp("demo", &demo_tokens).initialize().await;
+    assert_eq!(
+        initialized
+            .result()
+            .map(|result| result["capabilities"]["tools"].clone()),
+        Some(json!({"listChanged": true, "extra": 1})),
+        "a session initialize keeps its listChanged flag"
+    );
+}

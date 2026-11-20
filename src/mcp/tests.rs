@@ -687,7 +687,11 @@ fn decide_stateless_table_under_every_switch_combination() {
         ("server/discover", Shape::Request, [Fwd, Fwd, Fwd, Fwd]),
         ("tools/list", Shape::Request, [Fwd, Fwd, Fwd, Fwd]),
         ("tools/call", Shape::Request, [Fwd, Fwd, Fwd, Fwd]),
-        ("subscriptions/listen", Shape::Request, [Fwd, Fwd, Fwd, Fwd]),
+        (
+            "subscriptions/listen",
+            Shape::Request,
+            [Nope, Nope, Nope, Nope],
+        ),
         (
             "notifications/cancelled",
             Shape::Notification,

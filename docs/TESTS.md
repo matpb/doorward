@@ -374,6 +374,11 @@ both; token for the slug `mcp`.
     `_meta` (on a server path) or with `_meta` lacking the version (on `/mcp`) is 400 with
     `-32602` and `Invalid params: missing _meta or protocol version`; a `_meta` version
     `2025-11-25` under header `2026-07-28` is 400 with `-32020`.
+16. `stateless_subscriptions_are_refused_and_not_advertised`: a stateless `subscriptions/listen`
+    on `/demo` and on `/mcp` is 404 with `-32601` and the request's id, and the upstream
+    records no such request. Upstream `Mode::DeclaresFlags`: a stateless discover on `/demo`
+    has capabilities `{"tools": {"extra": 1}}` (no `listChanged` or `subscribe`, switches off);
+    a session initialize keeps `tools.listChanged`.
 
 ## s12_streaming.rs (statement 12)
 

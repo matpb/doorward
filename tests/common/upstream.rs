@@ -67,6 +67,9 @@ pub enum Mode {
     /// Notifications are answered 202 with `text/plain; charset=UTF-8` and an empty body, as the TypeScript SDK does.
     #[allow(dead_code)]
     TypeScriptNotices,
+    /// initialize and server/discover declare listChanged and subscribe in their capabilities.
+    #[allow(dead_code)]
+    DeclaresFlags,
     /// Every request answers 307 with this Location.
     Redirect(String),
     /// Normal, plus `Set-Cookie: upstream=1; Path=/` and `WWW-Authenticate: Basic realm="up"` on every response.
@@ -551,7 +554,11 @@ fn initialize(state: &mut Store, options: &UpstreamOptions, id: Value, params: &
         "id": id,
         "result": {
             "protocolVersion": version,
-            "capabilities": {"tools": {"listChanged": false}, "resources": {}, "prompts": {}},
+            "capabilities": if matches!(options.mode, Mode::DeclaresFlags) {
+                declared_capabilities()
+            } else {
+                json!({"tools": {"listChanged": false}, "resources": {}, "prompts": {}})
+            },
             "serverInfo": {"name": "fake-upstream", "version": "0"},
         },
     });
@@ -627,7 +634,11 @@ fn outcome(
     let mut result = match method {
         "server/discover" => json!({
             "supportedVersions": supported_versions(options.generation),
-            "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+            "capabilities": if matches!(options.mode, Mode::DeclaresFlags) {
+                declared_capabilities()
+            } else {
+                json!({"tools": {}, "resources": {}, "prompts": {}})
+            },
             "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "fake-upstream", "version": "0"}},
             "ttlMs": 3600000,
             "cacheScope": "public",
@@ -700,6 +711,15 @@ fn tools_json(options: &UpstreamOptions) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// The capabilities of `Mode::DeclaresFlags`: the four flags, with one other member in each group.
+fn declared_capabilities() -> Value {
+    json!({
+        "tools": {"listChanged": true, "extra": 1},
+        "resources": {"listChanged": true, "subscribe": true, "extra": true},
+        "prompts": {"listChanged": true},
+    })
 }
 
 fn supported_versions(generation: Generation) -> Vec<&'static str> {

@@ -17,6 +17,7 @@ use tempfile::TempDir;
 use time::OffsetDateTime;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::timeout;
 
 use super::catalog;
 use super::tests::{Plan, Seen, TestUpstream};
@@ -409,6 +410,10 @@ pub(super) enum Mode {
     Json(Vec<(&'static str, &'static str)>),
     /// JSON answers, and notifications answered 202 as the TypeScript SDK does: text/plain, no body.
     TypeScript,
+    /// JSON answers whose initialize and server/discover results declare listChanged and subscribe.
+    Declares,
+    /// JSON answers whose stateless tools/list also lists this tool, which the session form does not.
+    StatelessOnly(&'static str),
     /// Event streams with a notice first; the answer is the last event. Extra headers on each.
     Stream(Vec<(&'static str, &'static str)>),
     /// A notice, then the answer one second later.
@@ -557,6 +562,15 @@ fn stream_or_close(seen: &Seen) -> Option<Plan> {
     }
 }
 
+/// The capabilities of `Mode::Declares`: the four flags, with one other member in each group.
+fn declared_capabilities() -> Value {
+    json!({
+        "tools": {"listChanged": true, "extra": 1},
+        "resources": {"listChanged": true, "subscribe": true, "extra": true},
+        "prompts": {"listChanged": true},
+    })
+}
+
 /// How the scripted upstream answers one request under `mode`.
 fn respond(mode: &Mode, tools: &[String], seen: &Seen) -> Plan {
     let message = rpc_answer(seen, tools);
@@ -576,6 +590,48 @@ fn respond(mode: &Mode, tools: &[String], seen: &Seen) -> Plan {
                     extra,
                     Body::from(message.to_string()),
                 ),
+            },
+        },
+        Mode::Declares => match stream_or_close(seen) {
+            Some(plan) => plan,
+            None => match message {
+                None => build(202, None, None, &[], Body::empty()),
+                Some(mut message) => {
+                    if let Some(capabilities) = message.pointer_mut("/result/capabilities") {
+                        *capabilities = declared_capabilities();
+                    }
+                    build(
+                        200,
+                        Some("application/json"),
+                        session.as_deref(),
+                        &[],
+                        Body::from(message.to_string()),
+                    )
+                }
+            },
+        },
+        Mode::StatelessOnly(extra) => match stream_or_close(seen) {
+            Some(plan) => plan,
+            None => match message {
+                None => build(202, None, None, &[], Body::empty()),
+                Some(mut message) => {
+                    let stateless = seen.header("mcp-protocol-version") == Some("2026-07-28");
+                    if let Some(listed) = message
+                        .pointer_mut("/result/tools")
+                        .and_then(Value::as_array_mut)
+                        && seen.rpc() == "tools/list"
+                        && stateless
+                    {
+                        listed.push(json!({"name": extra, "inputSchema": {"type": "object"}}));
+                    }
+                    build(
+                        200,
+                        Some("application/json"),
+                        session.as_deref(),
+                        &[],
+                        Body::from(message.to_string()),
+                    )
+                }
             },
         },
         Mode::TypeScript => match stream_or_close(seen) {
@@ -1545,6 +1601,147 @@ async fn a_meta_version_that_differs_from_the_header_stays_32020() {
     );
     assert_eq!(reply.json()["id"], json!(4));
     assert_eq!(demo.fake.count(), before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stateless_subscriptions_listen_is_refused_without_an_upstream_request() {
+    let demo = demo().await;
+    demo.fake.set(Mode::Stalled);
+    let before = demo.fake.count();
+    let body = stateless_body(9, "subscriptions/listen", json!({"notifications": {}}));
+    let reply = timeout(
+        Duration::from_secs(1),
+        demo.gw.post(
+            "demo",
+            &demo.token,
+            stateless_headers("subscriptions/listen", None),
+            body,
+        ),
+    )
+    .await
+    .expect("the refusal is answered within one second");
+    assert_eq!(reply.status, 404, "a stateless subscriptions/listen is 404");
+    assert_eq!(reply.error_code(), Some(-32601));
+    assert_eq!(reply.json()["id"], json!(9), "the id is the request's");
+    assert_eq!(demo.fake.count(), before, "the upstream sees no request");
+
+    let reply = timeout(
+        Duration::from_secs(1),
+        session_post(
+            &demo,
+            None,
+            session_body(10, "subscriptions/listen", json!({"notifications": {}})),
+        ),
+    )
+    .await
+    .expect("the session refusal is answered within one second");
+    assert_eq!(
+        reply.status, 200,
+        "a session subscriptions/listen stays 200"
+    );
+    assert_eq!(reply.error_code(), Some(-32601));
+    assert_eq!(demo.fake.count(), before, "the upstream sees no request");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stateless_discover_does_not_advertise_listchanged_or_subscribe() {
+    let demo = demo_with(|_| {}, (true, true)).await;
+    demo.fake.set(Mode::Declares);
+    let body = stateless_body(2, "server/discover", json!({}));
+    let reply = demo
+        .gw
+        .post(
+            "demo",
+            &demo.token,
+            stateless_headers("server/discover", None),
+            body,
+        )
+        .await;
+    assert_eq!(reply.status, 200);
+    assert_eq!(
+        reply.json()["result"]["capabilities"],
+        json!({"tools": {"extra": 1}, "resources": {"extra": true}, "prompts": {}}),
+        "the four flags are gone and every other member is kept"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_initialize_keeps_the_listchanged_and_subscribe_flags() {
+    let demo = demo_with(|_| {}, (true, true)).await;
+    demo.fake.set(Mode::Declares);
+    let reply = session_post(&demo, None, initialize_body()).await;
+    assert_eq!(reply.status, 200);
+    assert_eq!(
+        reply.json()["result"]["capabilities"],
+        declared_capabilities(),
+        "the session initialize is relayed unchanged"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_two_line_json_answer_is_a_prompt_502() {
+    let demo = demo().await;
+    let session = initialized(&demo).await;
+    demo.fake.set(Mode::Status(
+        200,
+        Some("application/json"),
+        "{\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{}}\n{\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{}}\n",
+    ));
+    let reply = timeout(
+        Duration::from_secs(2),
+        session_post(&demo, Some(&session), session_body(6, "ping", json!({}))),
+    )
+    .await
+    .expect("the answer comes promptly");
+    assert_eq!(reply.status, 502, "two JSON values are not one answer");
+    assert_eq!(
+        reply.json(),
+        json!({"jsonrpc": "2.0", "id": null,
+            "error": {"code": -32000, "message": "Upstream demo is unavailable"}})
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_listed_only_on_the_stateless_form_is_called_through() {
+    let demo = demo().await;
+    demo.fake.set(Mode::StatelessOnly("extra"));
+    let listed = demo
+        .gw
+        .post(
+            "demo",
+            &demo.token,
+            stateless_headers("tools/list", None),
+            stateless_body(1, "tools/list", json!({})),
+        )
+        .await;
+    assert_eq!(listed.status, 200, "the stateless list is relayed");
+    let listed_json = listed.json();
+    let names: Vec<&str> = listed_json["result"]["tools"]
+        .as_array()
+        .expect("the tool list")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"extra"),
+        "the stateless list holds extra, got {names:?}"
+    );
+    let call = demo
+        .gw
+        .post(
+            "demo",
+            &demo.token,
+            stateless_headers("tools/call", Some("extra")),
+            stateless_body(2, "tools/call", json!({"name": "extra", "arguments": {}})),
+        )
+        .await;
+    assert_eq!(call.status, 200, "the call is relayed");
+    assert_eq!(call.text_of_call().as_deref(), Some("called: extra"));
+    assert_eq!(
+        demo.fake.calls("tools/call"),
+        1,
+        "the call reaches the upstream"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

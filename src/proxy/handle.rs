@@ -9,7 +9,7 @@ use axum::http::header::{
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::catalog;
 use super::intake::{Intake, intake};
@@ -624,7 +624,8 @@ async fn fault(ctx: &Ctx<'_>, owed: Option<Owed>) -> Response {
     answer::unavailable(ctx.slug)
 }
 
-/// Removes the switched-off capabilities of an initialize or server/discover result; true when it changed.
+/// Removes the switched-off capabilities of an initialize or server/discover result, and on a
+/// discover the listChanged and subscribe members; true when it changed.
 fn trim_capabilities(value: &mut Value, method: &str, switches: Switches) -> bool {
     if !matches!(method, "initialize" | "server/discover") {
         return false;
@@ -643,7 +644,25 @@ fn trim_capabilities(value: &mut Value, method: &str, switches: Switches) -> boo
     if !switches.prompts {
         changed |= capabilities.remove("prompts").is_some();
     }
+    if method == "server/discover" {
+        for (group, member) in [
+            ("tools", "listChanged"),
+            ("prompts", "listChanged"),
+            ("resources", "listChanged"),
+            ("resources", "subscribe"),
+        ] {
+            changed |= drop_member(capabilities, group, member);
+        }
+    }
     changed
+}
+
+/// Removes `member` from the object under `group`; true when it was there.
+fn drop_member(capabilities: &mut Map<String, Value>, group: &str, member: &str) -> bool {
+    capabilities
+        .get_mut(group)
+        .and_then(Value::as_object_mut)
+        .is_some_and(|object| object.remove(member).is_some())
 }
 
 /// Sets cacheScope to private on a result; true when it changed.

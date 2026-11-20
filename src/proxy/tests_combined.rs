@@ -2022,3 +2022,72 @@ async fn a_stateless_list_without_a_protocol_version_is_invalid_params_on_mcp() 
             "message": "Invalid params: missing _meta or protocol version"}}))
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_listed_only_on_the_stateless_form_is_called_through_mcp() {
+    let fx = fixture().await;
+    let up = TestUpstream::start(|seen: &Seen| {
+        let stateless = seen.header("mcp-protocol-version") == Some("2026-07-28");
+        match seen.rpc().as_str() {
+            "server/discover" => reply_to(seen, discover()),
+            "tools/list" if stateless => {
+                reply_to(seen, json!({"tools": [tool("echo"), tool("extra")]}))
+            }
+            "tools/list" => reply_to(seen, json!({"tools": [tool("echo")]})),
+            "tools/call" => echo_text(seen),
+            _ => reply_to(seen, json!({})),
+        }
+    })
+    .await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28"});
+    let listed = send(
+        &fx.state,
+        1,
+        "POST",
+        &[
+            ("MCP-Protocol-Version", "2026-07-28"),
+            ("Mcp-Method", "tools/list"),
+        ],
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list",
+            "params": {"_meta": meta}})),
+    )
+    .await;
+    assert_eq!(listed.status, 200, "the stateless list is answered");
+    let names: Vec<String> = listed
+        .json
+        .as_ref()
+        .and_then(|json| json["result"]["tools"].as_array())
+        .expect("the tool list")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        names.iter().any(|name| name == "demo__extra"),
+        "the stateless list holds demo__extra, got {names:?}"
+    );
+    let token = combined_caller(&fx.state, 1).await;
+    let called = send_text(
+        &fx.state,
+        token,
+        "POST",
+        &[
+            ("MCP-Protocol-Version", "2026-07-28"),
+            ("Mcp-Method", "tools/call"),
+            ("Mcp-Name", "demo__extra"),
+        ],
+        Some(stateless_call_body(2, "demo__extra")),
+    )
+    .await;
+    assert_eq!(called.status, 200, "the call is answered");
+    assert_eq!(
+        call_text(&called),
+        Some("called: extra"),
+        "the answer was {}",
+        called.text
+    );
+    let seen = calls(&up);
+    assert_eq!(seen.len(), 1, "the call reaches the upstream once");
+    assert_eq!(seen[0].json()["params"]["name"], "extra");
+}

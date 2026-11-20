@@ -365,7 +365,7 @@ Forwarded methods on `/{slug}`; everything else is refused:
 
 | Group | Session rules | Stateless rules |
 |---|---|---|
-| Always | `initialize`, `ping`, `tools/list`, `tools/call`, `logging/setLevel`, notifications `notifications/initialized`, `notifications/cancelled`, `notifications/progress`, `notifications/roots/list_changed` | `server/discover`, `tools/list`, `tools/call`, `subscriptions/listen`, notification `notifications/cancelled` |
+| Always | `initialize`, `ping`, `tools/list`, `tools/call`, `logging/setLevel`, notifications `notifications/initialized`, `notifications/cancelled`, `notifications/progress`, `notifications/roots/list_changed` | `server/discover`, `tools/list`, `tools/call`, notification `notifications/cancelled` |
 | `pass_resources` on | `resources/list`, `resources/templates/list`, `resources/read`, `resources/subscribe`, `resources/unsubscribe` | `resources/list`, `resources/templates/list`, `resources/read` |
 | `pass_prompts` on | `prompts/list`, `prompts/get` | `prompts/list`, `prompts/get` |
 | Either switch on | `completion/complete` | `completion/complete` |
@@ -373,7 +373,9 @@ Forwarded methods on `/{slug}`; everything else is refused:
 With a switch off, the gateway answers the group's list methods itself with empty lists
 (`resources`, `resourceTemplates`, `prompts`), answers the other methods of the group with
 `-32601` (HTTP `404` under the stateless rules), and removes `resources` or `prompts` from the capabilities in the relayed
-`initialize` and `server/discover` results. Under the stateless rules its own answers carry
+`initialize` and `server/discover` results. A stateless `subscriptions/listen` is not served on either endpoint: `404`,
+`-32601`, upstream not contacted. A relayed stateless `server/discover` also loses `listChanged` under `tools`, `prompts`
+and `resources`, and `subscribe` under `resources`; a session `initialize` keeps them. Under the stateless rules its own answers carry
 `"resultType": "complete"`, and list answers `"ttlMs": 60000, "cacheScope": "private"`.
 
 Stateless header rules: `MCP-Protocol-Version` must be present once and equal the body's

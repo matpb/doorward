@@ -178,7 +178,6 @@ const STATELESS: &[(&str, Group)] = &[
     ("server/discover", Group::Always),
     ("tools/list", Group::Always),
     ("tools/call", Group::Always),
-    ("subscriptions/listen", Group::Always),
     ("notifications/cancelled", Group::Always),
     ("resources/list", Group::Resources),
     ("resources/templates/list", Group::Resources),
