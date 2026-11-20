@@ -144,6 +144,7 @@ there. Claude Code, Codex and the Cursor command line client were run against 0.
 - [docs/DESIGN.md](docs/DESIGN.md): how the gateway is built and why.
 - [docs/INTERFACE.md](docs/INTERFACE.md): every page and endpoint.
 - [docs/TESTS.md](docs/TESTS.md): the test catalogue.
+- [SECURITY.md](SECURITY.md): how to report a vulnerability.
 
 ## License
 
