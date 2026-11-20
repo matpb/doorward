@@ -18,11 +18,12 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tokio::time::{Instant, timeout, timeout_at};
 
 use super::catalog::{self, RefreshError, SESSION, STATELESS};
+use super::combined_stream::{self, Call};
 use super::handle::{INVALID, NO_METHOD, Owed, TOOL_LIMIT, bare, cut, not_allowed};
 use super::intake::{Intake, intake};
 use super::links::{self, Ask, Owner};
 use super::stream::Owned;
-use super::upstream::{self, Fault, TargetError, time_limit};
+use super::upstream::{self, Fault, Kind, TargetError, time_limit};
 use crate::app::AppState;
 use crate::audit::{self, OwnedEvent};
 use crate::mcp::answer;
@@ -346,12 +347,24 @@ async fn call(
         Ok(sent) => sent,
         Err(Fault) => return unavailable(owed, slug).await,
     };
+    let client_stateless = message.generation == Generation::Stateless;
+    if sent.kind == Kind::Stream {
+        owed.hand_over();
+        let call = Call {
+            owned: owned_of(state, caller, started, slug, server_id),
+            tool: tool.to_owned(),
+            name: name.to_owned(),
+            upstream_id: sent.id,
+            client_id: id.clone(),
+            stateless: client_stateless,
+        };
+        return streamed(combined_stream::relay(call, sent.response));
+    }
     let cap = state.config.limits.tools_list_bytes;
     let upstream_answer = match links::read(state, sent, cap).await {
         Ok(upstream_answer) => upstream_answer,
         Err(Fault) => return unavailable(owed, slug).await,
     };
-    let client_stateless = message.generation == Generation::Stateless;
     let (reply, outcome) = reissue(id, &upstream_answer, client_stateless);
     if !combined_still_valid(state, caller, server_id).await {
         owed.settle("refused").await;
@@ -447,6 +460,20 @@ fn owned_of(
     }
 }
 
+/// The HTTP answer of a relayed stream: the event-stream type and the inert-content headers, no session id.
+fn streamed(body: Body) -> Response {
+    (
+        StatusCode::OK,
+        [
+            (CONTENT_TYPE, "text/event-stream"),
+            (X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (CONTENT_SECURITY_POLICY, "sandbox"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 /// The 502 of a call whose upstream cannot answer, with its row written as unavailable.
 async fn unavailable(owed: Owed, slug: &str) -> Response {
     owed.settle("unavailable").await;
@@ -488,7 +515,7 @@ async fn deny_call(
 
 /// The upstream's answer under the client's id, and the outcome of its row. A result that asks for
 /// input becomes a tool error; a stateless client's result is marked complete, a session client's is not.
-fn reissue(id: &Value, answer: &Value, stateless: bool) -> (Value, &'static str) {
+pub(super) fn reissue(id: &Value, answer: &Value, stateless: bool) -> (Value, &'static str) {
     let (member, body, outcome) = match answer.get("result") {
         Some(result) => {
             let (result, outcome) = result_for_client(result, stateless);

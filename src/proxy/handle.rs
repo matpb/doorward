@@ -762,7 +762,7 @@ impl Owed {
     }
 
     /// Gives the row to the stream relay, which writes it when the stream ends.
-    fn hand_over(mut self) {
+    pub(super) fn hand_over(mut self) {
         self.ctx = None;
     }
 }

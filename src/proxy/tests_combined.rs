@@ -1810,60 +1810,6 @@ async fn a_malformed_call_is_refused_without_an_upstream_or_a_row() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_event_stream_answer_is_read_to_its_answer_and_returned_as_json() {
-    let fx = fixture().await;
-    let up = stateless_with(vec![tool("echo")], |seen: &Seen| {
-        let id = seen.json()["id"].clone();
-        answer(
-            200,
-            None,
-            Some("text/event-stream"),
-            &format!(
-                "data: {}\n\n",
-                rpc_text(
-                    &id,
-                    json!({"content": [{"type": "text", "text": "streamed"}]})
-                )
-            ),
-        )
-    })
-    .await;
-    point(&fx, &up.url).await;
-    user(&fx.state, 1, vec![fx.server_id]).await;
-    let caller = combined_caller(&fx.state, 1).await;
-    let reply = send_text(
-        &fx.state,
-        caller,
-        "POST",
-        &[],
-        Some(call_body(31, "demo__echo")),
-    )
-    .await;
-    assert_eq!(reply.status, 200, "the streamed answer is answered");
-    assert_eq!(
-        reply
-            .headers
-            .get("content-type")
-            .and_then(|value| value.to_str().ok()),
-        Some("application/json"),
-        "the answer is one JSON body, not an event stream"
-    );
-    assert_eq!(call_text(&reply), Some("streamed"));
-    assert_eq!(
-        reply.json.as_ref().map(|json| json["id"].clone()),
-        Some(json!(31))
-    );
-    assert_eq!(
-        call_rows(&fx.state)
-            .await
-            .last()
-            .map(|row| row.outcome.clone()),
-        Some("ok".to_owned()),
-        "the streamed call writes an ok row"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_call_to_an_unassigned_server_never_reaches_it_even_when_its_catalog_has_the_tool() {
     let fx = fixture().await;
     let up = stateless_with(vec![tool("echo")], echo_text).await;

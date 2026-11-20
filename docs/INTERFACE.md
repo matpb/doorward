@@ -430,11 +430,31 @@ The combined endpoint `/mcp` is its own MCP server:
 - An allowed call is sent with the client's `params.arguments` as raw bytes (absent when
   absent or `null`), its `_meta.progressToken` when that is a string or an integer, and
   nothing else of the request: no other `_meta` key, no client header, not the client's id.
-- The upstream answer is read whole, also when it is an event stream: nothing is relayed
-  while it runs. It is returned under the client's id with its `result` or `error`. A result
-  whose `resultType` is present and not `complete` becomes a tool error with the text
-  `This tool asked for input that this endpoint does not relay.` and `isError` true. A
-  stateless client's result has `resultType` `complete`; a session client's has none.
+- An upstream answer that is JSON is read whole. It is returned under the client's id with its
+  `result` or `error`. A result whose `resultType` is present and not `complete` becomes a tool
+  error with the text `This tool asked for input that this endpoint does not relay.` and
+  `isError` true. A stateless client's result has `resultType` `complete`; a session client's
+  has none.
+- An upstream answer that is an event stream is relayed as a filtered stream: `200`,
+  `Content-Type: text/event-stream`, the inert-content headers, no `Mcp-Session-Id`. Each event
+  is parsed, and only two kinds reach the client, each as `event: message` and `data:` with its
+  compact JSON: a `notifications/progress` with no `id` member, as sent; then the first object
+  whose `id` is the id the link sent upstream and that has exactly one of `result` and `error`,
+  under the client's id and with the `resultType` rule above. That answer ends the stream, and
+  the upstream connection is closed with it. Everything else is dropped without a trace in the
+  client's bytes: upstream requests, other notifications, answers under another id, arrays,
+  non-objects, invalid JSON, and the SSE `id:`, `retry:`, `event:` and comment lines.
+- A relayed stream ends without an answer when the upstream ends it, breaks, sends an event over
+  `tools_list_bytes`, or sends no bytes for `upstream_timeout_seconds` (comment lines count as
+  bytes). Its last event is then the `-32000` error `Upstream {slug} is unavailable` under the
+  client's id. When the client leaves, the upstream connection is closed and no event is sent.
+- While a relayed stream is open, the caller's token and its assignment to the server are
+  checked every second. A failed check ends the stream with no further event. A check that
+  fails before the answer is sent makes the answer the `-32602` refusal above.
+- A streamed call writes one row when its stream ends: `allow` with the outcome of the answer
+  when one was sent (`ok`, or `error` for a JSON-RPC error or a replaced input request),
+  `refused` after a failed check, `unavailable` after a stream that ended without an answer, or
+  `error` with the detail `the client closed the stream` when the client left.
 - Before the answer is returned the caller's token and its assignment to the server are
   checked again; when either fails the answer is the refusal above and the row is
   `allow` / `refused`. A call that reached an upstream writes one row: `allow` with outcome
