@@ -3,6 +3,10 @@ public_url = "https://gateway.example.com"
 listen = "127.0.0.1:8717"
 database = "doorward.db"
 
+# Origins other than the public address that may call the MCP paths, such as a browser
+# extension. Each entry is compared exactly.
+# allowed_origins = ["chrome-extension://abcdefghijklmnop"]
+
 # Lifetimes of invitations, links, sessions and tokens.
 [lifetimes]
 # invitation_days = 7

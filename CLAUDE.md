@@ -219,6 +219,11 @@ L. Added after the owner's auth review
     each request: a server assigned later is listed and callable without a new consent,
     and a server unassigned is gone from the list at once and a call to it is refused
     without the upstream seeing it.
+48. A request to a server path or to the combined endpoint that carries an `Origin`
+    header other than the gateway's own address, or one listed in the `allowed_origins`
+    setting, is refused with a 403 before its token is looked at; it reaches no upstream,
+    costs the user nothing and is not logged as activity. A request with no `Origin`
+    header is unaffected, and the sign-in endpoints that programs call are not covered.
 
 ### Proof
 
@@ -244,6 +249,7 @@ into the test harness. In addition:
   limit, two callers in separate buckets, data kept across a restart, and a backup and
   restore that still decrypts a stored upstream secret. `./check.sh` does not run it, so
   that Check passes on a machine without Docker.
+- 48: `tests/s48_origin.rs`.
 
 ### Assumptions
 

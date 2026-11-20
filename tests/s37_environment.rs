@@ -193,6 +193,7 @@ fn valid_value(setting: &Setting, base: &BTreeMap<String, Value>) -> String {
         Kind::Path => "/srv/doorward/other".to_owned(),
         Kind::Ranges => "127.0.0.1".to_owned(),
         Kind::Bool => "true".to_owned(),
+        Kind::Origins => "https://other.example.com".to_owned(),
         Kind::Whole => {
             let current = base[setting.path].as_u64().expect("a whole number default");
             (current + 1).to_string()
@@ -209,6 +210,7 @@ fn wrong_value(kind: Kind) -> &'static str {
         Kind::Ranges => "not-an-address",
         Kind::Bool => "yes",
         Kind::Whole => "a lot",
+        Kind::Origins => "a\u{0}b",
     }
 }
 
@@ -221,6 +223,7 @@ fn expected_text(kind: Kind) -> &'static str {
         Kind::Ranges => "a comma separated list of addresses or ranges",
         Kind::Bool => "true or false",
         Kind::Whole => "a whole number",
+        Kind::Origins => "a comma separated list of origins",
     }
 }
 

@@ -37,6 +37,7 @@ async fn start(edit: impl FnOnce(&mut Config)) -> Gateway {
         key_file: None,
         trusted_proxies: Vec::new(),
         shared_client_address: false,
+        allowed_origins: Vec::new(),
         lifetimes: Default::default(),
         limits: Limits::default(),
         mail: Default::default(),

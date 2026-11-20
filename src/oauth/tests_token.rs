@@ -91,6 +91,7 @@ impl Gateway {
             key_file: None,
             trusted_proxies: Vec::new(),
             shared_client_address: false,
+            allowed_origins: Vec::new(),
             lifetimes: Lifetimes::default(),
             limits: Limits::default(),
             mail: Default::default(),

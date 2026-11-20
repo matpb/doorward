@@ -1150,3 +1150,36 @@ bob has a token for the combined endpoint; servers `a` (tool `alpha`) and `b` (t
 4. `the_check_is_made_on_every_call`: bob lists while assigned, is unassigned, then calls
    `a__alpha` from the list he already holds: refused as in test 2.
 5. `both_generations_follow_the_same_rule`: tests 1 and 2 with a stateless client.
+
+## s48_origin.rs (statement 48)
+
+bob on demo (`W.user`, `W.upstream`, `W.grant`); his tokens are for `/demo` and for the
+combined `/mcp`. "Refused" is status `403`, `Content-Type: application/json`, the exact
+refusal body, and no `WWW-Authenticate`. Foreign origin is `https://evil.example.com`.
+
+1. `a_foreign_origin_is_refused_before_anything_else`: `initialize` and stateless
+   `tools/list` on `/demo` and `/mcp` with the foreign origin are refused; the upstream
+   saw no request and bob has no new activity row.
+2. `refused_origin_forms`: the refused forms (another origin, `null`, empty, trailing
+   slash, uppercase host, explicit default port, other scheme, other port, look-alike,
+   non-visible ASCII, own origin beside a foreign one, two own origins) are each refused
+   on `/demo` and `/mcp`; the upstream saw no request.
+3. `the_gateways_own_origin_and_no_origin_pass`: no `Origin`, and the public address as
+   `Origin`, are both `200` on `/demo` and `/mcp`.
+4. `a_foreign_origin_is_refused_without_a_token_too`: without a token, no `Origin` gives
+   `401` with a challenge; a foreign origin gives the refusal with no challenge.
+5. `get_and_delete_are_covered`: `GET`, `DELETE`, `PUT` and `OPTIONS` on `/demo` with the
+   foreign origin are refused; the upstream saw no request.
+6. `an_allowed_origin_passes`: with `allowed_origins` holding
+   `chrome-extension://abcdefghijklmnop`, that origin is `200` on both paths and
+   `chrome-extension://other` is refused.
+7. `bad_allowed_origins_stop_the_start`: each bad entry (`*`, `null`, empty, path, query,
+   fragment or trailing slash, outside visible ASCII, over 256 bytes, 33 entries) stops
+   the start with exit 2 and a line naming the entry, from the config file and from
+   `DOORWARD_ALLOWED_ORIGINS`.
+8. `a_refused_origin_costs_the_user_nothing`: with `mcp_burst` at 2, three refused lists
+   then two normal ones: both normal ones are `200`, and only two lists reach the upstream.
+9. `the_non_rules_hold`: a foreign `Host` alone is `200`; `/oauth/token` and
+   `/oauth/register` answer a foreign origin with the same status and body as without it;
+   no response on these paths, nor an `OPTIONS` preflight to `/mcp`, carries an
+   `Access-Control-*` header.

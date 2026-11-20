@@ -15,7 +15,13 @@ pub enum Kind {
     Ranges,
     Bool,
     Whole,
+    Origins,
 }
+
+const ORIGINS_MAX_ENTRIES: usize = 32;
+const ORIGIN_MAX_BYTES: usize = 256;
+/// Characters of an entry shown in a refusal.
+const SHOWN_CHARS: usize = 200;
 
 pub struct Setting {
     pub variable: &'static str,
@@ -54,6 +60,11 @@ pub const SETTINGS: &[Setting] = &[
         variable: "DOORWARD_SHARED_CLIENT_ADDRESS",
         path: "shared_client_address",
         kind: Kind::Bool,
+    },
+    Setting {
+        variable: "DOORWARD_ALLOWED_ORIGINS",
+        path: "allowed_origins",
+        kind: Kind::Origins,
     },
     Setting {
         variable: "DOORWARD_LIFETIMES_INVITATION_DAYS",
@@ -229,6 +240,8 @@ pub struct Config {
     pub trusted_proxies: Vec<Range>,
     #[serde(default)]
     pub shared_client_address: bool,
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
     #[serde(default)]
     pub lifetimes: Lifetimes,
     #[serde(default)]
@@ -546,6 +559,16 @@ fn parse_value(setting: &Setting, text: &str) -> Result<Value, ConfigError> {
             })?;
             Ok(Value::Integer(number))
         }
+        Kind::Origins => {
+            if text.contains('\0') {
+                return Err(refuse("a comma separated list of origins"));
+            }
+            Ok(Value::Array(
+                text.split(',')
+                    .map(|entry| Value::String(entry.to_owned()))
+                    .collect(),
+            ))
+        }
     }
 }
 
@@ -642,8 +665,63 @@ impl Config {
             .to_owned();
         self.lifetimes.validate()?;
         self.limits.validate()?;
+        check_allowed_origins(&self.allowed_origins)?;
         Ok(())
     }
+}
+
+/// Refuses an `allowed_origins` list that breaks statement 48.
+fn check_allowed_origins(entries: &[String]) -> Result<(), ConfigError> {
+    if entries.len() > ORIGINS_MAX_ENTRIES {
+        return Err(ConfigError::Invalid(format!(
+            "allowed_origins has {} entries, at most {ORIGINS_MAX_ENTRIES} are allowed",
+            entries.len()
+        )));
+    }
+    for entry in entries {
+        check_origin(entry).map_err(ConfigError::Invalid)?;
+    }
+    Ok(())
+}
+
+/// The first rule `entry` breaks, worded for the refusal. An origin is `scheme://host[:port]`.
+fn check_origin(entry: &str) -> Result<(), String> {
+    if entry.is_empty() {
+        return Err("allowed_origins has an empty entry".to_owned());
+    }
+    let shown = shown_entry(entry);
+    let refuse = |reason: &str| Err(format!("allowed_origins entry \"{shown}\" {reason}"));
+    if entry.len() > ORIGIN_MAX_BYTES {
+        return refuse(&format!("is over {ORIGIN_MAX_BYTES} bytes"));
+    }
+    if !entry.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return refuse("has a character outside visible ASCII");
+    }
+    if entry == "*" {
+        return refuse("is a wildcard, not an origin");
+    }
+    if entry == "null" {
+        return refuse("is not an origin");
+    }
+    let Some((scheme, rest)) = entry.split_once("://") else {
+        return refuse("must be scheme://host[:port]");
+    };
+    if scheme.is_empty() || rest.is_empty() {
+        return refuse("must be scheme://host[:port]");
+    }
+    if rest.contains(['/', '?', '#']) {
+        return refuse("has a path, query, fragment or trailing slash");
+    }
+    Ok(())
+}
+
+/// The entry as a refusal shows it: its first 200 characters, each byte outside visible ASCII as `?`.
+fn shown_entry(entry: &str) -> String {
+    entry
+        .chars()
+        .take(SHOWN_CHARS)
+        .map(|c| if c.is_ascii_graphic() { c } else { '?' })
+        .collect()
 }
 
 impl Lifetimes {
@@ -1130,5 +1208,178 @@ mod tests {
         assert!(!started("https://127.0.0.1:8717", &[]).https_public());
         assert!(started("https://doorward.example.com", &[]).https_public());
         assert!(!started("http://127.0.0.1:8717", &[]).https_public());
+    }
+
+    /// The `allowed_origins` of a load with `value` as the variable.
+    fn origins_of(value: &str) -> Vec<String> {
+        Config::from_sources(None, &with(&[("DOORWARD_ALLOWED_ORIGINS", value)]))
+            .expect("the list loads")
+            .allowed_origins
+    }
+
+    /// The refusal of a load with `entries` joined by commas as the variable.
+    fn origins_refusal(entries: &[String]) -> String {
+        let joined = entries.join(",");
+        refusal(&[("DOORWARD_ALLOWED_ORIGINS", joined.as_str())])
+    }
+
+    /// The refusal of a config file whose `allowed_origins` is the TOML array `list`.
+    fn file_origins_refusal(list: &str) -> String {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("doorward.toml");
+        std::fs::write(&path, format!("allowed_origins = {list}\n")).expect("write config");
+        Config::from_sources(Some(&path), &with(&[]))
+            .expect_err("the list must be refused")
+            .to_string()
+    }
+
+    #[test]
+    fn origins_are_read_from_the_variable_in_order() {
+        assert_eq!(
+            origins_of("chrome-extension://abcdefghijklmnop,https://gw.example.com:8443"),
+            vec![
+                "chrome-extension://abcdefghijklmnop".to_owned(),
+                "https://gw.example.com:8443".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_variable_means_no_origins() {
+        assert!(origins_of("").is_empty());
+    }
+
+    #[test]
+    fn any_scheme_with_a_host_and_port_is_accepted() {
+        let list = origins_of("http://127.0.0.1:8717,moz-extension://abcdefghijklmnop");
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn a_file_list_loads() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("doorward.toml");
+        std::fs::write(
+            &path,
+            "allowed_origins = [\"chrome-extension://abcdefghijklmnop\"]\n",
+        )
+        .expect("write config");
+        let config = Config::from_sources(Some(&path), &with(&[])).expect("the list loads");
+        assert_eq!(
+            config.allowed_origins,
+            vec!["chrome-extension://abcdefghijklmnop".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_nul_byte_is_refused_as_not_text() {
+        assert_eq!(
+            refusal(&[("DOORWARD_ALLOWED_ORIGINS", "a\u{0}b")]),
+            "DOORWARD_ALLOWED_ORIGINS must be a comma separated list of origins"
+        );
+    }
+
+    #[test]
+    fn a_wildcard_and_null_are_refused() {
+        assert_eq!(
+            origins_refusal(&["*".to_owned()]),
+            r#"invalid config: allowed_origins entry "*" is a wildcard, not an origin"#
+        );
+        assert_eq!(
+            origins_refusal(&["null".to_owned()]),
+            r#"invalid config: allowed_origins entry "null" is not an origin"#
+        );
+    }
+
+    #[test]
+    fn an_empty_entry_is_refused() {
+        assert_eq!(
+            origins_refusal(&["https://a.example.com".to_owned(), String::new()]),
+            "invalid config: allowed_origins has an empty entry"
+        );
+        assert_eq!(
+            file_origins_refusal("[\"\"]"),
+            "invalid config: allowed_origins has an empty entry"
+        );
+    }
+
+    #[test]
+    fn an_entry_must_be_a_scheme_and_a_host() {
+        for entry in ["example.com", "://gw.example.com", "https://"] {
+            assert_eq!(
+                origins_refusal(&[entry.to_owned()]),
+                format!(
+                    r#"invalid config: allowed_origins entry "{entry}" must be scheme://host[:port]"#
+                ),
+                "{entry} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_query_fragment_or_trailing_slash_is_refused() {
+        for entry in [
+            "https://gw.example.com/",
+            "https://gw.example.com/x",
+            "https://gw.example.com?x=1",
+            "https://gw.example.com#x",
+        ] {
+            assert_eq!(
+                origins_refusal(&[entry.to_owned()]),
+                format!(
+                    r#"invalid config: allowed_origins entry "{entry}" has a path, query, fragment or trailing slash"#
+                ),
+                "{entry} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_outside_visible_ascii_are_refused_and_shown_as_question_marks() {
+        assert_eq!(
+            origins_refusal(&["https://gw.example.com ".to_owned()]),
+            r#"invalid config: allowed_origins entry "https://gw.example.com?" has a character outside visible ASCII"#
+        );
+        assert_eq!(
+            origins_refusal(&["https://ex\u{e9}mple.example.com".to_owned()]),
+            r#"invalid config: allowed_origins entry "https://ex?mple.example.com" has a character outside visible ASCII"#
+        );
+    }
+
+    #[test]
+    fn an_entry_of_256_bytes_loads_and_one_of_257_is_refused_cut_to_200_characters() {
+        let at_limit = format!("https://{}", "a".repeat(248));
+        assert_eq!(at_limit.len(), 256);
+        assert_eq!(origins_of(&at_limit), vec![at_limit.clone()]);
+        let over = format!("https://{}", "a".repeat(249));
+        assert_eq!(
+            origins_refusal(&[over]),
+            format!(
+                r#"invalid config: allowed_origins entry "https://{}" is over 256 bytes"#,
+                "a".repeat(192)
+            )
+        );
+    }
+
+    #[test]
+    fn at_most_32_origins_are_allowed() {
+        let list: Vec<String> = (0..32)
+            .map(|index| format!("https://h{index}.example.com"))
+            .collect();
+        assert_eq!(origins_of(&list.join(",")).len(), 32);
+        let mut more = list.clone();
+        more.push("https://h32.example.com".to_owned());
+        assert_eq!(
+            origins_refusal(&more),
+            "invalid config: allowed_origins has 33 entries, at most 32 are allowed"
+        );
+    }
+
+    #[test]
+    fn a_file_list_is_checked_like_the_variable() {
+        assert_eq!(
+            file_origins_refusal(r#"["https://gw.example.com", "*"]"#),
+            r#"invalid config: allowed_origins entry "*" is a wildcard, not an origin"#
+        );
     }
 }

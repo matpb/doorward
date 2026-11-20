@@ -69,6 +69,7 @@ message names the variable and never prints the value.
 | `DOORWARD_KEY_FILE` | (none) | File that holds the encryption key. When unset, the key file is the database path with `.key` added. |
 | `DOORWARD_TRUSTED_PROXIES` | (none) | Addresses or CIDR ranges of proxies whose `X-Forwarded-For` is believed. See Client addresses. |
 | `DOORWARD_SHARED_CLIENT_ADDRESS` | `false` | Set to `true` to accept that every visitor shares one address when no trusted proxy is set. |
+| `DOORWARD_ALLOWED_ORIGINS` | (none) | Comma separated origins, other than the public address, that may call the MCP paths, for a browser client served from another origin such as an extension. Each entry is `scheme://host[:port]` and is compared exactly. |
 | `DOORWARD_LIFETIMES_INVITATION_DAYS` | `7` | Days an invitation link works. |
 | `DOORWARD_LIFETIMES_RESET_MINUTES` | `60` | Minutes a password reset link works. |
 | `DOORWARD_LIFETIMES_SESSION_HOURS` | `12` | Hours a browser session lasts. |

@@ -228,6 +228,18 @@ impl McpClient {
         self.exchange(builder, None).await
     }
 
+    /// Sends `method` with no body and these extra headers; reads the body for at most 300 ms.
+    /// Unused by harness_upstream, which includes this file by path.
+    #[allow(dead_code)]
+    pub async fn bodiless(&self, method: reqwest::Method, headers: &[(&str, &str)]) -> McpReply {
+        let mut builder = self.with_auth_and_session(self.http.request(method, &self.url));
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let window = tokio::time::Instant::now() + GET_BODY_WINDOW;
+        self.exchange(builder, Some(window)).await
+    }
+
     pub fn session_id(&self) -> Option<String> {
         self.session.lock().expect("session lock").clone()
     }

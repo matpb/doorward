@@ -97,6 +97,7 @@ fn config_with_key(dir: &Path, key: PathBuf) -> Config {
         key_file: Some(key),
         trusted_proxies: Vec::new(),
         shared_client_address: false,
+        allowed_origins: Vec::new(),
         lifetimes: Default::default(),
         limits: Default::default(),
         mail: Default::default(),

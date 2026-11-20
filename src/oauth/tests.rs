@@ -1032,6 +1032,7 @@ async fn gateway(dir: &Path, dcr_per_hour: u64) -> String {
         key_file: None,
         trusted_proxies: Vec::new(),
         shared_client_address: false,
+        allowed_origins: Vec::new(),
         lifetimes: Default::default(),
         limits: Limits {
             dcr_per_hour,
