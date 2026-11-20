@@ -156,7 +156,7 @@ fn setup_error(form: &VerifiedForm, message: &str) -> Response {
 fn setup_form(csrf: &str, error: Option<&str>) -> Markup {
     html! {
         h1 { "Set up Doorward" }
-        p { "Enter the setup code printed when the gateway started, then the owner's email and a password of 12 to 256 characters." }
+        p.lede { "Enter the setup code printed when the gateway started, then the owner's email and a password of 12 to 256 characters." }
         @if let Some(message) = error {
             p.error { (message) }
         }
@@ -168,7 +168,32 @@ fn setup_form(csrf: &str, error: Option<&str>) -> Markup {
             input id="email" name="email" type="email" autocomplete="username" required;
             label for="password" { "Password" }
             input id="password" name="password" type="password" autocomplete="new-password" required;
-            button type="submit" { "Create owner" }
+            button type="submit" data-kind="primary" { "Create owner" }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use scraper::{Html, Selector};
+
+    use super::*;
+
+    /// How many elements of `doc` match `css`.
+    fn count(doc: &Html, css: &str) -> usize {
+        doc.select(&Selector::parse(css).expect("selector")).count()
+    }
+
+    #[test]
+    fn the_setup_page_has_a_lede_under_its_heading_and_one_primary_button() {
+        let doc = Html::parse_fragment(&setup_form("token", None).into_string());
+        assert_eq!(count(&doc, "h1"), 1);
+        assert_eq!(
+            count(&doc, "h1 + p.lede"),
+            1,
+            "the sentence under the heading must be a lede"
+        );
+        assert_eq!(count(&doc, r#"form > button[data-kind="primary"]"#), 1);
+        assert_eq!(count(&doc, "p.error"), 0);
     }
 }

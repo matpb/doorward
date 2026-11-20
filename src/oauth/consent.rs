@@ -13,6 +13,7 @@ use crate::app::AppState;
 use crate::cimd::{CimdFetcher, ClientMetadata};
 use crate::crypto::{constant_time_eq, random_token, token_hash};
 use crate::report;
+use crate::web::ui;
 use crate::web::{
     MainData, VerifiedForm, Viewer, content_security_policy, form_page_with, internal_error, page,
     redirect,
@@ -424,20 +425,22 @@ fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
         p { "Server: " (consent.server) }
         p { "Signed in as " (consent.email) }
         @if let Some(sentence) = consent.local_sentence {
-            p.local-app { (sentence) }
+            (ui::notice("warning", html! { p.local-app { (sentence) } }))
         }
-        p.notice data-consent-notice { "Approve only if you started this sign-in yourself." }
-        form method="post" action="/oauth/consent" {
-            input type="hidden" name="csrf" value=(csrf);
-            input type="hidden" name="req" value=(req);
-            input type="hidden" name="decision" value="approve";
-            button type="submit" { "Approve" }
-        }
-        form method="post" action="/oauth/consent" {
-            input type="hidden" name="csrf" value=(csrf);
-            input type="hidden" name="req" value=(req);
-            input type="hidden" name="decision" value="deny";
-            button type="submit" { "Deny" }
+        p.muted data-consent-notice { "Approve only if you started this sign-in yourself." }
+        div.actions {
+            form method="post" action="/oauth/consent" {
+                input type="hidden" name="csrf" value=(csrf);
+                input type="hidden" name="req" value=(req);
+                input type="hidden" name="decision" value="approve";
+                button type="submit" data-kind="primary" { "Approve" }
+            }
+            form method="post" action="/oauth/consent" {
+                input type="hidden" name="csrf" value=(csrf);
+                input type="hidden" name="req" value=(req);
+                input type="hidden" name="decision" value="deny";
+                button type="submit" data-kind="secondary" { "Deny" }
+            }
         }
     }
 }
@@ -457,11 +460,14 @@ fn client_line(client: &Shown, claim: bool) -> Markup {
                 ". Any program on this computer can use that description."
             }
         },
-        Some(host) => html! {
-            p data-client="document" {
-                q.client-name { (client.name) } ", published by " span.client-host { (host) } "."
-            }
-        },
+        Some(host) => ui::notice(
+            "ok",
+            html! {
+                p data-client="document" {
+                    q.client-name { (client.name) } ", published by " span.client-host { (host) } "."
+                }
+            },
+        ),
     }
 }
 
@@ -694,4 +700,130 @@ fn insert_code(
         ],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::to_bytes;
+    use scraper::{ElementRef, Html, Selector};
+
+    use super::*;
+
+    /// A consent page for a loopback redirect (`local`) or an https one, for a named client.
+    fn consent(local: bool, client_host: Option<&str>) -> ConsentPage {
+        ConsentPage {
+            redirect_host: "127.0.0.1:53579".to_owned(),
+            origin: "http://127.0.0.1:53579".to_owned(),
+            claim: local,
+            local_sentence: local.then_some(LISTENING_SENTENCE),
+            client: Shown {
+                name: "Claude Code".to_owned(),
+                verified: client_host.is_some(),
+                client_host: client_host.map(str::to_owned),
+            },
+            server: "demo".to_owned(),
+            email: "bob@example.com".to_owned(),
+        }
+    }
+
+    /// How many elements of `doc` match `css`.
+    fn count(doc: &Html, css: &str) -> usize {
+        doc.select(&Selector::parse(css).expect("selector")).count()
+    }
+
+    /// The collapsed text of the first element of `doc` that matches `css`.
+    fn text(doc: &Html, css: &str) -> String {
+        let selector = Selector::parse(css).expect("selector");
+        let element: ElementRef<'_> = doc
+            .select(&selector)
+            .next()
+            .unwrap_or_else(|| panic!("{css} must be on the page"));
+        element
+            .text()
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn a_local_sentence_sits_in_a_warning_notice() {
+        let doc =
+            Html::parse_fragment(&consent_body("token", "req", &consent(true, None)).into_string());
+        assert_eq!(
+            count(&doc, r#"div.notice[data-notice="warning"] > p.local-app"#),
+            1
+        );
+        assert_eq!(text(&doc, "p.local-app"), LISTENING_SENTENCE);
+    }
+
+    #[test]
+    fn a_confirmed_publisher_sits_in_an_ok_notice() {
+        let page = consent(false, Some("example.com"));
+        let doc = Html::parse_fragment(&consent_body("token", "req", &page).into_string());
+        assert_eq!(
+            count(
+                &doc,
+                r#"div.notice[data-notice="ok"] > p[data-client="document"]"#
+            ),
+            1
+        );
+        assert_eq!(
+            text(&doc, "p[data-client=document] span.client-host"),
+            "example.com"
+        );
+        assert_eq!(count(&doc, "p.local-app"), 0);
+    }
+
+    #[test]
+    fn the_decisions_sit_in_one_actions_row_with_approve_first() {
+        let doc = Html::parse_fragment(
+            &consent_body("token", "req", &consent(false, None)).into_string(),
+        );
+        assert_eq!(count(&doc, "div.actions > form"), 2);
+        assert_eq!(
+            text(
+                &doc,
+                r#"div.actions input[value="approve"] ~ button[data-kind="primary"]"#
+            ),
+            "Approve"
+        );
+        assert_eq!(
+            text(
+                &doc,
+                r#"div.actions input[value="deny"] ~ button[data-kind="secondary"]"#
+            ),
+            "Deny"
+        );
+        assert_eq!(count(&doc, "button[data-kind=danger]"), 0);
+    }
+
+    #[test]
+    fn the_notice_sentence_is_muted_text_and_keeps_its_attribute() {
+        let doc = Html::parse_fragment(
+            &consent_body("token", "req", &consent(false, None)).into_string(),
+        );
+        assert_eq!(
+            text(&doc, "p.muted[data-consent-notice]"),
+            "Approve only if you started this sign-in yourself."
+        );
+        assert_eq!(count(&doc, ".notice[data-consent-notice]"), 0);
+    }
+
+    #[tokio::test]
+    async fn the_no_access_page_carries_the_header_and_the_card_layout() {
+        let response = no_access();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let doc = Html::parse_document(std::str::from_utf8(&bytes).expect("utf-8"));
+        assert_eq!(
+            count(
+                &doc,
+                r#"body[data-layout="card"] > header[data-brand] .brand"#
+            ),
+            1
+        );
+    }
 }

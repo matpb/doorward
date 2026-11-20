@@ -177,7 +177,7 @@ fn invite_page(form: &VerifiedForm, email: &str, error: Option<&str>) -> Respons
 fn invite_body(csrf: &str, email: &str, error: Option<&str>) -> Markup {
     html! {
         h1 { "Accept your invitation" }
-        p { "Invited address: " (email) }
+        p.lede { "Invited address: " (email) }
         @if let Some(message) = error {
             p.error { (message) }
         }
@@ -185,7 +185,32 @@ fn invite_body(csrf: &str, email: &str, error: Option<&str>) -> Markup {
             input type="hidden" name="csrf" value=(csrf);
             label for="password" { "Choose a password (12 to 256 characters)" }
             input id="password" name="password" type="password" autocomplete="new-password" required;
-            button type="submit" { "Set password" }
+            button type="submit" data-kind="primary" { "Set password" }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use scraper::{Html, Selector};
+
+    use super::*;
+
+    /// How many elements of `doc` match `css`.
+    fn count(doc: &Html, css: &str) -> usize {
+        doc.select(&Selector::parse(css).expect("selector")).count()
+    }
+
+    #[test]
+    fn the_invitation_page_has_the_address_as_a_lede_and_one_primary_button() {
+        let markup = invite_body("token", "bob@example.com", None);
+        let doc = Html::parse_fragment(&markup.into_string());
+        assert_eq!(count(&doc, "h1 + p.lede"), 1);
+        assert_eq!(count(&doc, "p.lede"), 1);
+        assert_eq!(count(&doc, r#"form > button[data-kind="primary"]"#), 1);
+        assert_eq!(
+            count(&doc, "form > label[for=password] + input#password"),
+            1
+        );
     }
 }

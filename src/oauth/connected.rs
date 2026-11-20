@@ -269,13 +269,13 @@ fn link_page(viewer: &Viewer, family: &Family) -> Response {
 fn link_body(csrf: &str, family: &Family) -> Markup {
     html! {
         h1 { "Disconnect this app?" }
-        p {
+        p.lede {
             (family.client_name) " on " (family.server_label())
             " will no longer be able to use your account."
         }
         form method="post" {
             input type="hidden" name="csrf" value=(csrf);
-            button type="submit" { "Disconnect" }
+            button type="submit" data-kind="danger" { "Disconnect" }
         }
     }
 }
@@ -287,10 +287,52 @@ fn disconnected_page(family: &Family) -> Response {
         "App disconnected",
         html! {
             h1 { "The app is disconnected" }
-            p {
+            p.lede {
                 (family.client_name) " on " (family.server_label())
                 " can no longer use your account."
             }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::to_bytes;
+    use scraper::{Html, Selector};
+
+    use super::*;
+
+    fn family() -> Family {
+        Family {
+            id: 1,
+            user_id: 2,
+            user_email: "bob@example.com".to_owned(),
+            server_id: Some(3),
+            server_slug: Some("demo".to_owned()),
+            client_name: "Claude Code".to_owned(),
+            revoked: false,
+        }
+    }
+
+    /// How many elements of `doc` match `css`.
+    fn count(doc: &Html, css: &str) -> usize {
+        doc.select(&Selector::parse(css).expect("selector")).count()
+    }
+
+    #[test]
+    fn the_disconnect_question_has_a_lede_and_one_danger_button() {
+        let doc = Html::parse_fragment(&link_body("token", &family()).into_string());
+        assert_eq!(count(&doc, "h1 + p.lede"), 1);
+        assert_eq!(count(&doc, r#"form > button[data-kind="danger"]"#), 1);
+        assert_eq!(count(&doc, "button[data-kind=secondary]"), 0);
+    }
+
+    #[tokio::test]
+    async fn the_disconnected_page_has_its_sentence_as_a_lede() {
+        let bytes = to_bytes(disconnected_page(&family()).into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let doc = Html::parse_document(std::str::from_utf8(&bytes).expect("utf-8"));
+        assert_eq!(count(&doc, "h1 + p.lede"), 1);
+    }
 }

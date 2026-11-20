@@ -167,7 +167,58 @@ fn login_form(csrf: &str, req: &str, error: Option<&str>) -> Markup {
             input id="email" name="email" type="email" autocomplete="username" required;
             label for="password" { "Password" }
             input id="password" name="password" type="password" autocomplete="current-password" required;
-            button type="submit" { "Sign in" }
+            button type="submit" data-kind="primary" { "Sign in" }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use scraper::{Html, Selector};
+
+    use super::*;
+
+    /// The sign-in body as a fragment, with the error line when one is given.
+    fn body(error: Option<&str>) -> Html {
+        Html::parse_fragment(&login_form("token", "", error).into_string())
+    }
+
+    /// How many elements of `doc` match `css`.
+    fn count(doc: &Html, css: &str) -> usize {
+        doc.select(&Selector::parse(css).expect("selector")).count()
+    }
+
+    #[test]
+    fn the_sign_in_form_has_one_primary_button_and_keeps_its_fields() {
+        let doc = body(None);
+        assert_eq!(count(&doc, "h1"), 1);
+        assert_eq!(count(&doc, r#"form > button[data-kind="primary"]"#), 1);
+        assert_eq!(count(&doc, "form > input[name=csrf][type=hidden]"), 1);
+        assert_eq!(
+            count(
+                &doc,
+                r#"form > label[for="email"] + input#email[name=email]"#
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &doc,
+                r#"form > label[for="password"] + input#password[name=password]"#
+            ),
+            1
+        );
+        assert_eq!(count(&doc, "p.error"), 0);
+    }
+
+    #[test]
+    fn a_refused_sign_in_shows_its_message_as_an_error_paragraph() {
+        let doc = body(Some(WRONG_CREDENTIALS));
+        let selector = Selector::parse("p.error").expect("selector");
+        let errors: Vec<String> = doc
+            .select(&selector)
+            .map(|element| element.text().collect())
+            .collect();
+        assert_eq!(errors, vec!["Wrong email or password.".to_owned()]);
     }
 }

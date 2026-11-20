@@ -256,7 +256,7 @@ fn forgot_sent() -> Response {
         "Check your email",
         html! {
             h1 { "Check your email" }
-            p { "If an account exists for that address, a link to reset its password is on its way." }
+            p.lede { "If an account exists for that address, a link to reset its password is on its way." }
         },
     )
 }
@@ -264,12 +264,12 @@ fn forgot_sent() -> Response {
 fn forgot_body(csrf: &str) -> Markup {
     html! {
         h1 { "Forgot your password?" }
-        p { "Enter your email address. If an account exists for it, a reset link is sent." }
+        p.lede { "Enter your email address. If an account exists for it, a reset link is sent." }
         form method="post" action="/forgot" {
             input type="hidden" name="csrf" value=(csrf);
             label for="email" { "Email" }
             input id="email" name="email" type="email" autocomplete="username" required;
-            button type="submit" { "Send reset link" }
+            button type="submit" data-kind="primary" { "Send reset link" }
         }
     }
 }
@@ -289,7 +289,51 @@ fn reset_form(csrf: &str, error: Option<&str>) -> Markup {
             input type="hidden" name="csrf" value=(csrf);
             label for="password" { "New password (12 to 256 characters)" }
             input id="password" name="password" type="password" autocomplete="new-password" required;
-            button type="submit" { "Set password" }
+            button type="submit" data-kind="primary" { "Set password" }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::to_bytes;
+    use scraper::{Html, Selector};
+
+    use super::*;
+
+    /// How many elements of `doc` match `css`.
+    fn count(doc: &Html, css: &str) -> usize {
+        doc.select(&Selector::parse(css).expect("selector")).count()
+    }
+
+    #[test]
+    fn the_forgot_page_has_a_lede_and_one_primary_button() {
+        let doc = Html::parse_fragment(&forgot_body("token").into_string());
+        assert_eq!(count(&doc, "h1 + p.lede"), 1);
+        assert_eq!(count(&doc, r#"form > button[data-kind="primary"]"#), 1);
+        assert_eq!(
+            count(&doc, "form > label[for=email] + input#email[name=email]"),
+            1
+        );
+    }
+
+    #[test]
+    fn the_choose_password_page_has_one_primary_button_and_its_field() {
+        let doc = Html::parse_fragment(&reset_form("token", None).into_string());
+        assert_eq!(count(&doc, "h1"), 1);
+        assert_eq!(count(&doc, r#"form > button[data-kind="primary"]"#), 1);
+        assert_eq!(
+            count(&doc, "form > label[for=password] + input#password"),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn the_check_email_page_has_its_sentence_as_a_lede() {
+        let bytes = to_bytes(forgot_sent().into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let doc = Html::parse_document(std::str::from_utf8(&bytes).expect("utf-8"));
+        assert_eq!(count(&doc, "h1 + p.lede"), 1);
     }
 }
