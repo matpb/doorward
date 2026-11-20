@@ -7,6 +7,9 @@ use common::admin;
 use common::client::{Page, TestClient, Tokens};
 use common::upstream::{FakeUpstream, Mode, UpstreamOptions};
 use common::world::{OWNER_EMAIL, PASSWORD, World};
+use doorward::clock::Clock;
+use doorward::oauth::families;
+use rusqlite::Connection;
 use serde_json::{Value, json};
 
 const ALICE: &str = "alice@example.com";
@@ -570,6 +573,108 @@ async fn assert_one_ok_call(w: &World, tool: &str, server: &str) {
         calls[0].outcome, "ok",
         "the call that expired during its run must be recorded as ok"
     );
+}
+
+/// The token part of a housekeeping run, at the gateway's clock, while a call is still in flight.
+fn sweep_tokens_now(w: &World) {
+    let conn = Connection::open(w.gw.db_path()).expect("the gateway database opens");
+    conn.busy_timeout(Duration::from_secs(5))
+        .expect("the busy timeout is set");
+    let now = w.gw.clock.now().unix_timestamp();
+    let replay = families::replay_window(&w.gw.config().lifetimes);
+    families::sweep(&conn, now, replay).expect("the housekeeping token sweep runs");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_that_outlives_its_token_survives_the_housekeeping_run() {
+    let w = World::start().await;
+    let slow = UpstreamOptions {
+        mode: Mode::Delayed { millis: 1500 },
+        ..UpstreamOptions::default()
+    };
+    let (upstream, demo) = w.upstream("demo", slow).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[demo.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let mcp = Arc::new(w.session_mcp("demo", &tokens));
+    assert_eq!(
+        mcp.initialize().await.status,
+        200,
+        "bob's session must start"
+    );
+    let call = {
+        let mcp = mcp.clone();
+        tokio::spawn(async move { mcp.call_tool("echo", json!({"text": "hi"})).await })
+    };
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    w.gw.clock
+        .advance(time::Duration::hours(1) + time::Duration::minutes(20));
+    sweep_tokens_now(&w);
+    let reply = tokio::time::timeout(Duration::from_secs(5), call)
+        .await
+        .expect("the delayed call must return within 5 seconds")
+        .expect("the call task must not panic");
+    assert_eq!(
+        reply.status, 200,
+        "a call that outlives its token must still get the upstream's answer"
+    );
+    assert_eq!(
+        reply.text().as_deref(),
+        Some("called: echo"),
+        "the upstream's answer must be returned after the housekeeping run"
+    );
+    assert_eq!(
+        upstream.rpc_count("tools/call"),
+        1,
+        "the upstream must see the call once"
+    );
+    assert_one_ok_call(&w, "echo", "demo").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_combined_call_that_outlives_its_token_survives_the_housekeeping_run() {
+    let w = World::start().await;
+    let slow = UpstreamOptions {
+        mode: Mode::Delayed { millis: 1500 },
+        ..UpstreamOptions::default()
+    };
+    let (upstream, demo) = w.upstream("demo", slow).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[demo.as_str()]).await;
+    let tokens = w.token(&bob, "mcp").await;
+    let mcp = Arc::new(w.session_mcp("mcp", &tokens));
+    assert_eq!(
+        mcp.initialize().await.status,
+        200,
+        "bob's session must start"
+    );
+    let call = {
+        let mcp = mcp.clone();
+        tokio::spawn(async move { mcp.call_tool("demo__echo", json!({"text": "hi"})).await })
+    };
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    w.gw.clock
+        .advance(time::Duration::hours(1) + time::Duration::minutes(20));
+    sweep_tokens_now(&w);
+    let reply = tokio::time::timeout(Duration::from_secs(5), call)
+        .await
+        .expect("the delayed call must return within 5 seconds")
+        .expect("the call task must not panic");
+    assert_eq!(
+        reply.status, 200,
+        "a combined call that outlives its token must still get the upstream's answer"
+    );
+    assert_eq!(
+        reply.text().as_deref(),
+        Some("called: echo"),
+        "the upstream's answer must be returned after the housekeeping run"
+    );
+    assert_eq!(
+        upstream.rpc_count("tools/call"),
+        1,
+        "the upstream must see the call once"
+    );
+    assert_one_ok_call(&w, "echo", "demo").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

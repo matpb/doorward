@@ -5,12 +5,15 @@ use std::time::{Duration, Instant};
 
 use common::admin;
 use common::binary::{Outcome, Run, required_vars};
+use common::upstream::UpstreamOptions;
 use common::world::World;
 use doorward::clock::Clock;
 use doorward::config::Limits;
+use doorward::crypto::token_hash;
 use rusqlite::{Connection, params};
 
 const DAY: i64 = 86_400;
+const BOB: &str = "bob@example.com";
 
 /// The gateway's current time, in unix seconds.
 fn now(w: &World) -> i64 {
@@ -46,6 +49,34 @@ async fn wait_for_deletion(w: &World, tool: &str) {
     while rows_tagged(w, tool) > 0 && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// The number of access token rows that hold the hash of `token`.
+fn access_rows(w: &World, token: &str) -> i64 {
+    Connection::open(w.gw.db_path())
+        .expect("the gateway database opens")
+        .query_row(
+            "SELECT COUNT(*) FROM access_tokens WHERE token_hash = ?1",
+            [token_hash(token)],
+            |row| row.get(0),
+        )
+        .expect("the count query runs")
+}
+
+/// The number of token family rows.
+fn family_rows(w: &World) -> i64 {
+    Connection::open(w.gw.db_path())
+        .expect("the gateway database opens")
+        .query_row("SELECT COUNT(*) FROM token_families", [], |row| row.get(0))
+        .expect("the count query runs")
+}
+
+/// Restarts the gateway, which runs the housekeeping at once, and waits until the run has deleted
+/// a marker row. The token sweep runs in the same transaction, before the activity sweep.
+async fn housekeeping_run(w: &mut World, marker: &str) {
+    write_row(w, now(w) - 91 * DAY, "tool_call", marker);
+    w.gw.restart().await;
+    wait_for_deletion(w, marker).await;
 }
 
 /// The row count of every table but `activity`, by name.
@@ -187,6 +218,72 @@ async fn every_kind_of_row_is_pruned_alike() {
             "the housekeeping run must not delete rows of table {table}: {count} before, {counted_after} after"
         );
     }
+}
+
+/// An access token lives an hour; the housekeeping keeps it for an hour more, so a call that
+/// started while it was valid can still be answered.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_expired_access_token_is_removed_after_its_grace() {
+    let mut w = World::start().await;
+    let (_upstream, demo) = w.upstream("demo", UpstreamOptions::default()).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[demo.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    assert_eq!(
+        access_rows(&w, &tokens.access_token),
+        1,
+        "the access token must be stored after sign-in"
+    );
+    w.gw.clock.advance(time::Duration::minutes(90));
+    housekeeping_run(&mut w, "marker-token-30").await;
+    assert_eq!(
+        access_rows(&w, &tokens.access_token),
+        1,
+        "an access token expired 30 minutes ago must survive the housekeeping run"
+    );
+    let mcp = w.session_mcp("demo", &tokens);
+    assert_eq!(
+        mcp.initialize().await.status,
+        401,
+        "an access token expired 30 minutes ago must be refused while its row is kept"
+    );
+    w.gw.clock.advance(time::Duration::minutes(40));
+    housekeeping_run(&mut w, "marker-token-70").await;
+    assert_eq!(
+        access_rows(&w, &tokens.access_token),
+        0,
+        "an access token expired more than an hour ago must be deleted by the housekeeping run"
+    );
+}
+
+/// A token family lasts 90 days; the housekeeping keeps an expired one for an hour more.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_expired_family_is_removed_after_its_grace() {
+    let mut w = World::start().await;
+    let (_upstream, demo) = w.upstream("demo", UpstreamOptions::default()).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[demo.as_str()]).await;
+    let _tokens = w.token(&bob, "demo").await;
+    assert_eq!(
+        family_rows(&w),
+        1,
+        "the token family must be stored after sign-in"
+    );
+    w.gw.clock
+        .advance(time::Duration::days(90) + time::Duration::minutes(30));
+    housekeeping_run(&mut w, "marker-family-30").await;
+    assert_eq!(
+        family_rows(&w),
+        1,
+        "a family expired 30 minutes ago must survive the housekeeping run"
+    );
+    w.gw.clock.advance(time::Duration::minutes(40));
+    housekeeping_run(&mut w, "marker-family-70").await;
+    assert_eq!(
+        family_rows(&w),
+        0,
+        "a family expired more than an hour ago must be deleted by the housekeeping run"
+    );
 }
 
 /// The gap between two reset mails is one public constant: housekeeping must read it, not copy it.

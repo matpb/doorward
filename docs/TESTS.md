@@ -225,6 +225,14 @@ Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
     `Progress { steps: 5, interval_ms: 300 }`; the clock moves two hours ahead 400 ms in.
     All five progress events and the answer `called: echo` arrive; one `tool_call` row is
     `ok`.
+14. `a_call_that_outlives_its_token_survives_the_housekeeping_run`: the setup of 11, with the
+    clock 80 minutes ahead (20 minutes past the token's expiry) 400 ms into the call. The
+    token part of a housekeeping run is then called at that clock with `families::sweep` on
+    the gateway's database, since a restart would wait for the call to end. The call answers
+    `200` with `called: echo`, the upstream sees one `tools/call`, and one `tool_call` row for
+    echo on demo is `ok`.
+15. `a_combined_call_that_outlives_its_token_survives_the_housekeeping_run`: the same on `/mcp`
+    with `demo__echo`.
 
 ## s06_passwords.rs (statement 6)
 
@@ -1404,6 +1412,14 @@ is forced with `W.gw.restart()`.
 5. `the_reset_gap_is_one_public_constant`: reads `src/accounts`: `reset.rs` exports
    `REQUEST_GAP_SECONDS` as `pub const`, and `housekeeping.rs` keeps no copy of it. A source
    check, since the constant is private until phase B.
+6. `an_expired_access_token_is_removed_after_its_grace`: bob on demo, so a token row exists.
+   The clock moves 90 minutes ahead, 30 minutes past the token's expiry, and a housekeeping run
+   is forced with `W.gw.restart()`; a row aged 91 days is written before it, and the run has
+   finished when that row is gone. The token's row survives and `initialize` with the token
+   answers 401. The clock moves 40 minutes more and a second run deletes the row.
+7. `an_expired_family_is_removed_after_its_grace`: the family lasts 90 days. The clock moves
+   90 days and 30 minutes ahead; a run keeps the one family row. The clock moves 40 minutes
+   more; a second run deletes it.
 
 ## s46_consent_notice.rs (statement 46)
 
