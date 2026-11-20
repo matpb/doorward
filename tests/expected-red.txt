@@ -1,1 +1,3 @@
 # Test files written before their code. Each must compile and fail; remove a name when its code lands.
+s29_restart
+s43_rate_limits

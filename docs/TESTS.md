@@ -923,6 +923,15 @@ stateless `tools/call` body for that tool, sent with `raw` and explicit headers.
    directory that does not exist: `doorward: cannot create the key file {path}: No such
    file or directory (os error 2)`, and no key file is made. A key file that is a directory:
    `doorward: cannot read the key file {path}: Is a directory (os error 21)`.
+4. `a_stop_signal_ends_the_gateway_while_a_stream_is_open`: the real binary, with server
+   `demo` whose upstream sends one progress event a second; the owner's tool call is still
+   open when `SIGTERM` is sent. The process runs on 5 seconds later, exits 0 within 14
+   seconds, and standard error holds the stopping line and then the still-open line.
+5. `a_second_signal_ends_the_wait`: the same stream; the process runs on 2 seconds after the
+   first `SIGTERM`; a second `SIGTERM` ends it within 3 seconds with exit 0 and the same two
+   lines.
+6. `a_stop_with_nothing_open_is_immediate`: no request open; exit 0 within 3 seconds; the
+   stopping line and no still-open line.
 
 ## s32_rules.rs (statement 32)
 
@@ -1329,6 +1338,12 @@ documentation ranges. "Limited" is status `429` with an integer `Retry-After` of
 15. `every_limit_is_a_setting`: each class's burst and rate, `mcp_open` and
     `rate_table_keys` appear in `config::SETTINGS`, and a start with `burst = 1` limits the
     second request.
+16. `health_is_counted_for_a_caller_that_is_not_local`: from A (not loopback), the first two
+    `GET /healthz` are `200`; the third is limited with the JSON `too_many_requests` answer.
+    With the settings table renamed, a further request from A is still limited, so the
+    limited answer reads no database. B's first request is `200`.
+17. `health_from_the_host_itself_is_never_limited`: six `GET /healthz` with no forwarded
+    address (the loopback peer) are all `200`, with a burst of 2.
 
 ## s44_lockout.rs (statement 44)
 

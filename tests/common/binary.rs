@@ -141,6 +141,34 @@ impl Run {
         self.child.kill().expect("kill doorward");
         self.child.wait().expect("reap doorward");
     }
+
+    /// Sends the signal `name`, such as `TERM`, to the process with `kill`.
+    pub fn signal(&self, name: &str) {
+        let status = Command::new("kill")
+            .arg(format!("-{name}"))
+            .arg(self.child.id().to_string())
+            .status()
+            .expect("run kill");
+        assert!(status.success(), "kill -{name} failed: {status}");
+    }
+
+    /// Waits up to `within` for the process to exit; `None` when it is still running then.
+    pub fn exit_within(&mut self, within: Duration) -> Option<Outcome> {
+        let deadline = Instant::now() + within;
+        loop {
+            if let Some(status) = self.child.try_wait().expect("poll doorward") {
+                return Some(Outcome {
+                    code: status.code(),
+                    stdout: read_log(&self.logs.path().join("stdout.txt")),
+                    stderr: self.stderr(),
+                });
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(POLL);
+        }
+    }
 }
 
 impl Drop for Run {

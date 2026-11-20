@@ -876,3 +876,68 @@ async fn every_limit_is_a_setting() {
         "the second request with burst 1",
     );
 }
+
+/// Renames the settings table from `from` to `to`; a read of it fails while it has the old name.
+fn rename_settings(w: &World, from: &str, to: &str) {
+    let conn = Connection::open(w.gw.db_path()).expect("the gateway database opens");
+    conn.busy_timeout(Duration::from_secs(5))
+        .expect("set the busy timeout");
+    conn.execute_batch(&format!("ALTER TABLE {from} RENAME TO {to};"))
+        .expect("rename the settings table");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn health_is_counted_for_a_caller_that_is_not_local() {
+    let mut w = World::start().await;
+    tight(&mut w, |_| {}).await;
+    let browser = w.client();
+    let from = "192.0.2.10";
+    for n in 1..=2 {
+        let page = get_from(&browser, from, "/healthz").await;
+        assert_eq!(
+            page.status, 200,
+            "health request {n} from the caller must be answered"
+        );
+    }
+    let page = get_from(&browser, from, "/healthz").await;
+    assert_limited(
+        page.status,
+        &page.headers,
+        "the third health request from the caller",
+    );
+    assert_eq!(
+        page.json(),
+        Some(json!({
+            "error": "too_many_requests",
+            "error_description": "Too many requests. Try again later.",
+        })),
+        "a limited health request must answer the too_many_requests JSON"
+    );
+    rename_settings(&w, "settings", "settings_hidden");
+    let page = get_from(&browser, from, "/healthz").await;
+    rename_settings(&w, "settings_hidden", "settings");
+    assert_limited(
+        page.status,
+        &page.headers,
+        "a health request over the limit while the settings cannot be read",
+    );
+    let page = get_from(&browser, "192.0.2.20", "/healthz").await;
+    assert_eq!(
+        page.status, 200,
+        "the first health request from another address must be answered"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn health_from_the_host_itself_is_never_limited() {
+    let mut w = World::start().await;
+    tight(&mut w, |_| {}).await;
+    let browser = w.client();
+    for n in 1..=6 {
+        let page = browser.get("/healthz").await;
+        assert_eq!(
+            page.status, 200,
+            "health request {n} from the host itself must be answered"
+        );
+    }
+}
