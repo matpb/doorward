@@ -305,4 +305,23 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn loopback_clients_are_private() {
+        let trusted = [Range::from(ip("127.0.0.1"))];
+        for client in [ip("127.0.0.1"), ip("::1")] {
+            let warned = Warned::default();
+            assert_eq!(
+                warned.due(
+                    ip("127.0.0.1"),
+                    &forwarded(&["203.0.113.9"]),
+                    &trusted,
+                    true,
+                    client
+                ),
+                [PRIVATE_CLIENT],
+                "{client} is a loopback client and must earn the private-address warning"
+            );
+        }
+    }
 }

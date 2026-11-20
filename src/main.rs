@@ -145,3 +145,16 @@ async fn probe(url: &str) -> Result<(), String> {
         Err(format!("it answered {}", response.status()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::health_url;
+
+    #[test]
+    fn a_wildcard_listen_address_is_asked_on_loopback() {
+        let url = |listen: &str| health_url(listen.parse().expect("a socket address"));
+        assert_eq!(url("0.0.0.0:8717"), "http://127.0.0.1:8717/healthz");
+        assert_eq!(url("[::]:8717"), "http://[::1]:8717/healthz");
+        assert_eq!(url("192.0.2.7:9000"), "http://192.0.2.7:9000/healthz");
+    }
+}

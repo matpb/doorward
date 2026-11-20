@@ -1062,4 +1062,12 @@ mod tests {
         let config = started("http://127.0.0.1:8717", &[]);
         assert_eq!(config.start_check().expect("starts"), None);
     }
+
+    #[test]
+    fn a_loopback_https_address_is_not_a_public_install() {
+        assert!(!started("https://localhost", &[]).https_public());
+        assert!(!started("https://127.0.0.1:8717", &[]).https_public());
+        assert!(started("https://doorward.example.com", &[]).https_public());
+        assert!(!started("http://127.0.0.1:8717", &[]).https_public());
+    }
 }

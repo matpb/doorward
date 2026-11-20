@@ -1,8 +1,12 @@
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::Ipv4Addr;
+use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::net::{Ipv4Addr, TcpListener};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use common::binary::{
     Run, free_port, http, lines_containing, required_vars, settings_of, write_file,
@@ -481,4 +485,108 @@ fn pages_tell_browsers_to_stay_on_https() {
             "{path} on a loopback http gateway must not send Strict-Transport-Security"
         );
     }
+}
+
+/// Answers every connection on `listener` with 503 and no body, until `stop` is set.
+fn serve_503(listener: TcpListener, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+    listener
+        .set_nonblocking(true)
+        .expect("a nonblocking listener");
+    std::thread::spawn(move || {
+        while !stop.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).expect("a blocking stream");
+                    {
+                        let mut reader = BufReader::new(&stream);
+                        loop {
+                            let mut line = String::new();
+                            reader.read_line(&mut line).expect("read the request");
+                            if line.is_empty() || line == "\r\n" {
+                                break;
+                            }
+                        }
+                    }
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .expect("write the answer");
+                }
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(err) => panic!("accept failed: {err}"),
+            }
+        }
+    })
+}
+
+/// Sets a server thread's stop flag when the test ends, even by a panic.
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn health_fails_when_the_answer_is_not_200() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+    let port = listener.local_addr().expect("local address").port();
+    let stop = Arc::new(AtomicBool::new(false));
+    let _stop_on_drop = StopOnDrop(Arc::clone(&stop));
+    let server = serve_503(listener, Arc::clone(&stop));
+    let dir = tempfile::tempdir().expect("temp dir");
+    let url = format!("http://127.0.0.1:{port}");
+    let listen = format!("127.0.0.1:{port}");
+    let database = dir.path().join("doorward.db").display().to_string();
+    let env = [
+        ("DOORWARD_PUBLIC_URL", url.as_str()),
+        ("DOORWARD_LISTEN", listen.as_str()),
+        ("DOORWARD_DATABASE", database.as_str()),
+    ];
+    let outcome = Run::spawn(&["health"], &env).wait_for_exit();
+    assert_eq!(
+        outcome.code,
+        Some(1),
+        "doorward health must exit 1 when the gateway answers 503; stderr:\n{}",
+        outcome.stderr
+    );
+    assert_eq!(
+        outcome.stderr.lines().count(),
+        1,
+        "doorward health must print one line on stderr; stderr:\n{}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains("it answered 503"),
+        "the line must say the gateway answered 503; stderr:\n{}",
+        outcome.stderr
+    );
+    stop.store(true, Ordering::Relaxed);
+    server.join().expect("the answering thread ends cleanly");
+}
+
+#[test]
+fn health_asks_loopback_for_a_wildcard_listen_address() {
+    let site = Site::new();
+    let url = site.url();
+    let env = site.env(&url);
+    let mut gateway = Run::spawn(&[], &env);
+    gateway.wait_until_healthy(site.port);
+    let wildcard = format!("0.0.0.0:{}", site.port);
+    let health_env = [
+        ("DOORWARD_PUBLIC_URL", url.as_str()),
+        ("DOORWARD_LISTEN", wildcard.as_str()),
+        ("DOORWARD_DATABASE", site.database.as_str()),
+    ];
+    let outcome = Run::spawn(&["health"], &health_env).wait_for_exit();
+    assert_eq!(
+        outcome.code,
+        Some(0),
+        "a wildcard listen address must be asked on loopback and answer 200; stderr:\n{}",
+        outcome.stderr
+    );
 }
