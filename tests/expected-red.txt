@@ -7,3 +7,4 @@ s14_assignment
 s17_activity
 s20_cimd_fetcher
 s32_rules
+s47_combined_grants
