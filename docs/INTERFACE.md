@@ -115,6 +115,18 @@ account_failures = 5          # consecutive wrong passwords before the account i
 address_failures = 30         # wrong passwords per address inside the window
 block_minutes = 15
 dcr_per_hour = 60             # registrations per address
+dcr_total_per_hour = 600      # registrations of all addresses together
+general_burst = 240           # per client address: everything not listed below
+general_per_minute = 600
+oauth_burst = 60              # per client address: token, register, authorize
+oauth_per_minute = 120
+credentials_burst = 20        # per client address: the forms that take a password or a link token
+credentials_per_minute = 20
+mcp_burst = 240               # per user: requests that passed the bearer check
+mcp_per_minute = 600
+mcp_open = 64                 # per user: MCP requests and streams open at once
+rate_table_keys = 100000      # addresses and users the limiter counts at once
+auth_requests_max = 10000     # pending authorization requests kept
 
 [mail]
 # smtp_ca_file = "roots.pem"  # optional: extra trusted roots for SMTP over TLS, PEM
@@ -400,6 +412,37 @@ Headers sent upstream: `Content-Type`, `Accept`, `MCP-Protocol-Version`, `Mcp-Se
 Responses to the client carry `X-Content-Type-Options: nosniff` and
 `Content-Security-Policy: sandbox`; of the upstream's headers only `Content-Type` and
 `Mcp-Session-Id` pass.
+
+## Rate limits
+
+Every request but `GET /healthz` is counted before its route runs. Classes and keys:
+
+| Class | Key | Requests |
+|---|---|---|
+| oauth | client address | `POST /oauth/token`, `POST /oauth/register`, `GET /oauth/authorize` |
+| credentials | client address | `POST` on `/login`, `/setup`, `/forgot`, `/invite/{token}`, `/reset/{token}`, `/account/password`, `/account/disconnect/{token}` |
+| general | client address | everything else, and every request on `/mcp` and `/{slug}` until its bearer check passes |
+| mcp | user | every request on `/mcp` and `/{slug}` whose bearer check passed |
+
+A class allows `*_burst` requests at once and refills at `*_per_minute`. An IPv6 client is
+counted by its /64. On the MCP paths the address is counted first, before the database is
+read; a request that is admitted gives that count back and is counted for its user instead,
+so a wrong token or a user over their budget keeps using up the address. One user may have
+`mcp_open` requests and streams open at once; a stream holds its place until it ends.
+
+A limited request answers `429` with an integer `Retry-After` of at least 1,
+`Cache-Control: no-store` and no `WWW-Authenticate`; it changes no state and reaches no
+upstream. The body is the error page on pages,
+`{"error":"too_many_requests","error_description":"Too many requests. Try again later."}`
+on the JSON routes, and the JSON-RPC error `-32029` with a null id on the MCP paths. Over
+`mcp_open` the wait is 1. The older refusals carry the same headers: a blocked sign-in or
+password change waits `block_minutes * 60`, a registration past `dcr_per_hour` or
+`dcr_total_per_hour` waits 3600.
+
+The limiter keeps at most `rate_table_keys` keys, IPv6 at most half of them; past that,
+new keys of a class share one bucket and no live key is dropped. Counts live in memory and
+start empty after a restart. `auth_requests` keeps at most `auth_requests_max` rows: a new
+request past that removes the oldest.
 
 ## Test harness (`tests/common`)
 

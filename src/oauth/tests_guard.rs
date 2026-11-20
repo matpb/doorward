@@ -1,6 +1,7 @@
 //! The bearer guard, the account list and the disconnect pages over real HTTP. The helpers follow
 //! `tests_token.rs`; the database is read directly for what HTTP does not show.
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,7 +27,7 @@ use crate::db::Db;
 use crate::web::SESSION_COOKIE;
 
 use super::families::{self, NewFamily};
-use super::guard::{Caller, Target, bearer_token, check, is_token_shape, still_valid};
+use super::guard::{Caller, Refusal, Target, bearer_token, check, is_token_shape, still_valid};
 
 /// The fixed instant every test starts at, in unix seconds.
 const NOW: i64 = 1_800_000_000;
@@ -1338,6 +1339,7 @@ async fn state_of(gw: &Gateway) -> AppState {
         limits: Limits::default(),
         mail: Default::default(),
     };
+    let limiter = Arc::new(crate::rate::Limiter::new(&config.limits));
     AppState {
         keys: Arc::new(Keys::load(&config, None).expect("keys")),
         db: Db::open(&gw.db).expect("database"),
@@ -1347,6 +1349,7 @@ async fn state_of(gw: &Gateway) -> AppState {
         setup_code: None,
         http: reqwest::Client::new(),
         reset_requests: Arc::new(Semaphore::new(1)),
+        limiter,
         config,
     }
 }
@@ -1361,16 +1364,158 @@ async fn live_token() -> (Gateway, AppState, i64, Issued) {
     (gw, state, user, issued)
 }
 
-/// The caller that the bearer check gives the access token on `slug`.
-async fn caller_of(state: &AppState, access: &str, slug: &str) -> Caller {
+/// The state of `gw` with the limits `edit` changes, on the same clock.
+async fn state_with(gw: &Gateway, edit: impl FnOnce(&mut Limits)) -> AppState {
+    let mut state = state_of(gw).await;
+    edit(&mut state.config.limits);
+    state.limiter = Arc::new(crate::rate::Limiter::new(&state.config.limits));
+    state
+}
+
+fn bearer_headers(access: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {access}")).expect("header"),
     );
-    check(state, &headers, Target::Server(slug))
-        .await
-        .unwrap_or_else(|_| panic!("the token must pass the bearer check"))
+    headers
+}
+
+/// The caller that the bearer check gives the access token on `slug`.
+async fn caller_of(state: &AppState, access: &str, slug: &str) -> Caller {
+    let (caller, _open) = check(
+        state,
+        Ipv4Addr::LOCALHOST.into(),
+        &bearer_headers(access),
+        Target::Server(slug),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("the token must pass the bearer check"));
+    caller
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_admitted_request_gives_its_address_take_back() {
+    let gw = Gateway::start().await;
+    let demo = add_server(&gw, "demo");
+    let user = user_with(&gw, BOB, &[demo]);
+    let issued = issue(&gw, user, Some(demo), CLIENT);
+    let state = state_with(&gw, |limits| limits.general_burst = 1).await;
+    let headers = bearer_headers(&issued.access);
+    for attempt in 1..=3 {
+        let admitted = check(
+            &state,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &headers,
+            Target::Server("demo"),
+        )
+        .await;
+        assert!(admitted.is_ok(), "valid request {attempt} is admitted");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_over_the_user_budget_keeps_its_address_take() {
+    let gw = Gateway::start().await;
+    let demo = add_server(&gw, "demo");
+    let user = user_with(&gw, BOB, &[demo]);
+    let issued = issue(&gw, user, Some(demo), CLIENT);
+    let state = state_with(&gw, |limits| {
+        limits.general_burst = 1;
+        limits.mcp_burst = 1;
+    })
+    .await;
+    let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let headers = bearer_headers(&issued.access);
+    let first = check(&state, peer, &headers, Target::Server("demo")).await;
+    assert!(first.is_ok(), "the first valid request is admitted");
+    let second = check(&state, peer, &headers, Target::Server("demo")).await;
+    assert!(
+        matches!(second, Err(Refusal::Limited(_))),
+        "the second valid request is over the user budget"
+    );
+    let now = crate::web::limit::now_nanos(state.clock.as_ref());
+    let address = crate::rate::Key::address(peer);
+    assert!(
+        state
+            .limiter
+            .take(crate::rate::Class::General, address, now)
+            .is_err(),
+        "the over-budget request kept its address take"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bad_bearer_keeps_its_address_take() {
+    let gw = Gateway::start().await;
+    let state = state_with(&gw, |limits| limits.general_burst = 1).await;
+    let unknown = format!("dw_at_{}", "A".repeat(43));
+    let headers = bearer_headers(&unknown);
+    let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let first = check(&state, peer, &headers, Target::Server("demo")).await;
+    assert!(
+        matches!(first, Err(Refusal::Challenge(_))),
+        "the first unknown token gets the challenge"
+    );
+    let second = check(&state, peer, &headers, Target::Server("demo")).await;
+    assert!(
+        matches!(second, Err(Refusal::Limited(_))),
+        "the next request from the address is limited, not challenged"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_open_slot_is_held_until_its_response_is_dropped() {
+    let gw = Gateway::start().await;
+    let demo = add_server(&gw, "demo");
+    let user = user_with(&gw, BOB, &[demo]);
+    let issued = issue(&gw, user, Some(demo), CLIENT);
+    let state = state_with(&gw, |limits| limits.mcp_open = 1).await;
+    let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let headers = bearer_headers(&issued.access);
+    let Ok((_caller, open)) = check(&state, peer, &headers, Target::Server("demo")).await else {
+        panic!("the first valid request is admitted");
+    };
+    let second = check(&state, peer, &headers, Target::Server("demo")).await;
+    assert!(
+        matches!(second, Err(Refusal::Limited(1))),
+        "while the first slot is held the second request is limited with Retry-After 1"
+    );
+    drop(open);
+    let third = check(&state, peer, &headers, Target::Server("demo")).await;
+    assert!(
+        third.is_ok(),
+        "once the slot is dropped a request is admitted"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_refused_for_open_slots_gives_its_user_take_back() {
+    let gw = Gateway::start().await;
+    let demo = add_server(&gw, "demo");
+    let user = user_with(&gw, BOB, &[demo]);
+    let issued = issue(&gw, user, Some(demo), CLIENT);
+    let state = state_with(&gw, |limits| {
+        limits.mcp_open = 1;
+        limits.mcp_burst = 2;
+    })
+    .await;
+    let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let headers = bearer_headers(&issued.access);
+    let Ok((_caller, open)) = check(&state, peer, &headers, Target::Server("demo")).await else {
+        panic!("the first valid request is admitted");
+    };
+    let second = check(&state, peer, &headers, Target::Server("demo")).await;
+    assert!(
+        matches!(second, Err(Refusal::Limited(1))),
+        "with the only slot held the second request is limited with Retry-After 1"
+    );
+    drop(open);
+    let third = check(&state, peer, &headers, Target::Server("demo")).await;
+    assert!(
+        third.is_ok(),
+        "the refused request gave its user take back, so the third is admitted"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

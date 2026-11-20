@@ -11,6 +11,7 @@ pub mod mail;
 pub mod mcp;
 pub mod oauth;
 pub mod proxy;
+pub mod rate;
 pub mod servers;
 pub mod web;
 

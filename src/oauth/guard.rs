@@ -1,5 +1,7 @@
 //! The bearer check for `/{slug}` and `/mcp`: one database call, and one refusal for every failure.
 
+use std::net::IpAddr;
+
 use axum::extract::{Path, Request, State};
 use axum::http::header::{
     AUTHORIZATION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, WWW_AUTHENTICATE, X_CONTENT_TYPE_OPTIONS,
@@ -10,9 +12,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::app::AppState;
 use crate::crypto::token_hash;
+use crate::mcp;
 use crate::proxy;
+use crate::rate::{Class, Key, Open};
 use crate::servers::valid_slug;
-use crate::web::not_found;
+use crate::web::limit::{hold, now_nanos, peer_of};
+use crate::web::{client_address, not_found};
 
 const ACCESS_PREFIX: &str = "dw_at_";
 const TOKEN_BODY_LEN: usize = 43;
@@ -48,9 +53,11 @@ impl std::fmt::Debug for Caller {
     }
 }
 
-/// A failed check. Every failure renders the same 401, whatever check failed.
-pub struct Refusal {
-    challenge: String,
+/// A failed check. Every failure renders the same 401, whatever check failed; a limited request
+/// renders the MCP 429.
+pub enum Refusal {
+    Challenge(String),
+    Limited(u64),
 }
 
 impl Refusal {
@@ -59,28 +66,40 @@ impl Refusal {
         if presented {
             challenge.push_str(r#", error="invalid_token""#);
         }
-        Refusal { challenge }
+        Refusal::Challenge(challenge)
     }
 }
 
 impl IntoResponse for Refusal {
     fn into_response(self) -> Response {
-        match HeaderValue::from_str(&self.challenge) {
-            Ok(value) => (StatusCode::UNAUTHORIZED, [(WWW_AUTHENTICATE, value)]).into_response(),
-            // Unreachable: the challenge is built from a validated slug and a configured address.
-            Err(_) => StatusCode::UNAUTHORIZED.into_response(),
+        match self {
+            Refusal::Challenge(challenge) => match HeaderValue::from_str(&challenge) {
+                Ok(value) => {
+                    (StatusCode::UNAUTHORIZED, [(WWW_AUTHENTICATE, value)]).into_response()
+                }
+                // Unreachable: the challenge is built from a validated slug and a configured address.
+                Err(_) => StatusCode::UNAUTHORIZED.into_response(),
+            },
+            Refusal::Limited(wait) => mcp::answer::limited(wait),
         }
     }
 }
 
-/// Ok only when every check passes. The token is read from the Authorization header alone.
+/// Ok only when every check passes, with the open MCP slot the response must hold.
+/// The address is given back only for an admitted request, so an over-budget user still uses it up.
 pub async fn check(
     state: &AppState,
+    peer: IpAddr,
     headers: &HeaderMap,
     target: Target<'_>,
-) -> Result<Caller, Refusal> {
+) -> Result<(Caller, Open), Refusal> {
     let presented = headers.contains_key(AUTHORIZATION);
     let resource = resource_of(state, target);
+    let address = Key::address(client_address(peer, headers, &state.config.trusted_proxies));
+    let nanos = now_nanos(state.clock.as_ref());
+    if let Err(wait) = state.limiter.take(Class::General, address, nanos) {
+        return Err(Refusal::Limited(wait));
+    }
     let Some(token) = bearer_token(headers) else {
         return Err(Refusal::new(&resource, presented));
     };
@@ -95,7 +114,22 @@ pub async fn check(
         .call(move |conn| find_caller(conn, &hash, now, slug.as_deref()))
         .await
     {
-        Ok(Some(caller)) => Ok(caller),
+        Ok(Some(caller)) => {
+            let user = Key::User(caller.user_id);
+            if let Err(wait) = state.limiter.take(Class::Mcp, user, nanos) {
+                return Err(Refusal::Limited(wait));
+            }
+            match state.limiter.open(caller.user_id) {
+                Some(open) => {
+                    state.limiter.refund(Class::General, address, nanos);
+                    Ok((caller, open))
+                }
+                None => {
+                    state.limiter.refund(Class::Mcp, user, nanos);
+                    Err(Refusal::Limited(1))
+                }
+            }
+        }
         Ok(None) => Err(Refusal::new(&resource, presented)),
         Err(err) => {
             eprintln!("doorward: the bearer check cannot read the database: {err}");
@@ -142,16 +176,18 @@ pub async fn server_path(
     if !valid_slug(&slug) {
         return not_found();
     }
-    match check(&state, request.headers(), Target::Server(&slug)).await {
-        Ok(caller) => proxy::handle(&state, caller, &slug, request).await,
+    let peer = peer_of(request.extensions());
+    match check(&state, peer, request.headers(), Target::Server(&slug)).await {
+        Ok((caller, open)) => hold(proxy::handle(&state, caller, &slug, request).await, open),
         Err(refusal) => refusal.into_response(),
     }
 }
 
 /// `GET`, `POST` and `DELETE` on `/mcp`.
-pub async fn combined_path(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    match check(&state, &headers, Target::Combined).await {
-        Ok(_) => unavailable(COMBINED),
+pub async fn combined_path(State(state): State<AppState>, request: Request) -> Response {
+    let peer = peer_of(request.extensions());
+    match check(&state, peer, request.headers(), Target::Combined).await {
+        Ok((_caller, open)) => hold(unavailable(COMBINED), open),
         Err(refusal) => refusal.into_response(),
     }
 }

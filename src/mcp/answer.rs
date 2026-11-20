@@ -59,6 +59,19 @@ pub fn error(status: StatusCode, id: Option<&Value>, code: i64, message: &str) -
     respond(status, &body)
 }
 
+/// The 429 of a limited MCP request: JSON-RPC -32029 with a null id, and `Retry-After`.
+pub fn limited(wait: u64) -> Response {
+    crate::web::limit::retry_after(
+        error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            -32029,
+            "Too many requests",
+        ),
+        wait,
+    )
+}
+
 /// The 502 answer for an upstream the gateway cannot use.
 pub fn unavailable(slug: &str) -> Response {
     error(

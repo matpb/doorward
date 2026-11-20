@@ -242,9 +242,10 @@ pub async fn get_authorize(
         session_hash,
     };
     let lifetime = lifetime_seconds(state.config.lifetimes.auth_request_minutes);
+    let max = i64::try_from(state.config.limits.auth_requests_max).unwrap_or(i64::MAX);
     if state
         .db
-        .call(move |conn| store_in(conn, &new, now, lifetime))
+        .call(move |conn| store_in(conn, &new, now, lifetime, max))
         .await
         .is_err()
     {
@@ -395,12 +396,14 @@ struct NewRequest {
     session_hash: Option<String>,
 }
 
-/// Stores a request in one immediate transaction; expired rows go, a full address drops its oldest.
+/// Stores a request in one immediate transaction; expired rows go, a full address drops its oldest,
+/// and the oldest rows go when the table would exceed `max`.
 fn store_in(
     conn: &mut Connection,
     new: &NewRequest,
     now: i64,
     lifetime: i64,
+    max: i64,
 ) -> rusqlite::Result<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
@@ -408,6 +411,11 @@ fn store_in(
         params![now],
     )?;
     evict_oldest(&tx, &new.address)?;
+    tx.execute(
+        "DELETE FROM auth_requests WHERE rowid IN (SELECT rowid FROM auth_requests \
+         ORDER BY created_at, rowid LIMIT MAX((SELECT COUNT(*) FROM auth_requests) - ?1 + 1, 0))",
+        params![max],
+    )?;
     tx.execute(
         "INSERT INTO auth_requests (id_hash, client_id, redirect_uri, target_slug, state, \
          code_challenge, session_hash, client_name, address, shown_at, created_at, expires_at) \
@@ -448,4 +456,57 @@ fn evict_oldest(tx: &Transaction<'_>, address: &str) -> rusqlite::Result<()> {
 /// Configured minutes as seconds, saturating at the largest value.
 fn lifetime_seconds(minutes: u64) -> i64 {
     i64::try_from(minutes.saturating_mul(60)).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::db::Db;
+
+    const NOW: i64 = 1_800_000_000;
+
+    fn request(address: &str, id: &str) -> NewRequest {
+        NewRequest {
+            id_hash: id.to_owned(),
+            client_id: "client".to_owned(),
+            redirect_uri: "https://client.example.com/cb".to_owned(),
+            state: None,
+            challenge: "challenge".to_owned(),
+            target_slug: None,
+            address: address.to_owned(),
+            session_hash: None,
+        }
+    }
+
+    /// Stores one request from each of four addresses, a second apart, and returns the stored ids.
+    fn store_four(max: i64) -> Vec<String> {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("doorward.db");
+        Db::open(&path).expect("database");
+        let mut conn = Connection::open(&path).expect("connection");
+        for (index, address) in ["a", "b", "c", "d"].into_iter().enumerate() {
+            let now = NOW + index as i64;
+            let new = request(address, &format!("id-{index}"));
+            store_in(&mut conn, &new, now, 600, max).expect("store");
+        }
+        let mut statement = conn
+            .prepare("SELECT id_hash FROM auth_requests ORDER BY created_at")
+            .expect("prepare");
+        statement
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .map(|row| row.expect("row"))
+            .collect()
+    }
+
+    #[test]
+    fn the_oldest_requests_go_when_the_table_would_exceed_the_cap() {
+        assert_eq!(store_four(3), ["id-1", "id-2", "id-3"]);
+    }
+
+    #[test]
+    fn no_request_goes_below_an_unreachable_cap() {
+        assert_eq!(store_four(i64::MAX), ["id-0", "id-1", "id-2", "id-3"]);
+    }
 }

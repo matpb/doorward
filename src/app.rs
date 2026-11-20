@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::http::StatusCode;
 use axum::middleware;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -22,6 +23,7 @@ use crate::config::{Config, ConfigError};
 use crate::crypto::{CryptoError, KeyError, Keys, PasswordHasher, random_token};
 use crate::db::{Db, DbError};
 use crate::oauth;
+use crate::rate;
 use crate::web;
 
 /// Password reset requests that may run their mail task at once.
@@ -76,6 +78,8 @@ pub struct AppState {
     pub http: reqwest::Client,
     /// Permits for the background tasks of `POST /forgot`.
     pub reset_requests: Arc<Semaphore>,
+    /// Request buckets and the open MCP requests of each user.
+    pub limiter: Arc<rate::Limiter>,
 }
 
 /// Validates the config, opens the database and returns the gateway.
@@ -100,6 +104,7 @@ pub(crate) async fn assemble(
         Some(random_token(""))
     };
     let http = http_client()?;
+    let limiter = Arc::new(rate::Limiter::new(&config.limits));
     let state = AppState {
         config,
         db,
@@ -110,6 +115,7 @@ pub(crate) async fn assemble(
         http,
         setup_code: setup_code.clone(),
         reset_requests: Arc::new(Semaphore::new(RESET_REQUEST_PERMITS)),
+        limiter,
     };
     spawn_sweeps(&state);
     Ok(Gateway {
@@ -148,11 +154,16 @@ fn routes(state: AppState) -> Router {
             get(oauth::connected::get_disconnect_link).post(oauth::connected::post_disconnect_link),
         )
         .nest("/admin", admin::router(state.clone()))
+        .fallback(|| async { StatusCode::NOT_FOUND })
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            web::limit::pages_by_address,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             web::security_headers,
         ));
-    Router::new()
+    let api = Router::new()
         .route("/healthz", get(healthz))
         .route("/assets/doorward.css", get(web::stylesheet))
         .route(
@@ -168,6 +179,11 @@ fn routes(state: AppState) -> Router {
             "/oauth/token",
             post(oauth::token::post_token).fallback(oauth::token::not_post),
         )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            web::limit::api_by_address,
+        ));
+    let bearer = Router::new()
         .route(
             "/mcp",
             get(oauth::guard::combined_path)
@@ -179,9 +195,8 @@ fn routes(state: AppState) -> Router {
             get(oauth::guard::server_path)
                 .post(oauth::guard::server_path)
                 .delete(oauth::guard::server_path),
-        )
-        .merge(pages)
-        .with_state(state)
+        );
+    api.merge(pages).merge(bearer).with_state(state)
 }
 
 /// Runs the housekeeping at once and then every ten minutes. A failure goes to standard error.
@@ -190,10 +205,12 @@ fn spawn_sweeps(state: &AppState) {
     let clock = Arc::clone(&state.clock);
     let replay_seconds = oauth::families::replay_window(&state.config.lifetimes);
     let block_seconds = to_i64(state.config.limits.block_minutes).saturating_mul(60);
+    let limiter = Arc::clone(&state.limiter);
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(SWEEP_EVERY);
         loop {
             ticker.tick().await;
+            limiter.sweep(web::limit::now_nanos(clock.as_ref()));
             let now = clock.now().unix_timestamp();
             let swept = db
                 .call(move |conn| sweep_in(conn, now, replay_seconds, block_seconds))

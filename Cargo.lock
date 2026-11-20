@@ -566,6 +566,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac",
+ "http-body",
  "lettre",
  "maud",
  "multer",

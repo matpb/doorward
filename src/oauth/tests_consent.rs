@@ -7,6 +7,7 @@ use std::time::Duration;
 use form_urlencoded::Serializer;
 use rusqlite::{Connection, params};
 use scraper::{Html, Selector};
+use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 
@@ -297,13 +298,17 @@ struct Gateway {
 }
 
 async fn start(cimd: Arc<dyn CimdFetcher>) -> Gateway {
+    start_with(cimd, |_| {}).await
+}
+
+async fn start_with(cimd: Arc<dyn CimdFetcher>, edit: impl FnOnce(&mut Config)) -> Gateway {
     let dir = tempfile::tempdir().expect("temporary directory");
     let hasher = PasswordHasher::new().await.expect("hasher");
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let address = listener.local_addr().expect("address");
     let base = format!("http://{address}");
     let db = dir.path().join("doorward.db");
-    let config = Config {
+    let mut config = Config {
         public_url: base.clone(),
         listen: address,
         database: db.clone(),
@@ -314,6 +319,7 @@ async fn start(cimd: Arc<dyn CimdFetcher>) -> Gateway {
         limits: Limits::default(),
         mail: Default::default(),
     };
+    edit(&mut config);
     let deps = Deps {
         clock: Arc::new(SystemClock),
         cimd,
@@ -343,6 +349,7 @@ struct Reply {
     body: String,
     /// The pre-session csrf cookie as `name=value`, when the answer set one.
     csrf_cookie: Option<String>,
+    retry_after: Option<String>,
 }
 
 impl Reply {
@@ -397,6 +404,11 @@ impl Browser {
             .get("location")
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
         let csrf_cookie = response
             .headers()
             .get_all("set-cookie")
@@ -411,6 +423,7 @@ impl Browser {
             location,
             body,
             csrf_cookie,
+            retry_after,
         }
     }
 
@@ -699,7 +712,10 @@ async fn a_request_started_signed_in_is_closed_to_other_browsers() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_201st_live_request_evicts_the_oldest() {
-    let gw = start(fixed(Ok(document(None)))).await;
+    let gw = start_with(fixed(Ok(document(None))), |config| {
+        config.limits.oauth_burst = 1000;
+    })
+    .await;
     let browser = anonymous(&gw);
     let combined = format!("{}/mcp", gw.base);
     let mut first = None;
@@ -1425,4 +1441,173 @@ fn csrf_in(body: &str) -> String {
         .and_then(|input| input.attr("value"))
         .map(str::to_owned)
         .expect("the page carries a csrf token")
+}
+
+/// Every request may be made once, then one per minute.
+fn tight(config: &mut Config) {
+    config.limits.general_burst = 1;
+    config.limits.general_per_minute = 1;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_limited_page_keeps_its_policy_and_a_limited_metadata_answer_is_json() {
+    let gw = start_with(fixed(Ok(document(None))), tight).await;
+    let http = reqwest::Client::new();
+    let first = http
+        .get(format!("{}/login", gw.base))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(first.status(), 200, "the first page is within the burst");
+    let policy = first.headers()["content-security-policy"].clone();
+
+    let limited = http
+        .get(format!("{}/login", gw.base))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(limited.status(), 429, "the second page is limited");
+    assert!(
+        limited.headers()["content-type"]
+            .to_str()
+            .expect("text")
+            .starts_with("text/html"),
+        "a limited page answers HTML"
+    );
+    let wait: u64 = limited.headers()["retry-after"]
+        .to_str()
+        .expect("text")
+        .parse()
+        .expect("seconds");
+    assert!(
+        (1..=60).contains(&wait),
+        "Retry-After is {wait}, not 1 to 60"
+    );
+    assert_eq!(limited.headers()["cache-control"], "no-store");
+    assert_eq!(
+        limited.headers()["content-security-policy"],
+        policy,
+        "the limited page carries the page's policy"
+    );
+
+    let metadata = http
+        .get(format!(
+            "{}/.well-known/oauth-authorization-server",
+            gw.base
+        ))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(metadata.status(), 429, "the metadata is limited too");
+    assert_eq!(metadata.headers()["content-type"], "application/json");
+    let body: Value = metadata.json().await.expect("json");
+    assert_eq!(
+        body,
+        json!({
+            "error": "too_many_requests",
+            "error_description": "Too many requests. Try again later."
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn health_is_never_limited() {
+    let gw = start_with(fixed(Ok(document(None))), tight).await;
+    let http = reqwest::Client::new();
+    for attempt in 1..=3 {
+        let reply = http
+            .get(format!("{}/healthz", gw.base))
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(
+            reply.status(),
+            200,
+            "health check {attempt} is never limited"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_path_is_limited_like_any_other_page() {
+    let gw = start_with(fixed(Ok(document(None))), tight).await;
+    let http = reqwest::Client::new();
+    let first = http
+        .get(format!("{}/no/such/page", gw.base))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(
+        first.status(),
+        404,
+        "the first unknown path is within the burst"
+    );
+    let second = http
+        .get(format!("{}/no/such/page", gw.base))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(second.status(), 429, "the second unknown path is limited");
+    assert!(
+        second.headers().contains_key("retry-after"),
+        "with Retry-After"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blocked_sign_in_waits_for_the_whole_block() {
+    let gw = start_with(fixed(Ok(document(None))), |config| {
+        config.limits.account_failures = 1;
+        config.limits.block_minutes = 7;
+    })
+    .await;
+    let page = anonymous(&gw).get("/login").await;
+    let csrf = csrf_in(&page.body);
+    let browser = Browser::new(&gw.base, page.csrf_cookie.clone());
+    let fields = [
+        ("csrf", csrf.as_str()),
+        ("email", "nobody@example.com"),
+        ("password", "a-wrong-password"),
+        ("req", ""),
+    ];
+    let first = browser.post("/login", &fields).await;
+    assert_ne!(
+        first.status, 429,
+        "the first attempt is counted, not blocked"
+    );
+    let blocked = browser.post("/login", &fields).await;
+    assert_eq!(blocked.status, 429, "the second attempt is blocked");
+    assert_eq!(
+        blocked.retry_after.as_deref(),
+        Some("420"),
+        "the block lasts block_minutes * 60 seconds"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_throttled_password_change_waits_for_the_whole_block() {
+    let gw = start_with(fixed(Ok(document(None))), |config| {
+        config.limits.account_failures = 1;
+        config.limits.block_minutes = 7;
+    })
+    .await;
+    let bob = signed_in(&gw, "bob@example.com");
+    let csrf = bob.csrf().await;
+    let fields = [
+        ("csrf", csrf.as_str()),
+        ("current_password", "a-wrong-password"),
+        ("new_password", "a-new-long-password"),
+    ];
+    let first = bob.post("/account/password", &fields).await;
+    assert_ne!(
+        first.status, 429,
+        "the first change is counted, not blocked"
+    );
+    let blocked = bob.post("/account/password", &fields).await;
+    assert_eq!(blocked.status, 429, "the second change is blocked");
+    assert_eq!(
+        blocked.retry_after.as_deref(),
+        Some("420"),
+        "the throttle lasts block_minutes * 60 seconds"
+    );
 }

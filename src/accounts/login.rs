@@ -10,6 +10,7 @@ use crate::app::AppState;
 use crate::audit::{self, OwnedEvent};
 use crate::crypto::token_hash;
 use crate::oauth::authorize::is_request_id;
+use crate::web::limit;
 use crate::web::{
     SESSION_COOKIE, VerifiedForm, Viewer, busy, clear_cookie, form_page, internal_error, redirect,
     session_cookie, throttle_key, with_cookie,
@@ -57,7 +58,11 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
         epoch,
     } = attempt
     else {
-        return login_page(&form, StatusCode::TOO_MANY_REQUESTS, BLOCKED, &req);
+        let wait = limit::window_seconds(state.config.limits.block_minutes);
+        return limit::retry_after(
+            login_page(&form, StatusCode::TOO_MANY_REQUESTS, BLOCKED, &req),
+            wait,
+        );
     };
     let verified = phc.clone();
     let matched = state.hasher.verify(slot, password, phc).await;

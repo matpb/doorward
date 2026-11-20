@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 
 use crate::app::AppState;
 use crate::crypto::random_token;
+use crate::web::limit;
 use crate::web::{client_address, throttle_key};
 
 use super::uri;
@@ -25,6 +26,8 @@ const NAME_LIMIT: usize = 100;
 const MAX_REDIRECT_URIS: usize = 10;
 const HOUR_SECONDS: i64 = 3600;
 const WEEK_SECONDS: i64 = 7 * 24 * 3600;
+/// The window of the registration limits, in seconds: the Retry-After of a limited registration.
+const HOUR_WAIT: u64 = 3600;
 
 /// Why a registration is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,16 +81,14 @@ pub async fn post_register(State(state): State<AppState>, request: Request) -> R
     let checked = check_metadata(&object);
     let now = state.clock.now().unix_timestamp();
     let limit = i64::try_from(state.config.limits.dcr_per_hour).unwrap_or(i64::MAX);
+    let total = i64::try_from(state.config.limits.dcr_total_per_hour).unwrap_or(i64::MAX);
     let decided = state
         .db
-        .call(move |conn| register_in(conn, &address, limit, now, checked))
+        .call(move |conn| register_capped(conn, &address, limit, total, now, checked))
         .await;
     match decided {
         Ok(Decision::Created(body)) => answer(StatusCode::CREATED, body),
-        Ok(Decision::Limited) => answer(
-            StatusCode::TOO_MANY_REQUESTS,
-            json!({"error": "too_many_requests"}),
-        ),
+        Ok(Decision::Limited) => limit::json_limited(HOUR_WAIT),
         Ok(Decision::Refused(refusal)) => refuse(refusal),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -205,6 +206,18 @@ pub fn register_in(
     now: i64,
     checked: Result<Registration, Refusal>,
 ) -> rusqlite::Result<Decision> {
+    register_capped(conn, address, limit, i64::MAX, now, checked)
+}
+
+/// As `register_in`, and also limited when the attempts of all addresses in the hour reach `total`.
+pub fn register_capped(
+    conn: &mut Connection,
+    address: &str,
+    limit: i64,
+    total: i64,
+    now: i64,
+    checked: Result<Registration, Refusal>,
+) -> rusqlite::Result<Decision> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
         "DELETE FROM dcr_attempts WHERE at < ?1",
@@ -215,7 +228,8 @@ pub fn register_in(
         params![address],
         |row| row.get(0),
     )?;
-    if counted >= limit {
+    let all: i64 = tx.query_row("SELECT COUNT(*) FROM dcr_attempts", [], |row| row.get(0))?;
+    if counted >= limit || all >= total {
         tx.commit()?;
         return Ok(Decision::Limited);
     }

@@ -9,6 +9,7 @@ use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::crypto::token_hash;
 use crate::oauth::connected;
+use crate::web::limit;
 use crate::web::{
     VerifiedForm, Viewer, busy, internal_error, redirect, session_cookie, with_cookie,
 };
@@ -86,7 +87,9 @@ pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) ->
         epoch,
     } = attempt
     else {
-        return refused(&state, &form.viewer, StatusCode::TOO_MANY_REQUESTS, BLOCKED).await;
+        let wait = limit::window_seconds(state.config.limits.block_minutes);
+        let refusal = refused(&state, &form.viewer, StatusCode::TOO_MANY_REQUESTS, BLOCKED).await;
+        return limit::retry_after(refusal, wait);
     };
     let current = form.fields.get("current_password").to_owned();
     let verified = phc.clone();

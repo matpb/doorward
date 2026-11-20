@@ -392,6 +392,7 @@ pub async fn fixture_with(edit: impl FnOnce(&mut Config)) -> Fixture {
         .no_proxy()
         .build()
         .expect("http client");
+    let limiter = Arc::new(crate::rate::Limiter::new(&config.limits));
     let state = AppState {
         config,
         db,
@@ -402,6 +403,7 @@ pub async fn fixture_with(edit: impl FnOnce(&mut Config)) -> Fixture {
         setup_code: None,
         http,
         reset_requests: Arc::new(Semaphore::new(1)),
+        limiter,
     };
     let server_id = state
         .db

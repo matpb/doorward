@@ -869,6 +869,55 @@ fn a_refused_registration_uses_up_one_of_the_hourly_attempts() {
     assert_eq!(attempt_count(&conn), 2, "a limited attempt inserts no row");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_registration_over_the_address_limit_waits_an_hour() {
+    let dir = tempfile::tempdir().expect("dir");
+    let base = gateway(dir.path(), 1).await;
+    let http = reqwest::Client::new();
+    let url = format!("{base}/oauth/register");
+    let good = r#"{"client_name":"Cursor","redirect_uris":["http://localhost:8787/callback"]}"#;
+    let created = http
+        .post(&url)
+        .header("content-type", "application/json")
+        .body(good)
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(created.status(), 201, "the first registration is created");
+    let limited = http
+        .post(&url)
+        .header("content-type", "application/json")
+        .body(good)
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(
+        limited.status(),
+        429,
+        "the second is over the address limit"
+    );
+    assert_eq!(limited.headers()["retry-after"], "3600");
+}
+
+#[test]
+fn the_total_cap_limits_every_address_together_until_the_hour_passes() {
+    let (_dir, mut conn) = open();
+    let mut attempt = |address: &str, now: i64| {
+        register::register_capped(&mut conn, address, 100, 2, now, Ok(valid_body()))
+            .expect("register")
+    };
+    assert!(matches!(attempt("addr-a", NOW), Decision::Created(_)));
+    assert!(matches!(attempt("addr-b", NOW), Decision::Created(_)));
+    assert!(
+        matches!(attempt("addr-c", NOW), Decision::Limited),
+        "the third registration of all addresses within the hour is limited"
+    );
+    assert!(
+        matches!(attempt("addr-c", NOW + HOUR + 1), Decision::Created(_)),
+        "after the hour the attempts no longer count"
+    );
+}
+
 #[test]
 fn the_hourly_limit_is_per_address_and_sliding() {
     let (_dir, mut conn) = open();
@@ -1008,7 +1057,10 @@ async fn every_registration_answer_is_no_store_and_the_limit_counts_refusals() {
     );
     assert_eq!(limited.headers()["cache-control"], "no-store");
     let body: Value = limited.json().await.expect("json");
-    assert_eq!(body, json!({"error": "too_many_requests"}));
+    assert_eq!(
+        body,
+        json!({"error": "too_many_requests", "error_description": "Too many requests. Try again later."})
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
