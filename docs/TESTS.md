@@ -955,6 +955,11 @@ seconds; "refuses" means the process exits non-zero within 5 seconds.
     `DOORWARD_DATABASE` pointing into an empty directory: exit 1 and the directory is still
     empty.
 
+12. `pages_tell_browsers_to_stay_on_https`: with `public_url`
+    `https://doorward.example.com` and a trusted proxy, `GET /login` carries
+    `Strict-Transport-Security: max-age=31536000`; with a loopback `http` `public_url` no
+    answer carries that header.
+
 ## s41_docs.rs (statement 41)
 
 1. `every_setting_is_documented_with_its_default`: for each row of `config::SETTINGS`,
@@ -981,6 +986,15 @@ Real binary, as in s37.
    `http://localhost:{port}`, no proxies: starts without the warning.
 5. `http_on_a_public_name_follows_the_https_rule`: `public_url`
    `http://doorward.example.com`, no proxies: refuses.
+
+6. `a_trusted_proxy_that_sends_no_address_is_logged_once`: `trusted_proxies =
+   ["127.0.0.1"]`; three requests without `X-Forwarded-For`: the log has exactly one line
+   saying that a trusted proxy sent no client address.
+7. `a_private_client_address_on_a_public_install_is_logged_once`: `public_url`
+   `https://doorward.example.com`, `trusted_proxies = ["127.0.0.1"]`; three requests with
+   an `X-Forwarded-For` address from the private 10/8 range: exactly one line says that
+   the client address is private and names the usual causes; requests with
+   `X-Forwarded-For: 203.0.113.9` add none.
 
 ## s43_rate_limits.rs (statement 43)
 
@@ -1027,3 +1041,81 @@ documentation ranges. "Limited" is status `429` with an integer `Retry-After` of
 15. `every_limit_is_a_setting`: each class's burst and rate, `mcp_open` and
     `rate_table_keys` appear in `config::SETTINGS`, and a start with `burst = 1` limits the
     second request.
+
+## s44_lockout.rs (statement 44)
+
+`W` is started with `trusted_proxies = ["127.0.0.1"]`; a browser "at A" sends
+`X-Forwarded-For: A` with every request, addresses from the documentation ranges. The
+tests of `s06_passwords.rs` keep their meaning: there every request comes from one address.
+
+1. `a_strangers_failures_do_not_lock_the_owner_out`: five wrong passwords for the owner at
+   A are each 401; the owner's right password at A is then 429, and at B it answers 303.
+2. `the_block_of_a_pair_ends_with_the_window`: after 15 minutes and 1 second the right
+   password at A answers 303.
+3. `a_success_clears_only_its_own_pair`: four wrong at A and four wrong at B; the right
+   password at A answers 303; one more wrong at B is 401 and the right password at B is
+   then 429; at A four more wrong passwords are each 401, not 429.
+4. `a_blocked_attempt_is_neither_checked_nor_counted`: while A is blocked, ten more
+   attempts at A are 429 and the `login_failures` table does not grow.
+5. `the_account_ceiling_blocks_every_address`: `start_with` sets `account_ceiling = 8`.
+   Two wrong passwords at each of four addresses; the right password at a fifth address
+   is 429; after 15 minutes and 1 second it answers 303.
+6. `the_ceiling_defaults_to_fifty_and_both_numbers_are_settings`: `Limits::default()` has
+   `account_failures` 5 and `account_ceiling` 50; a config with `account_ceiling` below
+   `account_failures` is refused at start.
+7. `parallel_guesses_from_many_addresses_stop_at_the_ceiling`: `account_ceiling = 10`,
+   `address_failures = 1000`. Thirty browsers, each at its own address, post a wrong
+   password at once: at most ten are 401 and the rest 429; the right password is then 429.
+8. `an_unknown_account_is_throttled_like_a_real_one`: the same sequence as test 1 for an
+   email with no account gives the same statuses and the same bodies.
+9. `a_reset_lifts_every_block_of_the_account`: A is blocked and the ceiling is reached;
+   after a reset by mail the new password answers 303 at A without waiting.
+10. `unlock_lifts_every_block_of_the_account`: the same, lifted by `doorward unlock`.
+11. `wrong_current_passwords_count_for_the_pair`: bob is signed in at A. Five wrong
+    current passwords on `/account/password` are each 400; the sixth, with the right
+    current password, is 429; a fresh browser at B signs bob in with 303.
+12. `the_address_rule_still_spans_accounts`: `address_failures = 6`; seven wrong passwords
+    at A, each for another email: the next attempt at A for any account is 429 and the
+    same account at B is not.
+
+## s45_retention.rs (statement 45)
+
+Rows are written straight into the `activity` table with chosen times; a housekeeping run
+is forced with `W.gw.restart()`.
+
+1. `rows_older_than_the_period_are_deleted`: rows aged 91 days and 89 days; after the run
+   the first is gone and the second is on `/admin/activity`.
+2. `the_boundary_is_exact`: a row aged 90 days minus 1 second stays, one aged 90 days plus
+   1 second goes.
+3. `the_period_is_a_setting`: `start_with` sets `activity_days = 7`: a row aged 8 days is
+   deleted. `Limits::default()` has 90; 0 is refused at start.
+4. `every_kind_of_row_is_pruned_alike`: old `tool_call`, `login_failed` and `admin_change`
+   rows all go; no other table loses a row.
+
+## s46_consent_notice.rs (statement 46)
+
+1. `a_local_app_sees_the_notice`: the consent page of a client with a loopback redirect
+   has an element `[data-consent-notice]` whose text contains "Approve only if you started
+   this sign-in yourself."
+2. `a_web_client_sees_the_notice`: the same for a client whose redirect is an allowlisted
+   https address.
+3. `the_combined_endpoint_sees_the_notice`: the same on the consent page for `/mcp`.
+4. `only_a_local_app_is_told_it_runs_on_this_computer`: "This app runs on your computer."
+   is on the page of test 1 and on neither of the other two.
+
+## s47_combined_grants.rs (statement 47)
+
+bob has a token for the combined endpoint; servers `a` (tool `alpha`) and `b` (tool
+`beta`) exist; bob is assigned to `a` only when he connects.
+
+1. `a_server_assigned_later_is_listed_without_a_new_consent`: `tools/list` shows
+   `a__alpha` only; after `W.grant` adds `b`, the same token lists `a__alpha` and
+   `b__beta` and calls `b__beta` successfully.
+2. `an_unassigned_server_is_gone_at_once`: after bob is unassigned from `a`, the same
+   token's list has no `a__` tool, and a call to `a__alpha` is `-32602`
+   `Unknown tool: a__alpha` with upstream `a` untouched and a `deny` / `refused` row.
+3. `a_token_with_no_server_left_still_answers`: unassigned from everything, `tools/list`
+   is `200` with an empty list, and the refresh token still rotates.
+4. `the_check_is_made_on_every_call`: bob lists while assigned, is unassigned, then calls
+   `a__alpha` from the list he already holds: refused as in test 2.
+5. `both_generations_follow_the_same_rule`: tests 1 and 2 with a stateless client.

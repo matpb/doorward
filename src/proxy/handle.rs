@@ -13,9 +13,9 @@ use serde_json::{Value, json};
 
 use super::catalog;
 use super::sessions;
+use super::stream::{self, Owned, Watch};
 use super::upstream::{self, Fault, Kind, Outgoing, Target, TargetError};
 use crate::app::AppState;
-use crate::audit::{self, OwnedEvent};
 use crate::mcp::answer;
 use crate::mcp::headers::{HeaderRefusal, check_stateless};
 use crate::mcp::json::{JsonRefusal, parse_strict};
@@ -32,8 +32,8 @@ const MCP_NAME: HeaderName = HeaderName::from_static("mcp-name");
 const INVALID: &str = "Invalid request";
 const PARSE: &str = "Parse error";
 const NO_METHOD: &str = "Method not found";
-const TOOL_LIMIT: usize = 128;
 const SESSION_LIMIT: usize = 256;
+pub(super) const TOOL_LIMIT: usize = 128;
 
 /// What one request needs: its server, its caller, and when it started.
 pub(super) struct Ctx<'a> {
@@ -42,6 +42,19 @@ pub(super) struct Ctx<'a> {
     pub server_id: i64,
     pub caller: Arc<Caller>,
     pub started: Instant,
+}
+
+impl Ctx<'_> {
+    /// An owned copy of the context, for a relay that outlives the handler.
+    fn owned(&self) -> Owned {
+        Owned {
+            state: self.state.clone(),
+            slug: self.slug.to_owned(),
+            server_id: self.server_id,
+            caller: Arc::clone(&self.caller),
+            started: self.started,
+        }
+    }
 }
 
 /// The client's session id, checked against the caller's recorded sessions.
@@ -211,6 +224,7 @@ pub(super) async fn get_or_delete(ctx: &Ctx<'_>, method: &Method, headers: &Head
         forget(ctx, session.id).await;
     }
     match sent {
+        Ok(response) if *method == Method::GET => relay_get(ctx, response),
         Ok(response)
             if *method == Method::DELETE && response.status() == StatusCode::NO_CONTENT =>
         {
@@ -478,16 +492,12 @@ async fn relay_post(
         return relayed(status, None, Body::empty(), None);
     }
     if matches!(kind, Kind::Stream) && !rewritten {
-        if let Some(name) = call {
-            record(ctx, name, "allow", "ok").await;
-        }
-        let stream = response.bytes_stream();
-        return relayed(
-            status,
-            Some("text/event-stream"),
-            Body::from_stream(stream),
-            None,
-        );
+        let watch = Watch {
+            call: call.map(str::to_owned),
+            id: message.id.clone().unwrap_or(Value::Null),
+        };
+        let body = stream::relay(ctx.owned(), response, watch);
+        return relayed(status, Some("text/event-stream"), body, None);
     }
     let id = message.id.clone().unwrap_or(Value::Null);
     let (mut value, raw) = match read_answer(ctx, response, kind, &id).await {
@@ -496,12 +506,7 @@ async fn relay_post(
     };
     if !rewritten {
         if let Some(name) = call {
-            let outcome = if value.get("result").is_some() && value.get("error").is_none() {
-                "ok"
-            } else {
-                "error"
-            };
-            record(ctx, name, "allow", outcome).await;
+            record(ctx, name, "allow", stream::outcome_of(&value)).await;
         }
         return relayed(
             status,
@@ -561,20 +566,39 @@ async fn read_answer(
     }
 }
 
-/// A GET or DELETE answer: the JSON or stream as it is, with no upstream header.
+/// A GET answer: a 200 event stream is relayed as a watched stream, a 405 without its body. Any other
+/// answer is a fault.
+fn relay_get(ctx: &Ctx<'_>, response: reqwest::Response) -> Response {
+    let status = response.status();
+    match upstream::accept(&response) {
+        Ok(Kind::Stream) if status == StatusCode::OK => {
+            let watch = Watch {
+                call: None,
+                id: Value::Null,
+            };
+            let body = stream::relay(ctx.owned(), response, watch);
+            relayed(status, Some("text/event-stream"), body, None)
+        }
+        Ok(_) if status == StatusCode::METHOD_NOT_ALLOWED => {
+            relayed(status, None, Body::empty(), None)
+        }
+        _ => answer::unavailable(ctx.slug),
+    }
+}
+
+/// A DELETE answer: the JSON or stream as it is, with no upstream header.
 async fn relay_plain(ctx: &Ctx<'_>, response: reqwest::Response) -> Response {
     let status = response.status();
     match upstream::accept(&response) {
         Err(Fault) => answer::unavailable(ctx.slug),
         Ok(Kind::Empty) => relayed(status, None, Body::empty(), None),
         Ok(Kind::Stream) => {
-            let stream = response.bytes_stream();
-            relayed(
-                status,
-                Some("text/event-stream"),
-                Body::from_stream(stream),
-                None,
-            )
+            let watch = Watch {
+                call: None,
+                id: Value::Null,
+            };
+            let body = stream::relay(ctx.owned(), response, watch);
+            relayed(status, Some("text/event-stream"), body, None)
         }
         Ok(Kind::Json) => {
             let cap = ctx.state.config.limits.tools_list_bytes;
@@ -690,27 +714,11 @@ async fn record_session(ctx: &Ctx<'_>, issued: Option<HeaderValue>) -> Option<He
 
 /// One tool_call row. A failed write is reported and never changes the answer.
 async fn record(ctx: &Ctx<'_>, tool: &str, decision: &str, outcome: &str) {
-    let elapsed = i64::try_from(ctx.started.elapsed().as_millis()).unwrap_or(i64::MAX);
-    let event = OwnedEvent {
-        kind: "tool_call".to_owned(),
-        user_id: Some(ctx.caller.user_id),
-        user_email: ctx.caller.user_email.clone(),
-        server_id: Some(ctx.server_id),
-        server_slug: ctx.slug.to_owned(),
-        tool: cut(tool, TOOL_LIMIT),
-        client: ctx.caller.client_name.clone(),
-        decision: decision.to_owned(),
-        outcome: outcome.to_owned(),
-        duration_ms: Some(elapsed),
-        ..Default::default()
-    };
-    if let Err(err) = audit::record_now(ctx.state, event).await {
-        eprintln!("doorward: the activity row cannot be written: {err}");
-    }
+    stream::record(&ctx.owned(), tool, decision, outcome, "").await;
 }
 
 /// `text` cut to at most `limit` bytes, on a character boundary.
-fn cut(text: &str, limit: usize) -> String {
+pub(super) fn cut(text: &str, limit: usize) -> String {
     let mut end = text.len().min(limit);
     while !text.is_char_boundary(end) {
         end -= 1;

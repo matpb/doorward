@@ -14,17 +14,19 @@ use scraper::{Html, Selector};
 use tempfile::TempDir;
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 use crate::accounts::session;
-use crate::app::{Deps, assemble, serve};
+use crate::app::{AppState, Deps, assemble, serve};
 use crate::cimd::UnavailableCimd;
 use crate::clock::Clock;
 use crate::config::{Config, Lifetimes, Limits};
-use crate::crypto::{PasswordHasher, random_token, token_hash};
+use crate::crypto::{Keys, PasswordHasher, random_token, token_hash};
+use crate::db::Db;
 use crate::web::SESSION_COOKIE;
 
 use super::families::{self, NewFamily};
-use super::guard::{bearer_token, is_token_shape};
+use super::guard::{Caller, Target, bearer_token, check, is_token_shape, still_valid};
 
 /// The fixed instant every test starts at, in unix seconds.
 const NOW: i64 = 1_800_000_000;
@@ -1320,4 +1322,162 @@ async fn client_names_are_escaped_on_every_page_that_shows_them() {
         .post(&path, &[("csrf", view.csrf().as_str())])
         .await;
     assert_escaped(&done.body, "the disconnected page");
+}
+
+/// The state a handler of this gateway sees: the same database, key and clock.
+async fn state_of(gw: &Gateway) -> AppState {
+    let config = Config {
+        public_url: gw.base.clone(),
+        listen: "127.0.0.1:0".parse().expect("address"),
+        database: gw.db.clone(),
+        key_file: None,
+        trusted_proxies: Vec::new(),
+        lifetimes: Lifetimes::default(),
+        limits: Limits::default(),
+        mail: Default::default(),
+    };
+    AppState {
+        keys: Arc::new(Keys::load(&config, None).expect("keys")),
+        db: Db::open(&gw.db).expect("database"),
+        clock: gw.clock.clone(),
+        cimd: Arc::new(UnavailableCimd),
+        hasher: Arc::new(PasswordHasher::new().await.expect("hasher")),
+        setup_code: None,
+        http: reqwest::Client::new(),
+        reset_requests: Arc::new(Semaphore::new(1)),
+        config,
+    }
+}
+
+/// A gateway with bob assigned to `demo` and a token for it, and the state to check it with.
+async fn live_token() -> (Gateway, AppState, i64, Issued) {
+    let gw = Gateway::start().await;
+    let demo = add_server(&gw, "demo");
+    let user = user_with(&gw, BOB, &[demo]);
+    let issued = issue(&gw, user, Some(demo), CLIENT);
+    let state = state_of(&gw).await;
+    (gw, state, user, issued)
+}
+
+/// The caller that the bearer check gives the access token on `slug`.
+async fn caller_of(state: &AppState, access: &str, slug: &str) -> Caller {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {access}")).expect("header"),
+    );
+    check(state, &headers, Target::Server(slug))
+        .await
+        .unwrap_or_else(|_| panic!("the token must pass the bearer check"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn still_valid_is_true_for_a_live_token() {
+    let (_gw, state, _user, issued) = live_token().await;
+    let caller = caller_of(&state, &issued.access, "demo").await;
+    assert!(
+        still_valid(&state, &caller, "demo").await,
+        "a live token stays valid"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn still_valid_is_false_once_the_user_is_disabled() {
+    let (gw, state, user, issued) = live_token().await;
+    let caller = caller_of(&state, &issued.access, "demo").await;
+    gw.conn()
+        .execute("UPDATE users SET disabled = 1 WHERE id = ?1", params![user])
+        .expect("disable");
+    assert!(
+        !still_valid(&state, &caller, "demo").await,
+        "a disabled user's token is no longer valid"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn still_valid_is_false_once_the_family_is_revoked() {
+    let (gw, state, _user, issued) = live_token().await;
+    let caller = caller_of(&state, &issued.access, "demo").await;
+    families::revoke(&gw.conn(), issued.family, NOW).expect("revoke");
+    assert!(
+        !still_valid(&state, &caller, "demo").await,
+        "a revoked family is no longer valid"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn still_valid_is_false_after_a_password_reset() {
+    let (gw, state, user, issued) = live_token().await;
+    let caller = caller_of(&state, &issued.access, "demo").await;
+    session::revoke_all(&gw.conn(), user).expect("reset");
+    assert!(
+        !still_valid(&state, &caller, "demo").await,
+        "a reset bumps the sign-in generation and ends the family"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn still_valid_is_false_once_the_access_token_expires() {
+    let (gw, state, _user, issued) = live_token().await;
+    let caller = caller_of(&state, &issued.access, "demo").await;
+    gw.clock.set(NOW + 3601);
+    assert!(
+        !still_valid(&state, &caller, "demo").await,
+        "an access token past its hour is no longer valid"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn still_valid_is_false_once_the_user_is_unassigned() {
+    let (gw, state, user, issued) = live_token().await;
+    let caller = caller_of(&state, &issued.access, "demo").await;
+    gw.conn()
+        .execute("DELETE FROM user_servers WHERE user_id = ?1", params![user])
+        .expect("unassign");
+    assert!(
+        !still_valid(&state, &caller, "demo").await,
+        "an unassigned user's token is no longer valid"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn still_valid_is_false_on_a_database_error() {
+    let (gw, state, _user, issued) = live_token().await;
+    let caller = caller_of(&state, &issued.access, "demo").await;
+    gw.conn()
+        .execute_batch("ALTER TABLE access_tokens RENAME TO access_tokens_gone;")
+        .expect("rename");
+    assert!(
+        !still_valid(&state, &caller, "demo").await,
+        "a database error answers false"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_records_the_hash_the_lookup_used() {
+    let (_gw, state, _user, issued) = live_token().await;
+    let caller = caller_of(&state, &issued.access, "demo").await;
+    assert_eq!(caller.token_hash, token_hash(&issued.access));
+}
+
+#[test]
+fn a_caller_debug_text_never_shows_the_token_hash() {
+    let hash = token_hash("dw_at_probe");
+    let caller = Caller {
+        user_id: 1,
+        user_email: BOB.to_owned(),
+        family_id: 2,
+        server_id: Some(3),
+        client_name: CLIENT.to_owned(),
+        token_hash: hash.clone(),
+    };
+    let text = format!("{caller:?}");
+    assert!(
+        text.contains("user_id"),
+        "the debug text names the fields: {text}"
+    );
+    assert!(
+        !text.contains(&hash),
+        "the debug text must not show the hash"
+    );
 }

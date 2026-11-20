@@ -2,13 +2,15 @@
 
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
 use axum::response::Response;
-use futures_util::{StreamExt, stream};
+use futures_util::{Stream, StreamExt, stream};
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -19,17 +21,17 @@ use super::catalog;
 use super::tests::{Plan, Seen, TestUpstream};
 use crate::app::{Deps, assemble, serve};
 use crate::cimd::UnavailableCimd;
-use crate::clock::SystemClock;
+use crate::clock::Clock;
 use crate::config::{Config, Lifetimes, Limits};
 use crate::crypto::{Keys, PasswordHasher};
 use crate::oauth::families::{self, NewFamily};
 use crate::servers;
 
-const SECRET_NAME: &str = "x-upstream-secret";
-const SECRET: &str = "s3cret-for-demo";
-const BOB: &str = "bob@example.com";
-const CAROL: &str = "carol@example.com";
-const CLIENT: &str = "Example Client";
+pub(super) const SECRET_NAME: &str = "x-upstream-secret";
+pub(super) const SECRET: &str = "s3cret-for-demo";
+pub(super) const BOB: &str = "bob@example.com";
+pub(super) const CAROL: &str = "carol@example.com";
+pub(super) const CLIENT: &str = "Example Client";
 const INERT: [(&str, &str); 2] = [
     ("x-content-type-options", "nosniff"),
     ("content-security-policy", "sandbox"),
@@ -38,40 +40,40 @@ const UNAVAILABLE: &str = r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"
 const CLOSED_PORT: &str = "http://127.0.0.1:9/mcp";
 
 /// The reply of one request: status, every header in order, and the body text.
-struct Reply {
-    status: u16,
-    headers: Vec<(String, String)>,
-    body: String,
+pub(super) struct Reply {
+    pub(super) status: u16,
+    pub(super) headers: Vec<(String, String)>,
+    pub(super) body: String,
 }
 
 impl Reply {
-    fn header(&self, name: &str) -> Option<&str> {
+    pub(super) fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.as_str())
     }
 
-    fn json(&self) -> Value {
+    pub(super) fn json(&self) -> Value {
         serde_json::from_str(&self.body).unwrap_or(Value::Null)
     }
 
-    fn error_code(&self) -> Option<i64> {
+    pub(super) fn error_code(&self) -> Option<i64> {
         self.json()["error"]["code"].as_i64()
     }
 
-    fn error_message(&self) -> Option<String> {
+    pub(super) fn error_message(&self) -> Option<String> {
         self.json()["error"]["message"].as_str().map(str::to_owned)
     }
 
     /// The text of a tools/call result.
-    fn text_of_call(&self) -> Option<String> {
+    pub(super) fn text_of_call(&self) -> Option<String> {
         self.json()["result"]["content"][0]["text"]
             .as_str()
             .map(str::to_owned)
     }
 
-    fn assert_inert(&self, what: &str) {
+    pub(super) fn assert_inert(&self, what: &str) {
         for (name, value) in INERT {
             assert_eq!(self.header(name), Some(value), "{what} must carry {name}");
         }
@@ -80,33 +82,49 @@ impl Reply {
 
 /// One row of the tool-call activity log.
 #[derive(Debug, PartialEq)]
-struct Row {
-    user_id: Option<i64>,
-    email: String,
-    server_id: Option<i64>,
-    slug: String,
-    tool: String,
-    client: String,
-    decision: String,
-    outcome: String,
-    duration: Option<i64>,
+pub(super) struct Row {
+    pub(super) user_id: Option<i64>,
+    pub(super) email: String,
+    pub(super) server_id: Option<i64>,
+    pub(super) slug: String,
+    pub(super) tool: String,
+    pub(super) client: String,
+    pub(super) decision: String,
+    pub(super) outcome: String,
+    pub(super) duration: Option<i64>,
+}
+
+/// The gateway's clock: the real time at start, then only the moves a test makes.
+pub(super) struct SetClock(AtomicI64);
+
+impl SetClock {
+    pub(super) fn set(&self, at: i64) {
+        self.0.store(at, Ordering::SeqCst);
+    }
+}
+
+impl Clock for SetClock {
+    fn now(&self) -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(self.0.load(Ordering::SeqCst)).expect("instant")
+    }
 }
 
 /// A started gateway, its database and its key file in one temporary directory.
-struct Gw {
-    base: String,
-    db: PathBuf,
-    config: Config,
-    http: reqwest::Client,
+pub(super) struct Gw {
+    pub(super) base: String,
+    pub(super) db: PathBuf,
+    pub(super) config: Config,
+    pub(super) http: reqwest::Client,
+    pub(super) clock: Arc<SetClock>,
     _dir: TempDir,
 }
 
-fn now() -> i64 {
+pub(super) fn now() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
 }
 
 impl Gw {
-    async fn start(edit: impl FnOnce(&mut Config)) -> Gw {
+    pub(super) async fn start(edit: impl FnOnce(&mut Config)) -> Gw {
         let dir = tempfile::tempdir().expect("temporary directory");
         let db = dir.path().join("doorward.db");
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -125,8 +143,9 @@ impl Gw {
         edit(&mut config);
         Keys::load(&config, None).expect("keys");
         let hasher = PasswordHasher::new().await.expect("hasher");
+        let clock = Arc::new(SetClock(AtomicI64::new(now())));
         let deps = Deps {
-            clock: Arc::new(SystemClock),
+            clock: clock.clone(),
             cimd: Arc::new(UnavailableCimd),
         };
         let gateway = assemble(config.clone(), deps, Arc::new(hasher))
@@ -143,21 +162,22 @@ impl Gw {
             db,
             config,
             http,
+            clock,
             _dir: dir,
         }
     }
 
-    fn conn(&self) -> Connection {
+    pub(super) fn conn(&self) -> Connection {
         let conn = Connection::open(&self.db).expect("connection");
         conn.busy_timeout(Duration::from_secs(5)).expect("timeout");
         conn
     }
 
-    fn keys(&self) -> Keys {
+    pub(super) fn keys(&self) -> Keys {
         Keys::load(&self.config, None).expect("keys")
     }
 
-    fn add_user(&self, email: &str) -> i64 {
+    pub(super) fn add_user(&self, email: &str) -> i64 {
         let conn = self.conn();
         conn.execute(
             "INSERT INTO users (email, password_hash, role, created_at) VALUES (?1, 'hash', 'user', 0)",
@@ -168,7 +188,7 @@ impl Gw {
     }
 
     /// A server row; the secret is sealed the way the admin page seals it.
-    fn add_server(
+    pub(super) fn add_server(
         &self,
         slug: &str,
         url: &str,
@@ -194,7 +214,7 @@ impl Gw {
         id
     }
 
-    fn set_url(&self, server: i64, url: &str) {
+    pub(super) fn set_url(&self, server: i64, url: &str) {
         self.conn()
             .execute(
                 "UPDATE servers SET upstream_url = ?1 WHERE id = ?2",
@@ -203,7 +223,7 @@ impl Gw {
             .expect("address");
     }
 
-    fn grant(&self, user: i64, server: i64) {
+    pub(super) fn grant(&self, user: i64, server: i64) {
         self.conn()
             .execute(
                 "INSERT INTO user_servers (user_id, server_id) VALUES (?1, ?2)",
@@ -213,7 +233,7 @@ impl Gw {
     }
 
     /// A new token family of `user` on `server`, and its access token.
-    fn token(&self, user: i64, server: i64) -> String {
+    pub(super) fn token(&self, user: i64, server: i64) -> String {
         let conn = self.conn();
         let epoch: i64 = conn
             .query_row(
@@ -236,19 +256,19 @@ impl Gw {
     }
 
     /// Replaces the server's catalog with `names`, as a successful refresh would.
-    fn seed(&self, server: i64, names: &[&str]) {
+    pub(super) fn seed(&self, server: i64, names: &[&str]) {
         let tools: Vec<Value> = names.iter().map(|name| json!({"name": name})).collect();
         let mut conn = self.conn();
         catalog::replace(&mut conn, server, &tools, now()).expect("catalog");
     }
 
     /// The catalog names of the server, in position order.
-    fn catalog_names(&self, server: i64) -> Vec<String> {
+    pub(super) fn catalog_names(&self, server: i64) -> Vec<String> {
         catalog::names(&self.conn(), server).expect("names")
     }
 
     /// Sends one request; `headers` are added as given.
-    async fn send(
+    pub(super) async fn send(
         &self,
         method: reqwest::Method,
         path: &str,
@@ -287,7 +307,7 @@ impl Gw {
     }
 
     /// A POST to `/{slug}` with the headers and body the test gives.
-    async fn post(
+    pub(super) async fn post(
         &self,
         slug: &str,
         token: &str,
@@ -305,7 +325,7 @@ impl Gw {
     }
 
     /// Every row of one table, each cell as text.
-    fn dump(&self, table: &str) -> String {
+    pub(super) fn dump(&self, table: &str) -> String {
         let conn = self.conn();
         let mut statement = conn
             .prepare(&format!("SELECT * FROM {table}"))
@@ -326,7 +346,7 @@ impl Gw {
             .join("\n")
     }
 
-    fn tool_calls(&self) -> Vec<Row> {
+    pub(super) fn tool_calls(&self) -> Vec<Row> {
         let conn = self.conn();
         let mut statement = conn
             .prepare(
@@ -352,7 +372,7 @@ impl Gw {
         rows.map(|row| row.expect("row")).collect()
     }
 
-    fn session_rows(&self) -> i64 {
+    pub(super) fn session_rows(&self) -> i64 {
         self.conn()
             .query_row("SELECT COUNT(*) FROM upstream_sessions", [], |row| {
                 row.get(0)
@@ -363,7 +383,7 @@ impl Gw {
 
 /// What the scripted upstream does with each request.
 #[derive(Clone)]
-enum Mode {
+pub(super) enum Mode {
     /// JSON answers, with these extra headers on each.
     Json(Vec<(&'static str, &'static str)>),
     /// Event streams with a notice first; the answer is the last event. Extra headers on each.
@@ -390,6 +410,44 @@ enum Mode {
     Counted(Arc<AtomicUsize>),
     /// JSON answers with this status and body, each carrying the session id sess-1.
     Session(u16, &'static str),
+    /// Event streams for every POST and GET: each chunk after its wait, then the tail. The body
+    /// counts itself in `closed` when the server drops it.
+    Chunks {
+        chunks: Vec<(u64, String)>,
+        tail: Tail,
+        closed: Arc<AtomicUsize>,
+    },
+    /// An event stream that repeats one 64 KiB notice for ever, for a client that does not read.
+    Endless { closed: Arc<AtomicUsize> },
+}
+
+/// What a scripted stream does after its last chunk.
+#[derive(Clone, Copy)]
+pub(super) enum Tail {
+    /// The body ends.
+    Close,
+    /// The body stays open and silent.
+    Hang,
+}
+
+/// A body stream that counts itself in `closed` when the server drops it.
+struct Watched {
+    inner: Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>>,
+    closed: Arc<AtomicUsize>,
+}
+
+impl Stream for Watched {
+    type Item = Result<Bytes, io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
+    }
+}
+
+impl Drop for Watched {
+    fn drop(&mut self) {
+        self.closed.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 /// The JSON-RPC answer the scripted upstream gives to a request, or None for a notification
@@ -450,11 +508,11 @@ fn build(
 }
 
 /// One server-sent event carrying `data`.
-fn frame(data: &Value) -> Bytes {
+pub(super) fn frame(data: &Value) -> Bytes {
     Bytes::from(format!("data: {data}\n\n"))
 }
 
-fn notice() -> Value {
+pub(super) fn notice() -> Value {
     json!({"jsonrpc": "2.0", "method": "notifications/message",
         "params": {"level": "info", "data": "working"}})
 }
@@ -602,6 +660,54 @@ fn respond(mode: &Mode, tools: &[String], seen: &Seen) -> Plan {
                 Body::from(*body),
             ),
         },
+        Mode::Chunks {
+            chunks,
+            tail,
+            closed,
+        } => {
+            if seen.method == "DELETE" {
+                return build(200, None, None, &[], Body::empty());
+            }
+            let steps = stream::iter(chunks.clone()).then(|(wait, text)| async move {
+                tokio::time::sleep(Duration::from_millis(wait)).await;
+                Ok::<Bytes, io::Error>(Bytes::from(text))
+            });
+            let inner: Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>> = match tail {
+                Tail::Close => Box::pin(steps),
+                Tail::Hang => Box::pin(steps.chain(stream::pending())),
+            };
+            let watched = Watched {
+                inner,
+                closed: Arc::clone(closed),
+            };
+            build(
+                200,
+                Some("text/event-stream"),
+                None,
+                &[],
+                Body::from_stream(watched),
+            )
+        }
+        Mode::Endless { closed } => {
+            if seen.method == "DELETE" {
+                return build(200, None, None, &[], Body::empty());
+            }
+            let event = frame(&json!({"jsonrpc": "2.0", "method": "notifications/message",
+                "params": {"level": "info", "data": "x".repeat(64 * 1024)}}));
+            let inner: Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>> =
+                Box::pin(stream::repeat(event).map(Ok::<Bytes, io::Error>));
+            let watched = Watched {
+                inner,
+                closed: Arc::clone(closed),
+            };
+            build(
+                200,
+                Some("text/event-stream"),
+                None,
+                &[],
+                Body::from_stream(watched),
+            )
+        }
         Mode::Silent => Plan::Silent,
         Mode::Oversize(size) => build(
             200,
@@ -617,14 +723,14 @@ fn respond(mode: &Mode, tools: &[String], seen: &Seen) -> Plan {
 }
 
 /// A scripted upstream whose behaviour the test changes between requests.
-struct Fake {
+pub(super) struct Fake {
     up: TestUpstream,
     mode: Arc<Mutex<Mode>>,
     names: Arc<Mutex<Vec<String>>>,
 }
 
 impl Fake {
-    async fn start(tools: &[&str]) -> Fake {
+    pub(super) async fn start(tools: &[&str]) -> Fake {
         let mode = Arc::new(Mutex::new(Mode::Json(Vec::new())));
         let names = Arc::new(Mutex::new(
             tools
@@ -642,28 +748,28 @@ impl Fake {
         Fake { up, mode, names }
     }
 
-    fn set(&self, mode: Mode) {
+    pub(super) fn set(&self, mode: Mode) {
         *self.mode.lock().expect("mode") = mode;
     }
 
-    fn set_tools(&self, tools: &[&str]) {
+    pub(super) fn set_tools(&self, tools: &[&str]) {
         *self.names.lock().expect("names") = tools.iter().map(|tool| (*tool).to_owned()).collect();
     }
 
-    fn url(&self) -> String {
+    pub(super) fn url(&self) -> String {
         self.up.url.clone()
     }
 
-    fn seen(&self) -> Vec<Seen> {
+    pub(super) fn seen(&self) -> Vec<Seen> {
         self.up.seen()
     }
 
-    fn count(&self) -> usize {
+    pub(super) fn count(&self) -> usize {
         self.up.seen().len()
     }
 
     /// How many requests carried this JSON-RPC method.
-    fn calls(&self, method: &str) -> usize {
+    pub(super) fn calls(&self, method: &str) -> usize {
         self.up
             .seen()
             .iter()
@@ -673,15 +779,15 @@ impl Fake {
 }
 
 /// A gateway with bob assigned to `demo`, a scripted upstream behind it, and a token for bob.
-struct Demo {
-    gw: Gw,
-    fake: Fake,
-    server: i64,
-    bob: i64,
-    token: String,
+pub(super) struct Demo {
+    pub(super) gw: Gw,
+    pub(super) fake: Fake,
+    pub(super) server: i64,
+    pub(super) bob: i64,
+    pub(super) token: String,
 }
 
-async fn demo_with(edit: impl FnOnce(&mut Config), switches: (bool, bool)) -> Demo {
+pub(super) async fn demo_with(edit: impl FnOnce(&mut Config), switches: (bool, bool)) -> Demo {
     let gw = Gw::start(edit).await;
     let fake = Fake::start(&["echo", "search"]).await;
     let server = gw.add_server("demo", &fake.url(), Some(SECRET), switches);
@@ -697,12 +803,12 @@ async fn demo_with(edit: impl FnOnce(&mut Config), switches: (bool, bool)) -> De
     }
 }
 
-async fn demo() -> Demo {
+pub(super) async fn demo() -> Demo {
     demo_with(|_| {}, (false, false)).await
 }
 
 /// The headers of a session-rules request, with `session` when given.
-fn session_headers(session: Option<&str>) -> Vec<(&'static str, String)> {
+pub(super) fn session_headers(session: Option<&str>) -> Vec<(&'static str, String)> {
     let mut headers = vec![
         ("content-type", "application/json".to_owned()),
         ("accept", "application/json, text/event-stream".to_owned()),
@@ -715,7 +821,7 @@ fn session_headers(session: Option<&str>) -> Vec<(&'static str, String)> {
 }
 
 /// The headers of a stateless request for `method`, with `name` as Mcp-Name when given.
-fn stateless_headers(method: &str, name: Option<&str>) -> Vec<(&'static str, String)> {
+pub(super) fn stateless_headers(method: &str, name: Option<&str>) -> Vec<(&'static str, String)> {
     let mut headers = vec![
         ("content-type", "application/json".to_owned()),
         ("accept", "application/json, text/event-stream".to_owned()),
@@ -728,17 +834,17 @@ fn stateless_headers(method: &str, name: Option<&str>) -> Vec<(&'static str, Str
     headers
 }
 
-fn session_body(id: i64, method: &str, params: Value) -> String {
+pub(super) fn session_body(id: i64, method: &str, params: Value) -> String {
     json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string()
 }
 
-fn stateless_body(id: i64, method: &str, params: Value) -> String {
+pub(super) fn stateless_body(id: i64, method: &str, params: Value) -> String {
     let mut params = params;
     params["_meta"] = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28"});
     session_body(id, method, params)
 }
 
-fn initialize_body() -> String {
+pub(super) fn initialize_body() -> String {
     session_body(
         1,
         "initialize",
@@ -747,19 +853,19 @@ fn initialize_body() -> String {
     )
 }
 
-fn call_body(id: i64, name: &str) -> String {
+pub(super) fn call_body(id: i64, name: &str) -> String {
     session_body(id, "tools/call", json!({"name": name, "arguments": {}}))
 }
 
 /// A POST to demo with session headers and `body`.
-async fn session_post(demo: &Demo, session: Option<&str>, body: String) -> Reply {
+pub(super) async fn session_post(demo: &Demo, session: Option<&str>, body: String) -> Reply {
     demo.gw
         .post("demo", &demo.token, session_headers(session), body)
         .await
 }
 
 /// Initializes bob's session on `demo` and returns the session id.
-async fn initialized(demo: &Demo) -> String {
+pub(super) async fn initialized(demo: &Demo) -> String {
     let reply = session_post(demo, None, initialize_body()).await;
     assert_eq!(reply.status, 200, "initialize must be relayed");
     reply

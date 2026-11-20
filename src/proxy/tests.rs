@@ -1234,52 +1234,6 @@ async fn a_stream_whose_answer_is_an_error_is_unavailable() {
     assert_eq!(names(&fixture.state, fixture.server_id).await, vec!["old"]);
 }
 
-#[test]
-fn sse_splitter_reads_lf_and_crlf_events() {
-    let text = "data: {\"a\":1}\n\ndata: {\"b\":2}\r\n\r\n";
-    let (events, used) = catalog::sse_events(text.as_bytes());
-    assert_eq!(events, vec![b"{\"a\":1}".to_vec(), b"{\"b\":2}".to_vec()]);
-    assert_eq!(used, text.len());
-}
-
-#[test]
-fn sse_splitter_skips_comments_and_other_fields() {
-    let text = ": hello\nevent: message\nid: 7\nretry: 5\ndata: x\n\n";
-    let (events, used) = catalog::sse_events(text.as_bytes());
-    assert_eq!(events, vec![b"x".to_vec()]);
-    assert_eq!(used, text.len());
-}
-
-#[test]
-fn sse_splitter_joins_data_lines_and_drops_one_space() {
-    let (events, _) = catalog::sse_events(b"data: a\ndata:b\n\n");
-    assert_eq!(events, vec![b"a\nb".to_vec()]);
-    let (events, _) = catalog::sse_events(b"data:  a\n\n");
-    assert_eq!(events, vec![b" a".to_vec()], "only one space is dropped");
-}
-
-#[test]
-fn sse_splitter_keeps_an_open_event_for_later() {
-    let first = "data: {\"a\":1}\n\n";
-    let text = format!("{first}data: {{\"b\"");
-    let (events, used) = catalog::sse_events(text.as_bytes());
-    assert_eq!(events, vec![b"{\"a\":1}".to_vec()]);
-    assert_eq!(used, first.len());
-    for unfinished in ["data: {\"a\":1}", "data: {\"a\":1}\n"] {
-        let (events, used) = catalog::sse_events(unfinished.as_bytes());
-        assert!(events.is_empty(), "{unfinished:?} has no blank line");
-        assert_eq!(used, 0);
-    }
-}
-
-#[test]
-fn sse_splitter_emits_nothing_for_empty_input_or_events_without_data() {
-    assert_eq!(catalog::sse_events(b""), (Vec::new(), 0));
-    let (events, used) = catalog::sse_events(b"event: ping\n\n");
-    assert!(events.is_empty());
-    assert_eq!(used, "event: ping\n\n".len());
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refresh_that_runs_past_one_time_limit_is_unavailable_and_keeps_the_catalog() {
     let fixture = fixture_with(|config| config.limits.upstream_timeout_seconds = 1).await;

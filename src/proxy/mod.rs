@@ -14,10 +14,14 @@ use crate::oauth::guard::Caller;
 pub mod catalog;
 mod handle;
 pub mod sessions;
+mod sse;
+mod stream;
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg(test)]
 mod tests_handle;
+#[cfg(test)]
+mod tests_stream;
 pub mod upstream;
 
 /// Relays one request of an authorized caller on `/{slug}`, under the POST order and the GET and DELETE rules.

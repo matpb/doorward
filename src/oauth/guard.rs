@@ -34,6 +34,18 @@ pub struct Caller {
     pub family_id: i64,
     pub server_id: Option<i64>,
     pub client_name: String,
+    /// The hash the lookup used; never logged or shown.
+    pub token_hash: String,
+}
+
+impl std::fmt::Debug for Caller {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Caller")
+            .field("user_id", &self.user_id)
+            .field("family_id", &self.family_id)
+            .field("server_id", &self.server_id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A failed check. Every failure renders the same 401, whatever check failed.
@@ -88,6 +100,26 @@ pub async fn check(
         Err(err) => {
             eprintln!("doorward: the bearer check cannot read the database: {err}");
             Err(Refusal::new(&resource, presented))
+        }
+    }
+}
+
+/// True when the caller's token still passes the check for `slug`, from the same family. A database
+/// error is false.
+pub async fn still_valid(state: &AppState, caller: &Caller, slug: &str) -> bool {
+    let hash = caller.token_hash.clone();
+    let slug = slug.to_owned();
+    let now = state.clock.now().unix_timestamp();
+    match state
+        .db
+        .call(move |conn| find_caller(conn, &hash, now, Some(&slug)))
+        .await
+    {
+        Ok(Some(found)) => found.family_id == caller.family_id,
+        Ok(None) => false,
+        Err(err) => {
+            eprintln!("doorward: the bearer check cannot read the database: {err}");
+            false
         }
     }
 }
@@ -194,6 +226,7 @@ fn find_caller(
             family_id: row.get(2)?,
             server_id: row.get(3)?,
             client_name: row.get(4)?,
+            token_hash: hash.to_owned(),
         })
     })
     .optional()

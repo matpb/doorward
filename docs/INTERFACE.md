@@ -206,8 +206,10 @@ controls outgoing mail can read every password reset link.
 Activity rows: `data-user` is the user's email (empty when there is none), `data-server`
 the server's slug, `data-tool` the tool's name on its server. For `tool_call` rows,
 `data-decision` is `allow` or `deny` and `data-outcome` is `ok`, `error` (the upstream
-answered an error), `unavailable` (the upstream could not be reached or answered
-garbage) or `refused` (denied, or stopped by the gateway before the upstream). Each row
+answered an error, or the client left a streamed call before its answer), `unavailable`
+(the upstream could not be reached, answered garbage, or stopped before the answer) or
+`refused` (denied, stopped by the gateway before the upstream, or a streamed call cut
+off because the caller lost access). Each row
 also carries `data-time` (RFC 3339) and, for tool calls, `data-duration-ms`. The `user`
 and `server` filters take ids. Newest rows come first.
 
@@ -349,8 +351,18 @@ Relayed `tools/list` results keep the upstream's fields, minus denied tools, and
 stateless rules always carry `"cacheScope": "private"`, because the list is per user.
 
 Session rules: an `Mcp-Session-Id` from a relayed `initialize` response is recorded for
-(user, token family, server). GET with a recorded session is relayed as a stream; GET
-without one: `405`. DELETE with a recorded session is relayed and forgets it.
+(user, token family, server). GET with a recorded session is relayed when the upstream
+answers `200` with an event stream; an upstream `405` is relayed as `405` with no body;
+any other answer is the `502` below. GET without a recorded session: `405`. DELETE with
+a recorded session is relayed and forgets it.
+
+Event streams are relayed byte for byte as they arrive, and the gateway ends one when:
+the upstream ends it; the upstream sends nothing for `upstream_timeout_seconds`; one
+event grows past `tools_list_bytes`; the client leaves; or the caller's token stops
+passing the bearer check for this server (user disabled or unassigned, connection
+disconnected, password changed, access token expired), which is checked every second.
+The upstream connection is closed with the stream. A streamed `tools/call` writes its
+activity row when the stream ends, with the outcome of the answer when one was seen.
 
 The combined endpoint `/mcp` is its own MCP server:
 

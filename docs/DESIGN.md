@@ -173,8 +173,8 @@ it and allows it.
     hashed). Anything else gets 404 without upstream contact, on POST, GET and DELETE. A
     client-supplied id on `initialize` is stripped. An id the upstream issues twice is not
     rebound. A GET without a session gets 405.
-11. Open streams end when the user is disabled or reset, the family is revoked, or the
-    token expires.
+11. Open streams end when the user is disabled, reset or unassigned from the server, the
+    family is revoked, or the token expires. The check runs every second.
 
 Changing a server's upstream address clears its stored secret. The server page and the
 README state what the gateway cannot fix: every user reaches the upstream under one
