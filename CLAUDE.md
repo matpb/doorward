@@ -132,7 +132,7 @@ I. Keeps working
     front, locking down upstreams, connecting each client), a license, a security policy, and
     no host names, addresses, local paths, personal names, emails or secrets in any tracked
     file or commit message. Nothing is pushed without the owner's word.
-31. The project owner has read the auth code. It lives in its own modules and arrives as
+31. (replaced by 50) The project owner has read the auth code. It lives in its own modules and arrives as
     diffs with the abuse tests mapped to each rule; every finding from the adversarial
     reviews is fixed or listed. v1 is not called done before that sign-off.
 
@@ -229,6 +229,11 @@ L. Added after the owner's auth review
     tool, are refused a denied one, and the calls show in the activity log under the right
     user. No other client gates v1 (the owner's decision of 2026-11-20); a run made with
     another client is reported.
+50. The auth code and the rest of v1 have been reviewed by an independent advisor standing
+    in for the owner as tech lead, on security, code quality, maintainability, observability
+    and performance; every finding is fixed or listed with its reason. The owner is not asked
+    to read code (the owner's decision of 2026-11-20). v1 is not called done before that
+    review signs off.
 
 ### Proof
 
@@ -245,7 +250,7 @@ into the test harness. In addition:
   commit of the code it covers, with the saved failing run.
 - 27: replaced by 49.
 - 30: `scripts/hygiene.sh` scans tracked files and commit messages.
-- 31: by the project owner.
+- 31: replaced by 50.
 - 38, 39, 43: `scripts/prove-docker.sh` builds the image, starts each Compose file on the
   local machine, and checks health, the setup code in the logs, the user, the read-only
   root, the dropped capabilities, that the gateway's port is closed on the host in the
@@ -257,6 +262,8 @@ into the test harness. In addition:
 - 48: `tests/s48_origin.rs`.
 - 49: one transcript and one screenshot per client under `proof/clients/`, by hand-driven
   runs against the stack of `scripts/prove-clients.sh`.
+- 50: the advisor's reports, kept under `proof/review/` (not tracked), and the commits that
+  fix its findings.
 
 ### Assumptions
 
