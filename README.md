@@ -5,7 +5,7 @@ in with an email and a password, an admin decides who may use which server and w
 and every request is checked before it reaches a server. It ships as one binary with one
 SQLite database.
 
-Status: pre-release (0.1.0). Nothing is published yet.
+Status: pre-release (0.1.0).
 
 ## What it does
 
@@ -37,7 +37,7 @@ Two Compose files are in this repository. Copy `.env.example` to `.env`, set
 
 ## Run the binary
 
-Build it with a current Rust toolchain:
+Build it with Rust 1.89 or newer:
 
 ```sh
 cargo build --release
@@ -64,6 +64,10 @@ doorward --config doorward.toml
 
 The first start prints a setup code on standard error. Open `/setup`, enter the code, and
 the account you create becomes the owner. The code stops working once an owner exists.
+The admin panel is at `/admin`; an admin's account page links to it.
+
+Set up mail in the panel before you need it. A lost password, the owner's included, is
+reset by email only: there is no command that sets one.
 
 The encryption key for stored secrets is created next to the database, as a file readable
 only by its owner. Back it up with the database: one is useless without the other.
@@ -82,6 +86,30 @@ tunnel, or a load balancer.
 - With an `https` address and no trusted proxy the gateway refuses to start and says why.
   `shared_client_address = true` accepts that every visitor shares one address instead.
 
+Caddy needs nothing more than the address. It gets the certificate, sends
+`X-Forwarded-For` and passes event streams through as they arrive:
+
+```
+gateway.example.com {
+	reverse_proxy 127.0.0.1:8717
+}
+```
+
+nginx buffers answers and closes a connection that is silent for 60 seconds unless told
+otherwise, which breaks event streams. Inside the `server` block that holds your
+certificate:
+
+```
+location / {
+    proxy_pass http://127.0.0.1:8717;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_buffering off;
+    proxy_read_timeout 1h;
+}
+```
+
 ## Add a server and lock it down
 
 In the admin panel, add a server with a name, a slug and its address. Then make sure the
@@ -98,10 +126,18 @@ server only answers the gateway:
 The gateway never follows redirects from a server, and only relays the answers an MCP
 server is expected to give.
 
+Two things to know about server addresses. An admin can point a server at any address the
+gateway can reach, one on your private network included, so give the admin role only to
+people you would give that reach. And an `http` address carries the secret header
+unencrypted between the gateway and the server: use `https` unless the server runs on the
+same host or on a network you trust.
+
 ## Give people access
 
-Invite a person from the users page. Assign servers to them from their page or from the
-server's page. With no matching deny rule, every tool of an assigned server is allowed. Rules
+Invite a person from the invitations page of the admin panel (`/admin/invitations`). Assign
+servers to them from their page or from the server's page. An admin can do this for
+anyone, the owner and other admins included; only the owner changes roles and mail
+settings. With no matching deny rule, every tool of an assigned server is allowed. Rules
 allow or deny all tools, one server, or one exact tool, for one person or for everyone.
 
 ## Connect a client
@@ -138,6 +174,8 @@ there. Claude Code, Codex and the Cursor command line client were run against 0.
   [docs/DOCKER.md](docs/DOCKER.md#rate-limits).
 - A browser page on another origin cannot call the MCP paths unless its origin is listed
   in `allowed_origins`.
+- A server's answer larger than `tools_list_bytes` (4 MiB by default) is refused with a
+  `502`, whether it is a tool list, a tool result or one event of a stream.
 - Access tokens last 60 minutes and refresh tokens rotate. Presenting an old refresh token
   again ends that client's connection.
 
@@ -148,6 +186,7 @@ there. Claude Code, Codex and the Cursor command line client were run against 0.
 - [docs/INTERFACE.md](docs/INTERFACE.md): every page and endpoint.
 - [docs/TESTS.md](docs/TESTS.md): the test catalogue.
 - [SECURITY.md](SECURITY.md): how to report a vulnerability.
+- [CONTRIBUTING.md](CONTRIBUTING.md): how a change is made and checked.
 
 ## License
 

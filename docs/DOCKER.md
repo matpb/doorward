@@ -80,7 +80,7 @@ message names the variable and never prints the value.
 | `DOORWARD_LIFETIMES_FAMILY_DAYS` | `90` | Days one client connection (a token family) may last. |
 | `DOORWARD_LIFETIMES_REFRESH_REPLAY_SECONDS` | `30` | Seconds in which a just-used refresh token may be presented again. `0` turns this off. |
 | `DOORWARD_LIMITS_BODY_BYTES` | `1048576` | Largest request body in bytes. Caddy uses the same limit. |
-| `DOORWARD_LIMITS_TOOLS_LIST_BYTES` | `4194304` | Largest tool list or stream event in bytes that a server may send. |
+| `DOORWARD_LIMITS_TOOLS_LIST_BYTES` | `4194304` | Largest answer in bytes that a server may send in one piece: a tool list, any other JSON answer such as a tool result, or one event of a stream. A larger one is refused with `502`. |
 | `DOORWARD_LIMITS_UPSTREAM_TIMEOUT_SECONDS` | `300` | Seconds an upstream server may stay silent before the call ends. At most `86400` (one day); a larger value refuses the start. |
 | `DOORWARD_LIMITS_ACCOUNT_FAILURES` | `5` | Wrong passwords for one account from one client address, inside `DOORWARD_LIMITS_BLOCK_MINUTES`, after which a sign-in to that account from that address answers `429`, right password included. Other addresses are not affected. |
 | `DOORWARD_LIMITS_ACCOUNT_CEILING` | `50` | Wrong passwords for one account from all client addresses together, inside `DOORWARD_LIMITS_BLOCK_MINUTES`, that block the account for every address. Must be at least `DOORWARD_LIMITS_ACCOUNT_FAILURES`. |
@@ -98,7 +98,7 @@ message names the variable and never prints the value.
 | `DOORWARD_LIMITS_MCP_PER_MINUTE` | `600` | MCP class, per user: sustained requests per minute. |
 | `DOORWARD_LIMITS_MCP_OPEN` | `64` | Most MCP requests and streams one user may have open at the same time. |
 | `DOORWARD_LIMITS_RATE_TABLE_KEYS` | `100000` | Most addresses and users the rate limiter keeps counters for at once. |
-| `DOORWARD_LIMITS_AUTH_REQUESTS_MAX` | `10000` | Most pending sign-in requests kept at once. |
+| `DOORWARD_LIMITS_AUTH_REQUESTS_MAX` | `10000` | Most pending sign-in requests kept at once. Past it the oldest are dropped, so a flood from many addresses can make a person who is in the middle of a sign-in start again. |
 | `DOORWARD_LIMITS_CATALOG_REFRESH_SECONDS` | `30` | Least seconds between two refreshes of one server's tool list that a call for a tool missing from the list starts. A call that finds a refresh running waits for it. Must be at least `1`. |
 | `DOORWARD_LIMITS_ACTIVITY_DAYS` | `90` | Days an activity row is kept. The housekeeping run deletes older rows. Must be at least `1`. |
 | `DOORWARD_MAIL_SMTP_CA_FILE` | (none) | PEM file with extra trusted roots for SMTP over TLS. |

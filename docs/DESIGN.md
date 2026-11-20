@@ -103,8 +103,9 @@ Client registration:
   allowlist entry (scheme, host, optional path prefix). Defaults for the known clients ship
   in code; admin additions and disables live in the database. A blocked attempt of a
   registered client appears in the activity log with a one-click allow; the rows are capped
-  per hour, and an unverified client address never writes one, so a stranger cannot fill the
-  log or the admin's list.
+  per hour, and an unverified client address never writes one. The cap is shared and
+  registration is open, so a stranger can use up the hour's rows and put names of their
+  choosing in the blocked list, but cannot grow either past the cap.
 
 Tokens: `dw_at_`, `dw_rt_`, `dw_ac_` prefixes plus 32 random bytes, base64url; only SHA-256
 is stored. A family is bound to the server's id (or to the combined endpoint), the client
@@ -168,7 +169,10 @@ it and allows it.
    `Content-Security-Policy: sandbox` are added. Upstream 401 or 403 becomes 502.
 9. `tools/list` responses are buffered (capped), filtered by policy, and refresh the
    catalog. Other responses stream through as they arrive; the stream is observed for the
-   activity log.
+   activity log. The catalog is one per server, shared by everyone who uses it, and the
+   latest relayed list replaces it. A server whose tool list differs per caller or changes
+   order between calls is not supported in v1: each list rewrites the catalog, and a caller
+   with the larger set can get `Unknown tool` until the next refresh.
 10. Sessions: an `Mcp-Session-Id` is accepted only if the gateway recorded it from an
     `initialize` response it relayed to the same server, user and token family (stored
     hashed). Anything else gets 404 without upstream contact, on POST, GET and DELETE. A

@@ -47,4 +47,8 @@ Anything that lets a person do what the gateway is there to prevent, for example
 - An upstream server that answers without the gateway because it was never locked down.
   The README explains the lock-down and the check for it.
 - A gateway run without HTTPS in front of it, against the README.
+- What the admin role allows by design, such as setting a server's address to one on the
+  operator's own network. Admins are trusted with that reach.
+- A secret header read on the network between the gateway and a server that an admin
+  chose to reach over plain `http`.
 - Findings from an automated scanner with no demonstrated impact.
