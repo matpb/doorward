@@ -808,3 +808,41 @@ async fn an_error_is_never_redirected_to_an_unlisted_address() {
         "the error must be carried in the redirect"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_document_client_gets_no_error_redirect_to_a_loopback_address() {
+    let w = World::start().await;
+    let (bob, _upstream) = bob_on_demo(&w).await;
+    let resource = w.resource("demo");
+    let document = "https://client.example.com/app.json";
+    let control = raw_authorize(&bob, document, L, Some("code"), &resource).await;
+    assert_accepted(
+        &control,
+        "a document client with a valid request to its loopback address",
+    );
+    let page = raw_authorize(&bob, document, L, None, &resource).await;
+    assert_error_page(
+        &page,
+        "a document client with no response_type and a loopback redirect",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_document_client_gets_no_error_redirect_to_a_listed_callback() {
+    let w = World::start().await;
+    let (bob, _upstream) = bob_on_demo(&w).await;
+    let resource = w.resource("demo");
+    let document = "https://client.example.com/app.json";
+    w.gw.cimd()
+        .put(document, "Example Client", &[CLAUDE_CALLBACK]);
+    let control = raw_authorize(&bob, document, CLAUDE_CALLBACK, Some("code"), &resource).await;
+    assert_accepted(
+        &control,
+        "a document client with a valid request to a listed callback",
+    );
+    let page = raw_authorize(&bob, document, CLAUDE_CALLBACK, None, &resource).await;
+    assert_error_page(
+        &page,
+        "a document client with no response_type and a listed callback",
+    );
+}

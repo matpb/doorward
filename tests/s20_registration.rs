@@ -1,9 +1,12 @@
 mod common;
 
+use std::net::{IpAddr, Ipv4Addr};
+
 use common::admin;
 use common::client::{OAuthApp, Page, TestClient, pkce};
 use common::upstream::{FakeUpstream, UpstreamOptions};
 use common::world::{APP_ID, APP_NAME, APP_REDIRECT, PASSWORD, World};
+use doorward::config::Range;
 use doorward::{CimdError, ClientMetadata};
 use serde_json::{Value, json};
 
@@ -13,6 +16,9 @@ const C3: [&str; 3] = [
     "http://localhost:8787/callback",
 ];
 const LOCAL_8787: &str = "http://localhost:8787/callback";
+/// Eleven addresses at 55 attempts each make 605, more than the 600 of the global total.
+const PER_ADDRESS: u64 = 55;
+const ADDRESSES: u8 = 11;
 
 fn oauth_app(client_id: &str, redirect_uri: &str) -> OAuthApp {
     OAuthApp {
@@ -511,4 +517,96 @@ async fn the_unknown_client_id_is_refused() {
         )
         .await;
     assert_error_page(&page, "an unknown client id");
+}
+
+/// A caller address in the documentation range 203.0.113.0/24.
+fn address_of(n: u8) -> String {
+    Ipv4Addr::new(203, 0, 113, n).to_string()
+}
+
+/// Whether `/oauth/authorize` knows the client id: a known one is sent on to sign-in,
+/// an unknown one gets the error page.
+async fn is_known(w: &World, client_id: &str) -> bool {
+    let page = w
+        .client()
+        .authorize(
+            &oauth_app(client_id, LOCAL_8787),
+            &w.resource("demo"),
+            &pkce(),
+            "state-1",
+        )
+        .await;
+    if location_path(&page).as_deref() == Some("/login") {
+        return true;
+    }
+    assert_error_page(&page, &format!("the client id {client_id}"));
+    false
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn addresses_at_their_limit_do_not_stop_a_fresh_address() {
+    let w = World::start_with(|c| {
+        c.trusted_proxies = vec![Range::from(IpAddr::V4(Ipv4Addr::LOCALHOST))];
+        c.limits.dcr_per_hour = PER_ADDRESS;
+    })
+    .await;
+    for n in 1..=ADDRESSES {
+        let caller = TestClient::at(w.base(), &address_of(n));
+        for attempt in 1..=PER_ADDRESS {
+            let page = caller.register("X", &[LOCAL_8787]).await;
+            assert_eq!(
+                page.status, 201,
+                "registration {attempt} from address {n} is within its own limit and must be allowed"
+            );
+        }
+        let page = caller.register("X", &[LOCAL_8787]).await;
+        assert_eq!(
+            page.status, 429,
+            "address {n} past its own limit must be limited"
+        );
+    }
+    let fresh = TestClient::at(w.base(), &address_of(ADDRESSES + 1));
+    let page = fresh.register("X", &[LOCAL_8787]).await;
+    assert_eq!(
+        page.status, 201,
+        "a fresh address must register while the others are at their limit"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_oldest_unused_registration_gives_way_at_the_bound() {
+    let w = World::start_with(|c| {
+        let mut value = serde_json::to_value(&*c).expect("the config as JSON");
+        value["limits"]["unused_registrations"] = json!(3);
+        *c = serde_json::from_value(value)
+            .expect("the config must accept limits.unused_registrations");
+    })
+    .await;
+    let (bob, _upstream) = bob_on_demo(&w).await;
+    let resource = w.resource("demo");
+    let mut ids = Vec::new();
+    for _ in 0..4 {
+        ids.push(register_client(&w, "X", &[LOCAL_8787]).await);
+        w.gw.clock.advance(time::Duration::seconds(1));
+    }
+    assert!(
+        !is_known(&w, &ids[0]).await,
+        "the oldest unused registration must give way when the bound of 3 is reached"
+    );
+    for id in &ids[1..] {
+        assert!(
+            is_known(&w, id).await,
+            "the unused registration {id} must stay known"
+        );
+    }
+    bob.connect(&oauth_app(&ids[1], LOCAL_8787), &resource)
+        .await;
+    for _ in 0..4 {
+        register_client(&w, "X", &[LOCAL_8787]).await;
+        w.gw.clock.advance(time::Duration::seconds(1));
+    }
+    assert!(
+        is_known(&w, &ids[1]).await,
+        "a registration that completed an authorization must stay known after four more"
+    );
 }

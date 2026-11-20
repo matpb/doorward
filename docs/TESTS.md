@@ -595,6 +595,13 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
     `client_id`, then with `token_endpoint_auth_method` `client_secret_basic`: each consent
     GET is an error page.
 15. `the_unknown_client_id_is_refused`: `dcr_doesnotexist` gives an error page.
+16. `addresses_at_their_limit_do_not_stop_a_fresh_address`: `limits.dcr_per_hour` is 55 and
+    loopback is a trusted proxy, so `X-Forwarded-For` names the caller. Eleven addresses in
+    `203.0.113.0/24` each take 55 registrations and then get 429; a twelfth address gets 201.
+17. `the_oldest_unused_registration_gives_way_at_the_bound`: `limits.unused_registrations` is
+    3, set through a round-trip of the config. After four registrations the first client id
+    is unknown at `/oauth/authorize` and the other three are known. A client whose
+    authorization completed stays known after four more registrations.
 
 ## s20_cimd_fetcher.rs (statement 20, the fetcher itself)
 
@@ -872,6 +879,19 @@ bob is assigned to demo and signed in. `A` is `W.app()`.
     303 with `error=invalid_target`. Each carries `state` and `iss`.
 21. `a_plain_challenge_never_reaches_consent`: after test 20's `plain` attempt there is no
     consent address in any answer.
+22. `a_registered_client_is_shown_as_a_claim`: a client registered as `Claude Code published
+    by claude.ai` with `APP_REDIRECT` has one `p[data-client="registered"]` reading `An app
+    that calls itself Claude Code published by claude.ai. Doorward cannot check this name.`;
+    its `q.client-name` is the name; the page has no `(unverified)`.
+23. `a_document_client_with_a_web_redirect_names_its_publisher`: `APP_ID` with the redirect
+    `https://claude.ai/api/mcp/auth_callback` has one `p[data-client="document"]` reading
+    `Example Client, published by client.example.com.`, the name in `q.client-name` and the
+    host in `span.client-host`; there is no `document-loopback` line.
+24. `a_document_client_with_a_loopback_redirect_is_shown_as_a_claim`: `W.app()` has one
+    `p[data-client="document-loopback"]` reading `Says it is Example Client from
+    client.example.com. Any program on this computer can use that description.`; `p.local-app`
+    reads `The sign-in will be handed to whatever program is listening on this computer.`;
+    the page does not contain `This app runs on your computer.`.
 
 ## s34_redirects_codes.rs (statement 34)
 
@@ -929,6 +949,12 @@ bob is assigned to demo and signed in. `A` is `W.app()`.
 19. `token_endpoint_refuses_odd_requests`: an unknown grant type is
     `unsupported_grant_type`; a repeated `code` field is `invalid_request`; `GET` is 405.
 20. `the_code_is_not_stored`: the code is absent from `W.stored_bytes()`.
+21. `a_document_client_gets_no_error_redirect_to_a_loopback_address`: a valid request from the
+    document to `L` is accepted; the same request with no `response_type` is an error page
+    with no `Location`.
+22. `a_document_client_gets_no_error_redirect_to_a_listed_callback`: the document lists
+    `https://claude.ai/api/mcp/auth_callback`; a valid request is accepted; the same request
+    with no `response_type` is an error page with no `Location`.
 
 ## s35_tokens.rs (statement 35)
 

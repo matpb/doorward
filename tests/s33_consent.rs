@@ -5,7 +5,7 @@ use std::time::Duration;
 use common::client::{self, OAuthApp, Page, Pkce, TestClient};
 use common::mail::link_with_prefix;
 use common::upstream::{FakeUpstream, UpstreamOptions};
-use common::world::{APP_ID, APP_REDIRECT, PASSWORD, World};
+use common::world::{APP_ID, APP_NAME, APP_REDIRECT, PASSWORD, World};
 
 const BOB: &str = "bob@example.com";
 const CAROL: &str = "carol@example.com";
@@ -13,6 +13,7 @@ const DAVE: &str = "dave@example.com";
 const STATE: &str = "state-1";
 const REDIRECT_ORIGIN: &str = "http://127.0.0.1:53535";
 const CONNECTED_SUBJECT: &str = "A new app was connected to your Doorward account";
+const CLAUDE_CALLBACK: &str = "https://claude.ai/api/mcp/auth_callback";
 
 type Query = Vec<(String, String)>;
 
@@ -776,4 +777,151 @@ async fn a_plain_challenge_never_reaches_consent() {
             "{step} must not be shown the consent address for a plain challenge"
         );
     }
+}
+
+/// The consent page that `browser` reaches by authorizing `app` at `resource`.
+async fn consent_of(browser: &TestClient, app: &OAuthApp, resource: &str) -> Page {
+    let page = browser
+        .authorize(app, resource, &client::pkce(), STATE)
+        .await;
+    let req = consent_request(&page);
+    browser.get(&consent_path(&req)).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_registered_client_is_shown_as_a_claim() {
+    let (w, bob, _upstream) = bob_on_demo().await;
+    let name = "Claude Code published by claude.ai";
+    let registered = w.client().register(name, &[APP_REDIRECT]).await;
+    assert_eq!(
+        registered.status, 201,
+        "registering the client must answer 201"
+    );
+    let client_id = registered
+        .json()
+        .and_then(|json| json["client_id"].as_str().map(str::to_string))
+        .expect("the registration answer must carry a client_id");
+    let app = OAuthApp {
+        client_id,
+        redirect_uri: APP_REDIRECT.into(),
+    };
+    let consent = consent_of(&bob, &app, &w.resource("demo")).await;
+    assert_eq!(
+        consent.status, 200,
+        "the consent page must load for a registered client"
+    );
+    assert_eq!(
+        consent.count(r#"p[data-client="registered"]"#),
+        1,
+        "a registered client must have exactly one registered line"
+    );
+    assert_eq!(
+        consent.text(r#"p[data-client="registered"]"#).as_deref(),
+        Some(
+            "An app that calls itself Claude Code published by claude.ai. Doorward cannot check this name."
+        ),
+        "the registered line must say the name is a claim the gateway cannot check"
+    );
+    assert_eq!(
+        consent
+            .text(r#"p[data-client="registered"] q.client-name"#)
+            .as_deref(),
+        Some(name),
+        "the registered name must sit in its own q element"
+    );
+    assert!(
+        !consent.body.contains("(unverified)"),
+        "the consent page must not say (unverified)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_document_client_with_a_web_redirect_names_its_publisher() {
+    let (w, bob, _upstream) = bob_on_demo().await;
+    w.gw.cimd().put(APP_ID, APP_NAME, &[CLAUDE_CALLBACK]);
+    let app = OAuthApp {
+        client_id: APP_ID.into(),
+        redirect_uri: CLAUDE_CALLBACK.into(),
+    };
+    let consent = consent_of(&bob, &app, &w.resource("demo")).await;
+    assert_eq!(
+        consent.status, 200,
+        "the consent page must load for a document client"
+    );
+    assert_eq!(
+        consent.count(r#"p[data-client="document"]"#),
+        1,
+        "a document client with a web redirect must have exactly one document line"
+    );
+    assert_eq!(
+        consent.text(r#"p[data-client="document"]"#).as_deref(),
+        Some("Example Client, published by client.example.com."),
+        "the document line must name the client and the host that published it"
+    );
+    assert_eq!(
+        consent
+            .text(r#"p[data-client="document"] q.client-name"#)
+            .as_deref(),
+        Some(APP_NAME),
+        "the document name must sit in its own q element"
+    );
+    assert_eq!(
+        consent
+            .text(r#"p[data-client="document"] span.client-host"#)
+            .as_deref(),
+        Some("client.example.com"),
+        "the publisher host must sit in its own span element"
+    );
+    assert_eq!(
+        consent.count(r#"p[data-client="document-loopback"]"#),
+        0,
+        "a web redirect must not be shown as a loopback line"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_document_client_with_a_loopback_redirect_is_shown_as_a_claim() {
+    let (w, bob, _upstream) = bob_on_demo().await;
+    let consent = consent_of(&bob, &w.app(), &w.resource("demo")).await;
+    assert_eq!(
+        consent.status, 200,
+        "the consent page must load for a document client"
+    );
+    assert_eq!(
+        consent.count(r#"p[data-client="document-loopback"]"#),
+        1,
+        "a loopback document client must have exactly one loopback line"
+    );
+    assert_eq!(
+        consent
+            .text(r#"p[data-client="document-loopback"]"#)
+            .as_deref(),
+        Some(
+            "Says it is Example Client from client.example.com. Any program on this computer can use that description."
+        ),
+        "the loopback line must present the name as a claim from the host"
+    );
+    assert_eq!(
+        consent
+            .text(r#"p[data-client="document-loopback"] q.client-name"#)
+            .as_deref(),
+        Some(APP_NAME),
+        "the loopback name must sit in its own q element"
+    );
+    assert_eq!(
+        consent
+            .text(r#"p[data-client="document-loopback"] span.client-host"#)
+            .as_deref(),
+        Some("client.example.com"),
+        "the host must sit in its own span element"
+    );
+    assert_eq!(
+        consent.text("p.local-app").as_deref(),
+        Some("The sign-in will be handed to whatever program is listening on this computer."),
+        "a loopback redirect must carry the local-app sentence"
+    );
+    assert!(
+        !consent.body.contains("This app runs on your computer."),
+        "the consent page must not use the old local-app sentence"
+    );
 }
