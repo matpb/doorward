@@ -54,6 +54,8 @@ services:
       - doorward-data:/data
     networks:
       proxy:
+        # Fixed too, so the gateway can never take Caddy's address when it starts first.
+        ipv4_address: 10.213.87.3
       egress:
     read_only: true # Root file system is read-only; data lives in the volume.
     tmpfs:

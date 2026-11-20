@@ -5,3 +5,4 @@ target/
 .env
 *.key
 proof/
+__pycache__/
