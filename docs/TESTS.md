@@ -140,6 +140,8 @@ Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
     and dave; alice accepts. The owner then disables carol, changes her role to user, or
     deletes her, one run each. Dave's unused link is 404 `link-invalid` on GET and 404 on
     POST, his invitation is gone from the invitations page, and alice still signs in (303).
+    The owner invites erin before each change; her link still opens (200) afterwards, so a
+    delete of every invitation would fail here. This control passes before the change.
 15. `the_invitations_page_says_who_invited`: bob's row holds `[data-invited-by]` reading
     `invited by owner@example.com` and dave's reads `invited by carol@example.com`; with the
     inviter of bob's invitation cleared in the database, his row reads
@@ -203,11 +205,26 @@ Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
    alice's `disable` on the plain user bob is 303.
 8. `a_server_path_answer_is_not_returned_after_access_was_lost`: upstream in
    `Delayed { millis: 1500 }`. bob's `call_tool("echo")` runs in a task; 400 ms later the
-   owner disables bob. The call answers `401` with the bearer challenge, the answer a new
-   request would get, and its body does not hold the upstream's `called: echo`.
+   owner disables bob. The call answers `200` with `-32602` and `Unknown tool: echo`, as
+   `/mcp` answers, its body does not hold the upstream's `called: echo`, and its one
+   `tool_call` row is `refused` with the detail `access was lost`.
 9. `a_combined_answer_is_not_returned_after_access_was_lost`: the same on `/mcp` with
    `demo__echo`; `-32602` with `Unknown tool: demo__echo`, because the caller may still use
    other servers there. It passes before the change.
+10. `a_lost_access_on_another_method_gets_the_challenge`: upstream in
+    `SlowListing { millis: 1500 }`. bob's `list_tools` runs in a task; 400 ms later the owner
+    disables bob. The listing answers 401 with `www-authenticate`. It passes before the
+    change, since only tools/call changes.
+11. `a_token_that_expires_during_a_call_still_gets_its_answer`: upstream in
+    `Delayed { millis: 1500 }`. The test clock moves two hours ahead 400 ms into the call, so
+    the access token expires while the call runs. `/demo` answers 200 with `called: echo`,
+    the upstream sees one `tools/call`, and one `tool_call` row for echo on demo is `ok`.
+12. `a_token_that_expires_during_a_combined_call_still_gets_its_answer`: the same on `/mcp`
+    with `demo__echo`.
+13. `a_token_that_expires_during_a_streamed_call_still_gets_its_answer`: upstream in
+    `Progress { steps: 5, interval_ms: 300 }`; the clock moves two hours ahead 400 ms in.
+    All five progress events and the answer `called: echo` arrive; one `tool_call` row is
+    `ok`.
 
 ## s06_passwords.rs (statement 6)
 
@@ -608,6 +625,10 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
     row, polled for 5 seconds because the mail is sent in the background, starts with
     `reset: `.
 
+17. `a_header_refusal_says_so`: a stateless upstream whose tools carry an `x-mcp-header`
+    key, on `/mcp`: `demo__echo` is `-32602`, and its `tool_call` row for echo on demo has
+    the detail `the request headers do not match the call`.
+
 ## s18_unauthorized.rs (statement 18)
 
 `H(slug)` is
@@ -688,6 +709,10 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
     3, set through a round-trip of the config. After four registrations the first client id
     is unknown at `/oauth/authorize` and the other three are known. A client whose
     authorization completed stays known after four more registrations.
+
+18. `the_attempts_table_has_an_index_on_time`: `EXPLAIN QUERY PLAN DELETE FROM dcr_attempts
+    WHERE at < 1` on the test database names the index `dcr_attempts_at`, so the clean-up
+    of old attempts does not scan the table.
 
 ## s20_cimd_fetcher.rs (statement 20, the fetcher itself)
 
@@ -808,6 +833,19 @@ stateless `tools/call` body for that tool, sent with `raw` and explicit headers.
     forwarded.
 17. `denied_and_missing_tools_look_alike`: calling `delete_db` and calling `nope` give the
     same code and the same message shape, `Unknown tool: {name}`.
+
+18. `ten_misses_at_once_cost_one_list`: upstreams in `SlowListing { millis: 1000 }`, one
+    server on `/demo` and one on `/mcp`. Ten stateless calls with unknown names run at once
+    on each endpoint: each is `-32602`, and each upstream records one `tools/list`. It
+    passes before the change; it guards the miss gate under concurrency.
+19. `a_hung_refresh_does_not_queue_more_refreshes`: upstream in `HangListing`. Three misses
+    in a row on `/demo`: the first answers `-32602` in under 13 seconds (the 10 second list
+    limit and a margin), and the upstream records one `tools/list` for the three.
+20. `a_clock_stepped_back_does_not_hold_a_refresh_off`: a miss refreshes the list; the clock
+    moves back one second, which the rate limiter tolerates; the next miss refreshes it again (two `tools/list` in all).
+21. `a_refresh_goes_on_when_the_client_leaves`: upstream in `SlowListing { millis: 1000 }`
+    with `fresh` added to its tools. The client gives up after 300 ms; two seconds later
+    `fresh` is callable, so the refresh the client left still stored the list.
 
 ## s26_panel.rs (statement 26)
 
@@ -1004,7 +1042,20 @@ bob is assigned to demo and signed in. `A` is `W.app()`.
     `p[data-client="document-loopback"]` reading `Says it is Example Client from
     client.example.com. Any program on this computer can use that description.`; `p.local-app`
     reads `The sign-in will be handed to whatever program is listening on this computer.`;
-    the page does not contain `This app runs on your computer.`.
+    the page does not contain `This app runs on your computer.`; `data-client-verified` is `no`.
+25. `a_document_client_on_a_private_scheme_is_shown_as_a_claim`: the document lists
+    `cursor://anysphere.cursor-mcp/oauth/callback`. One `p[data-client="document-loopback"]`
+    reads the claim text of item 24 with `client.example.com`, there is no `document` line,
+    `p.local-app` reads `The sign-in will be handed to whatever program on this computer
+    opens addresses of this kind.`, and `data-client-verified` is `no`.
+26. `a_registered_client_on_a_private_scheme_gets_the_local_sentence`: a registered client
+    with the cursor redirect gets the same `p.local-app` sentence and `data-client-verified`
+    `no`.
+27. `a_document_that_does_not_list_the_redirect_shows_the_error_page`: the document lists
+    another address; the consent page is 400 with kind `error` and no `Location`. The line
+    on standard error (`the document does not list the redirect address`) is checked
+    in-crate in phase B, since an in-process test cannot read standard error. It passes
+    before the change.
 
 ## s34_redirects_codes.rs (statement 34)
 
@@ -1130,6 +1181,10 @@ bob on demo; the fake upstream offers one resource and one prompt.
 9. `switches_default_to_off_on_a_new_server`: the server page shows both checkboxes
    unchecked.
 
+10. `completions_are_not_advertised_with_both_switches_off`: upstream in
+    `DeclaresCompletions`. With both switches off, `initialize` and `server/discover` have no
+    `completions` under `capabilities`; with resources on, `initialize` has it again.
+
 ## s37_environment.rs (statement 37)
 
 These tests start the real binary (`env!("CARGO_BIN_EXE_doorward")`) with
@@ -1189,6 +1244,17 @@ seconds; "refuses" means the process exits non-zero within 5 seconds.
 5. `the_readme_config_passes_the_start_check`: the first `toml` fenced block of
    `README.md`, written to a temp dir and loaded by `Config::load`, has `start_check()`
    equal to `Ok(None)`.
+
+6. `the_unused_registrations_row_says_what_a_flood_does`: the `DOORWARD_LIMITS_UNUSED_REGISTRATIONS`
+   row of `docs/DOCKER.md` ends with the flood sentence.
+7. `the_rate_limits_say_how_long_registration_attempts_are_kept`: the Rate limits section
+   says registration attempts are kept for one hour.
+8. `design_says_json_answers_are_buffered_and_rechecked`: `docs/DESIGN.md` no longer says
+   that other responses stream through as they arrive, and says that JSON answers are
+   buffered and re-checked.
+9. `the_interface_names_the_new_phrases_and_lines`: `docs/INTERFACE.md` names `admission
+   time`, the stored secret phrase, the header refusal detail, the password check line, the
+   three document reasons and the private-scheme sentence.
 
 ## s42_proxy_start.rs (statement 42)
 
@@ -1318,6 +1384,10 @@ is forced with `W.gw.restart()`.
 4. `every_kind_of_row_is_pruned_alike`: old `tool_call`, `login_failed` and `admin_change`
    rows all go; no other table loses a row.
 
+5. `the_reset_gap_is_one_public_constant`: reads `src/accounts`: `reset.rs` exports
+   `REQUEST_GAP_SECONDS` as `pub const`, and `housekeeping.rs` keeps no copy of it. A source
+   check, since the constant is private until phase B.
+
 ## s46_consent_notice.rs (statement 46)
 
 1. `a_local_app_sees_the_notice`: the consent page of a client with a loopback redirect
@@ -1422,3 +1492,22 @@ by the request.
    `invalid_grant`, and one line starts `doorward: token refused: ` with a reason and holds
    neither the code nor a verifier. A code of valid shape that matches no row is `400`
    `invalid_grant` and adds no line.
+6. `an_unreadable_secret_writes_one_line_and_blames_no_upstream`: a server whose stored
+   secret is replaced by `not a sealed value`. A stateless call on `/demo` is `502`; one
+   line is `doorward: server demo failed: the stored secret cannot be opened`; one
+   `tool_call` row is `unavailable` with that phrase as detail. A call on `/mcp` is `502`
+   with that same one line, and the stored refresh error does not say the upstream did not
+   answer. It is red before the change.
+7. `a_broken_stored_hash_writes_one_line`: the owner's stored hash is replaced by `not a
+   hash`; a sign-in is `401` with `Wrong email or password.`; one line is `doorward:
+   password check failed: the stored hash cannot be read`, with no email in it.
+8. `a_mail_settings_read_failure_writes_one_line`: the `settings` table is renamed away while
+   an invitation is mailed (the invitation is stored first); one line starts
+   `doorward: mail settings failed: `.
+9. `a_mail_failure_record_that_cannot_be_written_writes_one_line`: the SMTP port refuses, and
+   the `activity` table is renamed away while the failure is recorded; one line starts
+   `doorward: mail failure record failed: `.
+10. `a_database_error_on_the_combined_endpoint_writes_one_line`: a session-style upstream on
+    `/mcp`; after the session starts, `upstream_sessions` is renamed away and one tool call
+    is made: exactly one line starts `doorward: upstream sessions failed: ` and none says
+    `no connection`. It is red before the change, since a second line says `no connection`.

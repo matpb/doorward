@@ -5,7 +5,7 @@ use std::time::Duration;
 use common::admin::{self, ServerSpec};
 use common::client::Page;
 use common::mail::{Fail, link_with_prefix};
-use common::upstream::{FakeUpstream, Mode, UpstreamOptions};
+use common::upstream::{FakeUpstream, Generation, Mode, UpstreamOptions};
 use common::world::{OWNER_EMAIL, PASSWORD, SECRET_HEADER, World, secret_for};
 use serde_json::json;
 use time::OffsetDateTime;
@@ -745,6 +745,37 @@ async fn a_refused_call_says_why() {
         detail_for("nope"),
         "not in the tool list",
         "a call to a name outside the tool list must say so"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_header_refusal_says_so() {
+    let w = World::start().await;
+    let bob = w.user(BOB).await;
+    let options = UpstreamOptions {
+        generation: Generation::Stateless,
+        mode: Mode::HeaderKeyed,
+        ..UpstreamOptions::default()
+    };
+    let (_up, id) = w.upstream("demo", options).await;
+    w.grant(BOB, &[id.as_str()]).await;
+    let tokens = w.token(&bob, "mcp").await;
+    let mcp = w.stateless_mcp("mcp", &tokens);
+    let reply = mcp.call_tool("demo__echo", json!({"text": "hi"})).await;
+    assert_eq!(
+        reply.error_code(),
+        Some(-32602),
+        "a call the header check refuses must be refused as unknown"
+    );
+    let rows = admin::activity_with_details(&w.owner, None, None).await;
+    let detail = rows
+        .iter()
+        .find(|(row, _)| row.kind == "tool_call" && row.server == "demo" && row.tool == "echo")
+        .map(|(_, detail)| detail.clone())
+        .unwrap_or_else(|| panic!("the refused call must have a row, rows were {rows:?}"));
+    assert_eq!(
+        detail, "the request headers do not match the call",
+        "a call the header check refuses must say the headers do not match the call"
     );
 }
 

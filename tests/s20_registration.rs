@@ -610,3 +610,23 @@ async fn the_oldest_unused_registration_gives_way_at_the_bound() {
         "a registration that completed an authorization must stay known after four more"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_attempts_table_has_an_index_on_time() {
+    let w = World::start().await;
+    let conn = rusqlite::Connection::open(w.gw.db_path()).expect("open the database");
+    let mut statement = conn
+        .prepare("EXPLAIN QUERY PLAN DELETE FROM dcr_attempts WHERE at < 1")
+        .expect("prepare the plan");
+    let details: Vec<String> = statement
+        .query_map([], |row| row.get::<_, String>(3))
+        .expect("run the plan")
+        .collect::<Result<_, _>>()
+        .expect("read the plan rows");
+    assert!(
+        details
+            .iter()
+            .any(|detail| detail.contains("dcr_attempts_at")),
+        "the clean-up of registration attempts by time must use the index dcr_attempts_at, plan was {details:?}"
+    );
+}

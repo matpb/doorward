@@ -336,16 +336,239 @@ async fn a_server_path_answer_is_not_returned_after_access_was_lost() {
         .expect("the delayed call must return within 5 seconds")
         .expect("the call task must not panic");
     assert_eq!(
+        reply.status, 200,
+        "a tools/call whose access was lost must be answered 200 as an unknown tool, as /mcp answers"
+    );
+    assert_eq!(
+        reply.error_code(),
+        Some(-32602),
+        "a tools/call whose access was lost must answer -32602"
+    );
+    assert_eq!(
+        reply.error_message().as_deref(),
+        Some("Unknown tool: echo"),
+        "a tools/call whose access was lost must say the tool is unknown"
+    );
+    assert!(
+        !reply.body.contains("called: echo"),
+        "the upstream's answer must not be returned after bob was disabled"
+    );
+    let rows = admin::activity_with_details(&w.owner, None, None).await;
+    let calls: Vec<_> = rows
+        .iter()
+        .filter(|(row, _)| row.kind == "tool_call" && row.tool == "echo")
+        .collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "the lost call must write exactly one activity row, rows were {rows:?}"
+    );
+    assert_eq!(
+        calls[0].0.outcome, "refused",
+        "the lost call's row must be refused"
+    );
+    assert_eq!(
+        calls[0].1, "access was lost",
+        "the lost call's row must say access was lost"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lost_access_on_another_method_gets_the_challenge() {
+    let w = World::start().await;
+    let slow = UpstreamOptions {
+        mode: Mode::SlowListing { millis: 1500 },
+        ..UpstreamOptions::default()
+    };
+    let (_upstream, demo) = w.upstream("demo", slow).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[demo.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let mcp = Arc::new(w.session_mcp("demo", &tokens));
+    assert_eq!(
+        mcp.initialize().await.status,
+        200,
+        "bob's session must start"
+    );
+    let bob_id = w.user_id(BOB).await;
+    let listing = {
+        let mcp = mcp.clone();
+        tokio::spawn(async move { mcp.list_tools().await })
+    };
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let page = admin::user_action(&w.owner, &bob_id, "disable").await;
+    assert_eq!(page.status, 303, "disabling bob must answer 303");
+    let reply = tokio::time::timeout(Duration::from_secs(5), listing)
+        .await
+        .expect("the delayed listing must return within 5 seconds")
+        .expect("the listing task must not panic");
+    assert_eq!(
         reply.status, 401,
-        "a call whose access was lost must get the 401 a new request would get"
+        "a tools/list whose access was lost must get the 401 challenge"
     );
     assert!(
         reply.headers.contains_key("www-authenticate"),
         "the 401 must carry the bearer challenge"
     );
-    assert!(
-        !reply.body.contains("called: echo"),
-        "the upstream's answer must not be returned after bob was disabled"
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_that_expires_during_a_call_still_gets_its_answer() {
+    let w = World::start().await;
+    let slow = UpstreamOptions {
+        mode: Mode::Delayed { millis: 1500 },
+        ..UpstreamOptions::default()
+    };
+    let (upstream, demo) = w.upstream("demo", slow).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[demo.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let mcp = Arc::new(w.session_mcp("demo", &tokens));
+    assert_eq!(
+        mcp.initialize().await.status,
+        200,
+        "bob's session must start"
+    );
+    let call = {
+        let mcp = mcp.clone();
+        tokio::spawn(async move { mcp.call_tool("echo", json!({"text": "hi"})).await })
+    };
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    w.gw.clock.advance(time::Duration::hours(2));
+    let reply = tokio::time::timeout(Duration::from_secs(5), call)
+        .await
+        .expect("the delayed call must return within 5 seconds")
+        .expect("the call task must not panic");
+    assert_eq!(
+        reply.status, 200,
+        "a call whose token expired while it ran must still get the upstream's answer"
+    );
+    assert_eq!(
+        reply.text().as_deref(),
+        Some("called: echo"),
+        "the upstream's answer must be returned"
+    );
+    assert_eq!(
+        upstream.rpc_count("tools/call"),
+        1,
+        "the upstream must see the call once"
+    );
+    assert_one_ok_call(&w, "echo", "demo").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_that_expires_during_a_combined_call_still_gets_its_answer() {
+    let w = World::start().await;
+    let slow = UpstreamOptions {
+        mode: Mode::Delayed { millis: 1500 },
+        ..UpstreamOptions::default()
+    };
+    let (upstream, demo) = w.upstream("demo", slow).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[demo.as_str()]).await;
+    let tokens = w.token(&bob, "mcp").await;
+    let mcp = Arc::new(w.session_mcp("mcp", &tokens));
+    assert_eq!(
+        mcp.initialize().await.status,
+        200,
+        "bob's session must start"
+    );
+    let call = {
+        let mcp = mcp.clone();
+        tokio::spawn(async move { mcp.call_tool("demo__echo", json!({"text": "hi"})).await })
+    };
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    w.gw.clock.advance(time::Duration::hours(2));
+    let reply = tokio::time::timeout(Duration::from_secs(5), call)
+        .await
+        .expect("the delayed call must return within 5 seconds")
+        .expect("the call task must not panic");
+    assert_eq!(
+        reply.status, 200,
+        "a combined call whose token expired while it ran must still get the upstream's answer"
+    );
+    assert_eq!(
+        reply.text().as_deref(),
+        Some("called: echo"),
+        "the upstream's answer must be returned"
+    );
+    assert_eq!(
+        upstream.rpc_count("tools/call"),
+        1,
+        "the upstream must see the call once"
+    );
+    assert_one_ok_call(&w, "echo", "demo").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_that_expires_during_a_streamed_call_still_gets_its_answer() {
+    let w = World::start().await;
+    let slow = UpstreamOptions {
+        mode: Mode::Progress {
+            steps: 5,
+            interval_ms: 300,
+        },
+        ..UpstreamOptions::default()
+    };
+    let (upstream, demo) = w.upstream("demo", slow).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[demo.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let mcp = Arc::new(w.session_mcp("demo", &tokens));
+    assert_eq!(
+        mcp.initialize().await.status,
+        200,
+        "bob's session must start"
+    );
+    let call = {
+        let mcp = mcp.clone();
+        tokio::spawn(async move { mcp.call_tool("echo", json!({"text": "hi"})).await })
+    };
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    w.gw.clock.advance(time::Duration::hours(2));
+    let reply = tokio::time::timeout(Duration::from_secs(10), call)
+        .await
+        .expect("the streamed call must end within 10 seconds")
+        .expect("the call task must not panic");
+    let progress = reply
+        .events
+        .iter()
+        .filter(|event| {
+            event.data.get("method").and_then(Value::as_str) == Some("notifications/progress")
+        })
+        .count();
+    assert_eq!(
+        progress, 5,
+        "every progress event must reach the client, got {progress}"
+    );
+    assert_eq!(
+        reply.text().as_deref(),
+        Some("called: echo"),
+        "the streamed answer must reach the client"
+    );
+    assert_eq!(
+        upstream.rpc_count("tools/call"),
+        1,
+        "the upstream must see the call once"
+    );
+    assert_one_ok_call(&w, "echo", "demo").await;
+}
+
+/// Asserts one activity row for `tool` on `server` with outcome ok.
+async fn assert_one_ok_call(w: &World, tool: &str, server: &str) {
+    let rows = admin::activity(&w.owner, None, None).await;
+    let calls: Vec<_> = rows
+        .iter()
+        .filter(|row| row.kind == "tool_call" && row.tool == tool && row.server == server)
+        .collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "the call must write exactly one activity row, rows were {rows:?}"
+    );
+    assert_eq!(
+        calls[0].outcome, "ok",
+        "the call that expired during its run must be recorded as ok"
     );
 }
 

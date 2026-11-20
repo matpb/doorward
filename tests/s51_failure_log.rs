@@ -10,7 +10,7 @@ use common::admin::{self, ServerSpec};
 use common::binary::{Run, free_port, write_file};
 use common::client::{OAuthApp, TestClient, pkce};
 use common::mcp::McpClient;
-use common::upstream::{FakeUpstream, UpstreamOptions};
+use common::upstream::{FakeUpstream, Generation, UpstreamOptions};
 use rusqlite::Connection;
 use serde_json::json;
 use tempfile::TempDir;
@@ -418,5 +418,336 @@ async fn an_unreachable_upstream_writes_one_line() {
         gateway.lines_since(before),
         vec!["doorward: upstream demo failed: no connection".to_string()],
         "one tool call to an unreachable upstream must write exactly that one line"
+    );
+}
+
+/// The phrase of a server whose stored secret no key opens.
+const SECRET_PHRASE: &str = "the stored secret cannot be opened";
+
+/// Replaces the stored secret of server `id` by text that no key opens, as a restored database with
+/// a lost key file would hold.
+fn break_secret(db: &Path, id: i64) {
+    let conn = Connection::open(db).expect("open the database");
+    conn.busy_timeout(BUSY).expect("set the busy timeout");
+    conn.execute(
+        "UPDATE servers SET secret_header_value = 'not a sealed value' WHERE id = ?1",
+        [id],
+    )
+    .expect("replace the stored secret");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_secret_writes_one_line_and_blames_no_upstream() {
+    let gateway = Spawned::start();
+    let owner = gateway.owner().await;
+    let secret = "s3cret-value";
+    let upstream = FakeUpstream::start(UpstreamOptions {
+        require_header: Some(("x-upstream-secret".to_owned(), secret.to_owned())),
+        ..UpstreamOptions::default()
+    })
+    .await;
+    let url = upstream.url();
+    let id = admin::add_server(
+        &owner,
+        &ServerSpec {
+            name: "demo",
+            slug: "demo",
+            upstream_url: &url,
+            secret: Some(("x-upstream-secret", secret)),
+            pass_resources: false,
+            pass_prompts: false,
+        },
+    )
+    .await;
+    let page = admin::refresh_tools(&owner, &id).await;
+    assert_eq!(
+        page.status, 303,
+        "the tool list of demo must be fetched while its secret is intact"
+    );
+    let owner_id = admin::user_id(&owner, EMAIL)
+        .await
+        .expect("the owner must be listed on the users page");
+    let page = admin::assign(&owner, &owner_id, &[id.as_str()]).await;
+    assert_eq!(page.status, 303, "the owner must be assigned to demo");
+    let server_id: i64 = id.parse().expect("a numeric server id");
+    break_secret(&gateway.db, server_id);
+
+    let registered = owner.register(CLIENT_NAME, &[LOOPBACK_CALLBACK]).await;
+    assert_eq!(registered.status, 201, "the probe client must register");
+    let client_id = registered
+        .json()
+        .and_then(|json| json["client_id"].as_str().map(str::to_owned))
+        .expect("registration answers with a client_id");
+    let app = OAuthApp {
+        client_id,
+        redirect_uri: LOOPBACK_CALLBACK.to_owned(),
+    };
+    let slug_resource = format!("{}/demo", gateway.base);
+    let combined_resource = format!("{}/mcp", gateway.base);
+    let slug_tokens = owner.connect(&app, &slug_resource).await;
+    let combined_tokens = owner.connect(&app, &combined_resource).await;
+    let line = format!("doorward: server demo failed: {SECRET_PHRASE}");
+
+    let before = gateway.lines().len();
+    let slug = McpClient::stateless(&slug_resource, Some(&slug_tokens.access_token));
+    let reply = slug.call_tool("echo", json!({"text": "hi"})).await;
+    assert_eq!(
+        reply.status, 502,
+        "an unreadable secret must answer 502 on /demo"
+    );
+    assert_eq!(
+        gateway.lines_since(before),
+        vec![line.clone()],
+        "a tool call on /demo with an unreadable secret must write exactly that one line"
+    );
+    let rows = admin::activity_with_details(&owner, None, None).await;
+    let calls: Vec<_> = rows
+        .iter()
+        .filter(|(row, _)| row.kind == "tool_call" && row.server == "demo" && row.tool == "echo")
+        .collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "a tool call on /demo with an unreadable secret must leave one activity row, rows were {rows:?}"
+    );
+    assert_eq!(
+        calls[0].0.outcome, "unavailable",
+        "the row of that call must be unavailable"
+    );
+    assert_eq!(
+        calls[0].1, SECRET_PHRASE,
+        "the row of that call must carry the phrase of the cause as its detail"
+    );
+
+    let before = gateway.lines().len();
+    let combined = McpClient::stateless(&combined_resource, Some(&combined_tokens.access_token));
+    let reply = combined
+        .call_tool("demo__echo", json!({"text": "hi"}))
+        .await;
+    assert_eq!(
+        reply.status, 502,
+        "an unreadable secret must answer 502 on /mcp"
+    );
+    assert_eq!(
+        gateway.lines_since(before),
+        vec![line],
+        "a tool call on /mcp with an unreadable secret must write exactly that one line"
+    );
+
+    let conn = Connection::open(&gateway.db).expect("open the database");
+    let refresh_error: Option<String> = conn
+        .query_row(
+            "SELECT catalog_error FROM servers WHERE id = ?1",
+            [server_id],
+            |row| row.get(0),
+        )
+        .expect("read the stored refresh error");
+    assert!(
+        !refresh_error.unwrap_or_default().contains("did not answer"),
+        "a cause on the gateway's side must not be stored as the upstream did not answer"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_broken_stored_hash_writes_one_line() {
+    let gateway = Spawned::start();
+    gateway.owner().await;
+    let conn = Connection::open(&gateway.db).expect("open the database");
+    conn.execute(
+        "UPDATE users SET password_hash = 'not a hash' WHERE email = ?1",
+        [EMAIL],
+    )
+    .expect("replace the stored hash");
+    let browser = TestClient::new(&gateway.base);
+    let form = browser.get("/login").await;
+    let csrf = form.csrf().expect("the sign-in form carries a csrf field");
+    let before = gateway.lines().len();
+    let page = browser
+        .post(
+            "/login",
+            &[
+                ("csrf", csrf.as_str()),
+                ("req", ""),
+                ("email", EMAIL),
+                ("password", PASSWORD),
+            ],
+        )
+        .await;
+    assert_eq!(
+        page.status, 401,
+        "a stored hash that cannot be read must refuse the sign-in as a wrong password"
+    );
+    assert_eq!(
+        page.error().as_deref(),
+        Some("Wrong email or password."),
+        "the sign-in answer must be the usual refusal"
+    );
+    assert_eq!(
+        gateway.lines_since(before),
+        vec!["doorward: password check failed: the stored hash cannot be read".to_string()],
+        "a stored hash that cannot be read must write exactly that one line, without the email"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mail_settings_read_failure_writes_one_line() {
+    let gateway = Spawned::start();
+    let owner = gateway.owner().await;
+    let csrf = owner
+        .get("/admin/invitations")
+        .await
+        .csrf()
+        .expect("the invitations page carries a csrf token");
+    let before = gateway.lines().len();
+    hide_table(&gateway.db, "settings");
+    let page = owner
+        .post(
+            "/admin/invitations",
+            &[
+                ("csrf", csrf.as_str()),
+                ("email", "recipient@example.com"),
+                ("role", "user"),
+            ],
+        )
+        .await;
+    show_table(&gateway.db, "settings");
+    let added = gateway.lines_since(before);
+    assert_eq!(
+        added.len(),
+        1,
+        "a mail settings read that fails must write exactly one line; stderr:\n{:?}",
+        gateway.lines()
+    );
+    assert!(
+        added[0].starts_with("doorward: mail settings failed: "),
+        "the line must name the mail settings; line: {}",
+        added[0]
+    );
+    assert_eq!(
+        page.status, 200,
+        "the invitation that could not be mailed answers with the link page, as before"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mail_failure_record_that_cannot_be_written_writes_one_line() {
+    let gateway = Spawned::start();
+    let owner = gateway.owner().await;
+    let closed = free_port();
+    let page = admin::mail_smtp(
+        &owner,
+        "gateway@example.com",
+        "127.0.0.1",
+        closed,
+        "mailer",
+        "mail-password",
+        "off",
+    )
+    .await;
+    assert_eq!(page.status, 303, "the mail settings must be saved");
+    let csrf = owner
+        .get("/admin/mail")
+        .await
+        .csrf()
+        .expect("the mail page carries a csrf token");
+    let before = gateway.lines().len();
+    hide_table(&gateway.db, "activity");
+    let page = owner
+        .post(
+            "/admin/mail/test",
+            &[("csrf", csrf.as_str()), ("to", "recipient@example.com")],
+        )
+        .await;
+    show_table(&gateway.db, "activity");
+    let added = gateway.lines_since(before);
+    assert_eq!(
+        added.len(),
+        1,
+        "a failed mail whose failure record cannot be written must write exactly one line; stderr:\n{:?}",
+        gateway.lines()
+    );
+    assert!(
+        added[0].starts_with("doorward: mail failure record failed: "),
+        "the line must name the failure record; line: {}",
+        added[0]
+    );
+    assert_eq!(
+        page.status, 200,
+        "the test send answers with the mail page, as before"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_database_error_on_the_combined_endpoint_writes_one_line() {
+    let gateway = Spawned::start();
+    let owner = gateway.owner().await;
+    let upstream = FakeUpstream::start(UpstreamOptions {
+        generation: Generation::Session,
+        ..UpstreamOptions::default()
+    })
+    .await;
+    let url = upstream.url();
+    let id = admin::add_server(
+        &owner,
+        &ServerSpec {
+            name: "demo",
+            slug: "demo",
+            upstream_url: &url,
+            secret: None,
+            pass_resources: false,
+            pass_prompts: false,
+        },
+    )
+    .await;
+    let page = admin::refresh_tools(&owner, &id).await;
+    assert_eq!(page.status, 303, "the tool list of demo must be fetched");
+    let owner_id = admin::user_id(&owner, EMAIL)
+        .await
+        .expect("the owner must be listed on the users page");
+    let page = admin::assign(&owner, &owner_id, &[id.as_str()]).await;
+    assert_eq!(page.status, 303, "the owner must be assigned to demo");
+    let registered = owner.register(CLIENT_NAME, &[LOOPBACK_CALLBACK]).await;
+    assert_eq!(registered.status, 201, "the probe client must register");
+    let client_id = registered
+        .json()
+        .and_then(|json| json["client_id"].as_str().map(str::to_owned))
+        .expect("registration answers with a client_id");
+    let app = OAuthApp {
+        client_id,
+        redirect_uri: LOOPBACK_CALLBACK.to_owned(),
+    };
+    let resource = format!("{}/mcp", gateway.base);
+    let tokens = owner.connect(&app, &resource).await;
+    let mcp = McpClient::session(&resource, Some(&tokens.access_token));
+    assert_eq!(
+        mcp.initialize().await.status,
+        200,
+        "the session must start before the table is hidden"
+    );
+
+    let before = gateway.lines().len();
+    hide_table(&gateway.db, "upstream_sessions");
+    let reply = mcp.call_tool("demo__echo", json!({"text": "hi"})).await;
+    show_table(&gateway.db, "upstream_sessions");
+    let added = gateway.lines_since(before);
+    assert_eq!(
+        added.len(),
+        1,
+        "a database error on /mcp must write exactly one line; stderr:\n{:?}",
+        gateway.lines()
+    );
+    assert!(
+        added[0].starts_with("doorward: upstream sessions failed: "),
+        "the line must be the database one; line: {}",
+        added[0]
+    );
+    assert!(
+        !added[0].contains("no connection"),
+        "a database error must not be reported as no connection; line: {}",
+        added[0]
+    );
+    assert_ne!(
+        reply.status, 0,
+        "the caller must get an answer while the database fails"
     );
 }

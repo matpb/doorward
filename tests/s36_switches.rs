@@ -3,7 +3,7 @@ mod common;
 use common::admin::{self, ServerSpec};
 use common::client::Tokens;
 use common::mcp::McpReply;
-use common::upstream::{FakeUpstream, UpstreamOptions};
+use common::upstream::{FakeUpstream, Mode, UpstreamOptions};
 use common::world::{SECRET_HEADER, World, secret_for};
 use serde_json::{Value, json};
 
@@ -146,6 +146,41 @@ async fn capabilities_are_removed_while_off() {
     assert!(
         caps.get("prompts").is_none(),
         "server/discover must not advertise prompts while the switch is off"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn completions_are_not_advertised_with_both_switches_off() {
+    let w = World::start().await;
+    let bob = w.user("bob@example.com").await;
+    let options = UpstreamOptions {
+        mode: Mode::DeclaresCompletions,
+        ..UpstreamOptions::default()
+    };
+    let (upstream, id) = w.upstream("demo", options).await;
+    w.grant("bob@example.com", &[id.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let init = w.session_mcp("demo", &tokens).initialize().await;
+    assert_eq!(init.status, 200, "initialize must be relayed");
+    assert!(
+        capabilities(&init).get("completions").is_none(),
+        "initialize must not advertise completions while both switches are off"
+    );
+    let discover = w.stateless_mcp("demo", &tokens).discover().await;
+    assert_eq!(discover.status, 200, "server/discover must be relayed");
+    assert!(
+        capabilities(&discover).get("completions").is_none(),
+        "server/discover must not advertise completions while both switches are off"
+    );
+    set_switches(&w, &upstream, &id, true, false).await;
+    let init = w.session_mcp("demo", &tokens).initialize().await;
+    assert_eq!(
+        init.status, 200,
+        "initialize must be relayed with a switch on"
+    );
+    assert!(
+        capabilities(&init).get("completions").is_some(),
+        "initialize must keep completions while the resources switch is on"
     );
 }
 

@@ -988,4 +988,116 @@ async fn a_document_client_with_a_loopback_redirect_is_shown_as_a_claim() {
         !consent.body.contains("This app runs on your computer."),
         "the consent page must not use the old local-app sentence"
     );
+    assert_eq!(
+        data(&consent, "data-client-verified").as_deref(),
+        Some("no"),
+        "a document client on a loopback redirect must not be marked verified"
+    );
+}
+
+/// The shipped private-scheme redirect of Cursor, which any installed program can claim.
+const CURSOR_CALLBACK: &str = "cursor://anysphere.cursor-mcp/oauth/callback";
+/// The sentence a private-scheme redirect carries on the consent page.
+const PRIVATE_SENTENCE: &str =
+    "The sign-in will be handed to whatever program on this computer opens addresses of this kind.";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_document_client_on_a_private_scheme_is_shown_as_a_claim() {
+    let (w, bob, _upstream) = bob_on_demo().await;
+    w.gw.cimd().put(APP_ID, APP_NAME, &[CURSOR_CALLBACK]);
+    let app = OAuthApp {
+        client_id: APP_ID.into(),
+        redirect_uri: CURSOR_CALLBACK.into(),
+    };
+    let consent = consent_of(&bob, &app, &w.resource("demo")).await;
+    assert_eq!(
+        consent.status, 200,
+        "the consent page must load for a document client on a private scheme"
+    );
+    assert_eq!(
+        consent.count(r#"p[data-client="document-loopback"]"#),
+        1,
+        "a document client on a private scheme must have exactly one claim line"
+    );
+    assert_eq!(
+        consent
+            .text(r#"p[data-client="document-loopback"]"#)
+            .as_deref(),
+        Some(
+            "Says it is Example Client from client.example.com. Any program on this computer can use that description."
+        ),
+        "the claim line must present the name as a claim from the host"
+    );
+    assert_eq!(
+        consent.count(r#"p[data-client="document"]"#),
+        0,
+        "a private scheme must not be shown as a publisher"
+    );
+    assert_eq!(
+        consent.text("p.local-app").as_deref(),
+        Some(PRIVATE_SENTENCE),
+        "a private scheme must carry the private-scheme sentence"
+    );
+    assert_eq!(
+        data(&consent, "data-client-verified").as_deref(),
+        Some("no"),
+        "a document client on a private scheme must not be marked verified"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_registered_client_on_a_private_scheme_gets_the_local_sentence() {
+    let (w, bob, _upstream) = bob_on_demo().await;
+    let registered = w
+        .client()
+        .register("Cursor Probe", &[CURSOR_CALLBACK])
+        .await;
+    assert_eq!(
+        registered.status, 201,
+        "registering the client must answer 201"
+    );
+    let client_id = registered
+        .json()
+        .and_then(|json| json["client_id"].as_str().map(str::to_string))
+        .expect("the registration answer must carry a client_id");
+    let app = OAuthApp {
+        client_id,
+        redirect_uri: CURSOR_CALLBACK.into(),
+    };
+    let consent = consent_of(&bob, &app, &w.resource("demo")).await;
+    assert_eq!(
+        consent.status, 200,
+        "the consent page must load for a registered client on a private scheme"
+    );
+    assert_eq!(
+        consent.text("p.local-app").as_deref(),
+        Some(PRIVATE_SENTENCE),
+        "a registered client on a private scheme must carry the private-scheme sentence"
+    );
+    assert_eq!(
+        data(&consent, "data-client-verified").as_deref(),
+        Some("no"),
+        "a registered client must not be marked verified"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_document_that_does_not_list_the_redirect_shows_the_error_page() {
+    // The reason is written to standard error, which an in-process test cannot read.
+    let (w, bob, _upstream) = bob_on_demo().await;
+    w.gw.cimd().put(APP_ID, APP_NAME, &[CLAUDE_CALLBACK]);
+    let consent = consent_of(&bob, &w.app(), &w.resource("demo")).await;
+    assert_eq!(
+        consent.status, 400,
+        "a document that does not list the redirect must answer 400"
+    );
+    assert_eq!(
+        consent.kind().as_deref(),
+        Some("error"),
+        "a document that does not list the redirect must show the error page"
+    );
+    assert!(
+        consent.location().is_none(),
+        "the error page must not redirect"
+    );
 }

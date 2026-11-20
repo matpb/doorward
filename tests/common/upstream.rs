@@ -101,6 +101,20 @@ pub enum Mode {
     /// tools/call answers with `isError` true.
     #[allow(dead_code)]
     ToolErrors,
+    /// tools/list answers 200 application/json after `millis` milliseconds.
+    #[allow(dead_code)]
+    SlowListing {
+        millis: u64,
+    },
+    /// tools/list is accepted and never answered; every other method is normal.
+    #[allow(dead_code)]
+    HangListing,
+    /// Every tool's input schema carries an x-mcp-header key.
+    #[allow(dead_code)]
+    HeaderKeyed,
+    /// initialize and server/discover declare a completions capability.
+    #[allow(dead_code)]
+    DeclaresCompletions,
 }
 
 #[derive(Clone, Debug)]
@@ -587,7 +601,7 @@ fn initialize(state: &mut Store, options: &UpstreamOptions, id: Value, params: &
         "id": id,
         "result": {
             "protocolVersion": version,
-            "capabilities": with_tasks(options, if matches!(options.mode, Mode::DeclaresFlags) {
+            "capabilities": with_declared(options, if matches!(options.mode, Mode::DeclaresFlags) {
                 declared_capabilities()
             } else {
                 json!({"tools": {"listChanged": false}, "resources": {}, "prompts": {}})
@@ -621,6 +635,18 @@ fn answer(
     params: &Value,
     stateless: bool,
 ) -> Reply {
+    if method == "tools/list" {
+        match &options.mode {
+            Mode::HangListing => return Reply::Hang,
+            Mode::SlowListing { millis } => {
+                return Reply::Delayed {
+                    wait: Duration::from_millis(*millis),
+                    message: dispatch(id, method, params, options, stateless),
+                };
+            }
+            _ => {}
+        }
+    }
     if method == "tools/call" {
         match &options.mode {
             Mode::Hang => return Reply::Hang,
@@ -694,7 +720,7 @@ fn outcome(
     let mut result = match method {
         "server/discover" => json!({
             "supportedVersions": supported_versions(options.generation),
-            "capabilities": with_tasks(options, if matches!(options.mode, Mode::DeclaresFlags) {
+            "capabilities": with_declared(options, if matches!(options.mode, Mode::DeclaresFlags) {
                 declared_capabilities()
             } else {
                 json!({"tools": {}, "resources": {}, "prompts": {}})
@@ -768,23 +794,31 @@ fn normalize_name(name: &str) -> String {
 }
 
 fn tools_json(options: &UpstreamOptions) -> Vec<Value> {
+    let keyed = matches!(options.mode, Mode::HeaderKeyed);
     options
         .tools
         .iter()
         .map(|name| {
+            let mut schema = json!({"type": "object", "properties": {"text": {"type": "string"}}});
+            if keyed {
+                schema["x-mcp-header"] = json!("Region");
+            }
             json!({
                 "name": name,
                 "description": "fake tool",
-                "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}},
+                "inputSchema": schema,
             })
         })
         .collect()
 }
 
-/// `capabilities` with a tasks member added when the mode declares tasks.
-fn with_tasks(options: &UpstreamOptions, mut capabilities: Value) -> Value {
+/// `capabilities` with the tasks or completions member added when the mode declares it.
+fn with_declared(options: &UpstreamOptions, mut capabilities: Value) -> Value {
     if matches!(options.mode, Mode::DeclaresTasks) {
         capabilities["tasks"] = json!({"list": {}, "cancel": {}});
+    }
+    if matches!(options.mode, Mode::DeclaresCompletions) {
+        capabilities["completions"] = json!({});
     }
     capabilities
 }

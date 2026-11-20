@@ -11,6 +11,7 @@ const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
 const CAROL: &str = "carol@example.com";
 const DAVE: &str = "dave@example.com";
+const ERIN: &str = "erin@example.com";
 const ELEVEN: &str = "abcdefghijk";
 const TWELVE: &str = "abcdefghijkl";
 const SUBJECT: &str = "You are invited to Doorward";
@@ -417,6 +418,9 @@ async fn removed_admin_takes_invitations_along(change: &str) {
     let page = admin::invite(&carol, DAVE, "user").await;
     assert_eq!(page.status, 303, "{change}: carol must invite dave");
     let dave_link = invitation_link(&w, &invitation_mail(&w, DAVE).await);
+    let page = admin::invite(&w.owner, ERIN, "user").await;
+    assert_eq!(page.status, 303, "{change}: the owner must invite erin");
+    let erin_link = invitation_link(&w, &invitation_mail(&w, ERIN).await);
     let page = w.client().accept_invite(&alice_link, PASSWORD).await;
     assert_eq!(page.status, 303, "{change}: alice's link must accept her");
 
@@ -464,6 +468,11 @@ async fn removed_admin_takes_invitations_along(change: &str) {
     assert_eq!(
         page.status, 303,
         "{change}: alice, who accepted, must still sign in"
+    );
+    let page = w.client().get(&erin_link).await;
+    assert_eq!(
+        page.status, 200,
+        "{change}: the owner's invitation to erin must still open, the change must not take it along"
     );
 }
 

@@ -1,5 +1,8 @@
 mod common;
 
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use base64::Engine as _;
 use common::admin;
 use common::client::Tokens;
@@ -713,6 +716,152 @@ async fn unknown_tool_names_do_not_make_the_gateway_refetch_the_list() {
         upstream.rpc_count("tools/list"),
         burst + 1,
         "a miss 31 seconds after the last refresh must refresh the list once more"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ten_misses_at_once_cost_one_list() {
+    let w = World::start().await;
+    let slow = UpstreamOptions {
+        mode: Mode::SlowListing { millis: 1000 },
+        ..UpstreamOptions::default()
+    };
+    let (demo_up, demo) = w.upstream("demo", slow.clone()).await;
+    let (other_up, other) = w.upstream("other", slow).await;
+    let bob = w.user("bob@example.com").await;
+    w.grant("bob@example.com", &[demo.as_str(), other.as_str()])
+        .await;
+    let slug_tokens = w.token(&bob, "demo").await;
+    let combined_tokens = w.token(&bob, "mcp").await;
+    let slug_client = Arc::new(w.stateless_mcp("demo", &slug_tokens));
+    let combined_client = Arc::new(w.stateless_mcp("mcp", &combined_tokens));
+    demo_up.clear();
+    other_up.clear();
+    let mut tasks = Vec::new();
+    for n in 0..10 {
+        let client = slug_client.clone();
+        tasks.push(tokio::spawn(async move {
+            client.call_tool(&format!("nope-{n}"), json!({})).await
+        }));
+        let client = combined_client.clone();
+        tasks.push(tokio::spawn(async move {
+            client
+                .call_tool(&format!("other__nope-{n}"), json!({}))
+                .await
+        }));
+    }
+    for task in tasks {
+        let reply = task.await.expect("the call task must not panic");
+        assert_eq!(
+            reply.error_code(),
+            Some(-32602),
+            "a name outside the tool list must be refused as unknown"
+        );
+    }
+    assert_eq!(
+        demo_up.rpc_count("tools/list"),
+        1,
+        "ten misses at once on /demo must cost one tools/list of demo"
+    );
+    assert_eq!(
+        other_up.rpc_count("tools/list"),
+        1,
+        "ten misses at once on /mcp must cost one tools/list of other"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hung_refresh_does_not_queue_more_refreshes() {
+    let w = World::start().await;
+    let (upstream, demo) = w.upstream("demo", UpstreamOptions::default()).await;
+    let bob = w.user("bob@example.com").await;
+    w.grant("bob@example.com", &[demo.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let client = w.stateless_mcp("demo", &tokens);
+    upstream.set_mode(Mode::HangListing);
+    client.set_timeout(Duration::from_secs(15));
+    upstream.clear();
+    let started = Instant::now();
+    let first = client.call_tool("nope-0", json!({})).await;
+    let waited = started.elapsed();
+    assert!(
+        waited < Duration::from_secs(13),
+        "a miss on a hung upstream must answer within the 10 second list limit plus a margin, it took {waited:?}"
+    );
+    assert_eq!(
+        first.error_code(),
+        Some(-32602),
+        "a miss on a hung upstream must be refused as an unknown tool"
+    );
+    for n in 1..3 {
+        let reply = client.call_tool(&format!("nope-{n}"), json!({})).await;
+        assert_eq!(
+            reply.error_code(),
+            Some(-32602),
+            "a miss within the cooldown must be refused as an unknown tool"
+        );
+    }
+    assert_eq!(
+        upstream.rpc_count("tools/list"),
+        1,
+        "three misses in a row must cost one tools/list within the cooldown"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clock_stepped_back_does_not_hold_a_refresh_off() {
+    let w = World::start().await;
+    let (upstream, demo) = w.upstream("demo", UpstreamOptions::default()).await;
+    let bob = w.user("bob@example.com").await;
+    w.grant("bob@example.com", &[demo.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let client = w.stateless_mcp("demo", &tokens);
+    upstream.clear();
+    let first = client.call_tool("nope-0", json!({})).await;
+    assert_eq!(first.error_code(), Some(-32602), "a miss must be refused");
+    assert_eq!(
+        upstream.rpc_count("tools/list"),
+        1,
+        "the first miss must refresh the list once"
+    );
+    w.gw.clock.advance(time::Duration::seconds(-1));
+    let second = client.call_tool("nope-1", json!({})).await;
+    assert_eq!(second.error_code(), Some(-32602), "a miss must be refused");
+    assert_eq!(
+        upstream.rpc_count("tools/list"),
+        2,
+        "a clock stepped back a second must not hold the next refresh off"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refresh_goes_on_when_the_client_leaves() {
+    let w = World::start().await;
+    let slow = UpstreamOptions {
+        mode: Mode::SlowListing { millis: 1000 },
+        ..UpstreamOptions::default()
+    };
+    let (upstream, demo) = w.upstream("demo", slow).await;
+    let bob = w.user("bob@example.com").await;
+    w.grant("bob@example.com", &[demo.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let client = w.stateless_mcp("demo", &tokens);
+    upstream.set_tools(&["echo", "search", "delete_db", "fresh"]);
+    client.set_timeout(Duration::from_millis(300));
+    let _left = client.call_tool("fresh", json!({})).await;
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    client.set_timeout(Duration::from_secs(10));
+    let reply = client.call_tool("fresh", json!({"text": "hi"})).await;
+    assert_eq!(
+        reply.error_code(),
+        None,
+        "a tool that the refresh of a client who left has listed must not be refused, got {:?}",
+        reply.error_message()
+    );
+    assert_eq!(
+        reply.text().as_deref(),
+        Some("called: fresh"),
+        "a tool that the refresh of a client who left has listed must be callable"
     );
 }
 

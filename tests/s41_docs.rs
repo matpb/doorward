@@ -183,3 +183,84 @@ fn the_readme_config_passes_the_start_check() {
         "the README config must start: it lists a proxy in trusted_proxies"
     );
 }
+
+/// The text of a markdown section: from its heading to the next heading of the same or a higher level.
+fn section(docs: &str, heading: &str) -> String {
+    let mut inside = false;
+    let mut text = String::new();
+    for line in docs.lines() {
+        if line.starts_with('#') {
+            if inside {
+                break;
+            }
+            inside = line.trim_start_matches('#').trim() == heading;
+        }
+        if inside {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    assert!(!text.is_empty(), "docs must have a section named {heading}");
+    text
+}
+
+#[test]
+fn the_unused_registrations_row_says_what_a_flood_does() {
+    const SENTENCE: &str = "A flood of registrations from many addresses can push out a client that registered but has not finished its first sign-in; it registers again on its next try.";
+    let docs = repo_file("docs/DOCKER.md");
+    assert!(
+        docs.lines().any(|line| {
+            line.starts_with('|')
+                && line.contains("DOORWARD_LIMITS_UNUSED_REGISTRATIONS")
+                && line
+                    .trim_end()
+                    .trim_end_matches('|')
+                    .trim_end()
+                    .ends_with(SENTENCE)
+        }),
+        "the row of DOORWARD_LIMITS_UNUSED_REGISTRATIONS must end with the flood sentence"
+    );
+}
+
+#[test]
+fn the_rate_limits_say_how_long_registration_attempts_are_kept() {
+    let docs = repo_file("docs/DOCKER.md");
+    let limits = section(&docs, "Rate limits");
+    assert!(
+        limits.contains("registration attempts are kept for one hour"),
+        "the rate limits section must say how long registration attempts are kept"
+    );
+}
+
+#[test]
+fn design_says_json_answers_are_buffered_and_rechecked() {
+    let design = repo_file("docs/DESIGN.md");
+    assert!(
+        !design.contains("Other responses stream through as they arrive"),
+        "docs/DESIGN.md must not say that every other response streams, since JSON answers are buffered"
+    );
+    assert!(
+        design.contains("JSON answers are buffered and re-checked"),
+        "docs/DESIGN.md must say that JSON answers are buffered and re-checked"
+    );
+}
+
+#[test]
+fn the_interface_names_the_new_phrases_and_lines() {
+    let interface = repo_file("docs/INTERFACE.md");
+    for phrase in [
+        "admission time",
+        "the stored secret cannot be opened",
+        "the request headers do not match the call",
+        "doorward: password check failed: the stored hash cannot be read",
+        "the document names another client",
+        "the document asks for a client secret",
+        "the document does not list the redirect address",
+        "The sign-in will be handed to whatever program on this computer opens addresses of this kind.",
+    ] {
+        assert!(
+            interface.contains(phrase),
+            "docs/INTERFACE.md must name {phrase:?}"
+        );
+    }
+}

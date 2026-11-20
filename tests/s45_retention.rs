@@ -1,5 +1,6 @@
 mod common;
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::admin;
@@ -186,4 +187,26 @@ async fn every_kind_of_row_is_pruned_alike() {
             "the housekeeping run must not delete rows of table {table}: {count} before, {counted_after} after"
         );
     }
+}
+
+/// The gap between two reset mails is one public constant: housekeeping must read it, not copy it.
+#[test]
+fn the_reset_gap_is_one_public_constant() {
+    let accounts = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/accounts");
+    let reset = std::fs::read_to_string(accounts.join("reset.rs")).expect("read reset.rs");
+    let housekeeping =
+        std::fs::read_to_string(accounts.join("housekeeping.rs")).expect("read housekeeping.rs");
+    assert!(
+        reset.contains("pub const REQUEST_GAP_SECONDS"),
+        "reset.rs must export the gap between reset mails as REQUEST_GAP_SECONDS"
+    );
+    assert!(
+        !housekeeping.contains("const RESET_GAP_SECONDS")
+            && !housekeeping.contains("const REQUEST_GAP_SECONDS"),
+        "housekeeping.rs must not keep its own copy of the reset gap"
+    );
+    assert!(
+        housekeeping.contains("REQUEST_GAP_SECONDS"),
+        "housekeeping.rs must use the reset gap constant of reset.rs"
+    );
 }
