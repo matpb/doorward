@@ -255,8 +255,13 @@ body[data-layout="card"] main > :last-child,
 .notice > :last-child,
 .confirm-body > :last-child,
 .side > :last-child,
+.card > p:has(+ .rows:empty) {
+  margin-bottom: 0;
+}
+
 details.provider > form:last-child {
   margin-bottom: 0;
+  padding-bottom: 1.25rem;
 }
 
 .danger-zone {
