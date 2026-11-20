@@ -1,5 +1,6 @@
 //! The gateway's HTTP client for upstream servers: one request, the relay rule, a capped body.
 
+use std::fmt;
 use std::time::Duration;
 
 use axum::body::Bytes;
@@ -8,9 +9,17 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method};
 
 use crate::app::AppState;
 use crate::db::DbError;
+use crate::report;
 use crate::servers;
 
 const USER_AGENT_VALUE: &str = concat!("doorward/", env!("CARGO_PKG_VERSION"));
+
+/// Writes the one line of a fault on the server `slug` and returns its phrase for the activity detail.
+pub fn fail(slug: &str, cause: Cause) -> String {
+    let fault = Fault(cause);
+    report::failure(&format!("upstream {slug}"), &fault);
+    fault.to_string()
+}
 
 /// What the gateway needs to contact one server.
 pub struct Target {
@@ -63,9 +72,35 @@ fn open_header(
     Ok((name, value))
 }
 
-/// Every upstream fault looks the same to the client.
-#[derive(Debug)]
-pub struct Fault;
+/// Why an upstream answer could not be used. Its phrase is the one the log and the activity row carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    NoConnection,
+    NoAnswerInTime,
+    Status(u16),
+    WrongContentType,
+    TooLarge,
+    NotJson,
+    NotMcp,
+}
+
+/// An upstream fault and its cause. The client always gets the same 502; the cause goes to the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fault(pub Cause);
+
+impl fmt::Display for Fault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Cause::NoConnection => f.write_str("no connection"),
+            Cause::NoAnswerInTime => f.write_str("no answer in time"),
+            Cause::Status(code) => write!(f, "the upstream answered {code}"),
+            Cause::WrongContentType => f.write_str("an answer of the wrong content type"),
+            Cause::TooLarge => f.write_str("an answer over the size limit"),
+            Cause::NotJson => f.write_str("an answer that is not valid JSON"),
+            Cause::NotMcp => f.write_str("an answer that is not an MCP answer"),
+        }
+    }
+}
 
 pub struct Outgoing {
     pub method: Method,
@@ -100,7 +135,9 @@ pub async fn send(
         .body(body);
     match tokio::time::timeout(time_limit(state), request.send()).await {
         Ok(Ok(response)) => Ok(response),
-        _ => Err(Fault),
+        Ok(Err(err)) if err.is_timeout() => Err(Fault(Cause::NoAnswerInTime)),
+        Ok(Err(_)) => Err(Fault(Cause::NoConnection)),
+        Err(_) => Err(Fault(Cause::NoAnswerInTime)),
     }
 }
 
@@ -117,7 +154,7 @@ pub enum Kind {
 pub fn accept(response: &reqwest::Response) -> Result<Kind, Fault> {
     let status = response.status().as_u16();
     if !matches!(status, 200 | 202 | 400 | 404 | 405) {
-        return Err(Fault);
+        return Err(Fault(Cause::Status(status)));
     }
     let headers = response.headers();
     let declared = headers
@@ -131,7 +168,7 @@ pub fn accept(response: &reqwest::Response) -> Result<Kind, Fault> {
         return if declared.is_none() {
             Ok(Kind::Empty)
         } else {
-            Err(Fault)
+            Err(Fault(Cause::WrongContentType))
         };
     };
     let essence = content_type
@@ -142,19 +179,30 @@ pub fn accept(response: &reqwest::Response) -> Result<Kind, Fault> {
     match essence.as_deref() {
         Some("application/json") => Ok(Kind::Json),
         Some("text/event-stream") => Ok(Kind::Stream),
-        _ => Err(Fault),
+        _ => Err(Fault(Cause::WrongContentType)),
     }
 }
 
 /// The whole body, at most `cap` bytes, within `limits.upstream_timeout_seconds`.
 pub async fn body(state: &AppState, response: reqwest::Response, cap: u64) -> Result<Bytes, Fault> {
-    read_body(state, response, cap).await.map_err(|_| Fault)
+    read_body(state, response, cap)
+        .await
+        .map_err(BodyError::into_fault)
 }
 
-/// Why a body was not read: a fault, or more bytes than the cap allows.
+/// Why a body was not read: a fault with its cause, or more bytes than the cap allows.
 pub(crate) enum BodyError {
-    Fault,
+    Fault(Cause),
     TooLarge,
+}
+
+impl BodyError {
+    pub(crate) fn into_fault(self) -> Fault {
+        match self {
+            BodyError::Fault(cause) => Fault(cause),
+            BodyError::TooLarge => Fault(Cause::TooLarge),
+        }
+    }
 }
 
 /// Reads chunk by chunk under the cap and the time limit, handing each chunk to `feed`.
@@ -170,7 +218,11 @@ where
 {
     let read = async {
         let mut total: u64 = 0;
-        while let Some(chunk) = response.chunk().await.map_err(|_| BodyError::Fault)? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| BodyError::Fault(Cause::NoConnection))?
+        {
             total = total.saturating_add(chunk.len() as u64);
             if total > cap {
                 return Err(BodyError::TooLarge);
@@ -183,7 +235,7 @@ where
     };
     match tokio::time::timeout(time_limit(state), read).await {
         Ok(result) => result,
-        Err(_) => Err(BodyError::Fault),
+        Err(_) => Err(BodyError::Fault(Cause::NoAnswerInTime)),
     }
 }
 

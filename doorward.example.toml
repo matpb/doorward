@@ -34,6 +34,7 @@ trusted_proxies = ["127.0.0.1", "::1"]
 # dcr_per_hour = 60
 # unused_registrations = 10000
 # activity_days = 90
+# catalog_refresh_seconds = 30
 
 # Outgoing mail.
 [mail]

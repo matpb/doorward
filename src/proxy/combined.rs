@@ -19,11 +19,11 @@ use tokio::time::{Instant, timeout, timeout_at};
 
 use super::catalog::{self, RefreshError, SESSION, STATELESS};
 use super::combined_stream::{self, Call};
-use super::handle::{INVALID, Owed, TOOL_LIMIT, bare, cut, not_allowed};
+use super::handle::{INVALID, NOT_LISTED, Owed, TOOL_LIMIT, bare, cut, not_allowed};
 use super::intake::{Intake, intake};
 use super::links::{self, Answer, Ask, Owner};
-use super::stream::Owned;
-use super::upstream::{self, Fault, Kind, TargetError, time_limit};
+use super::stream::{ACCESS_LOST, Owned, detail_of};
+use super::upstream::{self, Cause, Fault, Kind, TargetError, time_limit};
 use crate::app::AppState;
 use crate::audit::{self, OwnedEvent};
 use crate::mcp::answer;
@@ -32,6 +32,7 @@ use crate::mcp::message::{
 };
 use crate::oauth::guard::{Caller, combined_still_valid};
 use crate::policy;
+use crate::report;
 use crate::servers::valid_slug;
 
 /// The longest a whole tools/list may take, the wait for its turn included.
@@ -51,10 +52,11 @@ const ALL: Switches = Switches {
     prompts: true,
 };
 
-/// One list at a time per user: the gate of each user with a list running or waiting.
+/// The proxy's gates: one list at a time per user, and the miss refreshes of each server.
 #[derive(Default)]
 pub struct Turns {
     gates: Mutex<HashMap<i64, Arc<AsyncMutex<()>>>>,
+    pub misses: catalog::Misses,
 }
 
 impl Turns {
@@ -115,7 +117,7 @@ fn note(line: String) {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .push(line.clone());
-    eprintln!("doorward: {line}");
+    report::failure("tool list", &line);
 }
 
 /// Answers one request of `/mcp` for a caller that passed the bearer check.
@@ -237,6 +239,8 @@ struct Found {
 
 /// The text a result that asks for input is replaced with.
 const ASKED: &str = "This tool asked for input that this endpoint does not relay.";
+/// The detail of a call whose caller is not assigned to the server.
+const NOT_ASSIGNED: &str = "the server is not assigned";
 
 /// tools/call: the name is split and checked against the caller's servers, rules and catalog, then sent
 /// through the caller's link. A refused call never reaches an upstream.
@@ -269,7 +273,7 @@ async fn call(
     };
     let started = std::time::Instant::now();
     let Some((slug, tool)) = split(name) else {
-        return deny_call(state, caller, started, id, name, None).await;
+        return deny_call(state, caller, started, id, name, None, NOT_LISTED).await;
     };
     let user = caller.user_id;
     let (lookup_slug, lookup_tool) = (slug.to_owned(), tool.to_owned());
@@ -280,37 +284,41 @@ async fn call(
     {
         Ok(found) => found,
         Err(err) => {
-            eprintln!("doorward: the call cannot read its server: {err}");
+            report::failure("server", &err);
             return bare(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
     let Some(found) = found else {
-        return deny_call(state, caller, started, id, name, None).await;
+        return deny_call(state, caller, started, id, name, None, NOT_LISTED).await;
     };
     let server_id = found.server.server_id;
     let row = Some((server_id, slug, tool));
     if !found.assigned {
-        return deny_call(state, caller, started, id, name, row).await;
+        return deny_call(state, caller, started, id, name, row, NOT_ASSIGNED).await;
+    }
+    let verdict = policy::decide(&found.server.rules, user, server_id, tool);
+    if !verdict.allowed {
+        let detail = format!("rule {}", verdict.rule.unwrap_or_default());
+        return deny_call(state, caller, started, id, name, row, &detail).await;
     }
     let definition = match found.definition {
         Some(definition) => definition,
         None => match refetch(state, caller, &found.server, tool).await {
             Ok(Some(definition)) => definition,
-            Ok(None) => return deny_call(state, caller, started, id, name, row).await,
+            Ok(None) => {
+                return deny_call(state, caller, started, id, name, row, NOT_LISTED).await;
+            }
             Err(refusal) => return refusal,
         },
     };
-    if !policy::decide(&found.server.rules, user, server_id, tool).allowed {
-        return deny_call(state, caller, started, id, name, row).await;
-    }
     let target = match upstream::target(state, server_id).await {
         Ok(Some(target)) => target,
         Ok(None) | Err(TargetError::Secret) => {
             let owed = Owed::of(owned_of(state, caller, started, slug, server_id), tool);
-            return unavailable(owed, slug).await;
+            return unavailable(owed, slug, Cause::NoConnection).await;
         }
         Err(TargetError::Db(err)) => {
-            eprintln!("doorward: the server cannot be read: {err}");
+            report::failure("server", &err);
             return bare(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
@@ -320,9 +328,9 @@ async fn call(
     };
     let stateless = match state.links.stateless(state, owner, &target).await {
         Ok(stateless) => stateless,
-        Err(Fault) => {
+        Err(Fault(cause)) => {
             let owed = Owed::of(owned_of(state, caller, started, slug, server_id), tool);
-            return unavailable(owed, slug).await;
+            return unavailable(owed, slug, cause).await;
         }
     };
     let has_mcp_header = match serde_json::from_str::<Value>(&definition) {
@@ -330,7 +338,7 @@ async fn call(
         Err(_) => true,
     };
     if stateless && has_mcp_header {
-        return deny_call(state, caller, started, id, name, row).await;
+        return deny_call(state, caller, started, id, name, row, NOT_LISTED).await;
     }
     let arguments = body.params.as_ref().and_then(|params| params.arguments);
     let progress_token = body
@@ -349,11 +357,12 @@ async fn call(
         Ok(Answer::Sent(sent)) => sent,
         Ok(Answer::Refused { status, answer }) => {
             let (reply, outcome) = reissue(id, &answer, client_stateless);
+            let detail = detail_of(&answer, outcome);
             if !combined_still_valid(state, caller, server_id).await {
-                owed.settle("refused").await;
+                owed.settle("refused", ACCESS_LOST).await;
                 return answer::unknown_tool(id, name);
             }
-            owed.settle(outcome).await;
+            owed.settle(outcome, detail).await;
             let status = if client_stateless {
                 status
             } else {
@@ -361,7 +370,7 @@ async fn call(
             };
             return respond(status, &reply);
         }
-        Err(Fault) => return unavailable(owed, slug).await,
+        Err(Fault(cause)) => return unavailable(owed, slug, cause).await,
     };
     if sent.kind == Kind::Stream {
         owed.hand_over();
@@ -378,14 +387,15 @@ async fn call(
     let cap = state.config.limits.tools_list_bytes;
     let upstream_answer = match links::read(state, sent, cap).await {
         Ok(upstream_answer) => upstream_answer,
-        Err(Fault) => return unavailable(owed, slug).await,
+        Err(Fault(cause)) => return unavailable(owed, slug, cause).await,
     };
     let (reply, outcome) = reissue(id, &upstream_answer, client_stateless);
+    let detail = detail_of(&upstream_answer, outcome);
     if !combined_still_valid(state, caller, server_id).await {
-        owed.settle("refused").await;
+        owed.settle("refused", ACCESS_LOST).await;
         return answer::unknown_tool(id, name);
     }
-    owed.settle(outcome).await;
+    owed.settle(outcome, detail).await;
     respond(StatusCode::OK, &reply)
 }
 
@@ -407,13 +417,7 @@ fn lookup(conn: &Connection, user: i64, slug: &str, tool: &str) -> rusqlite::Res
         |row| row.get::<_, bool>(0),
     )?;
     let rules = policy::load(conn, user, server_id)?;
-    let definition = conn
-        .query_row(
-            "SELECT definition FROM tool_catalog WHERE server_id = ?1 AND name = ?2",
-            params![server_id, tool],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
+    let definition = definition_of(conn, server_id, tool)?;
     Ok(Some(Found {
         server: Assigned {
             server_id,
@@ -425,21 +429,57 @@ fn lookup(conn: &Connection, user: i64, slug: &str, tool: &str) -> rusqlite::Res
     }))
 }
 
-/// One refresh of the server's catalog through the caller's link, for a tool the catalog lacks. Returns
-/// the stored definition of `tool` after it; None when the refresh failed or the tool is still absent.
+/// The stored definition of `tool` on the server, if any.
+fn definition_of(
+    conn: &Connection,
+    server_id: i64,
+    tool: &str,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT definition FROM tool_catalog WHERE server_id = ?1 AND name = ?2",
+        params![server_id, tool],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+}
+
+/// The definition of `tool` after a miss refresh of the server's catalog, which waits for one in flight.
+/// None when the refresh is held off, failed, or the tool is still absent.
 async fn refetch(
     state: &AppState,
     caller: &Caller,
     server: &Assigned,
     tool: &str,
 ) -> Result<Option<String>, Response> {
-    let deadline = Instant::now() + time_limit(state).min(LIST_LIMIT);
-    let Some(fetched) = fetch(state, caller, server, deadline).await else {
-        refuse(state, server).await;
-        return Ok(None);
-    };
-    let now = state.clock.now().unix_timestamp();
     let server_id = server.server_id;
+    let mut last = state.turns.misses.lock(server_id).await;
+    let tool_name = tool.to_owned();
+    match state
+        .db
+        .call(move |conn| definition_of(conn, server_id, &tool_name))
+        .await
+    {
+        Ok(Some(definition)) => return Ok(Some(definition)),
+        Ok(None) => {}
+        Err(err) => {
+            report::failure("tool catalog", &err);
+            return Err(bare(StatusCode::INTERNAL_SERVER_ERROR));
+        }
+    }
+    let now = state.clock.now().unix_timestamp();
+    let every = i64::try_from(state.config.limits.catalog_refresh_seconds).unwrap_or(i64::MAX);
+    if last.is_some_and(|started| now - started < every) {
+        return Ok(None);
+    }
+    *last = Some(now);
+    let deadline = Instant::now() + time_limit(state).min(LIST_LIMIT);
+    let fetched = match fetch(state, caller, server, deadline).await {
+        Ok(fetched) => fetched,
+        Err(cause) => {
+            refuse(state, server, cause).await;
+            return Ok(None);
+        }
+    };
     let tools = fetched.tools;
     match state
         .db
@@ -452,7 +492,7 @@ async fn refetch(
             .find(|(name, _)| name.as_str() == tool)
             .map(|(_, definition)| definition)),
         Err(err) => {
-            eprintln!("doorward: the tool catalog cannot be stored: {err}");
+            report::failure("tool catalog", &err);
             Err(bare(StatusCode::INTERNAL_SERVER_ERROR))
         }
     }
@@ -489,14 +529,16 @@ fn streamed(body: Body) -> Response {
         .into_response()
 }
 
-/// The 502 of a call whose upstream cannot answer, with its row written as unavailable.
-async fn unavailable(owed: Owed, slug: &str) -> Response {
-    owed.settle("unavailable").await;
+/// The 502 of a call whose upstream cannot answer, with its row written as unavailable and the phrase
+/// of its cause as the detail.
+async fn unavailable(owed: Owed, slug: &str, cause: Cause) -> Response {
+    let phrase = upstream::fail(slug, cause);
+    owed.settle("unavailable", &phrase).await;
     answer::unavailable(slug)
 }
 
-/// A refused tools/call: one deny row and the one answer every refusal gets. A name that names no
-/// server has no server in its row, under the label `mcp`, and the name as sent.
+/// A refused tools/call: one deny row with its detail, and the one answer every refusal gets. A name
+/// that names no server has no server in its row, under the label `mcp`, and the name as sent.
 async fn deny_call(
     state: &AppState,
     caller: &Caller,
@@ -504,6 +546,7 @@ async fn deny_call(
     id: &Value,
     name: &str,
     server: Option<(i64, &str, &str)>,
+    detail: &str,
 ) -> Response {
     let (server_id, slug, tool) = match server {
         Some((server_id, slug, tool)) => (Some(server_id), slug, tool),
@@ -519,11 +562,11 @@ async fn deny_call(
         client: caller.client_name.clone(),
         decision: "deny".to_owned(),
         outcome: "refused".to_owned(),
-        detail: String::new(),
+        detail: detail.to_owned(),
         duration_ms: Some(i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX)),
     };
     if let Err(err) = audit::record_now(state, event).await {
-        eprintln!("doorward: the activity row cannot be written: {err}");
+        report::failure("activity row", &err);
     }
     answer::unknown_tool(id, name)
 }
@@ -608,7 +651,7 @@ async fn collect(
     let assigned = match state.db.call(move |conn| assigned(conn, user)).await {
         Ok(assigned) => assigned,
         Err(err) => {
-            eprintln!("doorward: the assigned servers cannot be read: {err}");
+            report::failure("assigned servers", &err);
             return Err(bare(StatusCode::INTERNAL_SERVER_ERROR));
         }
     };
@@ -624,8 +667,8 @@ async fn collect(
     let mut fetched: Vec<(usize, Fetched)> = Vec::new();
     for (position, outcome) in outcomes.into_iter().enumerate() {
         match outcome {
-            Some(list) => fetched.push((position, list)),
-            None => refuse(state, &assigned[position]).await,
+            Ok(list) => fetched.push((position, list)),
+            Err(cause) => refuse(state, &assigned[position], cause).await,
         }
     }
     if fetched.is_empty() {
@@ -644,7 +687,7 @@ async fn collect(
     let stored = match state.db.call(move |conn| store(conn, jobs, now)).await {
         Ok(stored) => stored,
         Err(err) => {
-            eprintln!("doorward: the tool catalog cannot be stored: {err}");
+            report::failure("tool catalog", &err);
             return Err(bare(StatusCode::INTERNAL_SERVER_ERROR));
         }
     };
@@ -842,27 +885,32 @@ fn admit(candidates: &[Candidate], limit: u64) -> Vec<bool> {
     admitted
 }
 
-/// One server's tools, or None when its list fails or the deadline cuts it.
+/// One server's tools, or the cause its list failed with, the deadline included.
 async fn fetch(
     state: &AppState,
     caller: &Caller,
     server: &Assigned,
     deadline: Instant,
-) -> Option<Fetched> {
-    timeout_at(deadline, fetch_pages(state, caller, server))
-        .await
-        .ok()
-        .flatten()
+) -> Result<Fetched, Cause> {
+    match timeout_at(deadline, fetch_pages(state, caller, server)).await {
+        Ok(fetched) => fetched,
+        Err(_) => Err(Cause::NoAnswerInTime),
+    }
 }
 
 /// Every page of the server's list through the caller's link, within the byte limit and the page limit.
-async fn fetch_pages(state: &AppState, caller: &Caller, server: &Assigned) -> Option<Fetched> {
+/// Passing the page limit is reported as too large.
+async fn fetch_pages(
+    state: &AppState,
+    caller: &Caller,
+    server: &Assigned,
+) -> Result<Fetched, Cause> {
     let target = match upstream::target(state, server.server_id).await {
         Ok(Some(target)) => target,
-        Ok(None) | Err(TargetError::Secret) => return None,
+        Ok(None) | Err(TargetError::Secret) => return Err(Cause::NoConnection),
         Err(TargetError::Db(err)) => {
-            eprintln!("doorward: the server cannot be read: {err}");
-            return None;
+            report::failure("server", &err);
+            return Err(Cause::NoConnection);
         }
     };
     let owner = Owner {
@@ -875,7 +923,7 @@ async fn fetch_pages(state: &AppState, caller: &Caller, server: &Assigned) -> Op
     let mut used: u64 = 0;
     let mut stateless = false;
     for page in 0..MAX_PAGES {
-        let Answer::Sent(sent) = state
+        let sent = match state
             .links
             .send(
                 state,
@@ -886,46 +934,45 @@ async fn fetch_pages(state: &AppState, caller: &Caller, server: &Assigned) -> Op
                 },
             )
             .await
-            .ok()?
-        else {
-            return None;
+        {
+            Ok(Answer::Sent(sent)) => sent,
+            Ok(Answer::Refused { status, .. }) => return Err(Cause::Status(status.as_u16())),
+            Err(Fault(cause)) => return Err(cause),
         };
         if page == 0 {
             stateless = sent.stateless;
         }
         let reply = links::read(state, sent, limit.saturating_sub(used))
             .await
-            .ok()?;
+            .map_err(|Fault(cause)| cause)?;
         used = used.saturating_add(u64::try_from(reply.to_string().len()).unwrap_or(u64::MAX));
-        let result = reply.get("result")?;
-        tools.extend(result.get("tools")?.as_array()?.iter().cloned());
+        let result = reply.get("result").ok_or(Cause::NotMcp)?;
+        let page_tools = result
+            .get("tools")
+            .and_then(Value::as_array)
+            .ok_or(Cause::NotMcp)?;
+        tools.extend(page_tools.iter().cloned());
         cursor = match result.get("nextCursor") {
             None | Some(Value::Null) => None,
             Some(Value::String(next)) => Some(next.clone()),
-            Some(_) => return None,
+            Some(_) => return Err(Cause::NotMcp),
         };
         if cursor.is_none() {
-            return Some(Fetched { tools, stateless });
+            return Ok(Fetched { tools, stateless });
         }
     }
-    None
+    Err(Cause::TooLarge)
 }
 
-/// Records a failed refresh of the server's catalog and logs the server's slug.
-async fn refuse(state: &AppState, server: &Assigned) {
-    if catalog::fail(state, server.server_id, RefreshError::Unavailable)
-        .await
-        .is_err()
-    {
-        eprintln!(
-            "doorward: the failed refresh of {} cannot be recorded",
-            server.slug
-        );
-    }
-    note(format!(
-        "tools/list: {} left out, its upstream did not answer with a tool list",
-        server.slug
-    ));
+/// Logs the fault of a failed list and records it as the server's refresh error.
+async fn refuse(state: &AppState, server: &Assigned, cause: Cause) {
+    upstream::fail(&server.slug, cause);
+    let error = match cause {
+        Cause::TooLarge => RefreshError::TooLarge,
+        _ => RefreshError::Unavailable,
+    };
+    // catalog::fail reports its own database error.
+    let _ = catalog::fail(state, server.server_id, error).await;
 }
 
 /// A JSON-RPC result with the inert-content headers of the server path's own answers.

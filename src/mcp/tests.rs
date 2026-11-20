@@ -630,7 +630,11 @@ fn decide_session_table_under_every_switch_combination() {
             [List("prompts"), List("prompts"), Fwd, Fwd],
         ),
         ("prompts/get", Shape::Request, [Nope, Nope, Fwd, Fwd]),
-        ("completion/complete", Shape::Request, [Nope, Fwd, Fwd, Fwd]),
+        (
+            "completion/complete",
+            Shape::Request,
+            [Nope, Nope, Nope, Nope],
+        ),
         ("server/discover", Shape::Request, [Nope, Nope, Nope, Nope]),
         (
             "subscriptions/listen",
@@ -663,7 +667,7 @@ fn decide_session_table_under_every_switch_combination() {
         (
             "completion/complete",
             Shape::Notification,
-            [Nope, Fwd, Fwd, Fwd],
+            [Nope, Nope, Nope, Nope],
         ),
         ("prompts/get", Shape::Notification, [Nope, Nope, Fwd, Fwd]),
         ("initialize", Shape::Notification, [Fwd, Fwd, Fwd, Fwd]),
@@ -729,7 +733,11 @@ fn decide_stateless_table_under_every_switch_combination() {
             [List("prompts"), List("prompts"), Fwd, Fwd],
         ),
         ("prompts/get", Shape::Request, [Nope, Nope, Fwd, Fwd]),
-        ("completion/complete", Shape::Request, [Nope, Fwd, Fwd, Fwd]),
+        (
+            "completion/complete",
+            Shape::Request,
+            [Nope, Nope, Nope, Nope],
+        ),
         ("initialize", Shape::Request, [Nope, Nope, Nope, Nope]),
         ("ping", Shape::Request, [Nope, Nope, Nope, Nope]),
         ("logging/setLevel", Shape::Request, [Nope, Nope, Nope, Nope]),
@@ -758,13 +766,69 @@ fn decide_stateless_table_under_every_switch_combination() {
         (
             "completion/complete",
             Shape::Notification,
-            [Nope, Fwd, Fwd, Fwd],
+            [Nope, Nope, Nope, Nope],
         ),
         ("ping", Shape::Notification, [Nope, Nope, Nope, Nope]),
     ];
     for (method, shape, expected) in rows {
         let message = message_for(method, shape, Generation::Stateless);
         assert_decisions(&message, expected, method);
+    }
+}
+
+/// A completion answers to the switch of the kind its ref names, and is refused for any other kind.
+#[test]
+fn completion_follows_the_switch_of_its_kind() {
+    let off = Switches {
+        resources: false,
+        prompts: false,
+    };
+    let resources_only = Switches {
+        resources: true,
+        prompts: false,
+    };
+    let prompts_only = Switches {
+        resources: false,
+        prompts: true,
+    };
+    let both = Switches {
+        resources: true,
+        prompts: true,
+    };
+    let cases = [
+        (
+            "ref/prompt",
+            [
+                Decision::MethodNotFound,
+                Decision::MethodNotFound,
+                Decision::Forward,
+                Decision::Forward,
+            ],
+        ),
+        (
+            "ref/resource",
+            [
+                Decision::MethodNotFound,
+                Decision::Forward,
+                Decision::MethodNotFound,
+                Decision::Forward,
+            ],
+        ),
+        ("ref/other", [Decision::MethodNotFound; 4]),
+    ];
+    for header in [SESSION_HEADER, STATELESS_HEADER] {
+        for (kind, expected) in cases {
+            let value = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "completion/complete",
+                "params": {"ref": {"type": kind}},
+            });
+            let message = classify(value, Some(header)).expect("classifies");
+            let got = [off, resources_only, prompts_only, both]
+                .map(|switches| decide(&message, switches));
+            assert_eq!(got, expected, "{kind} under {header}");
+        }
     }
 }
 

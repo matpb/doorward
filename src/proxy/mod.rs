@@ -10,6 +10,7 @@ use axum::response::Response;
 use crate::app::AppState;
 use crate::mcp::answer;
 use crate::oauth::guard::Caller;
+use crate::web::limit::peer_of;
 
 pub mod catalog;
 pub mod combined;
@@ -40,6 +41,7 @@ pub async fn handle(state: &AppState, caller: Caller, slug: &str, request: Reque
         return answer::unavailable(slug);
     };
     let started = Instant::now();
+    let peer = peer_of(request.extensions());
     let (parts, body) = request.into_parts();
     let ctx = handle::Ctx {
         state,
@@ -47,6 +49,8 @@ pub async fn handle(state: &AppState, caller: Caller, slug: &str, request: Reque
         server_id,
         caller: Arc::new(caller),
         started,
+        headers: parts.headers.clone(),
+        peer,
     };
     if parts.method == Method::POST {
         handle::post(&ctx, &parts.headers, body).await

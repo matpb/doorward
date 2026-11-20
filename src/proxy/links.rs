@@ -17,10 +17,13 @@ use tokio::time::timeout;
 
 use super::catalog::{self, SESSION, STATELESS, request_headers};
 use super::sse::sse_events;
-use super::upstream::{self, Fault, Kind, Outgoing, Target, read_body, read_stream, time_limit};
+use super::upstream::{
+    self, BodyError, Cause, Fault, Kind, Outgoing, Target, read_body, read_stream, time_limit,
+};
 use crate::app::AppState;
 use crate::crypto::token_hash;
 use crate::mcp::json::parse_strict;
+use crate::report;
 
 /// Links kept at once, over all owners.
 const MAX_LINKS: usize = 10_000;
@@ -148,7 +151,8 @@ impl Links {
                             kind,
                             stateless,
                         })),
-                        _ => Err(Fault),
+                        Ok(Kind::Empty) => Err(Fault(Cause::NotMcp)),
+                        Err(fault) => Err(fault),
                     };
                 }
                 400 | 404 => {
@@ -162,9 +166,9 @@ impl Links {
                     {
                         close_later(state, owned_target(target), session.clone());
                     }
-                    return Err(Fault);
+                    return Err(Fault(Cause::Status(status.as_u16())));
                 }
-                _ => return Err(Fault),
+                _ => return Err(Fault(Cause::Status(response.status().as_u16()))),
             }
         }
     }
@@ -233,13 +237,13 @@ impl Links {
             .await
             {
                 Ok(form) => form?,
-                Err(_) => return Err(Fault),
+                Err(_) => return Err(Fault(Cause::NoAnswerInTime)),
             };
             inner.install(&state, key, owner, &target, form)
         });
         let made = match task.await {
             Ok(made) => made,
-            Err(_) => Err(Fault),
+            Err(_) => Err(Fault(Cause::NoConnection)),
         };
         self.inner.tidy(key);
         made
@@ -405,7 +409,7 @@ impl Inner {
                     && entry.link.as_ref().and_then(|held| held.session_id()) == Some(session)
             })
         {
-            return Err(Fault);
+            return Err(Fault(Cause::NotMcp));
         }
         let tick = table.tick();
         let entry = table.entries.entry(key).or_insert_with(|| Entry {
@@ -516,7 +520,7 @@ fn close_evicted(state: &AppState, server_id: i64, link: Arc<Link>) {
                 catalog::close_session(&state, &target, &session, true).await;
             }
             Ok(_) => {}
-            Err(err) => eprintln!("doorward: an evicted upstream session is not closed: {err:?}"),
+            Err(err) => report::failure("evicted upstream session", &format!("{err:?}")),
         }
     });
 }
@@ -604,8 +608,8 @@ fn envelope<P: Serialize>(id: u64, method: &str, params: P) -> Result<Bytes, Fau
     match serde_json::to_vec(&body) {
         Ok(bytes) => Ok(Bytes::from(bytes)),
         Err(err) => {
-            eprintln!("doorward: an upstream request cannot be encoded: {err}");
-            Err(Fault)
+            report::failure("upstream request", &err);
+            Err(Fault(Cause::NoConnection))
         }
     }
 }
@@ -640,7 +644,7 @@ fn outgoing(form: &Form, ask: &Ask<'_>, id: u64) -> Result<Outgoing, Fault> {
             progress_token,
         } => {
             if stateless {
-                let value = HeaderValue::from_str(name).map_err(|_| Fault)?;
+                let value = HeaderValue::from_str(name).map_err(|_| Fault(Cause::NoConnection))?;
                 headers.insert(HeaderName::from_static("mcp-name"), value);
             }
             envelope(
@@ -667,6 +671,8 @@ struct Exchange {
     status: u16,
     session: Option<HeaderValue>,
     answer: Option<Value>,
+    /// Why there is no answer, when the status is 200.
+    reason: Cause,
 }
 
 /// The handshake: the stateless probe, then, when the probe has no result, initialize and
@@ -711,18 +717,19 @@ async fn handshake(state: &AppState, target: &Target) -> Result<Form, Fault> {
     .await?;
     let answer = match (init.status, init.answer) {
         (200, Some(answer)) => answer,
-        _ => return Err(Fault),
+        (200, None) => return Err(Fault(init.reason)),
+        (status, _) => return Err(Fault(Cause::Status(status))),
     };
     let revision = revision_of(&answer)?;
     let session = match init.session {
         None => None,
         Some(id) if visible_id(&id) => Some(id),
-        Some(_) => return Err(Fault),
+        Some(_) => return Err(Fault(Cause::NotMcp)),
     };
     if let Some(id) = &session
         && session_recorded(state, target.server_id, id).await?
     {
-        return Err(Fault);
+        return Err(Fault(Cause::NotMcp));
     }
     let notice =
         Bytes::from(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string());
@@ -741,12 +748,14 @@ async fn handshake(state: &AppState, target: &Target) -> Result<Form, Fault> {
 
 /// The revision an initialize result answers with, from the known ones.
 fn revision_of(answer: &Value) -> Result<&'static str, Fault> {
-    let version = answer["result"]["protocolVersion"].as_str().ok_or(Fault)?;
+    let version = answer["result"]["protocolVersion"]
+        .as_str()
+        .ok_or(Fault(Cause::NotMcp))?;
     REVISIONS
         .iter()
         .copied()
         .find(|revision| *revision == version)
-        .ok_or(Fault)
+        .ok_or(Fault(Cause::NotMcp))
 }
 
 /// True when upstream_sessions already holds the id for the server, whoever owns it.
@@ -755,7 +764,7 @@ async fn session_recorded(
     server_id: i64,
     id: &HeaderValue,
 ) -> Result<bool, Fault> {
-    let hash = token_hash(id.to_str().map_err(|_| Fault)?);
+    let hash = token_hash(id.to_str().map_err(|_| Fault(Cause::NotMcp))?);
     let recorded = state
         .db
         .call(move |conn| {
@@ -770,8 +779,8 @@ async fn session_recorded(
     match recorded {
         Ok(found) => Ok(found),
         Err(err) => {
-            eprintln!("doorward: the upstream sessions cannot be read: {err}");
-            Err(Fault)
+            report::failure("upstream sessions", &err);
+            Err(Fault(Cause::NoConnection))
         }
     }
 }
@@ -808,18 +817,24 @@ async fn exchange(
             status,
             session,
             answer: None,
+            reason: Cause::NotMcp,
         });
     }
-    let answer = match upstream::accept(&response) {
+    let (answer, reason) = match upstream::accept(&response) {
         Ok(kind @ (Kind::Json | Kind::Stream)) => {
-            read_answer(state, response, kind, cap, &json!(id)).await?
+            match read_answer(state, response, kind, cap, &json!(id)).await? {
+                Ok(answer) => (Some(answer), Cause::NotMcp),
+                Err(cause) => (None, cause),
+            }
         }
-        _ => None,
+        Ok(Kind::Empty) => (None, Cause::NotMcp),
+        Err(Fault(cause)) => (None, cause),
     };
     Ok(Exchange {
         status,
         session,
         answer,
+        reason,
     })
 }
 
@@ -842,23 +857,28 @@ async fn refusal(state: &AppState, response: reqwest::Response, id: &Value) -> O
     well_formed.then_some(value)
 }
 
-/// The whole answer to request `id` in a body of the given kind; None for any other message.
+/// The whole answer to request `id` in a body of the given kind, or the cause it is not one.
 async fn read_answer(
     state: &AppState,
     response: reqwest::Response,
     kind: Kind,
     cap: u64,
     id: &Value,
-) -> Result<Option<Value>, Fault> {
+) -> Result<Result<Value, Cause>, Fault> {
     match kind {
         Kind::Json => {
-            let bytes = read_body(state, response, cap).await.map_err(|_| Fault)?;
-            Ok(parse_strict(&bytes)
-                .ok()
-                .and_then(|value| whole_answer(value, id)))
+            let bytes = read_body(state, response, cap)
+                .await
+                .map_err(BodyError::into_fault)?;
+            Ok(match parse_strict(&bytes) {
+                Ok(value) => whole_answer(value, id).ok_or(Cause::NotMcp),
+                Err(_) => Err(Cause::NotJson),
+            })
         }
-        Kind::Stream => stream_answer(state, response, cap, id).await,
-        Kind::Empty => Ok(None),
+        Kind::Stream => Ok(stream_answer(state, response, cap, id)
+            .await?
+            .ok_or(Cause::NotMcp)),
+        Kind::Empty => Ok(Err(Cause::NotMcp)),
     }
 }
 
@@ -889,7 +909,7 @@ async fn stream_answer(
     .await;
     match read {
         Ok(_) => Ok(found),
-        Err(_) => Err(Fault),
+        Err(err) => Err(err.into_fault()),
     }
 }
 
@@ -909,5 +929,5 @@ pub async fn read(state: &AppState, sent: Sent, cap: u64) -> Result<Value, Fault
     } = sent;
     read_answer(state, response, kind, cap, &id)
         .await?
-        .ok_or(Fault)
+        .map_err(Fault)
 }

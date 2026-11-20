@@ -16,7 +16,7 @@ use tokio::time::timeout;
 
 use super::links::{Answer, Ask, Links, Owner, Sent, read};
 use super::tests::{Fixture, Plan, Seen, TestUpstream, answer, fixture, fixture_with};
-use super::upstream::{self, Fault, Target};
+use super::upstream::{self, Cause, Fault, Target};
 use crate::app::AppState;
 use crate::crypto::token_hash;
 use crate::oauth::families::{self, NewFamily};
@@ -313,7 +313,7 @@ async fn ask(
     request: Ask<'_>,
 ) -> Result<Value, Fault> {
     let Answer::Sent(sent) = links.send(state, owner, target, request).await? else {
-        return Err(Fault);
+        return Err(Fault(Cause::NotMcp));
     };
     read(state, sent, CAP).await
 }
@@ -426,7 +426,7 @@ async fn an_upstream_that_is_down_is_a_fault_and_keeps_no_link() {
     let links = Links::new();
     let target = target_at(&fx, &closed_url().await);
     let result = ask(&links, &fx.state, owned(1, 1), &target, list()).await;
-    assert!(matches!(result, Err(Fault)));
+    assert!(matches!(result, Err(Fault(Cause::NoConnection))));
     assert_eq!(links.len(), 0);
 }
 
@@ -447,7 +447,7 @@ async fn a_session_id_with_a_space_or_of_300_bytes_is_a_fault() {
         list(),
     )
     .await;
-    assert!(matches!(result, Err(Fault)));
+    assert!(matches!(result, Err(Fault(Cause::NotMcp))));
     assert_eq!(links.len(), 0);
 
     let long = start(Behave {
@@ -463,7 +463,7 @@ async fn a_session_id_with_a_space_or_of_300_bytes_is_a_fault() {
         list(),
     )
     .await;
-    assert!(matches!(result, Err(Fault)));
+    assert!(matches!(result, Err(Fault(Cause::NotMcp))));
     assert_eq!(links.len(), 0);
 }
 
@@ -505,7 +505,7 @@ async fn an_initialize_with_an_unknown_revision_is_a_fault() {
         list(),
     )
     .await;
-    assert!(matches!(result, Err(Fault)));
+    assert!(matches!(result, Err(Fault(Cause::NotMcp))));
     assert_eq!(links.len(), 0);
 }
 
@@ -557,7 +557,7 @@ async fn a_session_id_the_upstream_gave_to_another_family_is_a_fault_for_the_sec
         .await
         .expect("first family lists");
     let second = ask(&links, &fx.state, owned(1, 2), &target, list()).await;
-    assert!(matches!(second, Err(Fault)));
+    assert!(matches!(second, Err(Fault(Cause::NotMcp))));
     assert_eq!(links.len(), 1);
 }
 
@@ -609,7 +609,7 @@ async fn a_session_id_already_recorded_for_the_server_is_a_fault() {
         list(),
     )
     .await;
-    assert!(matches!(result, Err(Fault)));
+    assert!(matches!(result, Err(Fault(Cause::NotMcp))));
     assert_eq!(links.len(), 0);
 }
 
@@ -842,7 +842,7 @@ async fn twenty_server_errors_keep_the_link() {
     up.ledger().calls_status = Some(500);
     for _ in 0..20 {
         let result = ask(&links, &fx.state, owned(1, 1), &target, echo(None)).await;
-        assert!(matches!(result, Err(Fault)));
+        assert!(matches!(result, Err(Fault(Cause::Status(_)))));
     }
     assert_eq!(up.count("initialize"), 1);
     assert_eq!(up.count("server/discover"), 1);
@@ -865,7 +865,7 @@ async fn a_second_404_after_the_remade_session_is_a_fault() {
     )
     .await
     .expect("the retry is bounded");
-    assert!(matches!(answered, Err(Fault)));
+    assert!(matches!(answered, Err(Fault(Cause::Status(_)))));
     assert_eq!(up.count("tools/call"), 2);
     assert_eq!(up.count("initialize"), 2);
     assert_eq!(links.len(), 1);
@@ -882,7 +882,7 @@ async fn a_stateless_404_is_not_retried() {
         .expect("first list");
     up.ledger().calls_status = Some(404);
     let result = ask(&links, &fx.state, owned(1, 1), &target, echo(None)).await;
-    assert!(matches!(result, Err(Fault)));
+    assert!(matches!(result, Err(Fault(Cause::Status(_)))));
     assert_eq!(up.count("tools/call"), 1);
     assert_eq!(links.len(), 1);
 }
@@ -898,7 +898,7 @@ async fn a_400_drops_the_link_closes_it_once_and_the_next_send_probes_again() {
         .expect("first list");
     up.ledger().calls_status = Some(400);
     let result = ask(&links, &fx.state, owned(1, 1), &target, echo(None)).await;
-    assert!(matches!(result, Err(Fault)));
+    assert!(matches!(result, Err(Fault(_))));
     assert_eq!(links.len(), 0);
     wait_for(&up, "DELETE", 1).await;
     assert_eq!(up.count("DELETE"), 1);
@@ -925,7 +925,7 @@ async fn a_list_refused_with_a_jsonrpc_error_is_a_fault_and_drops_the_link() {
         ledger.calls_error = true;
     }
     let result = ask(&links, &fx.state, owned(1, 1), &target, list()).await;
-    assert!(matches!(result, Err(Fault)), "a list is never relayed");
+    assert!(matches!(result, Err(Fault(_))), "a list is never relayed");
     assert_eq!(links.len(), 0, "the link is dropped as before");
     wait_for(&up, "DELETE", 1).await;
     assert_eq!(up.count("DELETE"), 1);
@@ -948,7 +948,10 @@ async fn an_answer_for_another_id_is_a_fault() {
         .await
         .expect("sent");
     let sent = sent_of(sent);
-    assert!(matches!(read(&fx.state, sent, CAP).await, Err(Fault)));
+    assert!(matches!(
+        read(&fx.state, sent, CAP).await,
+        Err(Fault(Cause::NotMcp))
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -965,7 +968,10 @@ async fn an_object_with_both_result_and_error_is_a_fault() {
         .await
         .expect("sent");
     let sent = sent_of(sent);
-    assert!(matches!(read(&fx.state, sent, CAP).await, Err(Fault)));
+    assert!(matches!(
+        read(&fx.state, sent, CAP).await,
+        Err(Fault(Cause::NotMcp))
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -984,7 +990,10 @@ async fn an_array_is_a_fault() {
         .await
         .expect("sent");
     let sent = sent_of(sent);
-    assert!(matches!(read(&fx.state, sent, CAP).await, Err(Fault)));
+    assert!(matches!(
+        read(&fx.state, sent, CAP).await,
+        Err(Fault(Cause::NotMcp))
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1117,7 +1126,7 @@ async fn a_fault_names_no_session_id() {
     match result {
         Err(fault) => {
             let text = format!("{fault:?}");
-            assert_eq!(text, "Fault");
+            assert_eq!(text, "Fault(NotMcp)");
             assert!(!text.contains("leaky"));
         }
         Ok(_) => panic!("a session id with a space is a fault"),
@@ -1269,7 +1278,7 @@ async fn a_handshake_slower_than_the_deadline_is_a_fault() {
     let started = Instant::now();
     let result = ask(&links, &fx.state, owned(1, 1), &target, list()).await;
     let elapsed = started.elapsed();
-    assert!(matches!(result, Err(Fault)));
+    assert!(matches!(result, Err(Fault(Cause::NoAnswerInTime))));
     assert!(
         elapsed >= Duration::from_millis(900) && elapsed < Duration::from_millis(1500),
         "answered after {elapsed:?}"
@@ -1376,7 +1385,7 @@ async fn a_session_id_of_257_bytes_is_a_fault() {
         list(),
     )
     .await;
-    assert!(matches!(result, Err(Fault)));
+    assert!(matches!(result, Err(Fault(Cause::NotMcp))));
     assert_eq!(links.len(), 0);
 }
 

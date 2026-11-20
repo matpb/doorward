@@ -122,6 +122,11 @@ pub const SETTINGS: &[Setting] = &[
         kind: Kind::Whole,
     },
     Setting {
+        variable: "DOORWARD_LIMITS_CATALOG_REFRESH_SECONDS",
+        path: "limits.catalog_refresh_seconds",
+        kind: Kind::Whole,
+    },
+    Setting {
         variable: "DOORWARD_LIMITS_UPSTREAM_TIMEOUT_SECONDS",
         path: "limits.upstream_timeout_seconds",
         kind: Kind::Whole,
@@ -289,6 +294,7 @@ pub struct Limits {
     pub auth_requests_max: u64,
     pub unused_registrations: u64,
     pub activity_days: u64,
+    pub catalog_refresh_seconds: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,6 +343,7 @@ impl Default for Limits {
             auth_requests_max: 10_000,
             unused_registrations: 10_000,
             activity_days: 90,
+            catalog_refresh_seconds: 30,
         }
     }
 }
@@ -774,6 +781,7 @@ impl Limits {
                 ("auth_requests_max", self.auth_requests_max),
                 ("unused_registrations", self.unused_registrations),
                 ("activity_days", self.activity_days),
+                ("catalog_refresh_seconds", self.catalog_refresh_seconds),
             ],
         )?;
         if self.account_ceiling < self.account_failures {

@@ -183,6 +183,7 @@ fn sections_default_when_absent() {
             body_bytes: 1_048_576,
             tools_list_bytes: 4_194_304,
             upstream_timeout_seconds: 300,
+            catalog_refresh_seconds: 30,
             account_failures: 5,
             account_ceiling: 50,
             address_failures: 30,

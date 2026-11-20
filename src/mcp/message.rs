@@ -208,7 +208,11 @@ pub fn decide(message: &Message, switches: Switches) -> Decision {
         Group::Always => return Decision::Forward,
         Group::Resources => switches.resources,
         Group::Prompts => switches.prompts,
-        Group::Completion => switches.resources || switches.prompts,
+        Group::Completion => match completion_kind(&message.value) {
+            Some("ref/prompt") => switches.prompts,
+            Some("ref/resource") => switches.resources,
+            _ => return Decision::MethodNotFound,
+        },
     };
     if enabled {
         return Decision::Forward;
@@ -217,6 +221,11 @@ pub fn decide(message: &Message, switches: Switches) -> Decision {
         Some(key) => Decision::EmptyList(key),
         None => Decision::MethodNotFound,
     }
+}
+
+/// The `type` of `params.ref` of a completion request, when it is a string.
+fn completion_kind(value: &Value) -> Option<&str> {
+    param(value, "ref")?.get("type")?.as_str()
 }
 
 fn group_of(method: &str, generation: Generation) -> Option<Group> {

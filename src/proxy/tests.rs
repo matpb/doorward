@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 use super::catalog::{self, RefreshError};
 use super::combined;
 use super::links::Links;
-use super::upstream::{self, Fault, Kind, Outgoing, Target, TargetError};
+use super::upstream::{self, Cause, Fault, Kind, Outgoing, Target, TargetError};
 use crate::app::AppState;
 use crate::cimd::UnavailableCimd;
 use crate::clock::SystemClock;
@@ -656,7 +656,10 @@ async fn a_closed_port_is_a_fault() {
         post(HeaderMap::new(), "{}"),
     )
     .await;
-    assert!(matches!(result, Err(Fault)), "a closed port is a fault");
+    assert!(
+        matches!(result, Err(Fault(Cause::NoConnection))),
+        "a closed port is a fault"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -671,7 +674,10 @@ async fn an_upstream_that_never_answers_is_a_fault_in_time() {
     )
     .await;
     let elapsed = started.elapsed();
-    assert!(matches!(result, Err(Fault)), "silence is a fault");
+    assert!(
+        matches!(result, Err(Fault(Cause::NoAnswerInTime))),
+        "silence is a fault"
+    );
     assert!(
         elapsed >= Duration::from_secs(1),
         "the limit of one second must be waited out, took {elapsed:?}"
@@ -760,7 +766,7 @@ async fn body_refuses_what_passes_the_cap_and_keeps_what_fits() {
             assert_eq!(bytes.len(), size);
         } else {
             assert!(
-                matches!(read, Err(Fault)),
+                matches!(read, Err(Fault(Cause::TooLarge))),
                 "{size} bytes pass a cap of {cap}"
             );
         }
@@ -800,7 +806,10 @@ async fn a_body_that_stalls_is_a_fault_after_the_time_limit() {
     .expect("headers arrive");
     let started = Instant::now();
     let read = upstream::body(&fixture.state, response, 1000).await;
-    assert!(matches!(read, Err(Fault)), "a stalled body is a fault");
+    assert!(
+        matches!(read, Err(Fault(Cause::NoAnswerInTime))),
+        "a stalled body is a fault"
+    );
     assert!(started.elapsed() < Duration::from_secs(4));
 }
 

@@ -12,8 +12,8 @@ use tokio::time::{Interval, MissedTickBehavior};
 
 use super::combined::reissue;
 use super::sse::sse_events;
-use super::stream::{Framing, Owned, record};
-use super::upstream::time_limit;
+use super::stream::{ACCESS_LOST, Framing, Owned, detail_of, record};
+use super::upstream::{self, Cause, time_limit};
 use crate::mcp::json::parse_strict;
 use crate::oauth::guard::combined_still_valid;
 
@@ -43,10 +43,10 @@ pub(super) struct Call {
 
 type Item = Result<Bytes, io::Error>;
 
-/// How the relay ended. `Answered` carries the outcome of the answer that was sent.
+/// How the relay ended. `Answered` carries the outcome and detail of the answer that was sent.
 enum End {
-    Answered(&'static str),
-    Unavailable,
+    Answered(&'static str, &'static str),
+    Unavailable(Cause),
     Refused,
     ClientGone,
 }
@@ -81,40 +81,43 @@ async fn run(call: Call, mut response: reqwest::Response, tx: Sender<Item>) {
                 }
                 continue;
             }
-            _ = &mut idle => break End::Unavailable,
+            _ = &mut idle => break End::Unavailable(Cause::NoAnswerInTime),
             chunk = response.chunk() => chunk,
         };
         let bytes = match next {
             Ok(Some(bytes)) => bytes,
-            Ok(None) | Err(_) => break End::Unavailable,
+            Ok(None) => break End::Unavailable(Cause::NotMcp),
+            Err(_) => break End::Unavailable(Cause::NoConnection),
         };
         idle.as_mut().reset(tokio::time::Instant::now() + idle_for);
         if framing.feed(&bytes, limit) {
-            break End::Unavailable;
+            break End::Unavailable(Cause::TooLarge);
         }
         pending.extend_from_slice(&bytes);
         let (datas, used) = sse_events(&pending);
         pending.drain(..used);
         match pass(&call, &tx, &mut ticks, datas).await {
             Ok(None) => {}
-            Ok(Some(outcome)) => break End::Answered(outcome),
+            Ok(Some((outcome, detail))) => break End::Answered(outcome, detail),
             Err(end) => break end,
         }
     };
     let end = match end {
-        End::Unavailable => match deliver(&tx, &mut ticks, &call, unavailable(&call)).await {
-            Ok(()) => End::Unavailable,
-            Err(later) => later,
-        },
+        End::Unavailable(cause) => {
+            match deliver(&tx, &mut ticks, &call, unavailable(&call)).await {
+                Ok(()) => End::Unavailable(cause),
+                Err(later) => later,
+            }
+        }
         other => other,
     };
     let (outcome, detail) = match end {
-        End::Answered(outcome) => (outcome, ""),
-        End::Unavailable => ("unavailable", ""),
-        End::Refused => ("refused", ""),
-        End::ClientGone => ("error", LEFT),
+        End::Answered(outcome, detail) => (outcome, detail.to_owned()),
+        End::Unavailable(cause) => ("unavailable", upstream::fail(&call.owned.slug, cause)),
+        End::Refused => ("refused", ACCESS_LOST.to_owned()),
+        End::ClientGone => ("error", LEFT.to_owned()),
     };
-    record(&call.owned, &call.tool, "allow", outcome, detail).await;
+    record(&call.owned, &call.tool, "allow", outcome, &detail).await;
 }
 
 /// Sends the progress notifications among `datas`, in order, and stops at the answer: its outcome
@@ -124,7 +127,7 @@ async fn pass(
     tx: &Sender<Item>,
     ticks: &mut Interval,
     datas: Vec<Vec<u8>>,
-) -> Result<Option<&'static str>, End> {
+) -> Result<Option<(&'static str, &'static str)>, End> {
     for data in datas {
         let Ok(value) = parse_strict(&data) else {
             continue;
@@ -132,13 +135,14 @@ async fn pass(
         if is_progress(&value) {
             deliver(tx, ticks, call, frame(&value)).await?;
         } else if answers(&value, &call.upstream_id) {
-            let (reply, outcome) = if valid(call).await {
-                reissue(&call.client_id, &value, call.stateless)
+            let (reply, outcome, detail) = if valid(call).await {
+                let (reply, outcome) = reissue(&call.client_id, &value, call.stateless);
+                (reply, outcome, detail_of(&value, outcome))
             } else {
-                (refusal(&call.client_id, &call.name), "refused")
+                (refusal(&call.client_id, &call.name), "refused", ACCESS_LOST)
             };
             deliver(tx, ticks, call, frame(&reply)).await?;
-            return Ok(Some(outcome));
+            return Ok(Some((outcome, detail)));
         }
     }
     Ok(None)

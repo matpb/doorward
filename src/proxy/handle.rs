@@ -1,5 +1,6 @@
 //! The relay of one request on `/{slug}`: the POST order, GET and DELETE, and the upstream answer.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -14,16 +15,17 @@ use serde_json::{Map, Value, json};
 use super::catalog;
 use super::intake::{Intake, intake};
 use super::sessions;
-use super::stream::{self, Owned, Watch};
-use super::upstream::{self, Fault, Kind, Outgoing, Target, TargetError};
+use super::stream::{self, ACCESS_LOST, Owned, Watch};
+use super::upstream::{self, Cause, Fault, Kind, Outgoing, Target, TargetError};
 use crate::app::AppState;
 use crate::mcp::answer;
 use crate::mcp::json::parse_strict;
 use crate::mcp::message::{
     Decision, Generation, Message, Shape, Switches, decide, stateless_version,
 };
-use crate::oauth::guard::Caller;
+use crate::oauth::guard::{self, Caller, still_valid};
 use crate::policy;
+use crate::report;
 use crate::servers;
 
 const MCP_PROTOCOL_VERSION: HeaderName = HeaderName::from_static("mcp-protocol-version");
@@ -34,14 +36,19 @@ pub(super) const INVALID: &str = "Invalid request";
 pub(super) const PARSE: &str = "Parse error";
 const SESSION_LIMIT: usize = 256;
 pub(super) const TOOL_LIMIT: usize = 128;
+/// The detail of a call whose name the tool list lacks.
+pub(super) const NOT_LISTED: &str = "not in the tool list";
 
-/// What one request needs: its server, its caller, and when it started.
+/// What one request needs: its server, its caller, when it started, and what the bearer check reads
+/// again when a buffered answer arrives: the request's headers and its peer address.
 pub(super) struct Ctx<'a> {
     pub state: &'a AppState,
     pub slug: &'a str,
     pub server_id: i64,
     pub caller: Arc<Caller>,
     pub started: Instant,
+    pub headers: HeaderMap,
+    pub peer: IpAddr,
 }
 
 impl Ctx<'_> {
@@ -133,14 +140,10 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
         Err(refusal) => return refusal,
     };
     if let Some(name) = call.as_deref() {
-        let permitted = match listed(ctx, &target, name).await {
-            Ok(true) => allowed(ctx, name).await,
-            other => other,
-        };
-        match permitted {
-            Ok(true) => {}
-            Ok(false) => {
-                record(ctx, name, "deny", "refused").await;
+        match refusal_of(ctx, &target, name).await {
+            Ok(None) => {}
+            Ok(Some(detail)) => {
+                record(ctx, name, "deny", "refused", &detail).await;
                 let null = Value::Null;
                 return answer::unknown_tool(message.id.as_ref().unwrap_or(&null), name);
             }
@@ -163,7 +166,7 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
     let owed = call.as_deref().map(|name| Owed::new(ctx, name));
     match upstream::send(ctx.state, &target, outgoing).await {
         Ok(response) => relay_post(ctx, &message, owed, switches, response).await,
-        Err(Fault) => fault(ctx, owed).await,
+        Err(Fault(cause)) => fault(ctx, owed, cause).await,
     }
 }
 
@@ -203,7 +206,7 @@ pub(super) async fn get_or_delete(ctx: &Ctx<'_>, method: &Method, headers: &Head
             relayed(StatusCode::NO_CONTENT, None, Body::empty(), None)
         }
         Ok(response) => relay_plain(ctx, response).await,
-        Err(Fault) => answer::unavailable(ctx.slug),
+        Err(Fault(cause)) => unavailable_for(ctx, cause),
     }
 }
 
@@ -306,7 +309,7 @@ async fn belongs(ctx: &Ctx<'_>, id: String) -> Result<bool, Response> {
     {
         Ok(found) => Ok(found),
         Err(err) => {
-            eprintln!("doorward: the upstream sessions cannot be read: {err}");
+            report::failure("upstream sessions", &err);
             Err(bare(StatusCode::INTERNAL_SERVER_ERROR))
         }
     }
@@ -320,7 +323,7 @@ async fn forget(ctx: &Ctx<'_>, id: String) {
         .call(move |conn| sessions::forget(conn, server, &id))
         .await
     {
-        eprintln!("doorward: the upstream session cannot be forgotten: {err}");
+        report::failure("upstream session", &err);
     }
 }
 
@@ -339,7 +342,7 @@ async fn switches(ctx: &Ctx<'_>) -> Result<Switches, Response> {
         }),
         Ok(None) => Err(answer::unavailable(ctx.slug)),
         Err(err) => {
-            eprintln!("doorward: the server cannot be read: {err}");
+            report::failure("server", &err);
             Err(bare(StatusCode::INTERNAL_SERVER_ERROR))
         }
     }
@@ -351,34 +354,49 @@ async fn target(ctx: &Ctx<'_>) -> Result<Target, Response> {
         Ok(Some(target)) => Ok(target),
         Ok(None) | Err(TargetError::Secret) => Err(answer::unavailable(ctx.slug)),
         Err(TargetError::Db(err)) => {
-            eprintln!("doorward: the server cannot be read: {err}");
+            report::failure("server", &err);
             Err(bare(StatusCode::INTERNAL_SERVER_ERROR))
         }
     }
 }
 
-/// True when `name` is in the server's catalog. A miss refreshes the catalog once; a failed refresh is a miss.
+/// True when `name` is in the server's catalog. A miss refreshes it unless a miss refresh of the server
+/// started within `catalog_refresh_seconds`; a miss that waited for a refresh reads the catalog again.
 async fn listed(ctx: &Ctx<'_>, target: &Target, name: &str) -> Result<bool, Response> {
+    if stored(ctx, name).await? {
+        return Ok(true);
+    }
+    let mut last = ctx.state.turns.misses.lock(ctx.server_id).await;
+    if stored(ctx, name).await? {
+        return Ok(true);
+    }
+    let now = ctx.state.clock.now().unix_timestamp();
+    let every = i64::try_from(ctx.state.config.limits.catalog_refresh_seconds).unwrap_or(i64::MAX);
+    if last.is_some_and(|started| now - started < every) {
+        return Ok(false);
+    }
+    *last = Some(now);
+    Ok(match catalog::refresh(ctx.state, target).await {
+        Ok(fresh) => fresh.iter().any(|known| known == name),
+        Err(_) => false,
+    })
+}
+
+/// True when the stored catalog of the server has `name`.
+async fn stored(ctx: &Ctx<'_>, name: &str) -> Result<bool, Response> {
     let server = ctx.server_id;
-    let names = match ctx
+    match ctx
         .state
         .db
         .call(move |conn| catalog::names(conn, server))
         .await
     {
-        Ok(names) => names,
+        Ok(names) => Ok(names.iter().any(|known| known == name)),
         Err(err) => {
-            eprintln!("doorward: the tool catalog cannot be read: {err}");
-            return Err(bare(StatusCode::INTERNAL_SERVER_ERROR));
+            report::failure("tool catalog", &err);
+            Err(bare(StatusCode::INTERNAL_SERVER_ERROR))
         }
-    };
-    if names.iter().any(|known| known == name) {
-        return Ok(true);
     }
-    Ok(match catalog::refresh(ctx.state, target).await {
-        Ok(fresh) => fresh.iter().any(|known| known == name),
-        Err(_) => false,
-    })
 }
 
 /// The stored rules that can match the caller on this server. A rule that cannot be read is an internal error.
@@ -393,16 +411,29 @@ async fn rules_of(ctx: &Ctx<'_>) -> Result<Vec<policy::Rule>, Response> {
     {
         Ok(rules) => Ok(rules),
         Err(err) => {
-            eprintln!("doorward: the tool rules cannot be read: {err}");
+            report::failure("tool rules", &err);
             Err(bare(StatusCode::INTERNAL_SERVER_ERROR))
         }
     }
 }
 
-/// True when the caller's rules allow the tool `name` on this server.
-async fn allowed(ctx: &Ctx<'_>, name: &str) -> Result<bool, Response> {
+/// Why a tools/call is refused, as its row says it; None when it may go on.
+/// Rules are read before the catalog, so a refused call never refreshes it.
+async fn refusal_of(
+    ctx: &Ctx<'_>,
+    target: &Target,
+    name: &str,
+) -> Result<Option<String>, Response> {
     let rules = rules_of(ctx).await?;
-    Ok(policy::decide(&rules, ctx.caller.user_id, ctx.server_id, name).allowed)
+    let verdict = policy::decide(&rules, ctx.caller.user_id, ctx.server_id, name);
+    if !verdict.allowed {
+        return Ok(Some(format!("rule {}", verdict.rule.unwrap_or_default())));
+    }
+    if listed(ctx, target, name).await? {
+        Ok(None)
+    } else {
+        Ok(Some(NOT_LISTED.to_owned()))
+    }
 }
 
 /// Removes from a tools/list result every tool the caller may not use, and every entry without a name; true when one was removed.
@@ -474,17 +505,17 @@ async fn relay_post(
     let issued = response.headers().get(MCP_SESSION_ID).cloned();
     let kind = match upstream::accept(&response) {
         Ok(kind) => kind,
-        Err(Fault) => return fault(ctx, owed).await,
+        Err(Fault(cause)) => return fault(ctx, owed, cause).await,
     };
     let method = message.method.as_deref().unwrap_or("");
     let rewritten = message.shape == Shape::Request
         && matches!(method, "initialize" | "server/discover" | "tools/list");
     if matches!(kind, Kind::Empty) {
         if message.shape == Shape::Request && matches!(status.as_u16(), 200 | 202) {
-            return fault(ctx, owed).await;
+            return fault(ctx, owed, Cause::NotMcp).await;
         }
         if let Some(owed) = owed {
-            owed.settle("error").await;
+            owed.settle("error", "").await;
         }
         return relayed(status, None, Body::empty(), None);
     }
@@ -502,11 +533,15 @@ async fn relay_post(
     let id = message.id.clone().unwrap_or(Value::Null);
     let (mut value, raw) = match read_answer(ctx, response, kind, &id).await {
         Ok(read) => read,
-        Err(Fault) => return fault(ctx, owed).await,
+        Err(Fault(cause)) => return fault(ctx, owed, cause).await,
     };
+    if !still_valid(ctx.state, &ctx.caller, ctx.slug).await {
+        return access_lost(ctx, owed).await;
+    }
     if !rewritten {
         if let Some(owed) = owed {
-            owed.settle(stream::outcome_of(&value)).await;
+            let (outcome, detail) = stream::settled_by(&value);
+            owed.settle(outcome, detail).await;
         }
         return relayed(
             status,
@@ -524,7 +559,7 @@ async fn relay_post(
         match first_page(&value, &message.value) {
             Ok(Some(tools)) => replace_catalog(ctx, tools).await,
             Ok(None) => {}
-            Err(Fault) => return fault(ctx, owed).await,
+            Err(Fault(cause)) => return fault(ctx, owed, cause).await,
         }
         match hide_refused(ctx, &mut value).await {
             Ok(removed) => changed |= removed,
@@ -556,18 +591,24 @@ async fn read_answer(
         Kind::Stream => {
             let (answer, _) = catalog::stream_answer(ctx.state, response, cap, id)
                 .await
-                .map_err(|_| Fault)?;
+                .map_err(upstream::BodyError::into_fault)?;
             Ok((answer, None))
         }
         _ => {
             let bytes = upstream::body(ctx.state, response, cap).await?;
-            let value = parse_strict(&bytes).map_err(|_| Fault)?;
+            let value = parse_strict(&bytes).map_err(|_| Fault(Cause::NotJson))?;
             if !value.is_object() {
-                return Err(Fault);
+                return Err(Fault(Cause::NotMcp));
             }
             Ok((value, Some(bytes)))
         }
     }
+}
+
+/// The 502 of a fault, with the one line the fault writes.
+fn unavailable_for(ctx: &Ctx<'_>, cause: Cause) -> Response {
+    upstream::fail(ctx.slug, cause);
+    answer::unavailable(ctx.slug)
 }
 
 /// A GET answer: a 200 event stream is relayed as a watched stream, a 405 without its body. Any other
@@ -586,7 +627,10 @@ fn relay_get(ctx: &Ctx<'_>, response: reqwest::Response) -> Response {
         Ok(_) if status == StatusCode::METHOD_NOT_ALLOWED => {
             relayed(status, None, Body::empty(), None)
         }
-        _ => answer::unavailable(ctx.slug),
+        Ok(Kind::Json) => unavailable_for(ctx, Cause::WrongContentType),
+        Ok(Kind::Empty) => unavailable_for(ctx, Cause::NotMcp),
+        Ok(Kind::Stream) => unavailable_for(ctx, Cause::Status(status.as_u16())),
+        Err(Fault(cause)) => unavailable_for(ctx, cause),
     }
 }
 
@@ -594,7 +638,7 @@ fn relay_get(ctx: &Ctx<'_>, response: reqwest::Response) -> Response {
 async fn relay_plain(ctx: &Ctx<'_>, response: reqwest::Response) -> Response {
     let status = response.status();
     match upstream::accept(&response) {
-        Err(Fault) => answer::unavailable(ctx.slug),
+        Err(Fault(cause)) => unavailable_for(ctx, cause),
         Ok(Kind::Empty) => relayed(status, None, Body::empty(), None),
         Ok(Kind::Stream) => {
             let watch = Watch {
@@ -607,21 +651,49 @@ async fn relay_plain(ctx: &Ctx<'_>, response: reqwest::Response) -> Response {
         Ok(Kind::Json) => {
             let cap = ctx.state.config.limits.tools_list_bytes;
             match upstream::body(ctx.state, response, cap).await {
-                Ok(bytes) if parse_strict(&bytes).is_ok_and(|value| value.is_object()) => {
-                    relayed(status, Some("application/json"), Body::from(bytes), None)
-                }
-                _ => answer::unavailable(ctx.slug),
+                Ok(bytes) => match parse_strict(&bytes) {
+                    Ok(value) if value.is_object() => {
+                        if !still_valid(ctx.state, &ctx.caller, ctx.slug).await {
+                            return access_lost(ctx, None).await;
+                        }
+                        relayed(status, Some("application/json"), Body::from(bytes), None)
+                    }
+                    Ok(_) => unavailable_for(ctx, Cause::NotMcp),
+                    Err(_) => unavailable_for(ctx, Cause::NotJson),
+                },
+                Err(Fault(cause)) => unavailable_for(ctx, cause),
             }
         }
     }
 }
 
-/// The fault answer; a tools/call that faults is recorded as allowed and unavailable.
-async fn fault(ctx: &Ctx<'_>, owed: Option<Owed>) -> Response {
+/// The fault answer: the 502 with its one line; a tools/call that faults is recorded as allowed and
+/// unavailable, with the phrase of the fault as its detail.
+async fn fault(ctx: &Ctx<'_>, owed: Option<Owed>, cause: Cause) -> Response {
+    let phrase = upstream::fail(ctx.slug, cause);
     if let Some(owed) = owed {
-        owed.settle("unavailable").await;
+        owed.settle("unavailable", &phrase).await;
     }
     answer::unavailable(ctx.slug)
+}
+
+/// The answer to a buffered answer whose caller lost access while it was awaited: the bearer check's
+/// own refusal for this path, as a new request would get it.
+async fn access_lost(ctx: &Ctx<'_>, owed: Option<Owed>) -> Response {
+    if let Some(owed) = owed {
+        owed.settle("refused", ACCESS_LOST).await;
+    }
+    match guard::check(
+        ctx.state,
+        ctx.peer,
+        &ctx.headers,
+        guard::Target::Server(ctx.slug),
+    )
+    .await
+    {
+        Err(refusal) => refusal.into_response(),
+        Ok(_) => answer::unavailable(ctx.slug),
+    }
 }
 
 /// Removes the switched-off capabilities of an initialize or server/discover result, and on a
@@ -644,6 +716,7 @@ fn trim_capabilities(value: &mut Value, method: &str, switches: Switches) -> boo
     if !switches.prompts {
         changed |= capabilities.remove("prompts").is_some();
     }
+    changed |= capabilities.remove("tasks").is_some();
     if method == "server/discover" {
         for (group, member) in [
             ("tools", "listChanged"),
@@ -693,7 +766,10 @@ fn first_page(answer: &Value, request: &Value) -> Result<Option<Vec<Value>>, Fau
     if has_cursor || has_next {
         return Ok(None);
     }
-    let tools = result.get("tools").and_then(Value::as_array).ok_or(Fault)?;
+    let tools = result
+        .get("tools")
+        .and_then(Value::as_array)
+        .ok_or(Fault(Cause::NotMcp))?;
     Ok(Some(tools.clone()))
 }
 
@@ -706,7 +782,7 @@ async fn replace_catalog(ctx: &Ctx<'_>, tools: Vec<Value>) {
         .call(move |conn| catalog::replace(conn, server, &tools, now))
         .await
     {
-        eprintln!("doorward: the tool catalog cannot be stored: {err}");
+        report::failure("tool catalog", &err);
     }
 }
 
@@ -729,15 +805,15 @@ async fn record_session(ctx: &Ctx<'_>, issued: Option<HeaderValue>) -> Option<He
         Ok(true) => Some(issued),
         Ok(false) => None,
         Err(err) => {
-            eprintln!("doorward: the upstream session cannot be recorded: {err}");
+            report::failure("upstream session", &err);
             None
         }
     }
 }
 
 /// One tool_call row. A failed write is reported and never changes the answer.
-async fn record(ctx: &Ctx<'_>, tool: &str, decision: &str, outcome: &str) {
-    stream::record(&ctx.owned(), tool, decision, outcome, "").await;
+async fn record(ctx: &Ctx<'_>, tool: &str, decision: &str, outcome: &str, detail: &str) {
+    stream::record(&ctx.owned(), tool, decision, outcome, detail).await;
 }
 
 /// The detail of the row of a call whose client left before the answer.
@@ -762,18 +838,19 @@ impl Owed {
         }
     }
 
-    /// Writes the row with `outcome` in its own task and waits for it, so a dropped waiter writes nothing more.
-    pub(super) async fn settle(mut self, outcome: &str) {
+    /// Writes the row with `outcome` and `detail` in its own task and waits for it, so a dropped waiter
+    /// writes nothing more.
+    pub(super) async fn settle(mut self, outcome: &str, detail: &str) {
         let Some(owned) = self.ctx.take() else {
             return;
         };
         let tool = std::mem::take(&mut self.tool);
-        let outcome = outcome.to_owned();
+        let (outcome, detail) = (outcome.to_owned(), detail.to_owned());
         let written = tokio::spawn(async move {
-            stream::record(&owned, &tool, "allow", &outcome, "").await;
+            stream::record(&owned, &tool, "allow", &outcome, &detail).await;
         });
         if let Err(err) = written.await {
-            eprintln!("doorward: the activity row cannot be written: {err}");
+            report::failure("activity row", &err);
         }
     }
 
@@ -796,7 +873,7 @@ impl Drop for Owed {
                     stream::record(&owned, &tool, "allow", "error", LEFT).await;
                 });
             }
-            Err(err) => eprintln!("doorward: the activity row cannot be written: {err}"),
+            Err(err) => report::failure("activity row", &err),
         }
     }
 }

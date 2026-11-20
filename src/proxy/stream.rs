@@ -14,11 +14,12 @@ use tokio::time::{Interval, MissedTickBehavior};
 use super::catalog::answer_of;
 use super::handle::{TOOL_LIMIT, cut};
 use super::sse::sse_events;
-use super::upstream::time_limit;
+use super::upstream::{Cause, fail, time_limit};
 use crate::app::AppState;
 use crate::audit::{self, OwnedEvent};
 use crate::mcp::json::parse_strict;
 use crate::oauth::guard::{Caller, still_valid};
+use crate::report;
 
 /// Chunks the client may lag the upstream by before the reading waits.
 const CHANNEL: usize = 8;
@@ -39,6 +40,13 @@ pub(super) struct Watch {
     pub call: Option<String>,
     pub id: Value,
 }
+
+/// The detail of a row whose caller lost access.
+pub(super) const ACCESS_LOST: &str = "access was lost";
+/// The detail of a row whose client left before the answer.
+const CLOSED: &str = "the client closed the stream";
+/// The detail of a row whose tool reported an error.
+pub(super) const TOOL_ERROR: &str = "the tool reported an error";
 
 /// Why the relay ended.
 #[derive(Clone, Copy)]
@@ -99,17 +107,17 @@ async fn run(ctx: Owned, mut response: reqwest::Response, watch: Watch, tx: Send
         }
     };
     if let Some(call) = watch.call.as_deref() {
-        let outcome = match (observer.answer.outcome, end) {
-            (Some(outcome), _) => outcome,
-            (None, End::Refused) => "refused",
-            (None, End::ClientGone) => "error",
-            (None, _) => "unavailable",
+        let (outcome, detail) = match (observer.answer.outcome, end) {
+            (Some(outcome), End::ClientGone) => (outcome, CLOSED.to_owned()),
+            (Some(outcome), _) => (outcome, observer.answer.detail.to_owned()),
+            (None, End::Refused) => ("refused", ACCESS_LOST.to_owned()),
+            (None, End::ClientGone) => ("error", CLOSED.to_owned()),
+            (None, End::Broken) => ("unavailable", fail(&ctx.slug, Cause::NoConnection)),
+            (None, End::Idle) => ("unavailable", fail(&ctx.slug, Cause::NoAnswerInTime)),
+            (None, End::Oversize) => ("unavailable", fail(&ctx.slug, Cause::TooLarge)),
+            (None, End::Done) => ("unavailable", fail(&ctx.slug, Cause::NotMcp)),
         };
-        let detail = match end {
-            End::ClientGone => "the client closed the stream",
-            _ => "",
-        };
-        record(&ctx, call, "allow", outcome, detail).await;
+        record(&ctx, call, "allow", outcome, &detail).await;
     }
 }
 
@@ -184,11 +192,12 @@ impl Framing {
     }
 }
 
-/// The unread tail of the stream and the call's outcome once its answer is seen.
+/// The unread tail of the stream and the call's outcome and detail once its answer is seen.
 #[derive(Default)]
 pub(super) struct Observed {
     pub(super) pending: Vec<u8>,
     pub(super) outcome: Option<&'static str>,
+    pub(super) detail: &'static str,
     #[cfg(test)]
     pub(super) scans: usize,
 }
@@ -222,7 +231,9 @@ impl Observed {
                 .ok()
                 .and_then(|value| answer_of(value, id));
             if let Some(answer) = answer {
-                self.outcome = Some(outcome_of(&answer));
+                let (outcome, detail) = settled_by(&answer);
+                self.outcome = Some(outcome);
+                self.detail = detail;
                 return;
             }
         }
@@ -261,6 +272,22 @@ pub(super) fn outcome_of(answer: &Value) -> &'static str {
     }
 }
 
+/// The outcome of an answer and its row detail: a result that reports a tool error keeps `ok` and says so.
+pub(super) fn settled_by(answer: &Value) -> (&'static str, &'static str) {
+    let outcome = outcome_of(answer);
+    (outcome, detail_of(answer, outcome))
+}
+
+/// TOOL_ERROR for an ok outcome whose result reports a tool error; empty otherwise.
+pub(super) fn detail_of(answer: &Value, outcome: &str) -> &'static str {
+    let reported = answer.pointer("/result/isError") == Some(&Value::Bool(true));
+    if outcome == "ok" && reported {
+        TOOL_ERROR
+    } else {
+        ""
+    }
+}
+
 /// One tool_call row. A failed write is reported and changes nothing else.
 pub(super) async fn record(ctx: &Owned, tool: &str, decision: &str, outcome: &str, detail: &str) {
     let elapsed = i64::try_from(ctx.started.elapsed().as_millis()).unwrap_or(i64::MAX);
@@ -278,6 +305,6 @@ pub(super) async fn record(ctx: &Owned, tool: &str, decision: &str, outcome: &st
         duration_ms: Some(elapsed),
     };
     if let Err(err) = audit::record_now(&ctx.state, event).await {
-        eprintln!("doorward: the activity row cannot be written: {err}");
+        report::failure("activity row", &err);
     }
 }

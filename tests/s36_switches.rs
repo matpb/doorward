@@ -303,10 +303,24 @@ async fn completion_needs_a_switch() {
         "initialize must be relayed"
     );
     upstream.clear();
-    let answered = client.request("completion/complete", params).await;
+    let prompt_refused = client.request("completion/complete", params).await;
+    assert_eq!(
+        prompt_refused.error_code(),
+        Some(-32601),
+        "a ref/prompt completion follows the prompts switch, which is off"
+    );
+    assert!(
+        upstream.requests().is_empty(),
+        "the refused ref/prompt completion must not be forwarded"
+    );
+    let resource = json!({
+        "ref": {"type": "ref/resource", "uri": "file:///secret.txt"},
+        "argument": {"name": "uri", "value": "x"},
+    });
+    let answered = client.request("completion/complete", resource).await;
     assert_eq!(
         answered.status, 200,
-        "with one switch on, completion/complete must be answered"
+        "with the resources switch on, a ref/resource completion must be answered"
     );
     assert_eq!(
         answered.error_code(),
@@ -316,7 +330,7 @@ async fn completion_needs_a_switch() {
     assert_eq!(
         upstream.rpc_count("completion/complete"),
         1,
-        "with one switch on, the upstream must receive completion/complete"
+        "the upstream must receive the ref/resource completion and not the ref/prompt one"
     );
 }
 

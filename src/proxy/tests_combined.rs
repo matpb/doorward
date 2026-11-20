@@ -1267,15 +1267,28 @@ async fn every_refusal_answers_the_same_and_writes_one_deny_row() {
         })
         .await
         .expect("the deny rule");
-    let cases: [(&str, Option<i64>, &str, &str); 6] = [
-        ("echo", None, "mcp", "echo"),
-        ("nope__echo", None, "mcp", "nope__echo"),
-        ("other__echo", Some(other), "other", "echo"),
-        ("demo__missing", Some(demo), "demo", "missing"),
-        ("demo__denied", Some(demo), "demo", "denied"),
-        ("demo__hidden", Some(demo), "demo", "hidden"),
+    let rule_id: i64 = fx
+        .state
+        .db
+        .call(|conn| {
+            conn.query_row("SELECT id FROM rules WHERE tool = 'denied'", [], |row| {
+                row.get(0)
+            })
+        })
+        .await
+        .expect("the rule id");
+    let denied = format!("rule {rule_id}");
+    let missing = "not in the tool list";
+    let unassigned = "the server is not assigned";
+    let cases: [(&str, Option<i64>, &str, &str, &str); 6] = [
+        ("echo", None, "mcp", "echo", missing),
+        ("nope__echo", None, "mcp", "nope__echo", missing),
+        ("other__echo", Some(other), "other", "echo", unassigned),
+        ("demo__missing", Some(demo), "demo", "missing", missing),
+        ("demo__denied", Some(demo), "demo", "denied", &denied),
+        ("demo__hidden", Some(demo), "demo", "hidden", missing),
     ];
-    for (index, (name, server_id, slug, tool_name)) in cases.into_iter().enumerate() {
+    for (index, (name, server_id, slug, tool_name, detail)) in cases.into_iter().enumerate() {
         let caller = combined_caller(&fx.state, 1).await;
         let reply = send_text(
             &fx.state,
@@ -1314,7 +1327,7 @@ async fn every_refusal_answers_the_same_and_writes_one_deny_row() {
                 tool: tool_name.to_owned(),
                 decision: "deny".to_owned(),
                 outcome: "refused".to_owned(),
-                detail: String::new(),
+                detail: detail.to_owned(),
             },
             "{name}: the refused row"
         );
@@ -1545,7 +1558,7 @@ async fn an_upstream_answer_under_another_id_is_502_and_unavailable() {
             tool: "echo".to_owned(),
             decision: "allow".to_owned(),
             outcome: "unavailable".to_owned(),
-            detail: String::new(),
+            detail: "an answer that is not an MCP answer".to_owned(),
         }]
     );
 }
@@ -1594,7 +1607,7 @@ async fn a_user_unassigned_while_the_upstream_holds_the_answer_is_refused() {
             tool: "echo".to_owned(),
             decision: "allow".to_owned(),
             outcome: "refused".to_owned(),
-            detail: String::new(),
+            detail: "access was lost".to_owned(),
         }]
     );
 }
@@ -1638,7 +1651,7 @@ async fn a_client_that_leaves_while_the_upstream_holds_the_answer_leaves_one_row
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_tool_added_upstream_is_callable_and_a_missing_one_costs_one_list() {
+async fn a_tool_added_upstream_is_callable_and_a_missing_one_costs_no_list_in_the_interval() {
     let fx = fixture().await;
     let listed = Arc::new(Mutex::new(vec![tool("echo")]));
     let up = session_shared(Arc::clone(&listed)).await;
@@ -1693,8 +1706,8 @@ async fn a_tool_added_upstream_is_callable_and_a_missing_one_costs_one_list() {
     );
     assert_eq!(
         rpc_count(&up, "tools/list"),
-        3,
-        "a missing tool costs exactly one more list"
+        2,
+        "a missing tool within the refresh interval costs no list"
     );
     assert_eq!(calls(&up).len(), 1, "only the added tool was called");
 }
@@ -1851,7 +1864,7 @@ async fn a_call_to_an_unassigned_server_never_reaches_it_even_when_its_catalog_h
             tool: "echo".to_owned(),
             decision: "deny".to_owned(),
             outcome: "refused".to_owned(),
-            detail: String::new(),
+            detail: "the server is not assigned".to_owned(),
         }]
     );
 }
@@ -2604,7 +2617,7 @@ async fn a_user_unassigned_while_the_upstream_refuses_the_call_gets_the_refusal(
             tool: "echo".to_owned(),
             decision: "allow".to_owned(),
             outcome: "refused".to_owned(),
-            detail: String::new(),
+            detail: "access was lost".to_owned(),
         }]
     );
 }

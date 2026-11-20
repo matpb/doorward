@@ -459,7 +459,14 @@ async fn a_stream_that_ends_without_an_answer_is_unavailable() {
         vec![progress(1), unavailable_for_41()],
         "the last event names the server as unavailable"
     );
-    assert_eq!(rows(&fx.state).await, vec![row("echo", "unavailable", "")]);
+    assert_eq!(
+        rows(&fx.state).await,
+        vec![row(
+            "echo",
+            "unavailable",
+            "an answer that is not an MCP answer"
+        )]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -481,7 +488,10 @@ async fn an_event_over_the_cap_ends_the_stream_as_unavailable() {
         vec![progress(1), unavailable_for_41()],
         "an event over the cap ends the stream"
     );
-    assert_eq!(rows(&fx.state).await, vec![row("echo", "unavailable", "")]);
+    assert_eq!(
+        rows(&fx.state).await,
+        vec![row("echo", "unavailable", "an answer over the size limit")]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -495,7 +505,10 @@ async fn silence_past_the_time_limit_ends_the_stream_as_unavailable() {
     let caller = setup(&fx, &up).await;
     let streamed = read(handle(&fx.state, caller, post(&call_of("demo__echo"), &[])).await).await;
     assert_eq!(streamed.events(), vec![progress(1), unavailable_for_41()]);
-    assert_eq!(rows(&fx.state).await, vec![row("echo", "unavailable", "")]);
+    assert_eq!(
+        rows(&fx.state).await,
+        vec![row("echo", "unavailable", "no answer in time")]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -543,7 +556,10 @@ async fn a_user_unassigned_before_the_answer_gets_the_refusal() {
         vec![refusal_for_41("demo__echo")],
         "the answer the upstream held is replaced by the refusal"
     );
-    assert_eq!(rows(&fx.state).await, vec![row("echo", "refused", "")]);
+    assert_eq!(
+        rows(&fx.state).await,
+        vec![row("echo", "refused", "access was lost")]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -583,7 +599,10 @@ async fn a_user_unassigned_mid_stream_ends_it_within_two_and_a_half_seconds() {
         vec![progress(1)],
         "no answer event may follow the refusal"
     );
-    assert_eq!(rows(&fx.state).await, vec![row("echo", "refused", "")]);
+    assert_eq!(
+        rows(&fx.state).await,
+        vec![row("echo", "refused", "access was lost")]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -757,7 +776,7 @@ async fn each_streamed_call_writes_exactly_one_row() {
         rows(&fx.state).await,
         vec![
             row("echo", "ok", ""),
-            row("gone", "unavailable", ""),
+            row("gone", "unavailable", "an answer that is not an MCP answer"),
             row("ask", "error", ""),
         ],
         "three streamed calls write three rows, one each"
@@ -819,7 +838,14 @@ async fn an_answer_with_both_result_and_error_is_not_the_answer() {
         vec![unavailable_for_41()],
         "an object with both members is not the answer, so no result reaches the client"
     );
-    assert_eq!(rows(&fx.state).await, vec![row("echo", "unavailable", "")]);
+    assert_eq!(
+        rows(&fx.state).await,
+        vec![row(
+            "echo",
+            "unavailable",
+            "an answer that is not an MCP answer"
+        )]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

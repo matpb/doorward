@@ -244,7 +244,8 @@ that call is still recorded, and the upstream request is closed), `unavailable`
 (the upstream could not be reached, answered garbage, or stopped before the answer) or
 `refused` (denied, stopped by the gateway before the upstream, or a streamed call cut
 off because the caller lost access). Each row
-also carries `data-time` (RFC 3339) and, for tool calls, `data-duration-ms`. The `user`
+also carries `data-time` (RFC 3339) and, for tool calls, `data-duration-ms`. The detail of a tool
+call's row is one of the phrases listed under `/mcp`. The `user`
 and `server` filters take ids. Newest rows come first.
 
 Activity kinds: `tool_call`, `login`, `login_failed`, `invitation`, `reset`, `admin_change`,
@@ -396,12 +397,13 @@ Forwarded methods on `/{slug}`; everything else is refused:
 | Always | `initialize`, `ping`, `tools/list`, `tools/call`, `logging/setLevel`, notifications `notifications/initialized`, `notifications/cancelled`, `notifications/progress`, `notifications/roots/list_changed` | `server/discover`, `tools/list`, `tools/call`, notification `notifications/cancelled` |
 | `pass_resources` on | `resources/list`, `resources/templates/list`, `resources/read`, `resources/subscribe`, `resources/unsubscribe` | `resources/list`, `resources/templates/list`, `resources/read` |
 | `pass_prompts` on | `prompts/list`, `prompts/get` | `prompts/list`, `prompts/get` |
-| Either switch on | `completion/complete` | `completion/complete` |
+| A completion whose `params.ref.type` is `ref/prompt` (`pass_prompts` on) or `ref/resource` (`pass_resources` on) | `completion/complete` | `completion/complete` |
 
 With a switch off, the gateway answers the group's list methods itself with empty lists
 (`resources`, `resourceTemplates`, `prompts`), answers the other methods of the group with
 `-32601` (HTTP `404` under the stateless rules), and removes `resources` or `prompts` from the capabilities in the relayed
-`initialize` and `server/discover` results. A stateless `subscriptions/listen` is not served on either endpoint: `404`,
+`initialize` and `server/discover` results, and always removes `tasks`. A completion whose ref type is
+not `ref/prompt` or `ref/resource`, or is missing, is `-32601` with either switch on. A stateless `subscriptions/listen` is not served on either endpoint: `404`,
 `-32601`, upstream not contacted. A relayed stateless `server/discover` also loses `listChanged` under `tools`, `prompts`
 and `resources`, and `subscribe` under `resources`; a session `initialize` keeps them. Under the stateless rules its own answers carry
 `"resultType": "complete"`, and list answers `"ttlMs": 60000, "cacheScope": "private"`.
@@ -467,12 +469,14 @@ The combined endpoint `/mcp` is its own MCP server:
 - A request carrying `Mcp-Session-Id`: `404`, upstream not contacted.
 - `tools/call` takes `{slug}__{tool}`, split at the first `__`. A name without `__`, with an
   empty or invalid slug or tool, or longer than 128 bytes is refused; so is a name whose
-  server does not exist, whose server the caller is not assigned to now, whose tool is not
-  in the catalog after one refresh of that server, that the caller's rules deny, or whose
-  tool has an `x-mcp-header` key on a stateless link. A refusal is `200` with `-32602` and
+  server does not exist, whose server the caller is not assigned to now, whose rules deny it,
+  whose tool has an `x-mcp-header` key on a stateless link, or whose tool is not in the catalog. The rules
+  are checked first; a tool the catalog lacks is refreshed from the upstream at most once per
+  `catalog_refresh_seconds` per server, and a call that finds that refresh running waits for it. A refusal is `200` with `-32602` and
   `Unknown tool: {name as sent}` for every one of them; no upstream sees it. Its activity
   row is `deny` / `refused`: under the real server and the bare tool name when the server
-  exists, else with no server, the slug `mcp` and the name as sent.
+  exists, else with no server, the slug `mcp` and the name as sent. The detail is `not in the tool list`,
+  `the server is not assigned`, or `rule {id}` for the rule that denies it.
 - An allowed call is sent with the client's `params.arguments` as raw bytes (absent when
   absent or `null`), its `_meta.progressToken` when that is a string or an integer, and
   nothing else of the request: no other `_meta` key, no client header, not the client's id.
@@ -499,16 +503,19 @@ The combined endpoint `/mcp` is its own MCP server:
   fails before the answer is sent makes the answer the `-32602` refusal above.
 - A streamed call writes one row when its stream ends: `allow` with the outcome of the answer
   when one was sent (`ok`, or `error` for a JSON-RPC error or a replaced input request),
-  `refused` after a failed check, `unavailable` after a stream that ended without an answer, or
+  `refused` with the detail `access was lost` after a failed check, `unavailable` after a stream that ended without an answer, or
   `error` with the detail `the client closed the stream` when the client left.
 - Before the answer is returned the caller's token and its assignment to the server are
   checked again; when either fails the answer is the refusal above and the row is
-  `allow` / `refused`. A call that reached an upstream writes one row: `allow` with outcome
-  `ok` (any result, also one the tool itself marks as an error), `error` (a JSON-RPC error,
+  `allow` / `refused` with the detail `access was lost`. A call that reached an upstream writes one row: `allow` with outcome
+  `ok` (any result; one the tool marks as an error has the detail `the tool reported an error`), `error` (a JSON-RPC error,
   or a result replaced because it asked for input), or `unavailable`, or, when the
   client leaves before the answer, `error` with the detail `the client left before the answer`.
 - An upstream that is unreachable, answers another id, or faults: `502`, `-32000`,
-  `Upstream {slug} is unavailable`, row `unavailable`.
+  `Upstream {slug} is unavailable`, row `unavailable`. The row's detail and the one log line
+  `doorward: upstream {slug} failed: {phrase}` carry the fault: `no connection`, `no answer in time`,
+  `the upstream answered {status}`, `an answer of the wrong content type`, `an answer over the size limit`,
+  `an answer that is not valid JSON`, or `an answer that is not an MCP answer`.
 - A `tools/call` that the upstream answers with HTTP `400` or `404` and a JSON-RPC error (`jsonrpc`
   `2.0`, the id the gateway sent upstream, no `result`, an `error` with an integer `code` and a string
   `message`, optional `data`; read under the tool-list cap) is relayed with the client's id and the same

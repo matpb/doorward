@@ -99,6 +99,7 @@ message names the variable and never prints the value.
 | `DOORWARD_LIMITS_MCP_OPEN` | `64` | Most MCP requests and streams one user may have open at the same time. |
 | `DOORWARD_LIMITS_RATE_TABLE_KEYS` | `100000` | Most addresses and users the rate limiter keeps counters for at once. |
 | `DOORWARD_LIMITS_AUTH_REQUESTS_MAX` | `10000` | Most pending sign-in requests kept at once. |
+| `DOORWARD_LIMITS_CATALOG_REFRESH_SECONDS` | `30` | Least seconds between two refreshes of one server's tool list that a call for a tool missing from the list starts. A call that finds a refresh running waits for it. Must be at least `1`. |
 | `DOORWARD_LIMITS_ACTIVITY_DAYS` | `90` | Days an activity row is kept. The housekeeping run deletes older rows. Must be at least `1`. |
 | `DOORWARD_MAIL_SMTP_CA_FILE` | (none) | PEM file with extra trusted roots for SMTP over TLS. |
 
@@ -267,6 +268,10 @@ shapes:
 - `doorward: <what> failed: <error>`, for example `doorward: sign-in failed: database error: database is locked`.
   The page or answer the request gets is unchanged, except a bearer check that cannot read
   the database, which answers `503`.
+- `doorward: upstream <slug> failed: <phrase>`, when an upstream answer cannot be used. The phrase is one
+  fixed text, such as `no answer in time`; only the server's slug is written.
+- `doorward: tool list failed: tools/list: <slug> ...`, when a tool list leaves tools or a server out. It
+  names the server's slug and a count, never a tool.
 - `doorward: token refused: <reason>`, when a code or refresh token that exists is refused.
   The reason is one fixed phrase, such as `the verifier does not match`. A code or token
   that matches no row writes nothing.

@@ -1,20 +1,23 @@
 //! The tool catalog: the upstream's tool list as the gateway fetches it, and what is stored of it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::body::Bytes;
 use axum::http::header::{ACCEPT, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method};
 use rusqlite::{Connection, TransactionBehavior, params};
 use serde_json::{Value, json};
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use super::sse::sse_events;
 use super::upstream::{
-    self, BodyError, Fault, Kind, Outgoing, Target, read_body, read_stream, time_limit,
+    self, BodyError, Cause, Fault, Kind, Outgoing, Target, read_body, read_stream, time_limit,
 };
 use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::mcp::json::parse_strict;
+use crate::report;
 
 const MAX_PAGES: usize = 20;
 const NAME_LIMIT: usize = 128;
@@ -32,16 +35,39 @@ pub enum RefreshError {
     Db,
 }
 
+/// A failed fetch: the refresh error, and the upstream cause the log names.
+#[derive(Debug, Clone, Copy)]
+struct Failure {
+    error: RefreshError,
+    cause: Option<Cause>,
+}
+
+impl Failure {
+    fn upstream(cause: Cause) -> Failure {
+        Failure {
+            error: RefreshError::Unavailable,
+            cause: Some(cause),
+        }
+    }
+
+    fn too_large() -> Failure {
+        Failure {
+            error: RefreshError::TooLarge,
+            cause: Some(Cause::TooLarge),
+        }
+    }
+}
+
 /// What one request answered.
 enum Reply {
     /// A JSON-RPC result, and the size of the answer it came in.
     Result(Value, u64),
     /// Status 401 or 403.
-    Denied,
+    Denied(u16),
     /// The answer is over the cap.
     TooLarge,
-    /// A fault, another status or type, or an answer that is not a JSON-RPC result.
-    Other,
+    /// A fault with its cause, or an answer that is not a JSON-RPC result.
+    Other(Cause),
 }
 
 fn id() -> Value {
@@ -117,20 +143,22 @@ async fn post(
     };
     let response = match upstream::send(state, target, outgoing).await {
         Ok(response) => response,
-        Err(Fault) => return (Reply::Other, None),
+        Err(Fault(cause)) => return (Reply::Other(cause), None),
     };
     let session = response.headers().get(mcp_session()).cloned();
-    if matches!(response.status().as_u16(), 401 | 403) {
-        return (Reply::Denied, session);
+    let status = response.status().as_u16();
+    if matches!(status, 401 | 403) {
+        return (Reply::Denied(status), session);
     }
     let reply = match upstream::accept(&response) {
         Ok(Kind::Json) => match read_body(state, response, cap).await {
             Ok(bytes) => reply_of(&bytes, &id()),
             Err(BodyError::TooLarge) => Reply::TooLarge,
-            Err(BodyError::Fault) => Reply::Other,
+            Err(BodyError::Fault(cause)) => Reply::Other(cause),
         },
         Ok(Kind::Stream) => stream_reply(state, response, cap, &id()).await,
-        _ => Reply::Other,
+        Ok(Kind::Empty) => Reply::Other(Cause::NotMcp),
+        Err(Fault(cause)) => Reply::Other(cause),
     };
     (reply, session)
 }
@@ -145,28 +173,28 @@ pub(crate) fn answer_of(value: Value, expected: &Value) -> Option<Value> {
     (object.contains_key("result") || object.contains_key("error")).then_some(value)
 }
 
-/// The reply of an answer: its result, or Other for an error or any other shape.
+/// The reply of an answer: its result, or an error for an error or any other shape.
 fn reply_of_answer(mut answer: Value, size: u64) -> Reply {
     if answer.get("error").is_some() {
-        return Reply::Other;
+        return Reply::Other(Cause::NotMcp);
     }
     match answer
         .as_object_mut()
         .and_then(|object| object.remove("result"))
     {
         Some(result) => Reply::Result(result, size),
-        None => Reply::Other,
+        None => Reply::Other(Cause::NotMcp),
     }
 }
 
-/// The reply of a JSON body to request `expected`.
+/// The reply of a JSON body to request `expected`: a result, or the cause of its refusal.
 fn reply_of(bytes: &[u8], expected: &Value) -> Reply {
-    match parse_strict(bytes)
-        .ok()
-        .and_then(|value| answer_of(value, expected))
-    {
+    let Ok(value) = parse_strict(bytes) else {
+        return Reply::Other(Cause::NotJson);
+    };
+    match answer_of(value, expected) {
         Some(answer) => reply_of_answer(answer, bytes.len() as u64),
-        None => Reply::Other,
+        None => Reply::Other(Cause::NotMcp),
     }
 }
 
@@ -196,7 +224,9 @@ pub(crate) async fn stream_answer(
         false
     })
     .await?;
-    found.map(|answer| (answer, read)).ok_or(BodyError::Fault)
+    found
+        .map(|answer| (answer, read))
+        .ok_or(BodyError::Fault(Cause::NotMcp))
 }
 
 /// The reply of an event stream that answers request `expected`.
@@ -209,7 +239,7 @@ async fn stream_reply(
     match stream_answer(state, response, cap, expected).await {
         Ok((answer, total)) => reply_of_answer(answer, total),
         Err(BodyError::TooLarge) => Reply::TooLarge,
-        Err(BodyError::Fault) => Reply::Other,
+        Err(BodyError::Fault(cause)) => Reply::Other(cause),
     }
 }
 
@@ -231,7 +261,7 @@ async fn list_pages(
     stateless: bool,
     session: Option<&HeaderValue>,
     with_secret: bool,
-) -> Result<Option<Vec<Value>>, RefreshError> {
+) -> Result<Option<Vec<Value>>, Failure> {
     let limit = state.config.limits.tools_list_bytes;
     let mut tools = Vec::new();
     let mut cursor: Option<String> = None;
@@ -247,11 +277,12 @@ async fn list_pages(
         let (reply, _) = post(state, target, &body, headers, with_secret, cap).await;
         let (result, size) = match reply {
             Reply::Result(result, size) => (result, size),
-            Reply::TooLarge => return Err(RefreshError::TooLarge),
+            Reply::TooLarge => return Err(Failure::too_large()),
             _ if page == 0 => return Ok(None),
-            _ => return Err(RefreshError::Unavailable),
+            Reply::Denied(code) => return Err(Failure::upstream(Cause::Status(code))),
+            Reply::Other(cause) => return Err(Failure::upstream(cause)),
         };
-        let (page_tools, next) = page_of(&result).ok_or(RefreshError::Unavailable)?;
+        let (page_tools, next) = page_of(&result).ok_or(Failure::upstream(Cause::NotMcp))?;
         tools.extend(page_tools);
         used = used.saturating_add(size);
         match next {
@@ -259,7 +290,7 @@ async fn list_pages(
             Some(next) => cursor = Some(next),
         }
     }
-    Err(RefreshError::TooLarge)
+    Err(Failure::too_large())
 }
 
 /// Closes a session with DELETE. Best effort: the answer does not change the result.
@@ -279,7 +310,7 @@ pub(super) async fn close_session(
 }
 
 /// The session form: initialize, the notification, the list, then DELETE of the session.
-async fn session_tools(state: &AppState, target: &Target) -> Result<Vec<Value>, RefreshError> {
+async fn session_tools(state: &AppState, target: &Target) -> Result<Vec<Value>, Failure> {
     let limit = state.config.limits.tools_list_bytes;
     let (reply, session) = post(
         state,
@@ -292,8 +323,9 @@ async fn session_tools(state: &AppState, target: &Target) -> Result<Vec<Value>, 
     .await;
     match reply {
         Reply::Result(..) => {}
-        Reply::TooLarge => return Err(RefreshError::TooLarge),
-        _ => return Err(RefreshError::Unavailable),
+        Reply::TooLarge => return Err(Failure::too_large()),
+        Reply::Denied(code) => return Err(Failure::upstream(Cause::Status(code))),
+        Reply::Other(cause) => return Err(Failure::upstream(cause)),
     }
     let notified = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
     post(
@@ -309,11 +341,11 @@ async fn session_tools(state: &AppState, target: &Target) -> Result<Vec<Value>, 
     if let Some(session) = session.as_ref() {
         close_session(state, target, session, true).await;
     }
-    listed?.ok_or(RefreshError::Unavailable)
+    listed?.ok_or(Failure::upstream(Cause::NotMcp))
 }
 
 /// Asks the upstream for its tools: the stateless form first, then the session form.
-async fn fetch(state: &AppState, target: &Target) -> Result<Vec<Value>, RefreshError> {
+async fn fetch(state: &AppState, target: &Target) -> Result<Vec<Value>, Failure> {
     if let Some(tools) = list_pages(state, target, true, None, true).await? {
         return Ok(tools);
     }
@@ -325,13 +357,16 @@ async fn fetch(state: &AppState, target: &Target) -> Result<Vec<Value>, RefreshE
 pub async fn refresh(state: &AppState, target: &Target) -> Result<Vec<String>, RefreshError> {
     let fetched = match tokio::time::timeout(time_limit(state), fetch(state, target)).await {
         Ok(result) => result,
-        Err(_) => Err(RefreshError::Unavailable),
+        Err(_) => Err(Failure::upstream(Cause::NoAnswerInTime)),
     };
     match fetched {
         Ok(tools) => store(state, target.server_id, tools).await,
-        Err(error) => {
-            fail(state, target.server_id, error).await?;
-            Err(error)
+        Err(failure) => {
+            if let Some(cause) = failure.cause {
+                report::failure(&format!("upstream {}", target.slug), &Fault(cause));
+            }
+            fail(state, target.server_id, failure.error).await?;
+            Err(failure.error)
         }
     }
 }
@@ -349,7 +384,10 @@ async fn store(
             names(conn, server_id)
         })
         .await
-        .map_err(|_| RefreshError::Db)
+        .map_err(|err| {
+            report::failure("tool catalog", &err);
+            RefreshError::Db
+        })
 }
 
 /// Writes the fixed message of a failed refresh. The stored tools are not touched.
@@ -373,7 +411,10 @@ pub async fn fail(
         })
         .await
         .map(|_| ())
-        .map_err(|_| RefreshError::Db)
+        .map_err(|err| {
+            report::failure("tool catalog", &err);
+            RefreshError::Db
+        })
 }
 
 /// The lock-down probe without the secret: stateless tools/list, then the session initialize.
@@ -384,7 +425,7 @@ pub async fn lockdown(state: &AppState, target: &Target) -> &'static str {
     let (reply, _) = post(state, target, &list_body(true, None), headers, false, limit).await;
     match reply {
         Reply::Result(..) => return "open",
-        Reply::Denied => return "ok",
+        Reply::Denied(_) => return "ok",
         _ => {}
     }
     let (reply, session) = post(
@@ -401,8 +442,25 @@ pub async fn lockdown(state: &AppState, target: &Target) -> &'static str {
     }
     match reply {
         Reply::Result(..) => "open",
-        Reply::Denied => "ok",
+        Reply::Denied(_) => "ok",
         _ => "unknown",
+    }
+}
+
+/// The miss refreshes of each server: a miss waits for the one in flight.
+#[derive(Default)]
+pub struct Misses {
+    servers: Mutex<HashMap<i64, Arc<AsyncMutex<Option<i64>>>>>,
+}
+
+impl Misses {
+    /// The server's slot, which holds the start of its last miss refresh while the caller keeps it.
+    pub async fn lock(&self, server_id: i64) -> OwnedMutexGuard<Option<i64>> {
+        let slot = {
+            let mut servers = self.servers.lock().unwrap_or_else(PoisonError::into_inner);
+            Arc::clone(servers.entry(server_id).or_default())
+        };
+        slot.lock_owned().await
     }
 }
 
