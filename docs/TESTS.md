@@ -918,3 +918,112 @@ bob on demo; the fake upstream offers one resource and one prompt.
    rules is `-32601` while off.
 9. `switches_default_to_off_on_a_new_server`: the server page shows both checkboxes
    unchecked.
+
+## s37_environment.rs (statement 37)
+
+These tests start the real binary (`env!("CARGO_BIN_EXE_doorward")`) with
+`std::process::Command`, a cleared environment, a temporary directory and a free local
+port, and stop it afterwards. "Starts" means `GET /healthz` answers `200` within 5
+seconds; "refuses" means the process exits non-zero within 5 seconds.
+
+1. `starts_from_variables_alone`: no config file; `DOORWARD_PUBLIC_URL`,
+   `DOORWARD_LISTEN` and `DOORWARD_DATABASE` set: starts, and the setup code is printed.
+2. `a_variable_beats_the_file`: the file says one `listen` port, `DOORWARD_LISTEN` another:
+   the gateway answers on the variable's port and not on the file's.
+3. `an_empty_variable_is_unset`: `DOORWARD_LIMITS_BODY_BYTES=""` with a file that sets
+   `body_bytes = 2000`: a 3000 byte POST to `/oauth/token` is `413`.
+4. `an_unknown_variable_is_refused_and_named`: `DOORWARD_LIMIT_BODY_BYTES=1` (misspelt):
+   refuses, and the output names that variable.
+5. `a_bad_value_is_refused_without_echoing_it`: `DOORWARD_LIMITS_BODY_BYTES=hunter2-not-a-number`:
+   refuses; the output names the variable and says a whole number is expected; the output
+   does not contain `hunter2`.
+6. `every_setting_has_a_variable`: in process, for each row of `config::SETTINGS`: the
+   loader given that one variable with a valid non-default value returns a `Config` that
+   differs from the default in exactly that setting, and given a wrong-typed value returns
+   an error that names the variable. Every field of `Config` is reached by one row.
+7. `lists_and_booleans_parse`: `DOORWARD_TRUSTED_PROXIES` with two comma separated entries,
+   one of them a CIDR range, and `DOORWARD_SHARED_CLIENT_ADDRESS=true` are in effect;
+   `DOORWARD_SHARED_CLIENT_ADDRESS=yes` refuses.
+8. `orchestrator_variables_are_ignored`: `DOORWARD_PORT`, `DOORWARD_PORT_8717_TCP` and
+   `DOORWARD_SERVICE_HOST` set to arbitrary text: starts.
+9. `the_key_never_reaches_the_output`: `DOORWARD_KEY` set to a valid random key and an
+   unknown variable beside it: refuses, and neither stdout nor stderr contains the key.
+10. `subcommands_use_the_same_settings`: with variables only, `doorward health` exits 0
+    while the gateway runs and 1 after it stopped; `doorward unlock` for an unknown email
+    exits non-zero with a message and creates no key file in an empty directory.
+11. `health_opens_nothing`: `doorward health` against a closed port, with
+    `DOORWARD_DATABASE` pointing into an empty directory: exit 1 and the directory is still
+    empty.
+
+## s41_docs.rs (statement 41)
+
+1. `every_setting_is_documented_with_its_default`: for each row of `config::SETTINGS`,
+   `docs/DOCKER.md` has a table row with the variable name and the default that
+   `Config::default()` holds.
+2. `no_documented_variable_is_unknown`: every `DOORWARD_` name in `docs/DOCKER.md`,
+   `README.md`, the Compose files and `.env.example` is a `SETTINGS` variable, `DOORWARD_KEY`
+   or `DOORWARD_CONFIG`.
+3. `the_example_env_file_starts_a_gateway`: `.env.example` with its placeholders filled is
+   accepted by the loader (`config::from_env` over those pairs).
+
+## s42_proxy_start.rs (statement 42)
+
+Real binary, as in s37.
+
+1. `https_without_a_trusted_proxy_refuses`: `public_url` `https://doorward.example.com`,
+   no `trusted_proxies`: refuses; the output names `trusted_proxies` and
+   `shared_client_address` and shows the loopback entry for a proxy on the same host.
+2. `the_opt_out_starts_with_a_warning`: the same with `shared_client_address = true`:
+   starts, and the log has one warning that every visitor shares one address.
+3. `a_trusted_proxy_starts_quietly`: with `trusted_proxies = ["127.0.0.1"]`: starts, no
+   such warning.
+4. `http_on_loopback_is_exempt`: `public_url` `http://127.0.0.1:{port}` and
+   `http://localhost:{port}`, no proxies: starts without the warning.
+5. `http_on_a_public_name_follows_the_https_rule`: `public_url`
+   `http://doorward.example.com`, no proxies: refuses.
+
+## s43_rate_limits.rs (statement 43)
+
+`W` is started with `trusted_proxies = ["127.0.0.1"]` and every burst set to 2 unless a
+test says otherwise. A caller "from A" sends `X-Forwarded-For: A`; addresses come from the
+documentation ranges. "Limited" is status `429` with an integer `Retry-After` of at least
+1, `Cache-Control: no-store` and no `WWW-Authenticate`. Waiting is `W.gw.clock.advance`.
+
+1. `each_class_limits_after_its_burst`: from one address, the third request of each class
+   is limited: `GET /nothing-here` (general), `POST /oauth/token` (oauth), `POST /login`
+   (credentials); the `login_failures` table has two rows, not three, after three wrong
+   passwords.
+2. `a_forged_header_from_an_untrusted_peer_changes_nothing`: with `trusted_proxies` empty
+   and `shared_client_address = true`, three requests each naming another
+   `X-Forwarded-For`: the third is limited.
+3. `prepended_addresses_are_ignored`: behind the trusted peer, requests whose
+   `X-Forwarded-For` is `{rotating}, A`: the third is limited.
+4. `two_callers_have_two_buckets`: two requests from A, then one from B: B is answered.
+5. `ipv6_callers_are_counted_by_their_64`: two addresses of one /64 share a bucket; an
+   address of another /64 is answered.
+6. `a_limited_refresh_keeps_the_token`: the limited `POST /oauth/token` answers JSON
+   `{"error": "too_many_requests"}`; after the wait the same refresh token is accepted and
+   the family is not revoked.
+7. `a_limited_exchange_keeps_the_code`: a code exchange that is limited, then repeated
+   after the wait: tokens are issued.
+8. `a_bad_bearer_flood_is_limited_without_a_challenge`: from A, the third request with an
+   invalid bearer on `/demo` is limited, with JSON-RPC error `-32029` and `id` `null`;
+   bob's valid token from B is answered `200`.
+9. `a_user_is_limited_whatever_the_address`: bob's third `tools/list` in the window is
+   limited although each came from another address; the upstream records two; carol's
+   first is answered.
+10. `open_requests_are_capped_per_user`: `mcp_open = 2`: with two streams of bob open a
+    third request is limited; after one stream is dropped the next request is answered.
+11. `the_limit_is_checked_before_the_body`: a 10 MiB POST to an exhausted bucket is `429`,
+    not `413`.
+12. `the_table_is_bounded`: `rate_table_keys = 4`; A exhausts its bucket; 100 other
+    addresses each send one request; A is still limited, and after the flood two new
+    addresses in a row are limited by the shared overflow bucket.
+13. `rotating_addresses_cannot_fill_the_request_tables`: 200 `GET /oauth/authorize`
+    requests from 200 addresses with a valid client leave at most the documented cap of
+    pending rows; the same for `POST /oauth/register`.
+14. `existing_refusals_carry_retry_after`: the `429` of a blocked sign-in, of the
+    password change throttle and of the registration limit each carry `Retry-After`.
+15. `every_limit_is_a_setting`: each class's burst and rate, `mcp_open` and
+    `rate_table_keys` appear in `config::SETTINGS`, and a start with `burst = 1` limits the
+    second request.

@@ -99,10 +99,13 @@ pub(crate) fn meta_version(value: &Value) -> Option<&Value> {
     param(value, "_meta")?.get(META_VERSION)
 }
 
+/// True when the version header is a well-formed date from 2026-07-28 on.
+pub fn stateless_version(version_header: Option<&str>) -> bool {
+    version_header.is_some_and(|version| is_calendar_date(version) && version >= STATELESS_FROM)
+}
+
 fn stateless(version_header: Option<&str>, value: &Value) -> bool {
-    let header_says = version_header
-        .is_some_and(|version| is_calendar_date(version) && version >= STATELESS_FROM);
-    header_says || meta_version(value).is_some()
+    stateless_version(version_header) || meta_version(value).is_some()
 }
 
 /// True for `YYYY-MM-DD` that names a real calendar day.

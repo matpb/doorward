@@ -43,12 +43,6 @@ enum Reply {
     Other,
 }
 
-/// The answer to request 1 that one JSON-RPC message carries.
-enum Answer {
-    Result(Value),
-    Error,
-}
-
 fn id() -> Value {
     json!(1)
 }
@@ -130,67 +124,89 @@ async fn post(
     }
     let reply = match upstream::accept(&response) {
         Ok(Kind::Json) => match read_body(state, response, cap).await {
-            Ok(bytes) => reply_of(&bytes),
+            Ok(bytes) => reply_of(&bytes, &id()),
             Err(BodyError::TooLarge) => Reply::TooLarge,
             Err(BodyError::Fault) => Reply::Other,
         },
-        Ok(Kind::Stream) => stream_reply(state, response, cap).await,
+        Ok(Kind::Stream) => stream_reply(state, response, cap, &id()).await,
         _ => Reply::Other,
     };
     (reply, session)
 }
 
-/// The answer to request 1 in one JSON-RPC message, or None for any other message.
-fn answer_of(mut value: Value) -> Option<Answer> {
-    let object = value.as_object_mut()?;
-    if object.get("id") != Some(&id()) {
+/// The whole answer to request `expected` in one JSON-RPC message (a result or an error);
+/// None for any other message.
+pub(crate) fn answer_of(value: Value, expected: &Value) -> Option<Value> {
+    let object = value.as_object()?;
+    if object.get("id") != Some(expected) {
         return None;
     }
-    if object.contains_key("error") {
-        return Some(Answer::Error);
-    }
-    object.remove("result").map(Answer::Result)
+    (object.contains_key("result") || object.contains_key("error")).then_some(value)
 }
 
-/// The reply of a JSON body: its result, or Other for an error or any other shape.
-fn reply_of(bytes: &[u8]) -> Reply {
-    match parse_strict(bytes).ok().and_then(answer_of) {
-        Some(Answer::Result(result)) => Reply::Result(result, bytes.len() as u64),
-        _ => Reply::Other,
+/// The reply of an answer: its result, or Other for an error or any other shape.
+fn reply_of_answer(mut answer: Value, size: u64) -> Reply {
+    if answer.get("error").is_some() {
+        return Reply::Other;
     }
-}
-
-/// The reply that one event carries; None for an event that is not the answer to request 1.
-fn reply_of_event(data: &[u8]) -> Option<Reply> {
-    match parse_strict(data).ok().and_then(answer_of)? {
-        Answer::Result(result) => Some(Reply::Result(result, 0)),
-        Answer::Error => Some(Reply::Other),
+    match answer
+        .as_object_mut()
+        .and_then(|object| object.remove("result"))
+    {
+        Some(result) => Reply::Result(result, size),
+        None => Reply::Other,
     }
 }
 
-/// Reads an event stream until its answer to request 1 is complete, under the cap and the time limit.
-async fn stream_reply(state: &AppState, response: reqwest::Response, cap: u64) -> Reply {
+/// The reply of a JSON body to request `expected`.
+fn reply_of(bytes: &[u8], expected: &Value) -> Reply {
+    match parse_strict(bytes)
+        .ok()
+        .and_then(|value| answer_of(value, expected))
+    {
+        Some(answer) => reply_of_answer(answer, bytes.len() as u64),
+        None => Reply::Other,
+    }
+}
+
+/// Reads an event stream until its answer to request `expected` is complete, under the cap and
+/// the time limit. The whole answer and the bytes read; a stream that ends without it is a Fault.
+pub(crate) async fn stream_answer(
+    state: &AppState,
+    response: reqwest::Response,
+    cap: u64,
+    expected: &Value,
+) -> Result<(Value, u64), BodyError> {
     let mut pending: Vec<u8> = Vec::new();
-    let mut found: Option<Reply> = None;
+    let mut found: Option<Value> = None;
     let read = read_stream(state, response, cap, |chunk| {
         pending.extend_from_slice(chunk);
         let (events, used) = sse_events(&pending);
         pending.drain(..used);
         for data in events {
-            if let Some(reply) = reply_of_event(&data) {
-                found = Some(reply);
+            let answer = parse_strict(&data)
+                .ok()
+                .and_then(|value| answer_of(value, expected));
+            if answer.is_some() {
+                found = answer;
                 return true;
             }
         }
         false
     })
-    .await;
-    match read {
-        Ok(total) => match found {
-            Some(Reply::Result(result, _)) => Reply::Result(result, total),
-            Some(other) => other,
-            None => Reply::Other,
-        },
+    .await?;
+    found.map(|answer| (answer, read)).ok_or(BodyError::Fault)
+}
+
+/// The reply of an event stream that answers request `expected`.
+async fn stream_reply(
+    state: &AppState,
+    response: reqwest::Response,
+    cap: u64,
+    expected: &Value,
+) -> Reply {
+    match stream_answer(state, response, cap, expected).await {
+        Ok((answer, total)) => reply_of_answer(answer, total),
         Err(BodyError::TooLarge) => Reply::TooLarge,
         Err(BodyError::Fault) => Reply::Other,
     }

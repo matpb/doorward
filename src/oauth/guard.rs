@@ -1,6 +1,6 @@
 //! The bearer check for `/{slug}` and `/mcp`: one database call, and one refusal for every failure.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
 use axum::http::header::{
     AUTHORIZATION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, WWW_AUTHENTICATE, X_CONTENT_TYPE_OPTIONS,
 };
@@ -10,6 +10,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::app::AppState;
 use crate::crypto::token_hash;
+use crate::proxy;
 use crate::servers::valid_slug;
 use crate::web::not_found;
 
@@ -101,7 +102,7 @@ pub fn is_token_shape(text: &str, prefix: &str) -> bool {
 pub async fn server_path(
     State(state): State<AppState>,
     slug: Option<Path<String>>,
-    headers: HeaderMap,
+    request: Request,
 ) -> Response {
     let Some(Path(slug)) = slug else {
         return not_found();
@@ -109,8 +110,8 @@ pub async fn server_path(
     if !valid_slug(&slug) {
         return not_found();
     }
-    match check(&state, &headers, Target::Server(&slug)).await {
-        Ok(_) => unavailable(&slug),
+    match check(&state, request.headers(), Target::Server(&slug)).await {
+        Ok(caller) => proxy::handle(&state, caller, &slug, request).await,
         Err(refusal) => refusal.into_response(),
     }
 }

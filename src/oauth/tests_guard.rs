@@ -234,7 +234,7 @@ fn plain_challenge(base: &str, slug: &str) -> String {
     )
 }
 
-/// The answer of an accepted request on `slug`, while the proxy is not built.
+/// The answer of an accepted request on `/mcp`, which keeps its placeholder until the next slice.
 fn placeholder(slug: &str) -> String {
     format!(
         r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32000,"message":"Upstream {slug} is unavailable"}}}}"#
@@ -582,33 +582,57 @@ async fn every_refusal_is_the_same_answer() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_token_that_passes_gets_the_placeholder() {
+async fn a_token_that_passes_reaches_the_handler() {
     let gw = Gateway::start().await;
     let demo = add_server(&gw, "demo");
     let user = user_with(&gw, BOB, &[demo]);
     let server = issue(&gw, user, Some(demo), CLIENT);
     let combined = issue(&gw, user, None, CLIENT);
     let http = gw.http();
+    let reply = http
+        .bearer(reqwest::Method::GET, "/demo", &server.access)
+        .await;
+    assert_eq!(
+        reply.status, 405,
+        "GET /demo without a session must be answered 405 by the handler"
+    );
+    assert_eq!(
+        reply.header("allow").as_deref(),
+        Some("POST"),
+        "the 405 names the allowed method"
+    );
+    let reply = http
+        .request(
+            reqwest::Method::POST,
+            "/demo",
+            vec![
+                ("authorization", format!("Bearer {}", server.access)),
+                ("content-type", JSON_TYPE.to_owned()),
+            ],
+            Some(String::new()),
+        )
+        .await;
+    assert_eq!(
+        reply.status, 400,
+        "POST /demo with an empty body must be refused by the handler"
+    );
+    assert_eq!(
+        reply.body,
+        r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}"#,
+        "the empty body is a parse error"
+    );
+    let reply = http
+        .bearer(reqwest::Method::DELETE, "/demo", &server.access)
+        .await;
+    assert_eq!(
+        reply.status, 405,
+        "DELETE /demo without a session must be answered 405 by the handler"
+    );
     for method in [
         reqwest::Method::GET,
         reqwest::Method::POST,
         reqwest::Method::DELETE,
     ] {
-        let reply = http.bearer(method.clone(), "/demo", &server.access).await;
-        assert_eq!(
-            reply.status, 502,
-            "{method} /demo must reach the placeholder"
-        );
-        assert_eq!(
-            reply.body,
-            placeholder("demo"),
-            "the placeholder body of demo"
-        );
-        assert_eq!(
-            reply.header("content-type").as_deref(),
-            Some(JSON_TYPE),
-            "the placeholder is JSON"
-        );
         let reply = http.bearer(method.clone(), "/mcp", &combined.access).await;
         assert_eq!(
             reply.status, 502,
@@ -690,7 +714,7 @@ async fn bearer_is_any_case_and_the_spacing_is_exact() {
             .request(reqwest::Method::GET, "/demo", headers, None)
             .await;
         assert_eq!(
-            reply.status, 502,
+            reply.status, 405,
             "{scheme} with a valid token must be accepted"
         );
     }
@@ -1132,7 +1156,7 @@ async fn another_users_client_is_a_plain_404_and_is_not_revoked() {
         .http()
         .bearer(reqwest::Method::GET, "/demo", &issued.access)
         .await;
-    assert_eq!(live.status, 502, "bob's token must still pass the guard");
+    assert_eq!(live.status, 405, "bob's token must still pass the guard");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1181,7 +1205,7 @@ async fn the_mailed_link_shows_then_disconnects_once() {
         .http()
         .bearer(reqwest::Method::GET, "/demo", &issued.access)
         .await;
-    assert_eq!(live.status, 502, "the token must still pass after two GETs");
+    assert_eq!(live.status, 405, "the token must still pass after two GETs");
     let csrf = view.csrf();
     let bare = anonymous.post(&path, &[]).await;
     assert_eq!(bare.status, 403, "the link post needs the csrf token");

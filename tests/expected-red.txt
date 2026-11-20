@@ -1,6 +1,5 @@
 # Test files written before their code. Each must compile and fail; remove a name when its code lands.
 s05_disable
-s09_routing
 s10_combined
 s11_generations
 s12_streaming
@@ -8,14 +7,8 @@ s13_upstream_faults
 s14_assignment
 s16_tool_list
 s17_activity
-s18_unauthorized
 s20_cimd_fetcher
-s23_upstream_isolation
 s24_trick_requests
 s26_panel
 s29_state_survives
 s32_rules
-s33_consent
-s34_redirects_codes
-s35_tokens
-s36_switches
