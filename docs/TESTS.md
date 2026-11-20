@@ -1592,7 +1592,7 @@ activity of allowed, denied and failed tool calls.
 6. `the_lock_down_state_is_a_word_with_a_marker`: three servers, one checked as ok (the
    upstream refuses without the secret), one open (answers without it), one unchecked. Each
    server page holds one pill with tone ok, bad and warn. It is red before the change.
-7. `an_activity_row_reads_in_plain_words`: every `[data-kind]` row on the activity page has
+7. `an_activity_row_reads_in_plain_words`: every `li[data-kind]` row on the activity page has
    `data-time`, one `[data-label]` that is not the raw kind, and one `time` whose `datetime`
    is `data-time` and whose text reads `20 Nov 2026 19:25:09 UTC`. The labels are `Tool call`,
    `Tool call refused`, `Tool call failed`, `Sign-in`, `Client connected`, `Admin change`,

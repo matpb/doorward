@@ -282,7 +282,7 @@ pub async fn activity_with_details(
     };
     let page = c.get(&target).await;
     let doc = Html::parse_document(&page.body);
-    let selector = Selector::parse("[data-kind]").expect("static selector");
+    let selector = Selector::parse("li[data-kind]").expect("static selector");
     let detail = Selector::parse("p.detail").expect("static selector");
     doc.select(&selector)
         .map(|row| {

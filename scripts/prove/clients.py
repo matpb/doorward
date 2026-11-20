@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -459,6 +459,31 @@ def owner_client(state):
     return owner
 
 
+ACTIVITY_PAGE_LIMIT = 200
+
+
+def all_activity_rows(owner, path):
+    """The rows of every page of the activity list from `path`, newest first.
+
+    Older links are followed on the gateway address; more than ACTIVITY_PAGE_LIMIT pages fail.
+    """
+    gateway = urlsplit(owner.base)
+    rows = []
+    for _ in range(ACTIVITY_PAGE_LIMIT):
+        page = owner.get(path)
+        cf.need(page.status == 200 and page.kind() == "activity", f"the activity page answered {page.status}")
+        parser = ActivityRows()
+        parser.feed(page.text)
+        rows.extend(parser.rows)
+        older = page.find({"data-page-link": "older"})
+        if not older:
+            return rows
+        target = urlsplit(urljoin(owner.base + "/", older[0]["href"]))
+        cf.need(target.netloc == gateway.netloc, f"an older link leaves the gateway: {older[0]['href']}")
+        path = target.path + ("?" + target.query if target.query else "")
+    raise cf.Fail(f"the activity list runs past {ACTIVITY_PAGE_LIMIT} pages")
+
+
 def activity_rows(state, email=None):
     """The activity rows, oldest first, optionally only one user's rows."""
     owner = owner_client(state)
@@ -467,11 +492,7 @@ def activity_rows(state, email=None):
         matches = owner.get("/admin/users").find({"data-email": email})
         cf.need(len(matches) == 1, f"there is no user with the email {email}")
         query = "?" + urlencode({"user": matches[0]["data-user-id"]})
-    page = owner.get(f"/admin/activity{query}")
-    cf.need(page.status == 200 and page.kind() == "activity", f"the activity page answered {page.status}")
-    parser = ActivityRows()
-    parser.feed(page.text)
-    return list(reversed(parser.rows))
+    return list(reversed(all_activity_rows(owner, f"/admin/activity{query}")))
 
 
 def format_row(row):

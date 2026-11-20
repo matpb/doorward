@@ -141,11 +141,7 @@ def page_messages(text):
 
 def mail_rows(owner):
     """The activity rows of every user, oldest first."""
-    page = owner.get("/admin/activity")
-    cf.need(page.status == 200 and page.kind() == "activity", f"the activity page answered {page.status}")
-    parser = k.ActivityRows()
-    parser.feed(page.text)
-    return list(reversed(parser.rows))
+    return list(reversed(k.all_activity_rows(owner, "/admin/activity")))
 
 
 def shows(page_text, secret):

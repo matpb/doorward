@@ -14,6 +14,7 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use url::form_urlencoded::Serializer;
 
+use super::activity::{label_of, offset_of, page_number, plain_time};
 use super::servers::{Stored, store_lockdown};
 use crate::app::{Deps, assemble, serve};
 use crate::audit::{self, Event};
@@ -3825,4 +3826,384 @@ async fn a_tool_row_of_the_user_page_holds_one_allow_or_deny_pill_by_its_verdict
         Some("ok")
     );
     assert_eq!(elements(&body, "li[data-tool] [data-pill]").len(), 2);
+}
+
+#[test]
+fn every_activity_kind_has_a_plain_label_and_a_tone_where_it_needs_one() {
+    let cases = [
+        ("tool_call", "allow", "ok", "Tool call", None),
+        (
+            "tool_call",
+            "deny",
+            "refused",
+            "Tool call refused",
+            Some("bad"),
+        ),
+        (
+            "tool_call",
+            "allow",
+            "error",
+            "Tool call failed",
+            Some("bad"),
+        ),
+        (
+            "tool_call",
+            "allow",
+            "unavailable",
+            "Tool call failed",
+            Some("bad"),
+        ),
+        ("login", "", "", "Sign-in", None),
+        ("login_failed", "", "", "Sign-in refused", Some("bad")),
+        ("client_connected", "", "", "Client connected", None),
+        ("client_disconnected", "", "", "Client disconnected", None),
+        ("admin_change", "", "", "Admin change", None),
+        ("invitation", "", "", "Invitation", None),
+        ("mail_failed", "", "", "Mail not sent", Some("warn")),
+        ("owner_created", "", "", "Owner created", None),
+        ("reset", "", "", "Password reset", None),
+        ("password_change", "", "", "Password changed", None),
+        ("redirect_blocked", "", "", "Redirect blocked", Some("warn")),
+        ("tool_appeared", "", "", "New tool listed", None),
+        ("unlock", "", "", "Gateway unlocked", None),
+        ("made_up_kind", "", "", "Made up kind", None),
+    ];
+    for (kind, decision, outcome, label, tone) in cases {
+        assert_eq!(
+            label_of(kind, decision, outcome),
+            (label.to_owned(), tone),
+            "the label of {kind} with decision {decision:?} and outcome {outcome:?}"
+        );
+    }
+}
+
+#[test]
+fn the_plain_time_reads_day_month_year_and_utc() {
+    // The reference values are Python's datetime, converted to unix seconds.
+    let cases = [
+        (1_801_440_000, "1 Feb 2027 00:00:00 UTC"),
+        (1_835_442_309, "29 Feb 2028 13:05:09 UTC"),
+        (1_798_761_599, "31 Dec 2026 23:59:59 UTC"),
+        (1_805_068_800, "15 Mar 2027 00:00:00 UTC"),
+        (1_795_202_709, "20 Nov 2026 19:25:09 UTC"),
+    ];
+    for (at, text) in cases {
+        assert_eq!(plain_time(at).expect("the time formats"), text, "unix {at}");
+    }
+}
+
+#[test]
+fn a_page_number_is_positive_and_anything_else_is_the_first_page() {
+    assert_eq!(page_number(None), 1, "a missing page is the first");
+    for text in ["", "0", "-1", "abc", "1.5", " 2"] {
+        assert_eq!(page_number(Some(text)), 1, "page {text:?}");
+    }
+    assert_eq!(page_number(Some("3")), 3);
+    assert_eq!(page_number(Some("0003")), 3);
+    assert_eq!(page_number(Some("99999999999999999999999")), u64::MAX);
+}
+
+#[test]
+fn a_page_offset_is_fifty_rows_per_page_and_saturates() {
+    assert_eq!(offset_of(1), 0);
+    assert_eq!(offset_of(3), 100);
+    assert_eq!(offset_of(u64::MAX), i64::MAX);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_row_reads_in_plain_words_beside_its_time_element() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    let conn = open_db(dir.path());
+    let allowed = Event {
+        kind: "tool_call",
+        decision: "allow",
+        outcome: "ok",
+        ..Default::default()
+    };
+    let refused = Event {
+        kind: "tool_call",
+        decision: "deny",
+        outcome: "refused",
+        ..Default::default()
+    };
+    let failed = Event {
+        kind: "mail_failed",
+        detail: "invitation: refused",
+        ..Default::default()
+    };
+    audit::record(&conn, AT, &allowed).expect("record");
+    audit::record(&conn, AT + 1, &refused).expect("record");
+    audit::record(&conn, AT + 2, &failed).expect("record");
+    let mut owner = sign_in(&base, OWNER).await;
+    let body = owner.get("/admin/activity").await.body;
+
+    let rows = [
+        (
+            "2027-01-15T08:00:02Z",
+            "15 Jan 2027 08:00:02 UTC",
+            "Mail not sent",
+            Some("warn"),
+        ),
+        (
+            "2027-01-15T08:00:01Z",
+            "15 Jan 2027 08:00:01 UTC",
+            "Tool call refused",
+            Some("bad"),
+        ),
+        (
+            "2027-01-15T08:00:00Z",
+            "15 Jan 2027 08:00:00 UTC",
+            "Tool call",
+            None,
+        ),
+    ];
+    for (stamp, shown, label, tone) in rows {
+        let row = format!(r#"li[data-time="{stamp}"]"#);
+        assert_eq!(
+            text_of(&body, &format!("{row} [data-label]")).as_deref(),
+            Some(label),
+            "the row at {stamp} must read {label}"
+        );
+        assert_eq!(
+            attr_of(&body, &format!("{row} [data-label]"), "data-tone").as_deref(),
+            tone,
+            "the tone of the row at {stamp}"
+        );
+        assert_eq!(
+            attr_of(&body, &format!("{row} time"), "datetime").as_deref(),
+            Some(stamp),
+            "the time of the row at {stamp} must carry its data-time"
+        );
+        assert_eq!(
+            text_of(&body, &format!("{row} time")).as_deref(),
+            Some(shown),
+            "the time of the row at {stamp} must read in plain words"
+        );
+    }
+}
+
+/// Inserts `count` activity rows of one user and server, one second apart from AT.
+fn insert_activity(dir: &Path, count: i64) {
+    let conn = open_db(dir);
+    for offset in 0..count {
+        let event = Event {
+            kind: "tool_call",
+            user_id: Some(7),
+            user_email: "alice@example.com",
+            server_id: Some(10),
+            server_slug: "alpha",
+            tool: "echo",
+            decision: "allow",
+            outcome: "ok",
+            ..Default::default()
+        };
+        audit::record(&conn, AT + offset, &event).expect("record");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_activity_pages_hold_fifty_rows_and_link_with_the_filters() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    // With the sign-in row that the owner's visit writes, the log holds 120 rows.
+    insert_activity(dir.path(), 119);
+    let mut owner = sign_in(&base, OWNER).await;
+
+    let first = owner.get("/admin/activity").await.body;
+    assert_eq!(
+        elements(&first, "li[data-kind]").len(),
+        50,
+        "page one holds 50 rows"
+    );
+    assert_eq!(
+        text_of(&first, "[data-range]").as_deref(),
+        Some("Rows 1 to 50 of 120")
+    );
+    assert_eq!(
+        attr_of(&first, r#"a[data-page-link="older"]"#, "href").as_deref(),
+        Some("/admin/activity?user=&server=&page=2")
+    );
+    assert_eq!(
+        attr_of(&first, r#"a[data-page-link="newer"]"#, "href"),
+        None
+    );
+
+    let second = owner.get("/admin/activity?page=2").await.body;
+    assert_eq!(
+        text_of(&second, "[data-range]").as_deref(),
+        Some("Rows 51 to 100 of 120")
+    );
+    assert_eq!(
+        attr_of(&second, r#"a[data-page-link="newer"]"#, "href").as_deref(),
+        Some("/admin/activity?user=&server=&page=1")
+    );
+    assert_eq!(
+        attr_of(&second, r#"a[data-page-link="older"]"#, "href").as_deref(),
+        Some("/admin/activity?user=&server=&page=3")
+    );
+
+    let last = owner.get("/admin/activity?page=3").await.body;
+    assert_eq!(
+        text_of(&last, "[data-range]").as_deref(),
+        Some("Rows 101 to 120 of 120")
+    );
+    assert_eq!(attr_of(&last, r#"a[data-page-link="older"]"#, "href"), None);
+
+    let past = owner.get("/admin/activity?page=4").await.body;
+    assert!(
+        elements(&past, "li[data-kind]").is_empty(),
+        "a page past the end holds no rows"
+    );
+    assert!(past.contains("No activity matches."));
+    assert_eq!(
+        attr_of(&past, r#"a[data-page-link="newer"]"#, "href").as_deref(),
+        Some("/admin/activity?user=&server=&page=3")
+    );
+
+    let filtered = owner
+        .get("/admin/activity?user=7&server=10&page=2")
+        .await
+        .body;
+    assert_eq!(
+        attr_of(&filtered, r#"a[data-page-link="newer"]"#, "href").as_deref(),
+        Some("/admin/activity?user=7&server=10&page=1")
+    );
+    assert_eq!(
+        attr_of(&filtered, r#"a[data-page-link="older"]"#, "href").as_deref(),
+        Some("/admin/activity?user=7&server=10&page=3")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_overview_counts_its_rows_and_shows_the_newest_five_activity_rows() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    add_user(dir.path(), ADMIN, "admin").await;
+    add_user(dir.path(), PLAIN, "user").await;
+    let conn = open_db(dir.path());
+    conn.execute(
+        "INSERT INTO servers (name, slug, upstream_url, created_at) \
+         VALUES ('Demo', 'demo', 'http://127.0.0.1:9/mcp', 0)",
+        [],
+    )
+    .expect("server");
+    let server_id: i64 = conn
+        .query_row("SELECT id FROM servers", [], |row| row.get(0))
+        .expect("server id");
+    for (email, token, expires) in [
+        ("open@example.com", "hash-open", 4_102_444_800_i64),
+        ("old@example.com", "hash-old", 1),
+    ] {
+        conn.execute(
+            "INSERT INTO invitations (email, role, token_hash, invited_by, created_at, expires_at) \
+             VALUES (?1, 'user', ?2, NULL, 0, ?3)",
+            rusqlite::params![email, token, expires],
+        )
+        .expect("invitation");
+    }
+    conn.execute(
+        "INSERT INTO rules (user_id, effect, server_id, tool, created_at) VALUES (NULL, 'allow', ?1, NULL, 0)",
+        rusqlite::params![server_id],
+    )
+    .expect("rule");
+    conn.execute(
+        "INSERT INTO rules (user_id, effect, server_id, tool, created_at) VALUES (NULL, 'deny', ?1, 'echo', 0)",
+        rusqlite::params![server_id],
+    )
+    .expect("rule");
+    for offset in 0..6 {
+        let event = Event {
+            kind: "admin_change",
+            detail: "mail settings",
+            ..Default::default()
+        };
+        audit::record(&conn, AT + offset, &event).expect("record");
+    }
+    let mut owner = sign_in(&base, OWNER).await;
+    let body = owner.get("/admin").await.body;
+
+    for (key, value) in [
+        ("servers", "1"),
+        ("users", "3"),
+        ("invitations", "1"),
+        ("rules", "2"),
+    ] {
+        assert_eq!(
+            text_of(
+                &body,
+                &format!(r#"a[data-count="{key}"] [data-count-value]"#)
+            )
+            .as_deref(),
+            Some(value),
+            "the {key} count"
+        );
+    }
+    let stamps: Vec<String> = elements(&body, "section[data-latest-activity] li[data-kind]")
+        .iter()
+        .map(|row| row["data-time"].clone())
+        .collect();
+    assert_eq!(
+        stamps,
+        [
+            "2027-01-15T08:00:05Z",
+            "2027-01-15T08:00:04Z",
+            "2027-01-15T08:00:03Z",
+            "2027-01-15T08:00:02Z",
+            "2027-01-15T08:00:01Z",
+        ],
+        "the overview shows the five newest rows, newest first"
+    );
+    assert!(
+        body.contains(r#"href="/admin/activity""#),
+        "the latest activity links to the whole page"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_overview_without_activity_says_so() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    let mut owner = sign_in(&base, OWNER).await;
+    // The sign-in writes its own row, so the log is emptied before the overview is read.
+    open_db(dir.path())
+        .execute("DELETE FROM activity", [])
+        .expect("the log is emptied");
+    let body = owner.get("/admin").await.body;
+    assert!(
+        body.contains("No activity yet."),
+        "the overview must say there is no activity"
+    );
+    assert!(elements(&body, "section[data-latest-activity] li[data-kind]").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_post_naming_no_provider_is_refused_at_the_top_of_the_mail_page() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    let mut owner = sign_in(&base, OWNER).await;
+    let refused = owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail",
+            &[("provider", "bogus"), ("from", "")],
+        )
+        .await;
+    assert_eq!(
+        refused.status, 400,
+        "a post naming no provider must be refused"
+    );
+    assert_eq!(
+        text_of(&refused.body, ".error").as_deref(),
+        Some("Choose a provider: smtp, resend or mailgun.")
+    );
+    assert!(
+        elements(&refused.body, "details[open]").is_empty(),
+        "no provider disclosure may open for a post that names none"
+    );
 }

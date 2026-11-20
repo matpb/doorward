@@ -758,7 +758,7 @@ async fn an_activity_row_reads_in_plain_words() {
     let page = w.owner.get("/admin/activity").await;
     assert_eq!(page.status, 200, "the activity page must answer 200");
     let doc = Html::parse_document(&page.body);
-    let rows = all(doc.root_element(), "[data-kind]");
+    let rows = all(doc.root_element(), "li[data-kind]");
     assert!(!rows.is_empty(), "the activity page must list rows");
     let mut seen = BTreeSet::new();
     for row in rows {

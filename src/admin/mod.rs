@@ -17,9 +17,13 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::{get, post};
 use maud::{Markup, html};
+use rusqlite::{Connection, params};
 
 use crate::app::AppState;
-use crate::web::{Viewer, forbidden, page, redirect};
+use crate::web::{Viewer, forbidden, internal_error, page, redirect};
+
+/// The newest activity rows the overview shows.
+const LATEST_ROWS: i64 = 5;
 
 pub fn router(state: AppState) -> Router<AppState> {
     let owner_only = Router::new()
@@ -73,16 +77,76 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route_layer(middleware::from_fn_with_state(state, require_admin))
 }
 
-async fn panel(viewer: Viewer) -> Response {
-    page(
-        StatusCode::OK,
-        "admin",
-        "Admin",
-        html! {
-            (panel_nav(&viewer, "/admin"))
-            h1 { "Admin" }
+async fn panel(viewer: Viewer, State(state): State<AppState>) -> Response {
+    let now = state.clock.now().unix_timestamp();
+    let counted = state.db.call(move |conn| counts_in(conn, now)).await;
+    let latest = activity::latest(&state.db, LATEST_ROWS).await;
+    match (counted, latest) {
+        (Ok(counts), Ok(latest)) => page(
+            StatusCode::OK,
+            "admin",
+            "Admin",
+            html! {
+                (panel_nav(&viewer, "/admin"))
+                div.stack {
+                    h1 { "Admin" }
+                    (counts_markup(&counts))
+                    section.card data-latest-activity {
+                        h2 { "Latest activity" }
+                        (latest)
+                        p { a href="/admin/activity" { "All activity" } }
+                    }
+                }
+            },
+        ),
+        (Err(err), _) | (_, Err(err)) => internal_error("admin overview", &err),
+    }
+}
+
+/// The counts of the overview, read in one query. Open invitations are those not yet expired: an
+/// accepted or revoked invitation is deleted, so this is the list of the invitations page.
+struct Counts {
+    servers: i64,
+    users: i64,
+    invitations: i64,
+    rules: i64,
+}
+
+fn counts_in(conn: &Connection, now: i64) -> rusqlite::Result<Counts> {
+    conn.query_row(
+        "SELECT (SELECT COUNT(*) FROM servers), (SELECT COUNT(*) FROM users), \
+         (SELECT COUNT(*) FROM invitations WHERE expires_at > ?1), (SELECT COUNT(*) FROM rules)",
+        params![now],
+        |row| {
+            Ok(Counts {
+                servers: row.get(0)?,
+                users: row.get(1)?,
+                invitations: row.get(2)?,
+                rules: row.get(3)?,
+            })
         },
     )
+}
+
+/// The four counts, each a card that links to its page.
+fn counts_markup(counts: &Counts) -> Markup {
+    html! {
+        div.counts {
+            (count_link("servers", "/admin/servers", "Servers", counts.servers))
+            (count_link("users", "/admin/users", "Users", counts.users))
+            (count_link("invitations", "/admin/invitations", "Open invitations", counts.invitations))
+            (count_link("rules", "/admin/rules", "Rules", counts.rules))
+        }
+    }
+}
+
+fn count_link(key: &str, href: &str, label: &str, value: i64) -> Markup {
+    html! {
+        a.count.card data-count=(key) href=(href) {
+            span.count-label { (label) }
+            span.count-value data-count-value { (value) }
+        }
+    }
 }
 
 /// The links of the panel navigation: label, path, and whether only the owner sees it.
