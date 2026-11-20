@@ -728,3 +728,83 @@ async fn the_code_is_not_stored() {
         "the authorization code must not be stored in the database"
     );
 }
+
+/// An authorization request as a client sends it; `response_type` is left out when None.
+async fn raw_authorize(
+    browser: &TestClient,
+    client_id: &str,
+    redirect: &str,
+    response_type: Option<&str>,
+    resource: &str,
+) -> Page {
+    let pair = pkce();
+    let mut params: Vec<(&str, &str)> = Vec::new();
+    if let Some(kind) = response_type {
+        params.push(("response_type", kind));
+    }
+    params.extend([
+        ("client_id", client_id),
+        ("redirect_uri", redirect),
+        ("code_challenge", pair.challenge.as_str()),
+        ("code_challenge_method", "S256"),
+        ("resource", resource),
+        ("state", "state-1"),
+    ]);
+    browser.authorize_raw(&params).await
+}
+
+/// Fails when any link of the page points at `host`.
+fn assert_no_link_to(page: &Page, host: &str, case: &str) {
+    let links = page.attrs("[href]", "href");
+    assert!(
+        links.iter().all(|href| !href.contains(host)),
+        "{case} must not link to {host}, links {links:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_error_is_never_redirected_to_an_unlisted_address() {
+    let w = World::start().await;
+    let (bob, _upstream) = bob_on_demo(&w).await;
+    let resource = w.resource("demo");
+    let document = "https://client.example.com/app.json";
+    let evil = "https://evil.example.com/x";
+
+    let page = raw_authorize(&bob, document, evil, None, &resource).await;
+    assert_error_page(
+        &page,
+        "a document client with no response_type and an unlisted redirect",
+    );
+    assert_no_link_to(&page, "evil.example.com", "that error page");
+
+    let registered = register_client(&w, "Local", &[L]).await;
+    let page = raw_authorize(&bob, &registered, evil, None, &resource).await;
+    assert_error_page(
+        &page,
+        "a registered client with no response_type and an unlisted redirect",
+    );
+    assert_no_link_to(&page, "evil.example.com", "that error page");
+
+    let page = raw_authorize(&bob, document, evil, Some("token"), &resource).await;
+    assert_error_page(
+        &page,
+        "a document client with response_type=token and an unlisted redirect",
+    );
+    assert_no_link_to(&page, "evil.example.com", "that error page");
+
+    let page = raw_authorize(&bob, &registered, L, Some("token"), &resource).await;
+    assert_eq!(
+        page.status, 303,
+        "a registered loopback redirect with response_type=token must be sent back"
+    );
+    let location = page.location().unwrap_or_default();
+    assert!(
+        location.starts_with(L),
+        "the error must go to the registered loopback address, got {location}"
+    );
+    assert_eq!(
+        page.query("error").as_deref(),
+        Some("invalid_request"),
+        "the error must be carried in the redirect"
+    );
+}

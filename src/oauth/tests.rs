@@ -650,6 +650,50 @@ fn the_name_limits_and_the_invisible_characters_are_enforced() {
 }
 
 #[test]
+fn is_plain_text_refuses_every_invisible_and_direction_character() {
+    let refused = [
+        ("U+00AD", "a\u{AD}b"),
+        ("U+061C", "a\u{61C}b"),
+        ("U+2060", "a\u{2060}b"),
+        ("U+2061", "a\u{2061}b"),
+        ("U+2062", "a\u{2062}b"),
+        ("U+2063", "a\u{2063}b"),
+        ("U+2064", "a\u{2064}b"),
+        ("U+180E", "a\u{180E}b"),
+        ("U+115F", "a\u{115F}b"),
+        ("U+1160", "a\u{1160}b"),
+        ("U+3164", "a\u{3164}b"),
+        ("U+FFA0", "a\u{FFA0}b"),
+        ("U+2028", "a\u{2028}b"),
+        ("U+2029", "a\u{2029}b"),
+        ("U+200F", "a\u{200F}b"),
+        ("U+202A", "a\u{202A}b"),
+        ("U+2069", "a\u{2069}b"),
+        ("U+FEFF", "a\u{FEFF}b"),
+        ("U+0007", "a\u{7}b"),
+    ];
+    let accepted: Vec<&str> = refused
+        .iter()
+        .filter(|(_, text)| register::is_plain_text(text))
+        .map(|(label, _)| *label)
+        .collect();
+    assert_eq!(
+        accepted,
+        Vec::<&str>::new(),
+        "these characters must make a name refused"
+    );
+    for text in [
+        "Claude Code",
+        "Zed (preview)",
+        "Caf\u{e9}",
+        "\u{4F60}\u{597D} client",
+        "Client \u{1F600}",
+    ] {
+        assert!(register::is_plain_text(text), "{text:?} must be plain text");
+    }
+}
+
+#[test]
 fn the_redirect_list_is_one_to_ten_strings() {
     let one_of =
         |list: &str| register::check_metadata(&metadata(&format!(r#"{{"redirect_uris":{list}}}"#)));

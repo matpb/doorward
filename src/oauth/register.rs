@@ -191,10 +191,22 @@ pub(crate) fn is_plain_text(text: &str) -> bool {
     text.chars().all(|c| !c.is_control() && !is_invisible(c))
 }
 
+/// The soft hyphen, the invisible joiners and fillers, the direction marks and the line separators.
 fn is_invisible(c: char) -> bool {
     matches!(
         c,
-        '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{2029}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{3164}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
     )
 }
 
