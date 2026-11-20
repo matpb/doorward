@@ -55,7 +55,7 @@ pub trait Resolver: Send + Sync + 'static {
 }
 /// False for loopback, private, link-local, carrier-grade NAT, unspecified, multicast,
 /// broadcast, documentation and benchmarking ranges, unique-local and link-local IPv6,
-/// IPv4-mapped and NAT64 forms of any of those.
+/// IPv4-mapped and NAT64 forms of any of those, and every IPv6 address outside `2000::/3`.
 pub fn address_allowed(ip: IpAddr) -> bool;
 pub struct FetcherParts {
     pub resolver: Arc<dyn Resolver>,
@@ -72,7 +72,7 @@ impl HttpCimdFetcher {
 ```
 
 `HttpCimdFetcher::fetch` accepts only `https://host/path` with a host name (no address
-literal), no userinfo, no fragment, and no port in the address; any other shape is
+literal), no userinfo, no query, no fragment, and no port in the address; any other shape is
 `NotAllowed`, decided before any name lookup. It resolves the host once, refuses
 when any answer fails `address_allowed` (`NotAllowed`), connects to the resolved address
 itself, sends one GET with `Accept: application/json`, follows no redirect, and refuses a

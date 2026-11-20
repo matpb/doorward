@@ -16,6 +16,9 @@ pub mod rate;
 pub mod servers;
 pub mod web;
 
+#[cfg(test)]
+mod tests_cimd;
+
 pub use app::{Deps, Gateway, StartError, build, serve, unlock};
 pub use cimd::{CimdError, CimdFetcher, ClientMetadata};
 pub use config::{Config, ConfigError};

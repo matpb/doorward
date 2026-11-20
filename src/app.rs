@@ -17,7 +17,7 @@ use crate::accounts::{
     self, account, housekeeping, invite, login, password, reset, setup, throttle,
 };
 use crate::admin;
-use crate::cimd::{CimdFetcher, UnavailableCimd};
+use crate::cimd::{CimdFetcher, HttpCimdFetcher};
 use crate::clock::{Clock, SystemClock};
 use crate::config::{Config, ConfigError};
 use crate::crypto::{CryptoError, KeyError, Keys, PasswordHasher, random_token};
@@ -42,7 +42,7 @@ impl Deps {
     pub fn system() -> Deps {
         Deps {
             clock: Arc::new(SystemClock),
-            cimd: Arc::new(UnavailableCimd),
+            cimd: Arc::new(HttpCimdFetcher::system()),
         }
     }
 }
