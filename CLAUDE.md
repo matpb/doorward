@@ -164,6 +164,33 @@ J. Added after the first security review
     While a switch is off the gateway answers those requests itself with empty lists and
     the upstream does not see them.
 
+K. Added for container installs
+
+37. Every setting of the config file can also be given as an environment variable
+    (`DOORWARD_` and the setting's name in capitals, sections joined by `_`). A variable
+    wins over the file, and the file is optional when the variables give the required
+    settings. An unknown `DOORWARD_` variable or a value that does not parse refuses the
+    start with a message that names the variable and never prints a secret.
+38. One command builds a container image from the repository. The image holds the binary
+    and nothing to log into, runs as a non-root user on a read-only root file system, keeps
+    all its data in one volume, and reports its own health.
+39. Two Compose files ship. One puts Caddy in front with automatic HTTPS and does not
+    publish the gateway on the host. The other runs the gateway alone, published on the
+    host's loopback address only, for a proxy or tunnel the operator already has. With
+    either, a fresh machine with one filled-in `.env` file gets a healthy gateway whose
+    setup code is in the logs, and stopping and starting the stack keeps its data. Every
+    container runs with all capabilities dropped, no privilege escalation, and memory and
+    process limits.
+40. The gateway limits request rates itself, so the protection is the same with or without
+    Caddy: per client address on every endpoint, tighter on the sign-in, password reset,
+    registration, authorization and token endpoints, and per user on tool calls. A request
+    over a limit gets `429` with `Retry-After` and reaches no upstream. Every limit is a
+    setting. Behind the shipped Caddy the address is the caller's real one: a forged
+    forwarding header does not move a caller into another bucket.
+41. The README and `docs/DOCKER.md` cover both Compose files, the first start, every
+    environment variable with its default, backup and restore, upgrading, and what each
+    hardening setting is for. A test fails when a setting has no documented variable.
+
 ### Proof
 
 Each statement is proven by an automated test that `./check.sh` runs, named after its number
@@ -180,6 +207,12 @@ into the test harness. In addition:
 - 27: one transcript and one screenshot per client under `proof/`, by hand-driven runs.
 - 30: `scripts/hygiene.sh` scans tracked files and commit messages.
 - 31: by the project owner.
+- 38, 39, 40: `scripts/prove-docker.sh` builds the image, starts each Compose file on the
+  local machine, and checks health, the setup code in the logs, the user, the read-only
+  root, the dropped capabilities, that the gateway's port is closed on the host in the
+  Caddy stack, a sign-up and a streamed tool call through Caddy's HTTPS, a forged
+  forwarding header against the rate limit, and data kept across a restart. `./check.sh`
+  does not run it, so that Check passes on a machine without Docker.
 
 ### Assumptions
 
@@ -194,6 +227,13 @@ into the test harness. In addition:
 - The key that encrypts mail and upstream secrets comes from the environment or a key file,
   never from the database.
 - License: MIT OR Apache-2.0.
+- Container installs build the image from the repository. Publishing an image to a registry
+  is the owner's call.
+- The Caddy in the Compose stack is the stock official image; nothing in the stack needs a
+  custom build.
+- Mail settings stay in the admin panel, stored encrypted; they are not environment
+  variables.
+- Rate limit counters live in the memory of the one gateway process.
 
 ### Not in v1
 
