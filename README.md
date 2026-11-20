@@ -37,7 +37,7 @@ Two Compose files are in this repository. Copy `.env.example` to `.env`, set
 
 ## Run the binary
 
-Build it with Rust 1.89 or newer:
+The gateway runs on Linux; Windows is not supported. Build it with Rust 1.89 or newer:
 
 ```sh
 cargo build --release
@@ -55,11 +55,12 @@ trusted_proxies = ["127.0.0.1", "::1"]
 ```
 
 `trusted_proxies` names the proxy in front; the two loopback addresses fit a proxy on the same host.
+The directory of `database` must exist and be writable by the gateway.
 
 Start it. The config file is read only from `--config` or `DOORWARD_CONFIG`.
 
 ```sh
-doorward --config doorward.toml
+./target/release/doorward --config doorward.toml
 ```
 
 The first start prints a setup code on standard error. Open `/setup`, enter the code, and
@@ -169,15 +170,16 @@ there. Claude Code, Codex and the Cursor command line client were run against 0.
 
 ## Limits worth knowing
 
-- Five wrong passwords for one account from one address block further tries from that
-  address for 15 minutes. Other limits and all defaults are in
+- Five wrong passwords for one account from one address block further tries on that
+  account from that address for 15 minutes. Other limits and all defaults are in
   [docs/DOCKER.md](docs/DOCKER.md#rate-limits).
 - A browser page on another origin cannot call the MCP paths unless its origin is listed
   in `allowed_origins`.
 - A server's answer larger than `tools_list_bytes` (4 MiB by default) is refused with a
   `502`, whether it is a tool list, a tool result or one event of a stream.
-- Access tokens last 60 minutes and refresh tokens rotate. Presenting an old refresh token
-  again ends that client's connection.
+- Access tokens last 60 minutes and refresh tokens rotate. A refresh token presented again
+  within 30 seconds gets the same new pair, which covers a lost answer; presented later, it
+  ends that client's connection.
 
 ## More
 

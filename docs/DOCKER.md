@@ -256,7 +256,7 @@ unless the peer is in `DOORWARD_TRUSTED_PROXIES`. Then it takes the last `X-Forw
 entry that is not itself a trusted proxy.
 
 - `DOORWARD_TRUSTED_PROXIES` takes addresses or CIDR ranges, comma separated. Keep it to the
-  proxies you run. A `/0` entry trusts every peer and must never be used.
+  proxies you run. A `/0` entry would trust every peer, so the gateway refuses to start with one.
 - The gateway refuses to start when `DOORWARD_PUBLIC_URL` is `https` and no trusted proxy is
   set. The message says how to fix it. `DOORWARD_SHARED_CLIENT_ADDRESS=true` accepts the
   refusal instead: the gateway then starts, logs one warning, and every visitor shares one

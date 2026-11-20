@@ -11,15 +11,18 @@ Small, tested changes are welcome.
 
 ## Build and check
 
-You need Rust 1.89 or newer, `cargo-audit` and `cargo-deny`.
+You need Linux, Rust 1.89 or newer, `cargo-audit` and `cargo-deny`.
 
 ```sh
 ./check.sh
 ```
 
 `check.sh` runs the formatter, clippy with warnings as errors, every test, the advisory and
-licence checks, and a scan for host names, addresses, paths and secrets. It must pass before
-a change is proposed. There is no hosted CI: the same script is the gate everywhere.
+licence checks, and a scan of the tracked files for home directory paths, email addresses
+outside the example domains and IPv4 addresses outside the loopback and documentation
+ranges. The scan does not find everything: host names and secrets are yours to keep out.
+It must pass before a change is proposed. There is no hosted CI: the same script is the
+gate everywhere.
 
 The scripts under `scripts/prove*` drive real clients and containers against a built
 gateway. They need Docker and take longer; run the ones that cover what you changed.
