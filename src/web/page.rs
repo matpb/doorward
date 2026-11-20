@@ -4,6 +4,7 @@ use maud::{DOCTYPE, Markup, html};
 
 use super::cookies::{csrf_cookie, with_cookie};
 use super::viewer::Viewer;
+use crate::report;
 
 /// Extra data attributes of the main element. A None leaves the attribute out.
 #[derive(Default)]
@@ -93,7 +94,7 @@ pub fn redirect(to: &str) -> Response {
             response.headers_mut().insert(LOCATION, location);
             response
         }
-        Err(_) => internal_error(),
+        Err(err) => internal_error("redirect", &err),
     }
 }
 
@@ -126,7 +127,9 @@ pub fn not_found() -> Response {
     StatusCode::NOT_FOUND.into_response()
 }
 
-pub fn internal_error() -> Response {
+/// The 500 page; the failure is written to standard error first.
+pub fn internal_error(what: &str, err: &dyn std::fmt::Display) -> Response {
+    report::failure(what, err);
     page(
         StatusCode::INTERNAL_SERVER_ERROR,
         "error",

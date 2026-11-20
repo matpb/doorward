@@ -41,7 +41,7 @@ pub async fn get_setup(viewer: Viewer, State(state): State<AppState>) -> Respons
             |csrf| setup_form(csrf, None),
         ),
         Ok(false) => not_found(),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("setup page", &err),
     }
 }
 
@@ -52,7 +52,7 @@ pub async fn post_setup(State(state): State<AppState>, form: VerifiedForm) -> Re
     match setup_open(&state).await {
         Ok(true) => {}
         Ok(false) => return not_found(),
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("setup", &err),
     }
     let submitted = form.fields.get(SETUP_CODE_FIELD);
     if !constant_time_eq(submitted.as_bytes(), code.as_bytes()) {
@@ -71,7 +71,7 @@ pub async fn post_setup(State(state): State<AppState>, form: VerifiedForm) -> Re
     };
     let phc = match state.hasher.hash(slot, password.to_owned()).await {
         Ok(phc) => phc,
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("setup", &err),
     };
     let now = state.clock.now().unix_timestamp();
     let lifetime = session::lifetime_seconds(state.config.lifetimes.session_hours);
@@ -83,7 +83,7 @@ pub async fn post_setup(State(state): State<AppState>, form: VerifiedForm) -> Re
     match created {
         Ok(Some(token)) => with_cookie(redirect("/admin"), &session_cookie(&token)),
         Ok(None) => not_found(),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("setup", &err),
     }
 }
 

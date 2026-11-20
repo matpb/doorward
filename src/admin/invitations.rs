@@ -53,7 +53,7 @@ pub async fn get_invitations(viewer: Viewer, State(state): State<AppState>) -> R
     let now = state.clock.now().unix_timestamp();
     match load_open(&state.db, now).await {
         Ok(rows) => invitations_page(&viewer, StatusCode::OK, &rows, None),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("invitations page", &err),
     }
 }
 
@@ -85,7 +85,7 @@ pub async fn post_invitation(State(state): State<AppState>, form: VerifiedForm) 
     match state.db.call(move |conn| store_in(conn, &new)).await {
         Ok(Stored::Written) => {}
         Ok(Stored::Taken) => return refuse(&state, &form.viewer, TAKEN_MESSAGE).await,
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("invitation", &err),
     }
     let link = format!("{}/invite/{token}", state.config.public_url);
     let message = templates::invitation(&link).to(email);
@@ -113,7 +113,7 @@ pub async fn post_revoke(
         .await
     {
         Ok(()) => redirect("/admin/invitations"),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("invitation revoke", &err),
     }
 }
 
@@ -227,7 +227,7 @@ async fn refuse(state: &AppState, viewer: &Viewer, message: &str) -> Response {
     let now = state.clock.now().unix_timestamp();
     match load_open(&state.db, now).await {
         Ok(rows) => invitations_page(viewer, StatusCode::BAD_REQUEST, &rows, Some(message)),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("invitations page", &err),
     }
 }
 

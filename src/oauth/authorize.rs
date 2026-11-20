@@ -215,7 +215,7 @@ pub async fn get_authorize(
     match checked {
         Ok(Checked::Allowed) => {}
         Ok(Checked::Refused(host)) => return error_page(host.as_deref()),
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("authorization request", &err),
     }
     let asked = match check_request(&params, &issuer) {
         Ok(asked) => asked,
@@ -243,13 +243,12 @@ pub async fn get_authorize(
     };
     let lifetime = lifetime_seconds(state.config.lifetimes.auth_request_minutes);
     let max = i64::try_from(state.config.limits.auth_requests_max).unwrap_or(i64::MAX);
-    if state
+    if let Err(err) = state
         .db
         .call(move |conn| store_in(conn, &new, now, lifetime, max))
         .await
-        .is_err()
     {
-        return internal_error();
+        return internal_error("authorization request", &err);
     }
     let next = if signed_in {
         format!("/oauth/consent?req={req}")

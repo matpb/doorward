@@ -102,7 +102,7 @@ pub async fn get_activity(
         .await;
     match listing {
         Ok(listing) => activity_page(&viewer, user, server, &listing),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("activity page", &err),
     }
 }
 

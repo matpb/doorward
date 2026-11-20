@@ -10,6 +10,7 @@ use crate::app::AppState;
 use crate::audit::{self, OwnedEvent};
 use crate::crypto::token_hash;
 use crate::oauth::authorize::is_request_id;
+use crate::report;
 use crate::web::limit;
 use crate::web::{
     SESSION_COOKIE, VerifiedForm, Viewer, busy, clear_cookie, form_page, internal_error, redirect,
@@ -49,7 +50,7 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
     let reserve = reservation(&state, &email, form.viewer.address, now);
     let attempt = match throttle::reserve(&state.db, reserve).await {
         Ok(attempt) => attempt,
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("sign-in", &err),
     };
     let Attempt::Counted {
         user_id,
@@ -86,7 +87,7 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
             record_failed(&state, Some(user_id), &email).await;
             login_page(&form, StatusCode::UNAUTHORIZED, WRONG_CREDENTIALS, &req)
         }
-        Err(_) => internal_error(),
+        Err(err) => internal_error("sign-in", &err),
     }
 }
 
@@ -130,7 +131,7 @@ pub(super) async fn record_failed(state: &AppState, user_id: Option<i64>, email:
         },
     };
     if let Err(err) = audit::record_now(state, event).await {
-        eprintln!("doorward: cannot record a failed sign-in: {err}");
+        report::failure("sign-in record", &err);
     }
 }
 
@@ -140,8 +141,8 @@ pub async fn post_logout(State(state): State<AppState>, form: VerifiedForm) -> R
             .db
             .call(move |conn| session::delete(conn, &token))
             .await;
-        if deleted.is_err() {
-            return internal_error();
+        if let Err(err) = deleted {
+            return internal_error("sign-out", &err);
         }
     }
     with_cookie(redirect("/login"), &clear_cookie(SESSION_COOKIE))

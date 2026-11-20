@@ -50,6 +50,6 @@ pub fn with_cookie(mut response: Response, line: &str) -> Response {
             response.headers_mut().append(SET_COOKIE, value);
             response
         }
-        Err(_) => internal_error(),
+        Err(err) => internal_error("cookie", &err),
     }
 }

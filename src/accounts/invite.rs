@@ -77,7 +77,7 @@ pub async fn get_invite(
             invite_body(csrf, &invitation.email, None)
         }),
         Ok(None) => not_found_link(),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("invitation page", &err),
     }
 }
 
@@ -96,7 +96,7 @@ pub async fn post_invite(
     {
         Ok(Some(invitation)) => invitation,
         Ok(None) => return not_found_link(),
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("invitation", &err),
     };
     let password = form.fields.get("password").to_owned();
     if !valid_password(&password) {
@@ -107,7 +107,7 @@ pub async fn post_invite(
     };
     let phc = match state.hasher.hash(slot, password).await {
         Ok(phc) => phc,
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("password hash", &err),
     };
     let accept = Accept {
         hash,
@@ -119,7 +119,7 @@ pub async fn post_invite(
     match state.db.call(move |conn| accept_in(conn, &accept)).await {
         Ok(Some(token)) => with_cookie(redirect("/account"), &session_cookie(&token)),
         Ok(None) => not_found_link(),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("invitation", &err),
     }
 }
 

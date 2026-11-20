@@ -9,7 +9,7 @@ use rusqlite::{Connection, TransactionBehavior, params};
 use crate::accounts::input::{normalize_email, valid_new_email};
 use crate::app::AppState;
 use crate::audit::{self, Event};
-use crate::crypto::Keys;
+use crate::crypto::{CryptoError, Keys};
 use crate::db::{self, Db, DbError};
 use crate::mail::{self, Message};
 use crate::web::{
@@ -53,13 +53,13 @@ pub struct Plan {
 /// A refused post answers 400; a failed seal answers 500.
 enum PlanError {
     Invalid(&'static str),
-    Seal,
+    Seal(CryptoError),
 }
 
 pub async fn get_mail(viewer: Viewer, State(state): State<AppState>) -> Response {
     match load_view(&state.db).await {
         Ok(view) => mail_page(&viewer, StatusCode::OK, &view, None, None),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("mail page", &err),
     }
 }
 
@@ -75,10 +75,10 @@ pub async fn post_mail(State(state): State<AppState>, form: VerifiedForm) -> Res
                     Some(message),
                     None,
                 ),
-                Err(_) => internal_error(),
+                Err(err) => internal_error("mail page", &err),
             };
         }
-        Err(PlanError::Seal) => return internal_error(),
+        Err(PlanError::Seal(err)) => return internal_error("mail settings", &err),
     };
     let Some(actor) = form.viewer.user.clone() else {
         return forbidden();
@@ -90,7 +90,7 @@ pub async fn post_mail(State(state): State<AppState>, form: VerifiedForm) -> Res
         .await;
     match saved {
         Ok(()) => redirect("/admin/mail"),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("mail settings", &err),
     }
 }
 
@@ -138,7 +138,7 @@ async fn test_answer(
 ) -> Response {
     match load_view(&state.db).await {
         Ok(view) => mail_page(viewer, status, &view, error, notice),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("mail page", &err),
     }
 }
 
@@ -180,7 +180,7 @@ fn seal_secret(keys: &Keys, secret_key: &str, secret: &str) -> Result<Option<Str
     let context = format!("settings.value:{secret_key}");
     keys.seal(&context, secret.as_bytes())
         .map(Some)
-        .map_err(|_| PlanError::Seal)
+        .map_err(PlanError::Seal)
 }
 
 fn smtp_plan(fields: &FormFields, keys: &Keys, from: String) -> Result<Plan, PlanError> {

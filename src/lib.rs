@@ -13,6 +13,7 @@ pub mod oauth;
 pub mod policy;
 pub mod proxy;
 pub mod rate;
+pub mod report;
 pub mod servers;
 pub mod web;
 

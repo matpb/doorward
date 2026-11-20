@@ -20,6 +20,7 @@ use crate::crypto::{
     CryptoError, constant_time_eq, open_with_token, random_token, seal_with_token, token_hash,
 };
 use crate::mail::{self, templates};
+use crate::report;
 
 use super::clients;
 use super::families::{self, NewFamily, Pair};
@@ -80,7 +81,10 @@ enum Outcome {
         body: Vec<u8>,
         welcome: Option<Welcome>,
     },
+    /// A refusal with no token behind it: the error, and nothing logged.
     Refused(&'static str),
+    /// A refusal of a token that exists: the error, and the reason written to standard error.
+    Denied(&'static str, &'static str),
 }
 
 /// The new-connection mail, sent after the commit.
@@ -168,8 +172,12 @@ pub async fn post_token(State(state): State<AppState>, request: Request) -> Resp
             answer(StatusCode::OK, body)
         }
         Ok(Outcome::Refused(error)) => refuse(error),
+        Ok(Outcome::Denied(error, reason)) => {
+            report::refused("token", reason);
+            refuse(error)
+        }
         Err(err) => {
-            eprintln!("doorward: cannot decide a token request: {err}");
+            report::failure("token request", &err);
             answer(StatusCode::INTERNAL_SERVER_ERROR, Vec::new())
         }
     }
@@ -300,20 +308,39 @@ fn redeem_code(tx: &Transaction<'_>, job: &Job) -> rusqlite::Result<Outcome> {
     let Some(stored) = load_code(tx, &code_hash)? else {
         return Ok(Outcome::Refused(INVALID_GRANT));
     };
-    if !binds_request(job, &stored) || !pkce_matches(verifier, &stored.challenge) {
-        return Ok(Outcome::Refused(INVALID_GRANT));
+    if job.form.get("client_id") != Some(stored.client_id.as_str()) {
+        return Ok(Outcome::Denied(INVALID_GRANT, "the client does not match"));
+    }
+    if job
+        .form
+        .get("redirect_uri")
+        .is_some_and(|redirect| redirect != stored.redirect_uri)
+    {
+        return Ok(Outcome::Denied(
+            INVALID_GRANT,
+            "the redirect address does not match",
+        ));
+    }
+    if !pkce_matches(verifier, &stored.challenge) {
+        return Ok(Outcome::Denied(
+            INVALID_GRANT,
+            "the verifier does not match",
+        ));
     }
     if stored.used_at.is_some() {
         return code_replay(tx, job, &stored);
     }
     if job.now >= stored.expires_at {
-        return Ok(Outcome::Refused(INVALID_GRANT));
+        return Ok(Outcome::Denied(INVALID_GRANT, "the code has expired"));
     }
     if !resource_ok(tx, job, stored.server_id)? {
-        return Ok(Outcome::Refused(INVALID_TARGET));
+        return Ok(Outcome::Denied(
+            INVALID_TARGET,
+            "the resource does not match",
+        ));
     }
     let Some(user) = load_user(tx, stored.user_id)? else {
-        return Ok(Outcome::Refused(INVALID_GRANT));
+        return Ok(Outcome::Denied(INVALID_GRANT, "the user no longer exists"));
     };
     if !may_use(
         tx,
@@ -322,18 +349,12 @@ fn redeem_code(tx: &Transaction<'_>, job: &Job) -> rusqlite::Result<Outcome> {
         stored.user_id,
         stored.server_id,
     )? {
-        return Ok(Outcome::Refused(INVALID_GRANT));
+        return Ok(Outcome::Denied(
+            INVALID_GRANT,
+            "the user may no longer use this server",
+        ));
     }
     issue_from_code(tx, job, &code_hash, &stored, user)
-}
-
-/// The request names the client and, when it sends one, the redirect address of the code.
-fn binds_request(job: &Job, stored: &StoredCode) -> bool {
-    job.form.get("client_id") == Some(stored.client_id.as_str())
-        && job
-            .form
-            .get("redirect_uri")
-            .is_none_or(|redirect| redirect == stored.redirect_uri)
 }
 
 /// base64url(SHA-256(verifier)) equals the stored challenge.
@@ -353,7 +374,7 @@ fn code_replay(tx: &Transaction<'_>, job: &Job, stored: &StoredCode) -> rusqlite
         };
         record(tx, job.now, "client_disconnected", &who, CODE_REPLAY)?;
     }
-    Ok(Outcome::Refused(INVALID_GRANT))
+    Ok(Outcome::Denied(INVALID_GRANT, "the code was already used"))
 }
 
 /// Marks the code used, makes its family and pair, and records the connection.
@@ -445,7 +466,10 @@ fn refresh(tx: &Transaction<'_>, job: &Job) -> rusqlite::Result<Outcome> {
         return Ok(Outcome::Refused(INVALID_GRANT));
     };
     let Some(family) = load_family(tx, row.family_id)? else {
-        return Ok(Outcome::Refused(INVALID_GRANT));
+        return Ok(Outcome::Denied(
+            INVALID_GRANT,
+            "the connection no longer exists",
+        ));
     };
     families::clear_old_replays_of(
         tx,
@@ -454,13 +478,16 @@ fn refresh(tx: &Transaction<'_>, job: &Job) -> rusqlite::Result<Outcome> {
         families::replay_window(&job.lifetimes),
     )?;
     if job.form.get("client_id") != Some(family.client_id.as_str()) {
-        return Ok(Outcome::Refused(INVALID_GRANT));
+        return Ok(Outcome::Denied(INVALID_GRANT, "the client does not match"));
     }
     if !resource_ok(tx, job, family.server_id)? {
-        return Ok(Outcome::Refused(INVALID_TARGET));
+        return Ok(Outcome::Denied(
+            INVALID_TARGET,
+            "the resource does not match",
+        ));
     }
-    if !family_is_live(tx, job.now, &family)? {
-        return Ok(Outcome::Refused(INVALID_GRANT));
+    if let Some(reason) = family_ended(tx, job.now, &family)? {
+        return Ok(Outcome::Denied(INVALID_GRANT, reason));
     }
     match row.used_at {
         Some(used_at) => reuse(tx, job, token, &row, &family, used_at),
@@ -490,7 +517,10 @@ fn reuse(
         client_name: &family.client_name,
     };
     record(tx, job.now, "client_disconnected", &who, REFRESH_REPLAY)?;
-    Ok(Outcome::Refused(INVALID_GRANT))
+    Ok(Outcome::Denied(
+        INVALID_GRANT,
+        "the refresh token was already used",
+    ))
 }
 
 /// The stored answer, when the window is on, the use is inside it, and the token opens the copy.
@@ -511,7 +541,10 @@ fn rotate(
     row: &StoredRefresh,
 ) -> rusqlite::Result<Outcome> {
     if job.now >= row.expires_at {
-        return Ok(Outcome::Refused(INVALID_GRANT));
+        return Ok(Outcome::Denied(
+            INVALID_GRANT,
+            "the refresh token has expired",
+        ));
     }
     let pair = families::mint_pair(tx, row.family_id, job.now, &job.lifetimes)?;
     let body = token_body(&pair, &job.lifetimes);
@@ -570,21 +603,30 @@ fn target_of(
     Ok(server_slug(conn, id)?.map(|slug| format!("{issuer}/{slug}")))
 }
 
-/// The family is not revoked or expired, and its user may still use the server.
-fn family_is_live(conn: &Connection, now: i64, family: &StoredFamily) -> rusqlite::Result<bool> {
-    if family.revoked_at.is_some() || now >= family.expires_at {
-        return Ok(false);
+/// The reason the connection cannot be used now: revoked, expired, or its user may not use it.
+/// None while it can be used.
+fn family_ended(
+    conn: &Connection,
+    now: i64,
+    family: &StoredFamily,
+) -> rusqlite::Result<Option<&'static str>> {
+    if family.revoked_at.is_some() {
+        return Ok(Some("the connection was revoked"));
+    }
+    if now >= family.expires_at {
+        return Ok(Some("the connection has expired"));
     }
     let Some(user) = load_user(conn, family.user_id)? else {
-        return Ok(false);
+        return Ok(Some("the user no longer exists"));
     };
-    may_use(
+    let usable = may_use(
         conn,
         &user,
         family.auth_epoch,
         family.user_id,
         family.server_id,
-    )
+    )?;
+    Ok((!usable).then_some("the user may no longer use this server"))
 }
 
 /// The user is enabled, on the given auth epoch, and assigned to the server when there is one.

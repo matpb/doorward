@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 
 use crate::app::AppState;
 use crate::crypto::random_token;
+use crate::report;
 use crate::web::limit;
 use crate::web::{client_address, throttle_key};
 
@@ -90,11 +91,14 @@ pub async fn post_register(State(state): State<AppState>, request: Request) -> R
         Ok(Decision::Created(body)) => answer(StatusCode::CREATED, body),
         Ok(Decision::Limited) => limit::json_limited(HOUR_WAIT),
         Ok(Decision::Refused(refusal)) => refuse(refusal),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            [(CACHE_CONTROL, "no-store")],
-        )
-            .into_response(),
+        Err(err) => {
+            report::failure("client registration", &err);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(CACHE_CONTROL, "no-store")],
+            )
+                .into_response()
+        }
     }
 }
 

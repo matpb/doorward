@@ -95,10 +95,7 @@ pub async fn post_client_disconnect(
     {
         Ok(Own::Missing) => not_found(),
         Ok(Own::Ended | Own::Disconnected) => redirect("/account"),
-        Err(err) => {
-            eprintln!("doorward: cannot disconnect a client: {err}");
-            internal_error()
-        }
+        Err(err) => internal_error("client disconnect", &err),
     }
 }
 
@@ -123,10 +120,7 @@ pub async fn get_disconnect_link(
     let family = match found {
         Ok(Some(family)) => family,
         Ok(None) => return not_found_link(),
-        Err(err) => {
-            eprintln!("doorward: cannot read a disconnect link: {err}");
-            return internal_error();
-        }
+        Err(err) => return internal_error("disconnect link", &err),
     };
     let (parts, _body) = request.into_parts();
     let viewer = Viewer::resolve(&parts, &state).await;
@@ -154,10 +148,7 @@ pub async fn post_disconnect_link(
     {
         Ok(Some(family)) => disconnected_page(&family),
         Ok(None) => not_found_link(),
-        Err(err) => {
-            eprintln!("doorward: cannot disconnect with a link: {err}");
-            internal_error()
-        }
+        Err(err) => internal_error("disconnect link", &err),
     }
 }
 

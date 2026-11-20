@@ -14,10 +14,7 @@ pub async fn get_account(State(state): State<AppState>, viewer: Viewer) -> Respo
     let now = state.clock.now().unix_timestamp();
     match connected::list(&state.db, user.id, now).await {
         Ok(clients) => account_page(&viewer, StatusCode::OK, None, &clients),
-        Err(err) => {
-            eprintln!("doorward: cannot list connected clients: {err}");
-            internal_error()
-        }
+        Err(err) => internal_error("connected clients", &err),
     }
 }
 

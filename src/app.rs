@@ -28,6 +28,7 @@ use crate::oauth;
 use crate::proxy::combined;
 use crate::proxy::links::Links;
 use crate::rate;
+use crate::report;
 use crate::web;
 
 /// Password reset requests that may run their mail task at once.
@@ -240,7 +241,7 @@ fn spawn_sweeps(state: &AppState) {
                 })
                 .await;
             if let Err(err) = swept {
-                eprintln!("doorward: housekeeping failed: {err}");
+                report::failure("housekeeping", &err);
             }
         }
     });
@@ -347,6 +348,6 @@ async fn root(State(state): State<AppState>) -> Response {
     match setup::owner_exists(&state.db).await {
         Ok(true) => web::redirect("/login"),
         Ok(false) => web::redirect("/setup"),
-        Err(_) => web::internal_error(),
+        Err(err) => web::internal_error("owner check", &err),
     }
 }

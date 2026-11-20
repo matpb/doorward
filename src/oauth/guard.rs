@@ -3,7 +3,7 @@
 use std::net::IpAddr;
 
 use axum::extract::{Path, Request, State};
-use axum::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
+use axum::http::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -13,6 +13,7 @@ use crate::crypto::token_hash;
 use crate::mcp;
 use crate::proxy;
 use crate::rate::{Class, Key, Open};
+use crate::report;
 use crate::servers::valid_slug;
 use crate::web::limit::{hold, now_nanos, peer_of};
 use crate::web::{client_address, not_found};
@@ -51,11 +52,12 @@ impl std::fmt::Debug for Caller {
     }
 }
 
-/// A failed check. Every failure renders the same 401, whatever check failed; a limited request
-/// renders the MCP 429.
+/// A failed check. An unknown or expired token renders the 401 challenge; a database error renders
+/// a 503 with no challenge; a limited request renders the MCP 429.
 pub enum Refusal {
     Challenge(String),
     Limited(u64),
+    Unavailable,
 }
 
 impl Refusal {
@@ -79,6 +81,9 @@ impl IntoResponse for Refusal {
                 Err(_) => StatusCode::UNAUTHORIZED.into_response(),
             },
             Refusal::Limited(wait) => mcp::answer::limited(wait),
+            Refusal::Unavailable => {
+                (StatusCode::SERVICE_UNAVAILABLE, [(RETRY_AFTER, "1")]).into_response()
+            }
         }
     }
 }
@@ -130,8 +135,8 @@ pub async fn check(
         }
         Ok(None) => Err(Refusal::new(&resource, presented)),
         Err(err) => {
-            eprintln!("doorward: the bearer check cannot read the database: {err}");
-            Err(Refusal::new(&resource, presented))
+            report::failure("bearer check", &err);
+            Err(Refusal::Unavailable)
         }
     }
 }
@@ -150,7 +155,7 @@ pub async fn still_valid(state: &AppState, caller: &Caller, slug: &str) -> bool 
         Ok(Some(found)) => found.family_id == caller.family_id,
         Ok(None) => false,
         Err(err) => {
-            eprintln!("doorward: the bearer check cannot read the database: {err}");
+            report::failure("bearer check", &err);
             false
         }
     }
@@ -174,7 +179,7 @@ pub async fn combined_still_valid(state: &AppState, caller: &Caller, server_id: 
         Ok(Some(family)) => family == caller.family_id,
         Ok(None) => false,
         Err(err) => {
-            eprintln!("doorward: the bearer check cannot read the database: {err}");
+            report::failure("bearer check", &err);
             false
         }
     }

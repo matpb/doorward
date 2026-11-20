@@ -12,6 +12,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use crate::app::AppState;
 use crate::cimd::{CimdFetcher, ClientMetadata};
 use crate::crypto::{constant_time_eq, random_token, token_hash};
+use crate::report;
 use crate::web::{
     MainData, VerifiedForm, Viewer, content_security_policy, form_page_with, internal_error, page,
     redirect,
@@ -127,7 +128,7 @@ pub async fn get_consent(
         Ok(Opened::Ready(pending)) => pending,
         Ok(Opened::Refused) => return error_page(None),
         Ok(Opened::NoAccess) => return no_access(),
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("consent page", &err),
     };
     let Some(redirect_address) = uri::parse(&pending.stored.redirect_uri) else {
         return error_page(None);
@@ -149,7 +150,7 @@ pub async fn get_consent(
     match shown {
         Ok(true) => {}
         Ok(false) => return error_page(None),
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("consent page", &err),
     }
     let consent = ConsentPage {
         redirect_host: shown_host(&redirect_address),
@@ -231,15 +232,25 @@ async fn client_display(state: &AppState, client: &Client, redirect_uri: &str) -
     }
 }
 
-/// The metadata document, or None on an error or when `limit` runs out first.
+/// The metadata document, or None on an error or when `limit` runs out first. Each failure is
+/// written to standard error under the host of the address.
 pub(super) async fn fetch_within(
     fetcher: &dyn CimdFetcher,
     client_id: &str,
     limit: Duration,
 ) -> Option<ClientMetadata> {
+    let label = format!("client metadata for {}", host_of(client_id)?);
     match tokio::time::timeout(limit, fetcher.fetch(client_id)).await {
         Ok(Ok(metadata)) => Some(metadata),
-        Ok(Err(_)) | Err(_) => None,
+        Ok(Err(err)) => {
+            report::failure(&label, &err);
+            None
+        }
+        Err(_) => {
+            let waited = format!("no answer within {} seconds", limit.as_secs());
+            report::failure(&label, &waited);
+            None
+        }
     }
 }
 
@@ -403,7 +414,7 @@ fn with_policy(mut response: Response, origin: &str) -> Response {
                 .insert(CONTENT_SECURITY_POLICY, value);
             response
         }
-        Err(_) => internal_error(),
+        Err(err) => internal_error("consent page", &err),
     }
 }
 
@@ -464,7 +475,7 @@ pub async fn post_consent(State(state): State<AppState>, form: VerifiedForm) -> 
         Ok(Answer::Redirect(url)) => redirect(&url),
         Ok(Answer::Refused) => error_page(None),
         Ok(Answer::NoAccess) => no_access(),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("consent decision", &err),
     }
 }
 

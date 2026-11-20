@@ -357,7 +357,10 @@ WWW-Authenticate: Bearer resource_metadata="PUB/.well-known/oauth-protected-reso
 ```
 
 with an empty body, and `error="invalid_token"` added when a token was presented. A token
-in the query string is never read.
+in the query string is never read. A database error during the check answers `503` with
+`Retry-After: 1`, no `WWW-Authenticate` header and an empty body, and writes one stderr line
+(`doorward: bearer check failed: <error>`); a token that is unknown or expired still gets the
+`401`.
 
 ## MCP paths
 

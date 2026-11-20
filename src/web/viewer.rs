@@ -8,6 +8,7 @@ use axum::http::request::Parts;
 use crate::accounts::session;
 use crate::app::AppState;
 use crate::crypto::{CsrfBinding, Keys, random_token};
+use crate::report;
 
 use super::address::{client_address, log_warnings};
 use super::cookies::{CSRF_COOKIE, SESSION_COOKIE, cookie_value};
@@ -99,13 +100,14 @@ impl Viewer {
         let mut binding = None;
         let presented = cookie_value(&parts.headers, SESSION_COOKIE);
         if let Some(value) = presented.as_deref() {
-            // A database error reads as no session, so the request stays anonymous.
-            let found = session::find(&state.db, value, now)
-                .await
-                .unwrap_or_default();
-            if let Some(found) = found {
-                user = Some(found);
-                binding = Some(CsrfBinding::Session(value.to_owned()));
+            match session::find(&state.db, value, now).await {
+                Ok(Some(found)) => {
+                    user = Some(found);
+                    binding = Some(CsrfBinding::Session(value.to_owned()));
+                }
+                Ok(None) => {}
+                // A database error reads as no session, so the request stays anonymous.
+                Err(err) => report::failure("session lookup", &err),
             }
         }
         if binding.is_none() {

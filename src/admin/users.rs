@@ -75,7 +75,7 @@ enum AssignVerdict {
 pub async fn get_users(viewer: Viewer, State(state): State<AppState>) -> Response {
     match state.db.call(|conn| list_in(conn)).await {
         Ok(rows) => users_page(&viewer, &rows),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("users page", &err),
     }
 }
 
@@ -133,7 +133,7 @@ pub async fn post_role(
             )
             .await
         }
-        Err(_) => internal_error(),
+        Err(err) => internal_error("user role", &err),
     }
 }
 
@@ -173,7 +173,7 @@ pub async fn post_servers(
             )
             .await
         }
-        Err(_) => internal_error(),
+        Err(err) => internal_error("user servers", &err),
     }
 }
 
@@ -229,7 +229,7 @@ async fn change(state: AppState, id: &str, form: VerifiedForm, action: Action) -
             .await
         }
         Ok(Verdict::Forbidden) => forbidden(),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("user action", &err),
     }
 }
 
@@ -403,7 +403,7 @@ async fn user_page(
     let user = match load(state, id).await {
         Ok(Some(user)) => user,
         Ok(None) => return not_found(),
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("user page", &err),
     };
     let loaded = state
         .db
@@ -423,7 +423,7 @@ async fn user_page(
                 }
             })
         }
-        Err(_) => internal_error(),
+        Err(err) => internal_error("user page", &err),
     }
 }
 

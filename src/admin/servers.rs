@@ -91,7 +91,8 @@ pub async fn post_server(State(state): State<AppState>, form: VerifiedForm) -> R
             )
             .await
         }
-        Ok(Err(_)) | Err(_) => internal_error(),
+        Ok(Err(err)) => internal_error("server save", &err),
+        Err(err) => internal_error("server save", &err),
     }
 }
 
@@ -109,7 +110,7 @@ pub async fn get_server(
             server_page(&state, &viewer, StatusCode::OK, &server, &draft, None).await
         }
         Ok(None) => not_found(),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("server page", &err),
     }
 }
 
@@ -124,7 +125,7 @@ pub async fn post_update(
     let stored = match load(&state, id).await {
         Ok(Some(server)) => server,
         Ok(None) => return not_found(),
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("server save", &err),
     };
     let draft = draft_from(&form.fields);
     let remove = form.fields.get("remove_secret") == "on";
@@ -165,7 +166,8 @@ pub async fn post_update(
             .await
         }
         Ok(Ok(Changed::Missing)) => not_found(),
-        Ok(Err(_)) | Err(_) => internal_error(),
+        Ok(Err(err)) => internal_error("server save", &err),
+        Err(err) => internal_error("server save", &err),
     }
 }
 
@@ -188,7 +190,7 @@ pub async fn post_delete(
     {
         Ok(Deleted::Done) => redirect("/admin/servers"),
         Ok(Deleted::Missing) => not_found(),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("server delete", &err),
     }
 }
 
@@ -214,7 +216,7 @@ pub async fn post_users(
         Ok(Assigned::Saved) => redirect(&format!("/admin/servers/{id}")),
         Ok(Assigned::Missing) => not_found(),
         Ok(Assigned::BadValue) => assignment_refused(&state, &form.viewer, id).await,
-        Err(_) => internal_error(),
+        Err(err) => internal_error("server assignment", &err),
     }
 }
 
@@ -406,7 +408,7 @@ async fn assignment_refused(state: &AppState, viewer: &Viewer, id: i64) -> Respo
             .await
         }
         Ok(None) => not_found(),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("server page", &err),
     }
 }
 
@@ -428,7 +430,7 @@ async fn servers_page(
                 }
             })
         }
-        Err(_) => internal_error(),
+        Err(err) => internal_error("servers page", &err),
     }
 }
 
@@ -464,7 +466,7 @@ async fn server_page(
                 }
             })
         }
-        Err(_) => internal_error(),
+        Err(err) => internal_error("server page", &err),
     }
 }
 
@@ -483,22 +485,24 @@ pub async fn post_refresh_tools(
     let server = match load(&state, id).await {
         Ok(Some(server)) => server,
         Ok(None) => return not_found(),
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("tool refresh", &err),
     };
     let outcome = match upstream::target(&state, id).await {
         Ok(Some(target)) => catalog::refresh(&state, &target).await.map(|_| ()),
         Ok(None) => return not_found(),
         Err(TargetError::Secret) => catalog::fail(&state, id, RefreshError::Unavailable).await,
-        Err(TargetError::Db(_)) => return internal_error(),
+        Err(TargetError::Db(err)) => return internal_error("tool refresh", &err),
     };
     let detail = match outcome {
         Ok(()) => "tools refreshed",
-        Err(RefreshError::Db) => return internal_error(),
+        Err(RefreshError::Db) => {
+            return internal_error("tool refresh", &"the tool catalog cannot be stored");
+        }
         Err(_) => "tool refresh failed",
     };
     match record_change(&state, &actor, id, &server.slug, detail).await {
         Ok(()) => redirect(&format!("/admin/servers/{id}")),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("tool refresh record", &err),
     }
 }
 
@@ -517,7 +521,7 @@ pub async fn post_check_lockdown(
     let server = match load(&state, id).await {
         Ok(Some(server)) => server,
         Ok(None) => return not_found(),
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("lockdown check", &err),
     };
     // The probe carries no secret, so the stored secret is not opened for it.
     let probed_url = server.upstream_url;
@@ -536,7 +540,7 @@ pub async fn post_check_lockdown(
     {
         Ok(Stored::Missing) => not_found(),
         Ok(_) => redirect(&format!("/admin/servers/{id}")),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("lockdown check", &err),
     }
 }
 

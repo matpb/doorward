@@ -258,3 +258,21 @@ entry that is not itself a trusted proxy.
   `compose.caddy.yaml`, and `10.213.87.9` for the host's bridge in `compose.yaml`.
 - Hosts without IPv6 must remove `enable_ipv6: true` from the `edge` network in
   `compose.caddy.yaml`.
+
+## Logs
+
+The gateway writes to standard error. A failure inside it writes one line, in one of these
+shapes:
+
+- `doorward: <what> failed: <error>`, for example `doorward: sign-in failed: database error: database is locked`.
+  The page or answer the request gets is unchanged, except a bearer check that cannot read
+  the database, which answers `503`.
+- `doorward: token refused: <reason>`, when a code or refresh token that exists is refused.
+  The reason is one fixed phrase, such as `the verifier does not match`. A code or token
+  that matches no row writes nothing.
+- `doorward: client metadata for <host> failed: <error>`, when a client metadata document
+  cannot be fetched. Only the host of the client ID is written, never its path or query.
+
+No failure line holds a password, an email address, a token, a code, a cookie, a request
+body or a full URL. The setup code printed at first start is the one secret line, and it is
+unchanged.

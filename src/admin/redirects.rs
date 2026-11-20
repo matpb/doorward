@@ -57,7 +57,7 @@ pub async fn post_add(State(state): State<AppState>, form: VerifiedForm) -> Resp
         .await;
     match written {
         Ok(()) => redirect("/admin/redirects"),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("redirect add", &err),
     }
 }
 
@@ -92,7 +92,7 @@ async fn toggle(state: &AppState, form: VerifiedForm, id: &str, enabled: bool) -
     {
         Ok(Toggled::Done) => redirect("/admin/redirects"),
         Ok(Toggled::Missing) => not_found(),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("redirect change", &err),
     }
 }
 
@@ -182,7 +182,7 @@ async fn redirects_page(
                 }
             })
         }
-        Err(_) => internal_error(),
+        Err(err) => internal_error("redirects page", &err),
     }
 }
 

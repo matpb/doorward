@@ -47,10 +47,7 @@ async fn refused(state: &AppState, viewer: &Viewer, status: StatusCode, message:
     let now = state.clock.now().unix_timestamp();
     match connected::list(&state.db, user.id, now).await {
         Ok(clients) => account_page(viewer, status, Some(message), &clients),
-        Err(err) => {
-            eprintln!("doorward: cannot list connected clients: {err}");
-            internal_error()
-        }
+        Err(err) => internal_error("connected clients", &err),
     }
 }
 
@@ -78,7 +75,7 @@ pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) ->
     let reserve = login::reservation(&state, &user.email, form.viewer.address, now);
     let attempt = match throttle::reserve(&state.db, reserve).await {
         Ok(attempt) => attempt,
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("password change", &err),
     };
     let Attempt::Counted {
         user_id,
@@ -100,7 +97,7 @@ pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) ->
     };
     let new_phc = match state.hasher.hash(second, new_password).await {
         Ok(phc) => phc,
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("password change", &err),
     };
     let change = Change {
         user_id,
@@ -117,7 +114,7 @@ pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) ->
     match state.db.call(move |conn| change_in(conn, &change)).await {
         Ok(Some(token)) => with_cookie(redirect("/account"), &session_cookie(&token)),
         Ok(None) => redirect("/login"),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("password change", &err),
     }
 }
 

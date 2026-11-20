@@ -13,6 +13,7 @@ use crate::audit::{self, Event};
 use crate::crypto::{random_token, token_hash};
 use crate::mail;
 use crate::mail::templates;
+use crate::report;
 use crate::web::{
     VerifiedForm, Viewer, busy, form_page, internal_error, not_found_link, page, redirect,
 };
@@ -93,7 +94,7 @@ async fn send_reset_mail(state: &AppState, email: String) {
         Ok(true) => {}
         Ok(false) => return,
         Err(err) => {
-            eprintln!("doorward: cannot store a password reset: {err}");
+            report::failure("password reset", &err);
             return;
         }
     }
@@ -169,7 +170,7 @@ pub async fn get_reset(
             reset_body,
         ),
         Ok(None) => not_found_link(),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("reset page", &err),
     }
 }
 
@@ -188,7 +189,7 @@ pub async fn post_reset(
     {
         Ok(Some(_)) => {}
         Ok(None) => return not_found_link(),
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("reset link", &err),
     }
     let password = form.fields.get("password").to_owned();
     if !valid_password(&password) {
@@ -205,7 +206,7 @@ pub async fn post_reset(
     };
     let phc = match state.hasher.hash(slot, password).await {
         Ok(phc) => phc,
-        Err(_) => return internal_error(),
+        Err(err) => return internal_error("password reset", &err),
     };
     let complete = Complete { hash, phc, now };
     match state
@@ -215,7 +216,7 @@ pub async fn post_reset(
     {
         Ok(true) => redirect("/login"),
         Ok(false) => not_found_link(),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("password reset", &err),
     }
 }
 

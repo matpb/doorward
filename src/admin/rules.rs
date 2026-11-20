@@ -108,7 +108,7 @@ pub async fn post_add(State(state): State<AppState>, form: VerifiedForm) -> Resp
         Ok(Added::Refused(message)) => {
             rules_page(&state, &form.viewer, StatusCode::BAD_REQUEST, Some(message)).await
         }
-        Err(_) => internal_error(),
+        Err(err) => internal_error("rule add", &err),
     }
 }
 
@@ -131,7 +131,7 @@ pub async fn post_delete(
         .await
     {
         Ok(()) => redirect("/admin/rules"),
-        Err(_) => internal_error(),
+        Err(err) => internal_error("rule delete", &err),
     }
 }
 
@@ -338,7 +338,7 @@ async fn rules_page(
                 }
             })
         }
-        Err(_) => internal_error(),
+        Err(err) => internal_error("rules page", &err),
     }
 }
 
