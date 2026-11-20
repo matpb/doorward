@@ -476,6 +476,14 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
 8. `a_new_tool_is_usable_without_a_manual_refresh`: `set_tools` adds `gamma` after the
    first refresh; bob's `call_tool("gamma")` succeeds (the catalog refreshes once on a
    miss) and the upstream records one extra `tools/list`.
+9. `the_rule_form_offers_the_real_tools`: after a refresh of upstream tools
+   `["alpha", "beta"]`, `/admin/rules` has `input#rule-tool[list="rule-tools"]` and a
+   `datalist#rule-tools` whose option values are `["alpha", "beta"]`, each labelled with
+   the server's path; after `set_tools(&["alpha", "gamma"])` and a refresh the values are
+   `["alpha", "gamma"]`.
+10. `the_rule_form_lists_every_servers_tools_by_slug_then_name`: servers `demo` (`alpha`,
+    `beta`) and `aaa` (`zeta`): the option values are `zeta`, `alpha`, `beta`, labelled
+    `aaa`, `demo`, `demo`.
 
 ## s17_activity.rs (statement 17)
 
@@ -718,6 +726,23 @@ stateless `tools/call` body for that tool, sent with `raw` and explicit headers.
     under `/assets/`, and that address answers 200 with content type `text/css`.
 12. `pages_have_no_outside_resources`: no `src` or `href` on those pages starts with
     `http://` or `https://`, except links to `{base}`.
+13. `every_panel_page_carries_the_navigation`: as the owner, each of `/admin`,
+    `/admin/users`, one user page, `/admin/invitations`, `/admin/servers`, one server
+    page, `/admin/rules`, `/admin/redirects`, `/admin/activity`, `/admin/mail` has one
+    `nav[data-nav="panel"]` first in `main`, its nine links in order, and one link with
+    `aria-current="page"`: the Users link on a user page, the Servers link on a server
+    page, the link of the section otherwise.
+14. `an_admin_sees_no_mail_link`: a non-owner admin's `/admin/users` has the eight links
+    without Mail.
+15. `a_plain_user_and_public_pages_get_no_navigation`: a plain user's 403 under
+    `/admin/users`, the plain user's `/account`, and `/login`, `/forgot` and an invitation
+    page carry no `data-nav`.
+16. `the_account_page_links_to_the_panel_for_admins_only`: the owner and an admin see
+    `a[data-nav="to-panel"]` reading `Admin panel` with href `/admin`; a plain user does
+    not.
+17. `a_refused_form_keeps_the_navigation`: the owner's `/admin/servers` form with the slug
+    `Not A Slug!` answers 400 with an error and still carries the navigation, with the
+    Servers link current.
 
 ## s29_state_survives.rs (statement 29)
 

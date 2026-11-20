@@ -77,6 +77,76 @@ async fn rules_can_only_name_real_tools() {
     );
 }
 
+/// The (value, label) of each option in the rule form's tool list.
+fn rule_tool_options(page: &common::client::Page) -> Vec<(String, String)> {
+    let values = page.attrs("datalist#rule-tools option", "value");
+    let labels = page.attrs("datalist#rule-tools option", "label");
+    assert_eq!(
+        values.len(),
+        labels.len(),
+        "every tool option of the rule form must carry a server label"
+    );
+    values.into_iter().zip(labels).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_rule_form_offers_the_real_tools() {
+    let w = World::start().await;
+    let (up, id) = w.upstream("demo", two_tools()).await;
+    let page = admin::refresh_tools(&w.owner, &id).await;
+    assert_eq!(page.status, 303, "refreshing the tools must answer 303");
+    let page = w.owner.get("/admin/rules").await;
+    assert_eq!(
+        page.count(r#"input#rule-tool[list="rule-tools"]"#),
+        1,
+        "the tool name field of the rule form must read its options from rule-tools"
+    );
+    assert_eq!(
+        rule_tool_options(&page),
+        vec![
+            ("alpha".into(), "demo".into()),
+            ("beta".into(), "demo".into())
+        ],
+        "the rule form must offer the real tools, labelled with the server's path"
+    );
+    up.set_tools(&["alpha", "gamma"]);
+    let page = admin::refresh_tools(&w.owner, &id).await;
+    assert_eq!(page.status, 303, "refreshing the tools must answer 303");
+    let page = w.owner.get("/admin/rules").await;
+    assert_eq!(
+        rule_tool_options(&page),
+        vec![
+            ("alpha".into(), "demo".into()),
+            ("gamma".into(), "demo".into())
+        ],
+        "after a refresh the rule form must offer the upstream's current tools"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_rule_form_lists_every_servers_tools_by_slug_then_name() {
+    let w = World::start().await;
+    w.upstream("demo", two_tools()).await;
+    w.upstream(
+        "aaa",
+        UpstreamOptions {
+            tools: vec!["zeta".into()],
+            ..Default::default()
+        },
+    )
+    .await;
+    let page = w.owner.get("/admin/rules").await;
+    assert_eq!(
+        rule_tool_options(&page),
+        vec![
+            ("zeta".into(), "aaa".into()),
+            ("alpha".into(), "demo".into()),
+            ("beta".into(), "demo".into()),
+        ],
+        "the rule form must list every server's tools ordered by server path, then tool name"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_fetch_sends_the_secret_and_no_user_credential() {
     let w = World::start().await;

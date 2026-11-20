@@ -4,6 +4,7 @@ use common::admin;
 use common::client::{Page, TestClient};
 use common::upstream::UpstreamOptions;
 use common::world::{APP_NAME, World};
+use scraper::{ElementRef, Html, Node, Selector};
 
 const BOB: &str = "bob@example.com";
 const CAROL: &str = "carol@example.com";
@@ -22,6 +23,76 @@ const SERVER: &[(&str, &str)] = &[
     ("slug", "probe"),
     ("upstream_url", "http://127.0.0.1:9/mcp"),
 ];
+
+const NAV: &str = r#"nav[data-nav="panel"]"#;
+/// The panel links an owner sees, as (text, href), in the order of the navigation.
+const OWNER_LINKS: [(&str, &str); 9] = [
+    ("Admin", "/admin"),
+    ("Users", "/admin/users"),
+    ("Invitations", "/admin/invitations"),
+    ("Servers", "/admin/servers"),
+    ("Rules", "/admin/rules"),
+    ("Redirects", "/admin/redirects"),
+    ("Activity", "/admin/activity"),
+    ("Mail", "/admin/mail"),
+    ("Your account", "/account"),
+];
+/// The panel links an admin who is not the owner sees: the owner's list without Mail.
+const ADMIN_LINKS: [(&str, &str); 8] = [
+    ("Admin", "/admin"),
+    ("Users", "/admin/users"),
+    ("Invitations", "/admin/invitations"),
+    ("Servers", "/admin/servers"),
+    ("Rules", "/admin/rules"),
+    ("Redirects", "/admin/redirects"),
+    ("Activity", "/admin/activity"),
+    ("Your account", "/account"),
+];
+
+/// True when the first child of main that is not blank text is the panel navigation.
+fn nav_leads_main(page: &Page) -> bool {
+    let doc = Html::parse_document(&page.body);
+    let selector = Selector::parse("main").expect("static selector");
+    let Some(main) = doc.select(&selector).next() else {
+        return false;
+    };
+    main.children()
+        .find(|node| !matches!(node.value(), Node::Text(text) if text.trim().is_empty()))
+        .and_then(ElementRef::wrap)
+        .is_some_and(|element| {
+            element.value().name() == "nav" && element.value().attr("data-nav") == Some("panel")
+        })
+}
+
+/// One page carries exactly one panel navigation, first in main, with these links in
+/// this order, and exactly one link marked as the current page: the one for `current`.
+fn assert_panel_nav(path: &str, page: &Page, links: &[(&str, &str)], current: &str) {
+    assert_eq!(
+        page.count(NAV),
+        1,
+        "{path} must carry exactly one panel navigation"
+    );
+    assert!(
+        nav_leads_main(page),
+        "{path} must put the panel navigation first in main"
+    );
+    let link = format!("{NAV} a");
+    let shown: Vec<(String, String)> = page
+        .texts(&link)
+        .into_iter()
+        .zip(page.attrs(&link, "href"))
+        .collect();
+    let wanted: Vec<(String, String)> = links
+        .iter()
+        .map(|(text, href)| (text.to_string(), href.to_string()))
+        .collect();
+    assert_eq!(shown, wanted, "{path} must list the panel links in order");
+    assert_eq!(
+        page.attrs(&format!(r#"{NAV} a[aria-current="page"]"#), "href"),
+        vec![current.to_string()],
+        "{path} must mark exactly its own section as the current page"
+    );
+}
 
 /// Every page the security tests cover, each fetched by a browser that may open it.
 async fn covered_pages(w: &World) -> Vec<(&'static str, Page)> {
@@ -376,4 +447,141 @@ async fn pages_have_no_outside_resources() {
             );
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_panel_page_carries_the_navigation() {
+    let w = World::start().await;
+    w.user(BOB).await;
+    let bob_id = w.user_id(BOB).await;
+    let (_up, server_id) = w.upstream("demo", UpstreamOptions::default()).await;
+    let cases: Vec<(String, &str)> = vec![
+        ("/admin".into(), "/admin"),
+        ("/admin/users".into(), "/admin/users"),
+        (format!("/admin/users/{bob_id}"), "/admin/users"),
+        ("/admin/invitations".into(), "/admin/invitations"),
+        ("/admin/servers".into(), "/admin/servers"),
+        (format!("/admin/servers/{server_id}"), "/admin/servers"),
+        ("/admin/rules".into(), "/admin/rules"),
+        ("/admin/redirects".into(), "/admin/redirects"),
+        ("/admin/activity".into(), "/admin/activity"),
+        ("/admin/mail".into(), "/admin/mail"),
+    ];
+    for (path, current) in cases {
+        let page = w.owner.get(&path).await;
+        assert_eq!(page.status, 200, "{path} must answer 200 to the owner");
+        assert_panel_nav(&path, &page, &OWNER_LINKS, current);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_admin_sees_no_mail_link() {
+    let w = World::start().await;
+    let carol = w.admin(CAROL).await;
+    let page = carol.get("/admin/users").await;
+    assert_eq!(page.status, 200, "/admin/users must answer 200 to an admin");
+    assert_panel_nav("/admin/users", &page, &ADMIN_LINKS, "/admin/users");
+    assert_eq!(
+        page.count(&format!(r#"{NAV} a[href="/admin/mail"]"#)),
+        0,
+        "an admin who is not the owner must not see the Mail link"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plain_user_and_public_pages_get_no_navigation() {
+    let w = World::start().await;
+    let bob = w.user(BOB).await;
+    let page = bob.get("/admin/users").await;
+    assert_eq!(page.status, 403, "/admin/users must refuse a plain user");
+    assert_eq!(
+        page.kind().as_deref(),
+        Some("forbidden"),
+        "a plain user's refusal must show the forbidden page"
+    );
+    assert_eq!(
+        page.count("[data-nav]"),
+        0,
+        "the forbidden page must carry no navigation"
+    );
+    let account = bob.get("/account").await;
+    assert_eq!(
+        account.status, 200,
+        "/account must answer 200 to a plain user"
+    );
+    assert_eq!(
+        account.count("[data-nav]"),
+        0,
+        "a plain user's account page must carry no navigation"
+    );
+    let anonymous = w.client();
+    let invite = w.invite_link("dan@example.com", "user").await;
+    let invite_path = invite.strip_prefix(w.base()).unwrap_or(invite.as_str());
+    for path in ["/login", "/forgot", invite_path] {
+        let page = anonymous.get(path).await;
+        assert_eq!(page.status, 200, "{path} must answer 200 to a visitor");
+        assert_eq!(
+            page.count("[data-nav]"),
+            0,
+            "{path} must carry no navigation"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_account_page_links_to_the_panel_for_admins_only() {
+    let w = World::start().await;
+    let carol = w.admin(CAROL).await;
+    let bob = w.user(BOB).await;
+    for (who, browser) in [("the owner", &w.owner), ("an admin", &carol)] {
+        let page = browser.get("/account").await;
+        assert_eq!(page.status, 200, "/account must answer 200 to {who}");
+        assert_eq!(
+            page.attrs(r#"a[data-nav="to-panel"]"#, "href"),
+            vec!["/admin".to_string()],
+            "/account must link to the panel for {who}"
+        );
+        assert_eq!(
+            page.texts(r#"a[data-nav="to-panel"]"#),
+            vec!["Admin panel".to_string()],
+            "the panel link on /account must read Admin panel for {who}"
+        );
+    }
+    let page = bob.get("/account").await;
+    assert_eq!(
+        page.count(r#"a[data-nav="to-panel"]"#),
+        0,
+        "/account must not link to the panel for a plain user"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_form_keeps_the_navigation() {
+    let w = World::start().await;
+    let page = w
+        .owner
+        .submit(
+            "/admin/servers",
+            "/admin/servers",
+            &[
+                ("name", "probe"),
+                ("slug", "Not A Slug!"),
+                ("upstream_url", "http://127.0.0.1:9/mcp"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        page.status, 400,
+        "a bad path must refuse the server form with 400"
+    );
+    assert!(
+        page.error().is_some_and(|error| !error.is_empty()),
+        "the refused server form must show its error"
+    );
+    assert_panel_nav(
+        "/admin/servers (refused form)",
+        &page,
+        &OWNER_LINKS,
+        "/admin/servers",
+    );
 }
