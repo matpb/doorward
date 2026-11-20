@@ -43,7 +43,7 @@ Build it with a current Rust toolchain:
 cargo build --release
 ```
 
-Write a config file. Three settings are enough to start; `doorward.example.toml` lists the
+Write a config file. Four settings are enough to start; `doorward.example.toml` lists the
 rest, and every setting can also come from an environment variable (see
 [docs/DOCKER.md](docs/DOCKER.md#settings)).
 
@@ -51,7 +51,10 @@ rest, and every setting can also come from an environment variable (see
 public_url = "https://gateway.example.com"
 listen = "127.0.0.1:8717"
 database = "/var/lib/doorward/doorward.db"
+trusted_proxies = ["127.0.0.1", "::1"]
 ```
+
+`trusted_proxies` names the proxy in front; the two loopback addresses fit a proxy on the same host.
 
 Start it. The config file is read only from `--config` or `DOORWARD_CONFIG`.
 

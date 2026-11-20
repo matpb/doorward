@@ -472,6 +472,9 @@ fn user_body(
         }
         p { "Role: " (user.role) }
         p { "Status: " (status) }
+        p {
+            a href=(format!("/admin/activity?user={}", user.id)) data-link="activity" { "Activity" }
+        }
         h2 { "Servers" }
         form method="post" action=(format!("{path}/servers")) {
             input type="hidden" name="csrf" value=(csrf);

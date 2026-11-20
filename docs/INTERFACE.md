@@ -141,6 +141,7 @@ and leaves the link or code usable. A wrong `current_password` answers `400` as 
 
 | Route | Fields | Outcome |
 |---|---|---|
+| `GET /` | | `303 /setup` while no owner exists, `303 /login` once one does. Every other unknown path keeps its answer |
 | `GET /setup` | | `200` `data-page="setup"` while no owner exists, else `404` |
 | `POST /setup` | `setup_code`, `email`, `password` | owner created, session set, `303 /admin`. Wrong code: `403`, nothing created. Owner exists: `404`. Two concurrent valid posts create one owner |
 | `GET /login` | | `200` `data-page="login"`; optional `?req=<auth request id>` is carried in a hidden `req` field |
@@ -208,14 +209,14 @@ Every full page of the panel (status 200, and the 400 pages that re-render a for
 | `GET /admin` | | `data-page="admin"` |
 | `GET /admin/servers` | | `data-page="servers"`; each row `data-server-id`, `data-slug` |
 | `POST /admin/servers` | `name`, `slug`, `upstream_url`, `secret_header_name`, `secret_header_value`, `pass_resources`, `pass_prompts` (checkboxes, `on`) | `303 /admin/servers/{id}`. Bad or reserved or taken slug, or a non-HTTP(S) URL: `400` |
-| `GET /admin/servers/{id}` | | `data-page="server"`: settings (secret value never rendered); one `input[name="user_id"]` checkbox per user, `checked` when assigned; the cached tool list, one element per tool with `data-catalog-tool`; lock-down result in `data-lockdown="ok|open|unknown"` on `<main>` |
+| `GET /admin/servers/{id}` | | `data-page="server"`: settings (secret value never rendered); one `input[name="user_id"]` checkbox per user, `checked` when assigned; the cached tool list, one element per tool with `data-catalog-tool`; lock-down result in `data-lockdown="ok|open|unknown"` on `<main>`; a link `a[data-link="activity"]` reading Activity, `href` `/admin/activity?server={id}` |
 | `POST /admin/servers/{id}/users` | `user_id` (repeated) | replaces the server's assignments; a removed user's token families for this server are revoked, combined endpoint families stay valid and lose the server's tools; `303` |
 | `POST /admin/servers/{id}` | same as create | `303`. A changed `upstream_url` clears the stored secret unless a new `secret_header_value` is sent in the same post |
 | `POST /admin/servers/{id}/delete` | | server, its assignments, rules, and token families gone; `303 /admin/servers` |
 | `POST /admin/servers/{id}/refresh-tools` | | fetches the upstream tool list; always `303` to the server page. A failed fetch keeps the previous list, and the server page shows the failure as its error until the next successful refresh |
 | `POST /admin/servers/{id}/check-lockdown` | | asks the upstream for its tool list without the secret (the stateless form, then the session form's `initialize` when the first was neither refused nor answered); `ok` when refused with 401 or 403, `open` when answered, else `unknown`; `303` |
 | `GET /admin/users` | | `data-page="users"`; rows `data-user-id`, `data-email` |
-| `GET /admin/users/{id}` | | `data-page="user"`: role, status; one `input[name="server_id"]` checkbox per server, `checked` when assigned; effective tools, one element per tool of each assigned server with `data-server` (slug), `data-tool`, `data-verdict="allow|deny"` and `data-rule` (the id of the rule that decided, empty when no deny matched) |
+| `GET /admin/users/{id}` | | `data-page="user"`: role, status; one `input[name="server_id"]` checkbox per server, `checked` when assigned; effective tools, one element per tool of each assigned server with `data-server` (slug), `data-tool`, `data-verdict="allow|deny"` and `data-rule` (the id of the rule that decided, empty when no deny matched); a link `a[data-link="activity"]` reading Activity, `href` `/admin/activity?user={id}` |
 | `POST /admin/users/{id}/servers` | `server_id` (repeated) | replaces the user's assignments; the user's token families for each removed server are revoked, combined endpoint families stay valid and lose those servers' tools; `303` |
 | `POST /admin/users/{id}/role` | `role` (`admin` or `user`) | owner only; `303` |
 | `POST /admin/users/{id}/disable`, `/enable`, `/delete` | | disable and delete revoke sessions and families at once; `303`. The owner cannot be disabled or deleted: `400`. An admin may act on accounts with the role `user` only (`403` otherwise); the owner on anyone else |
@@ -231,7 +232,7 @@ Every full page of the panel (status 200, and the 400 pages that re-render a for
 | `GET /admin/mail` | | `data-page="mail"`; stored secrets never rendered |
 | `POST /admin/mail` | `provider` (`smtp`, `resend`, `mailgun`), `from`; smtp: `smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`, `smtp_tls` (`off`, `starttls` or `implicit`); resend: `resend_api_key`, `resend_base_url`; mailgun: `mailgun_api_key`, `mailgun_domain`, `mailgun_base_url` | `303`. An empty secret field keeps the stored one, unless the server it is sent to changed in the same post (SMTP host, port, username or TLS mode; Resend base URL; Mailgun domain or base URL): then the stored secret is deleted. An empty base URL means the provider's own address. A field with a control character: `400`. Requests to Resend carry `User-Agent: doorward/<version>` |
 | `POST /admin/mail/test` | `to` | `200` `data-page="mail"` with `class="notice"` "Test email sent." or `class="error"` holding the provider's error |
-| `GET /admin/activity` | query `user`, `server` | `data-page="activity"`; rows `data-kind`, `data-user`, `data-server`, `data-tool`, `data-decision`, `data-outcome` |
+| `GET /admin/activity` | query `user`, `server`; an empty value means any, a value that is not an id matches no row | `data-page="activity"`; a GET form `form[data-form="activity-filter"]` with `select#filter-user` (`Any user`, then every user by email, `value` the user id) and `select#filter-server` (`Any server`, then every server by slug, text `{name} ({slug})`, `value` the server id), each with the current filter's option `selected`, and a `Filter` button; rows `data-kind`, `data-user`, `data-server`, `data-tool`, `data-decision`, `data-outcome` |
 
 The tool name field of the rule form is `input#rule-tool[list="rule-tools"]` with `datalist#rule-tools` holding one option per stored tool of every server: `value` the tool's name, `label` the server's slug, ordered by slug then name.
 

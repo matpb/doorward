@@ -27,8 +27,8 @@ variants.
 4. Start the stack: `docker compose -f compose.caddy.yaml up -d`
 5. Read the setup code: `docker compose -f compose.caddy.yaml logs doorward`. Look for the
    line `doorward setup code: <code>`.
-6. Open `DOORWARD_PUBLIC_URL` in a browser and sign up with the setup code. The first person
-   to sign up becomes the owner. After that, only invitations open new accounts.
+6. Open `<DOORWARD_PUBLIC_URL>/setup` in a browser and sign up with the setup code. The first
+   person to sign up becomes the owner. After that, only invitations open new accounts.
 
 To use another HTTPS port, set `HTTPS_PORT` in `.env` and put the same port in
 `DOORWARD_PUBLIC_URL`, for example `https://doorward.example.com:8443`. The two must match,
@@ -46,7 +46,7 @@ on `docker compose -f compose.caddy.yaml pull`. A person who wants a frozen imag
 4. Start the gateway: `docker compose -f compose.yaml up -d`
 5. Point your proxy at `http://127.0.0.1:8717` and make it send `X-Forwarded-For`.
 6. Read the setup code with `docker compose -f compose.yaml logs doorward`, then sign up in
-   the browser at the address.
+   the browser at `<DOORWARD_PUBLIC_URL>/setup`.
 
 Plain `http` is accepted only for `localhost` and other loopback hosts, for a test on the
 host itself.

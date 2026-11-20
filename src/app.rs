@@ -3,8 +3,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::middleware;
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -134,6 +136,7 @@ pub(crate) async fn assemble(
 
 fn routes(state: AppState) -> Router {
     let pages = Router::new()
+        .route("/", get(root))
         .route("/setup", get(setup::get_setup).post(setup::post_setup))
         .route("/login", get(login::get_login).post(login::post_login))
         .route("/logout", post(login::post_logout))
@@ -337,4 +340,13 @@ where
 
 async fn healthz() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok" }))
+}
+
+/// Leads to sign-up while no owner exists, and to sign-in after that.
+async fn root(State(state): State<AppState>) -> Response {
+    match setup::owner_exists(&state.db).await {
+        Ok(true) => web::redirect("/login"),
+        Ok(false) => web::redirect("/setup"),
+        Err(_) => web::internal_error(),
+    }
 }

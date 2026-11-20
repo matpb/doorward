@@ -654,6 +654,9 @@ fn server_body(
     html! {
         h1 { (server.name) }
         p { "Path: " (server.slug) }
+        p {
+            a href=(format!("/admin/activity?server={}", server.id)) data-link="activity" { "Activity" }
+        }
         @if let Some(refusal) = refusal {
             p.error { (refusal) }
         }
