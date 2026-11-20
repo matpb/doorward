@@ -254,6 +254,19 @@ pub async fn activity(
     user: Option<&str>,
     server: Option<&str>,
 ) -> Vec<ActivityRow> {
+    activity_with_details(c, user, server)
+        .await
+        .into_iter()
+        .map(|(row, _)| row)
+        .collect()
+}
+
+/// The activity rows, each with the text of its detail paragraph (empty when the row has none).
+pub async fn activity_with_details(
+    c: &TestClient,
+    user: Option<&str>,
+    server: Option<&str>,
+) -> Vec<(ActivityRow, String)> {
     let mut query = Serializer::new(String::new());
     if let Some(user) = user {
         query.append_pair("user", user);
@@ -270,14 +283,23 @@ pub async fn activity(
     let page = c.get(&target).await;
     let doc = Html::parse_document(&page.body);
     let selector = Selector::parse("[data-kind]").expect("static selector");
+    let detail = Selector::parse("p.detail").expect("static selector");
     doc.select(&selector)
-        .map(|row| ActivityRow {
-            kind: attribute(row, "data-kind"),
-            user: attribute(row, "data-user"),
-            server: attribute(row, "data-server"),
-            tool: attribute(row, "data-tool"),
-            decision: attribute(row, "data-decision"),
-            outcome: attribute(row, "data-outcome"),
+        .map(|row| {
+            let row_detail = row
+                .select(&detail)
+                .next()
+                .map(|paragraph| paragraph.text().collect::<String>())
+                .unwrap_or_default();
+            let entry = ActivityRow {
+                kind: attribute(row, "data-kind"),
+                user: attribute(row, "data-user"),
+                server: attribute(row, "data-server"),
+                tool: attribute(row, "data-tool"),
+                decision: attribute(row, "data-decision"),
+                outcome: attribute(row, "data-outcome"),
+            };
+            (entry, row_detail)
         })
         .collect()
 }

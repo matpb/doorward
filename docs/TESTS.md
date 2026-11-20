@@ -149,6 +149,13 @@ Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
 7. `an_admin_cannot_disable_or_delete_another_admin`: alice and carol are admins. alice's
    `disable` and `delete` on carol are 403 forbidden and carol's `/admin` is still 200.
    alice's `disable` on the plain user bob is 303.
+8. `a_server_path_answer_is_not_returned_after_access_was_lost`: upstream in
+   `Delayed { millis: 1500 }`. bob's `call_tool("echo")` runs in a task; 400 ms later the
+   owner disables bob. The call answers `401` with the bearer challenge, the answer a new
+   request would get, and its body does not hold the upstream's `called: echo`.
+9. `a_combined_answer_is_not_returned_after_access_was_lost`: the same on `/mcp` with
+   `demo__echo`; `-32602` with `Unknown tool: demo__echo`, because the caller may still use
+   other servers there. It passes before the change.
 
 ## s06_passwords.rs (statement 6)
 
@@ -335,6 +342,10 @@ both; token for the slug `mcp`.
     it is `-32602`.
 13. `only_tool_methods_exist_here`: `resources/list`, `prompts/list` and `ping` under the
     stateless rules are `-32601`; under the session rules `ping` answers `{}`.
+19. `the_tasks_capability_is_not_relayed`: upstream in `DeclaresTasks`, both switches on.
+    `initialize` on `/demo` has capabilities `{tools: {listChanged: false}, resources: {},
+    prompts: {}}`; `server/discover` on `/demo` has `{tools: {}, resources: {}, prompts: {}}`;
+    `/mcp` initialize has no `tasks` and its discover is `{tools: {}}`.
 
 ## s11_generations.rs (statement 11)
 
@@ -415,6 +426,11 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
    is 202 and reaches the upstream.
 7. `combined_endpoint_does_not_relay_server_requests`: through `/mcp` no event has method
    `elicitation/create`, and the result still arrives.
+11. `a_fault_row_says_why`: `upstream_timeout_seconds` 1 and `tools_list_bytes` 1024. One
+    server per cause, each given one stateless `echo` call: the client gets the 502 named
+    error, and the row's detail is `no connection` (closed port), `the upstream answered 307`
+    (redirect), `an answer of the wrong content type`, `an answer over the size limit`
+    (4096 bytes), `an answer that is not valid JSON`, `no answer in time` (hang).
 
 ## s13_upstream_faults.rs (statement 13)
 
@@ -490,6 +506,10 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
 10. `the_rule_form_lists_every_servers_tools_by_slug_then_name`: servers `demo` (`alpha`,
     `beta`) and `aaa` (`zeta`): the option values are `zeta`, `alpha`, `beta`, labelled
     `aaa`, `demo`, `demo`.
+12. `a_refused_call_says_why`: a deny rule on `delete_db` for everyone. The call to it
+    has detail `rule {id}` of that rule; a call to `nope` has `not in the tool list`.
+13. `a_tool_error_is_marked`: the upstream answers `isError` true. The client gets that
+    answer as sent; the row is `allow` / `ok` with detail `the tool reported an error`.
 
 ## s17_activity.rs (statement 17)
 
@@ -673,6 +693,11 @@ loopback through. `system()` behaviour is tested without any server.
     `list_tools` is not 200.
 13. `a_session_dies_with_its_token_family`: after bob disconnects the client from
     `/account`, a new token of bob's with the old session id is 404.
+18. `unknown_tool_names_do_not_make_the_gateway_refetch_the_list`: ten stateless calls with
+    ten unknown names send at most one `tools/list` to the upstream; 31 seconds later one
+    more unknown name sends exactly one more.
+19. `a_call_denied_for_all_tools_needs_no_upstream`: a deny rule with scope `server`. A call
+    to `nope` is `Unknown tool: nope` and the upstream records no request at all.
 
 ## s24_trick_requests.rs (statement 24)
 
@@ -993,6 +1018,10 @@ bob on demo; `T1` is the first token pair, `R1` its refresh token.
 13. `an_access_token_lasts_an_hour`: at 59 minutes it works; at 61 minutes it is 401.
 14. `the_old_access_token_stays_valid_until_it_expires`: after a refresh, the access token
     of `T1` still works until its hour is over.
+10. `a_completion_follows_the_switch_of_its_kind`: resources on and prompts off: a
+    `ref/resource` completion reaches the upstream, a `ref/prompt` one is `-32601` and does
+    not. The mirror case holds too. With both on, a completion with no `ref` or with
+    `ref.type` `ref/tool` is `-32601` and is not forwarded.
 
 ## s36_switches.rs (statement 36)
 
@@ -1275,6 +1304,10 @@ refusal body, and no `WWW-Authenticate`. Foreign origin is `https://evil.example
 10. `unknown_paths_follow_the_same_rule`: `GET /zzz` and `POST /zzz` (bob's demo token, a
    slug that does not exist) with no `Origin` are `401`; with the foreign origin they are
    refused. The upstream saw no request.
+6. `an_unreachable_upstream_writes_one_line`: the owner is assigned to demo, whose upstream
+    (run in the test process) fills the tool list and then stops. The owner's stateless
+    `echo` call, with a token from registration and consent, is `502`; exactly one new line
+    reads `doorward: upstream demo failed: no connection`.
 
 ## s51_failure_log.rs (statement 51)
 

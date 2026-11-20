@@ -5,7 +5,7 @@ use std::time::Duration;
 use common::admin::{self, ServerSpec};
 use common::client::Page;
 use common::mail::link_with_prefix;
-use common::upstream::{FakeUpstream, UpstreamOptions};
+use common::upstream::{FakeUpstream, Mode, UpstreamOptions};
 use common::world::{OWNER_EMAIL, PASSWORD, SECRET_HEADER, World, secret_for};
 use serde_json::json;
 use time::OffsetDateTime;
@@ -545,5 +545,112 @@ async fn the_user_and_server_pages_link_to_their_activity() {
         server_page.texts(ACTIVITY_LINK),
         vec!["Activity".to_string()],
         "the link on the server page must read Activity"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_call_says_why() {
+    let w = World::start().await;
+    let bob = w.user(BOB).await;
+    let (_up, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    w.grant(BOB, &[id.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let mcp = w.session_mcp("demo", &tokens);
+    assert_eq!(
+        mcp.initialize().await.status,
+        200,
+        "initialize must answer 200"
+    );
+    let before = admin::rule_ids(&w.owner).await;
+    let page = admin::add_rule(
+        &w.owner,
+        "everyone",
+        "deny",
+        "tool",
+        Some(id.as_str()),
+        Some("delete_db"),
+    )
+    .await;
+    assert_eq!(
+        page.status, 303,
+        "the deny rule for delete_db must be stored"
+    );
+    let rule = admin::rule_ids(&w.owner)
+        .await
+        .into_iter()
+        .find(|known| !before.contains(known))
+        .expect("the new rule must be listed");
+    let denied = mcp.call_tool("delete_db", json!({})).await;
+    assert_eq!(
+        denied.error_code(),
+        Some(-32602),
+        "a denied tool must be refused as unknown"
+    );
+    let missing = mcp.call_tool("nope", json!({})).await;
+    assert_eq!(
+        missing.error_code(),
+        Some(-32602),
+        "a name outside the tool list must be refused as unknown"
+    );
+
+    let rows = admin::activity_with_details(&w.owner, None, None).await;
+    let detail_for = |tool: &str| {
+        rows.iter()
+            .find(|(row, _)| row.kind == "tool_call" && row.tool == tool)
+            .map(|(_, detail)| detail.as_str())
+            .unwrap_or_else(|| panic!("a tool_call row for {tool} must exist, rows were {rows:?}"))
+    };
+    assert_eq!(
+        detail_for("delete_db"),
+        format!("rule {rule}"),
+        "a call refused by a deny rule must name the deciding rule"
+    );
+    assert_eq!(
+        detail_for("nope"),
+        "not in the tool list",
+        "a call to a name outside the tool list must say so"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_error_is_marked() {
+    let w = World::start().await;
+    let bob = w.user(BOB).await;
+    let options = UpstreamOptions {
+        mode: Mode::ToolErrors,
+        ..UpstreamOptions::default()
+    };
+    let (_up, id) = w.upstream("demo", options).await;
+    w.grant(BOB, &[id.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let mcp = w.session_mcp("demo", &tokens);
+    assert_eq!(
+        mcp.initialize().await.status,
+        200,
+        "initialize must answer 200"
+    );
+    let reply = mcp.call_tool("echo", json!({"text": "hi"})).await;
+    assert_eq!(reply.status, 200, "the call must be answered");
+    assert_eq!(
+        reply
+            .result()
+            .and_then(|result| result["isError"].as_bool()),
+        Some(true),
+        "the tool's own error must reach the client as the upstream sent it"
+    );
+
+    let rows = admin::activity_with_details(&w.owner, None, None).await;
+    let (row, detail) = rows
+        .iter()
+        .find(|(row, _)| row.kind == "tool_call")
+        .unwrap_or_else(|| panic!("a tool_call row must exist, rows were {rows:?}"));
+    assert_eq!(row.decision, "allow", "the call was allowed");
+    assert_eq!(
+        row.outcome, "ok",
+        "a tool that reports an error keeps outcome ok"
+    );
+    assert_eq!(
+        detail, "the tool reported an error",
+        "a tool error must be marked in the detail, with no part of the result"
     );
 }

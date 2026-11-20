@@ -3,7 +3,7 @@ mod common;
 use std::time::Duration;
 
 use common::admin;
-use common::client::TestClient;
+use common::client::{TestClient, Tokens};
 use common::mcp::McpReply;
 use common::upstream::{FakeUpstream, Mode, UpstreamOptions};
 use common::world::{SECRET_HEADER, World, secret_for};
@@ -258,4 +258,108 @@ async fn failures_are_recorded() {
             && row.outcome == "unavailable"),
         "the failed call must be recorded as allowed and unavailable, got {rows:?}"
     );
+}
+
+/// One failed `echo` call on `slug`: the client gets the named error, and the one tool_call row of
+/// server `id` says why in its detail.
+async fn assert_fault_says(w: &World, slug: &str, id: &str, tokens: &Tokens, phrase: &str) {
+    let reply = w
+        .stateless_mcp(slug, tokens)
+        .call_tool("echo", json!({"text": "hi"}))
+        .await;
+    assert_unavailable(&reply, slug);
+    let rows = admin::activity_with_details(&w.owner, None, Some(id)).await;
+    let calls: Vec<&(admin::ActivityRow, String)> = rows
+        .iter()
+        .filter(|(row, _)| row.kind == "tool_call")
+        .collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "{slug}: one failed call must write one tool_call row, rows were {rows:?}"
+    );
+    assert_eq!(
+        calls[0].1, phrase,
+        "{slug}: the row must say why the call failed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fault_row_says_why() {
+    let w = World::start_with(|c| {
+        c.limits.upstream_timeout_seconds = 1;
+        c.limits.tools_list_bytes = 1024;
+    })
+    .await;
+    let bob = w.user(BOB).await;
+    let (mut closed, closed_id) = w.upstream("closed-port", UpstreamOptions::default()).await;
+    let (redirected, redirected_id) = w.upstream("wrong-status", UpstreamOptions::default()).await;
+    let (wrong_type, wrong_type_id) = w.upstream("wrong-type", UpstreamOptions::default()).await;
+    let (big, big_id) = w.upstream("too-big", UpstreamOptions::default()).await;
+    let (junk, junk_id) = w.upstream("not-json", UpstreamOptions::default()).await;
+    let (slow, slow_id) = w.upstream("too-slow", UpstreamOptions::default()).await;
+    let ids = [
+        closed_id.as_str(),
+        redirected_id.as_str(),
+        wrong_type_id.as_str(),
+        big_id.as_str(),
+        junk_id.as_str(),
+        slow_id.as_str(),
+    ];
+    w.grant(BOB, &ids).await;
+    let closed_tokens = w.token(&bob, "closed-port").await;
+    let status_tokens = w.token(&bob, "wrong-status").await;
+    let type_tokens = w.token(&bob, "wrong-type").await;
+    let big_tokens = w.token(&bob, "too-big").await;
+    let junk_tokens = w.token(&bob, "not-json").await;
+    let slow_tokens = w.token(&bob, "too-slow").await;
+
+    closed.shutdown().await;
+    redirected.set_mode(Mode::Redirect("/elsewhere".into()));
+    wrong_type.set_mode(Mode::WrongContentType);
+    big.set_mode(Mode::Oversized { bytes: 4096 });
+    junk.set_mode(Mode::Garbage);
+    slow.set_mode(Mode::Hang);
+
+    assert_fault_says(
+        &w,
+        "closed-port",
+        &closed_id,
+        &closed_tokens,
+        "no connection",
+    )
+    .await;
+    assert_fault_says(
+        &w,
+        "wrong-status",
+        &redirected_id,
+        &status_tokens,
+        "the upstream answered 307",
+    )
+    .await;
+    assert_fault_says(
+        &w,
+        "wrong-type",
+        &wrong_type_id,
+        &type_tokens,
+        "an answer of the wrong content type",
+    )
+    .await;
+    assert_fault_says(
+        &w,
+        "too-big",
+        &big_id,
+        &big_tokens,
+        "an answer over the size limit",
+    )
+    .await;
+    assert_fault_says(
+        &w,
+        "not-json",
+        &junk_id,
+        &junk_tokens,
+        "an answer that is not valid JSON",
+    )
+    .await;
+    assert_fault_says(&w, "too-slow", &slow_id, &slow_tokens, "no answer in time").await;
 }

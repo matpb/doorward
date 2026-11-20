@@ -321,6 +321,117 @@ async fn completion_needs_a_switch() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_completion_follows_the_switch_of_its_kind() {
+    let w = World::start().await;
+    let (upstream, id, tokens) = bob_on_demo(&w).await;
+    let resource = json!({
+        "ref": {"type": "ref/resource", "uri": "file:///secret.txt"},
+        "argument": {"name": "uri", "value": "x"},
+    });
+    let prompt = json!({
+        "ref": {"type": "ref/prompt", "name": "greet"},
+        "argument": {"name": "who", "value": "x"},
+    });
+
+    set_switches(&w, &upstream, &id, true, false).await;
+    let client = w.session_mcp("demo", &tokens);
+    assert_eq!(
+        client.initialize().await.status,
+        200,
+        "initialize must be relayed"
+    );
+    upstream.clear();
+    let forwarded = client
+        .request("completion/complete", resource.clone())
+        .await;
+    assert_eq!(
+        forwarded.status, 200,
+        "with resources on, a ref/resource completion must be answered"
+    );
+    assert_eq!(
+        upstream.rpc_count("completion/complete"),
+        1,
+        "with resources on and prompts off, a ref/resource completion must reach the upstream"
+    );
+    let refused = client.request("completion/complete", prompt.clone()).await;
+    assert_eq!(
+        refused.error_code(),
+        Some(-32601),
+        "with prompts off, a ref/prompt completion must be refused with -32601"
+    );
+    assert_eq!(
+        refused.error_message(),
+        Some("Method not found".to_string()),
+        "the refused ref/prompt completion must carry the gateway's Method not found"
+    );
+    assert_eq!(
+        upstream.rpc_count("completion/complete"),
+        1,
+        "with prompts off, a ref/prompt completion must not reach the upstream"
+    );
+
+    set_switches(&w, &upstream, &id, false, true).await;
+    let client = w.session_mcp("demo", &tokens);
+    assert_eq!(
+        client.initialize().await.status,
+        200,
+        "initialize must be relayed"
+    );
+    upstream.clear();
+    let forwarded = client.request("completion/complete", prompt).await;
+    assert_eq!(
+        forwarded.status, 200,
+        "with prompts on, a ref/prompt completion must be answered"
+    );
+    assert_eq!(
+        upstream.rpc_count("completion/complete"),
+        1,
+        "with prompts on and resources off, a ref/prompt completion must reach the upstream"
+    );
+    let refused = client.request("completion/complete", resource).await;
+    assert_eq!(
+        refused.error_code(),
+        Some(-32601),
+        "with resources off, a ref/resource completion must be refused with -32601"
+    );
+    assert_eq!(
+        upstream.rpc_count("completion/complete"),
+        1,
+        "with resources off, a ref/resource completion must not reach the upstream"
+    );
+
+    set_switches(&w, &upstream, &id, true, true).await;
+    let client = w.session_mcp("demo", &tokens);
+    assert_eq!(
+        client.initialize().await.status,
+        200,
+        "initialize must be relayed"
+    );
+    upstream.clear();
+    let without_ref = json!({"argument": {"name": "who", "value": "x"}});
+    let unknown_kind = json!({
+        "ref": {"type": "ref/tool", "name": "echo"},
+        "argument": {"name": "text", "value": "x"},
+    });
+    for (case, params) in [
+        ("a completion with no ref", without_ref),
+        ("a completion with an unknown ref.type", unknown_kind),
+    ] {
+        let reply = client.request("completion/complete", params).await;
+        assert_eq!(
+            reply.error_code(),
+            Some(-32601),
+            "{case} must be refused with -32601"
+        );
+    }
+    assert_eq!(
+        upstream.rpc_count("completion/complete"),
+        0,
+        "a completion that names no known kind must not reach the upstream"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn subscriptions_follow_the_resources_switch() {
     let w = World::start().await;
     let (upstream, id, tokens) = bob_on_demo(&w).await;

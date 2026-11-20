@@ -305,3 +305,92 @@ async fn an_admin_cannot_disable_or_delete_another_admin() {
         "an admin disabling a plain user must answer 303"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_path_answer_is_not_returned_after_access_was_lost() {
+    let w = World::start().await;
+    let slow = UpstreamOptions {
+        mode: Mode::Delayed { millis: 1500 },
+        ..UpstreamOptions::default()
+    };
+    let (_upstream, demo) = w.upstream("demo", slow).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[demo.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let mcp = Arc::new(w.session_mcp("demo", &tokens));
+    assert_eq!(
+        mcp.initialize().await.status,
+        200,
+        "bob's session must start"
+    );
+    let bob_id = w.user_id(BOB).await;
+    let call = {
+        let mcp = mcp.clone();
+        tokio::spawn(async move { mcp.call_tool("echo", json!({"text": "hi"})).await })
+    };
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let page = admin::user_action(&w.owner, &bob_id, "disable").await;
+    assert_eq!(page.status, 303, "disabling bob must answer 303");
+    let reply = tokio::time::timeout(Duration::from_secs(5), call)
+        .await
+        .expect("the delayed call must return within 5 seconds")
+        .expect("the call task must not panic");
+    assert_eq!(
+        reply.status, 401,
+        "a call whose access was lost must get the 401 a new request would get"
+    );
+    assert!(
+        reply.headers.contains_key("www-authenticate"),
+        "the 401 must carry the bearer challenge"
+    );
+    assert!(
+        !reply.body.contains("called: echo"),
+        "the upstream's answer must not be returned after bob was disabled"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_combined_answer_is_not_returned_after_access_was_lost() {
+    let w = World::start().await;
+    let slow = UpstreamOptions {
+        mode: Mode::Delayed { millis: 1500 },
+        ..UpstreamOptions::default()
+    };
+    let (_upstream, demo) = w.upstream("demo", slow).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[demo.as_str()]).await;
+    let tokens = w.token(&bob, "mcp").await;
+    let mcp = Arc::new(w.session_mcp("mcp", &tokens));
+    assert_eq!(
+        mcp.initialize().await.status,
+        200,
+        "bob's session must start"
+    );
+    let bob_id = w.user_id(BOB).await;
+    let call = {
+        let mcp = mcp.clone();
+        tokio::spawn(async move { mcp.call_tool("demo__echo", json!({"text": "hi"})).await })
+    };
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let page = admin::user_action(&w.owner, &bob_id, "disable").await;
+    assert_eq!(page.status, 303, "disabling bob must answer 303");
+    let reply = tokio::time::timeout(Duration::from_secs(5), call)
+        .await
+        .expect("the delayed call must return within 5 seconds")
+        .expect("the call task must not panic");
+    assert_eq!(
+        reply.result(),
+        None,
+        "the upstream's answer must not be returned after bob was disabled"
+    );
+    assert_eq!(
+        reply.error_code(),
+        Some(-32602),
+        "the combined endpoint must answer -32602 when access was lost"
+    );
+    assert_eq!(
+        reply.error_message(),
+        Some("Unknown tool: demo__echo".to_string()),
+        "the combined endpoint must answer the unknown-tool message when access was lost"
+    );
+}

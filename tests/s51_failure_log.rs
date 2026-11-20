@@ -6,9 +6,13 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use common::admin::{self, ServerSpec};
 use common::binary::{Run, free_port, write_file};
 use common::client::{OAuthApp, TestClient, pkce};
+use common::mcp::McpClient;
+use common::upstream::{FakeUpstream, UpstreamOptions};
 use rusqlite::Connection;
+use serde_json::json;
 use tempfile::TempDir;
 
 const EMAIL: &str = "owner@example.com";
@@ -360,5 +364,59 @@ async fn a_refused_code_writes_one_line_and_an_unknown_code_writes_none() {
         gateway.lines_since(before).is_empty(),
         "a code that matches no row must write nothing; stderr:\n{:?}",
         gateway.lines()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreachable_upstream_writes_one_line() {
+    let gateway = Spawned::start();
+    let owner = gateway.owner().await;
+    let mut upstream = FakeUpstream::start(UpstreamOptions::default()).await;
+    let url = upstream.url();
+    let id = admin::add_server(
+        &owner,
+        &ServerSpec {
+            name: "demo",
+            slug: "demo",
+            upstream_url: &url,
+            secret: None,
+            pass_resources: false,
+            pass_prompts: false,
+        },
+    )
+    .await;
+    let page = admin::refresh_tools(&owner, &id).await;
+    assert_eq!(
+        page.status, 303,
+        "the tool list of demo must be fetched while its upstream runs"
+    );
+    let owner_id = admin::user_id(&owner, EMAIL)
+        .await
+        .expect("the owner must be listed on the users page");
+    let page = admin::assign(&owner, &owner_id, &[id.as_str()]).await;
+    assert_eq!(page.status, 303, "the owner must be assigned to demo");
+    upstream.shutdown().await;
+
+    let registered = owner.register(CLIENT_NAME, &[LOOPBACK_CALLBACK]).await;
+    assert_eq!(registered.status, 201, "the probe client must register");
+    let client_id = registered
+        .json()
+        .and_then(|json| json["client_id"].as_str().map(str::to_owned))
+        .expect("registration answers with a client_id");
+    let app = OAuthApp {
+        client_id,
+        redirect_uri: LOOPBACK_CALLBACK.to_owned(),
+    };
+    let resource = format!("{}/demo", gateway.base);
+    let tokens = owner.connect(&app, &resource).await;
+    let mcp = McpClient::stateless(&resource, Some(&tokens.access_token));
+
+    let before = gateway.lines().len();
+    let reply = mcp.call_tool("echo", json!({"text": "hi"})).await;
+    assert_eq!(reply.status, 502, "an unreachable upstream must answer 502");
+    assert_eq!(
+        gateway.lines_since(before),
+        vec!["doorward: upstream demo failed: no connection".to_string()],
+        "one tool call to an unreachable upstream must write exactly that one line"
     );
 }

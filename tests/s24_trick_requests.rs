@@ -6,6 +6,7 @@ use common::client::Tokens;
 use common::mcp::{McpClient, McpReply};
 use common::upstream::{FakeUpstream, Mode, UpstreamOptions};
 use common::world::World;
+use serde_json::json;
 
 const STATELESS: &str = "2026-07-28";
 const SESSION: &str = "2025-11-25";
@@ -675,4 +676,87 @@ async fn denied_and_missing_tools_look_alike() {
             "{name}: the message must read Unknown tool followed by the name"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unknown_tool_names_do_not_make_the_gateway_refetch_the_list() {
+    let w = World::start().await;
+    let bob = w.user("bob@example.com").await;
+    let (upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    w.grant("bob@example.com", &[id.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let client = w.stateless_mcp("demo", &tokens);
+    upstream.clear();
+    for n in 0..10 {
+        let name = format!("unknown-{n}");
+        let reply = client.call_tool(&name, json!({})).await;
+        assert_eq!(
+            reply.error_code(),
+            Some(-32602),
+            "{name} must be refused as an unknown tool"
+        );
+    }
+    let burst = upstream.rpc_count("tools/list");
+    assert!(
+        burst <= 1,
+        "ten calls with unknown names must refresh the list at most once, the upstream saw {burst} tools/list requests"
+    );
+
+    w.gw.clock.advance(time::Duration::seconds(31));
+    let reply = client.call_tool("unknown-later", json!({})).await;
+    assert_eq!(
+        reply.error_code(),
+        Some(-32602),
+        "a name after 31 seconds must be refused as an unknown tool"
+    );
+    assert_eq!(
+        upstream.rpc_count("tools/list"),
+        burst + 1,
+        "a miss 31 seconds after the last refresh must refresh the list once more"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_denied_for_all_tools_needs_no_upstream() {
+    let w = World::start().await;
+    let bob = w.user("bob@example.com").await;
+    let (upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    w.grant("bob@example.com", &[id.as_str()]).await;
+    let tokens = w.token(&bob, "demo").await;
+    let page = admin::add_rule(
+        &w.owner,
+        "everyone",
+        "deny",
+        "server",
+        Some(id.as_str()),
+        None,
+    )
+    .await;
+    assert_eq!(
+        page.status, 303,
+        "the deny rule for all of demo must be stored"
+    );
+    upstream.clear();
+    let reply = w
+        .stateless_mcp("demo", &tokens)
+        .call_tool("nope", json!({}))
+        .await;
+    assert_eq!(
+        reply.status, 200,
+        "a refused call answers as a JSON-RPC error"
+    );
+    assert_eq!(
+        reply.error_message(),
+        Some("Unknown tool: nope".to_string()),
+        "a call denied for every tool must be refused as an unknown tool"
+    );
+    assert!(
+        upstream.requests().is_empty(),
+        "a call denied for every tool must not reach the upstream, it recorded {:?}",
+        upstream
+            .requests()
+            .iter()
+            .map(|request| request.rpc_method.clone())
+            .collect::<Vec<_>>()
+    );
 }

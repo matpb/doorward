@@ -1,9 +1,10 @@
 mod common;
 
+use common::admin::{self, ServerSpec};
 use common::client::{TestClient, Tokens};
 use common::mcp::McpClient;
 use common::upstream::{FakeUpstream, Generation, Mode, UpstreamOptions};
-use common::world::World;
+use common::world::{SECRET_HEADER, World, secret_for};
 use serde_json::{Value, json};
 
 const BOB: &str = "bob@example.com";
@@ -868,5 +869,78 @@ async fn stateless_subscriptions_are_refused_and_not_advertised() {
             .map(|result| result["capabilities"]["tools"].clone()),
         Some(json!({"listChanged": true, "extra": 1})),
         "a session initialize keeps its listChanged flag"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_tasks_capability_is_not_relayed() {
+    let w = World::start().await;
+    let options = UpstreamOptions {
+        mode: Mode::DeclaresTasks,
+        ..Default::default()
+    };
+    let (bob, upstream, id) = bob_on(&w, "demo", options).await;
+    let url = upstream.url();
+    let secret = secret_for("demo");
+    let page = admin::update_server(
+        &w.owner,
+        &id,
+        &ServerSpec {
+            name: "demo",
+            slug: "demo",
+            upstream_url: &url,
+            secret: Some((SECRET_HEADER, secret.as_str())),
+            pass_resources: true,
+            pass_prompts: true,
+        },
+    )
+    .await;
+    assert_eq!(
+        page.status, 303,
+        "turning both switches on must be accepted"
+    );
+    let demo_tokens = w.token(&bob, "demo").await;
+    let initialized = w.session_mcp("demo", &demo_tokens).initialize().await;
+    assert_eq!(
+        initialized.status, 200,
+        "initialize on /demo must be answered"
+    );
+    assert_eq!(
+        initialized
+            .result()
+            .map(|result| result["capabilities"].clone()),
+        Some(json!({"tools": {"listChanged": false}, "resources": {}, "prompts": {}})),
+        "initialize on /demo must drop the upstream's tasks and keep the other capabilities"
+    );
+    let discovered = w.stateless_mcp("demo", &demo_tokens).discover().await;
+    assert_eq!(
+        discovered.status, 200,
+        "server/discover on /demo must be answered"
+    );
+    assert_eq!(
+        discovered
+            .result()
+            .map(|result| result["capabilities"].clone()),
+        Some(json!({"tools": {}, "resources": {}, "prompts": {}})),
+        "server/discover on /demo must drop the upstream's tasks and keep the other capabilities"
+    );
+    let mcp_tokens = w.token(&bob, "mcp").await;
+    let combined = w.session_mcp("mcp", &mcp_tokens).initialize().await;
+    assert_eq!(combined.status, 200, "initialize on /mcp must be answered");
+    let combined_caps = combined
+        .result()
+        .and_then(|result| result.get("capabilities"))
+        .expect("initialize on /mcp must carry capabilities");
+    assert!(
+        combined_caps.get("tasks").is_none(),
+        "initialize on /mcp must not advertise tasks, got {combined_caps}"
+    );
+    let combined_discover = w.stateless_mcp("mcp", &mcp_tokens).discover().await;
+    assert_eq!(
+        combined_discover
+            .result()
+            .map(|result| result["capabilities"].clone()),
+        Some(json!({"tools": {}})),
+        "server/discover on /mcp must offer only tools"
     );
 }

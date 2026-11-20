@@ -85,6 +85,22 @@ pub enum Mode {
     LenientMethods,
     /// Session style only: every `initialize` returns the session id `fixed-session`.
     ReuseSessionId,
+    /// initialize and server/discover declare a tasks capability next to the usual ones.
+    #[allow(dead_code)]
+    DeclaresTasks,
+    /// tools/call answers 200 application/json after `millis` milliseconds.
+    #[allow(dead_code)]
+    Delayed {
+        millis: u64,
+    },
+    /// tools/call answers 200 application/json whose text is `bytes` characters long.
+    #[allow(dead_code)]
+    Oversized {
+        bytes: usize,
+    },
+    /// tools/call answers with `isError` true.
+    #[allow(dead_code)]
+    ToolErrors,
 }
 
 #[derive(Clone, Debug)]
@@ -297,6 +313,10 @@ impl Drop for FakeUpstream {
 
 enum Reply {
     Now(Response),
+    Delayed {
+        wait: Duration,
+        message: Value,
+    },
     Progress {
         steps: u32,
         interval: Duration,
@@ -328,6 +348,10 @@ async fn handle(State(shared): State<Arc<Shared>>, request: Request) -> Response
     };
     let mut response = match reply {
         Reply::Now(response) => response,
+        Reply::Delayed { wait, message } => {
+            tokio::time::sleep(wait).await;
+            json_response(StatusCode::OK, &message)
+        }
         Reply::Progress {
             steps,
             interval,
@@ -563,11 +587,11 @@ fn initialize(state: &mut Store, options: &UpstreamOptions, id: Value, params: &
         "id": id,
         "result": {
             "protocolVersion": version,
-            "capabilities": if matches!(options.mode, Mode::DeclaresFlags) {
+            "capabilities": with_tasks(options, if matches!(options.mode, Mode::DeclaresFlags) {
                 declared_capabilities()
             } else {
                 json!({"tools": {"listChanged": false}, "resources": {}, "prompts": {}})
-            },
+            }),
             "serverInfo": {"name": "fake-upstream", "version": "0"},
         },
     });
@@ -624,6 +648,21 @@ fn answer(
                     message: dispatch(id, method, params, options, stateless),
                 };
             }
+            Mode::Delayed { millis } => {
+                return Reply::Delayed {
+                    wait: Duration::from_millis(*millis),
+                    message: dispatch(id, method, params, options, stateless),
+                };
+            }
+            Mode::Oversized { bytes } => {
+                let text = "x".repeat(*bytes);
+                let body = json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"content": [{"type": "text", "text": text}], "isError": false},
+                });
+                return Reply::Now(json_response(StatusCode::OK, &body));
+            }
             _ => {}
         }
     }
@@ -655,11 +694,11 @@ fn outcome(
     let mut result = match method {
         "server/discover" => json!({
             "supportedVersions": supported_versions(options.generation),
-            "capabilities": if matches!(options.mode, Mode::DeclaresFlags) {
+            "capabilities": with_tasks(options, if matches!(options.mode, Mode::DeclaresFlags) {
                 declared_capabilities()
             } else {
                 json!({"tools": {}, "resources": {}, "prompts": {}})
-            },
+            }),
             "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "fake-upstream", "version": "0"}},
             "ttlMs": 3600000,
             "cacheScope": "public",
@@ -696,10 +735,18 @@ fn call_result(params: &Value, options: &UpstreamOptions) -> Result<Value, (i64,
         .iter()
         .find(|tool| same_name(tool, name, lenient))
     {
-        Some(tool) => Ok(json!({
-            "content": [{"type": "text", "text": format!("called: {tool}")}],
-            "isError": false,
-        })),
+        Some(tool) => {
+            let failed = matches!(options.mode, Mode::ToolErrors);
+            let text = if failed {
+                format!("failed: {tool}")
+            } else {
+                format!("called: {tool}")
+            };
+            Ok(json!({
+                "content": [{"type": "text", "text": text}],
+                "isError": failed,
+            }))
+        }
         None => Err((-32602, format!("Unknown tool: {name}"))),
     }
 }
@@ -732,6 +779,14 @@ fn tools_json(options: &UpstreamOptions) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// `capabilities` with a tasks member added when the mode declares tasks.
+fn with_tasks(options: &UpstreamOptions, mut capabilities: Value) -> Value {
+    if matches!(options.mode, Mode::DeclaresTasks) {
+        capabilities["tasks"] = json!({"list": {}, "cancel": {}});
+    }
+    capabilities
 }
 
 /// The capabilities of `Mode::DeclaresFlags`: the four flags, with one other member in each group.
