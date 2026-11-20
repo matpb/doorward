@@ -13,6 +13,7 @@ use crate::oauth::guard::Caller;
 
 pub mod catalog;
 mod handle;
+pub mod links;
 pub mod sessions;
 mod sse;
 mod stream;
@@ -20,6 +21,8 @@ mod stream;
 pub(crate) mod tests;
 #[cfg(test)]
 mod tests_handle;
+#[cfg(test)]
+mod tests_links;
 #[cfg(test)]
 mod tests_stream;
 pub mod upstream;

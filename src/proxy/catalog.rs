@@ -19,8 +19,8 @@ use crate::mcp::json::parse_strict;
 const MAX_PAGES: usize = 20;
 const NAME_LIMIT: usize = 128;
 const APPEARED_LIMIT: usize = 50;
-const STATELESS: &str = "2026-07-28";
-const SESSION: &str = "2025-11-25";
+pub(super) const STATELESS: &str = "2026-07-28";
+pub(super) const SESSION: &str = "2025-11-25";
 const ACCEPTS: &str = "application/json, text/event-stream";
 const UNAVAILABLE: &str = "The last refresh failed: the upstream did not answer with a tool list.";
 const TOO_LARGE: &str = "The last refresh failed: the tool list is larger than the limit.";
@@ -57,7 +57,7 @@ fn mcp_session() -> HeaderName {
 }
 
 /// The headers of one request of the sequence, for the stateless or the session form.
-fn request_headers(
+pub(super) fn request_headers(
     version: &'static str,
     method: Option<&'static str>,
     session: Option<&HeaderValue>,
@@ -263,7 +263,7 @@ async fn list_pages(
 }
 
 /// Closes a session with DELETE. Best effort: the answer does not change the result.
-async fn close_session(
+pub(super) async fn close_session(
     state: &AppState,
     target: &Target,
     session: &HeaderValue,

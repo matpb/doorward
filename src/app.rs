@@ -23,6 +23,7 @@ use crate::config::{Config, ConfigError};
 use crate::crypto::{CryptoError, KeyError, Keys, PasswordHasher, random_token};
 use crate::db::{Db, DbError};
 use crate::oauth;
+use crate::proxy::links::Links;
 use crate::rate;
 use crate::web;
 
@@ -80,6 +81,8 @@ pub struct AppState {
     pub reset_requests: Arc<Semaphore>,
     /// Request buckets and the open MCP requests of each user.
     pub limiter: Arc<rate::Limiter>,
+    /// The gateway's kept upstream links, one per token family and server.
+    pub links: Arc<Links>,
 }
 
 /// Validates the config, opens the database and returns the gateway.
@@ -116,6 +119,7 @@ pub(crate) async fn assemble(
         setup_code: setup_code.clone(),
         reset_requests: Arc::new(Semaphore::new(RESET_REQUEST_PERMITS)),
         limiter,
+        links: Arc::new(Links::new()),
     };
     spawn_sweeps(&state);
     Ok(Gateway {

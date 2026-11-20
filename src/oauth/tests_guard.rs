@@ -1350,6 +1350,7 @@ async fn state_of(gw: &Gateway) -> AppState {
         http: reqwest::Client::new(),
         reset_requests: Arc::new(Semaphore::new(1)),
         limiter,
+        links: Arc::new(crate::proxy::links::Links::new()),
         config,
     }
 }

@@ -18,6 +18,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use super::catalog::{self, RefreshError};
+use super::links::Links;
 use super::upstream::{self, Fault, Kind, Outgoing, Target, TargetError};
 use crate::app::AppState;
 use crate::cimd::UnavailableCimd;
@@ -404,6 +405,7 @@ pub async fn fixture_with(edit: impl FnOnce(&mut Config)) -> Fixture {
         http,
         reset_requests: Arc::new(Semaphore::new(1)),
         limiter,
+        links: Arc::new(Links::new()),
     };
     let server_id = state
         .db
