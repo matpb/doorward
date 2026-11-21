@@ -136,6 +136,7 @@ refresh_replay_seconds = 30
 
 [limits]
 body_bytes = 1048576
+body_read_seconds = 15 # at most 300; a body slower than this is answered 408 and the connection closed
 tools_list_bytes = 4194304
 upstream_timeout_seconds = 300 # at most 86400 (one day)
 catalog_refresh_seconds = 30  # least seconds between two catalog refreshes of one server
@@ -598,6 +599,7 @@ Answers that both endpoints share:
 |---|---|
 | `Origin` present and not exactly one header equal to the own origin or an `allowed_origins` entry, any method | `403`, `Content-Type: application/json`, no `WWW-Authenticate`, JSON-RPC `-32000` with message `Origin not allowed` and a null id; nothing else is checked, no upstream contacted |
 | Body over `body_bytes` | `413` |
+| Body not complete within `body_read_seconds` | `408`, `Connection: close`, no body; nothing else is done |
 | `Content-Encoding` present, charset other than UTF-8, byte order mark | `400`, JSON-RPC `-32600` |
 | Not valid JSON, duplicate key at any depth (compared after unescaping), lone surrogate, trailing data, nesting deeper than 64 | `400`, JSON-RPC `-32700` |
 | JSON array, `tools/call` without an `id`, a client-sent response under the stateless rules or without a session of the caller | `400`, JSON-RPC `-32600` |

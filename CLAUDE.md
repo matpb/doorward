@@ -327,6 +327,10 @@ L. Added after the owner's auth review
     or a name that differs only in letter case from one the gateway reads there, such as
     `Name` for `name`. Member names inside `params.arguments` belong to the tool and are not
     checked.
+76. A request body that is not sent in full within `limits.body_read_seconds` (15 by default)
+    is answered with `408` and the connection is closed, for browser forms, the token and
+    registration endpoints and MCP posts alike. Nothing is processed or forwarded, and no
+    activity row is written. A `HEAD` on `/oauth/authorize` is rate limited as a `GET` is.
 
 ### Proof
 
@@ -372,6 +376,9 @@ into the test harness. In addition:
 - 73: `tests/s73_account_nav.rs`.
 - 74: `tests/s74_key_case.rs`, on the per-server and the combined route under both protocol
   generations, and the classify rows in `src/mcp/tests.rs`.
+- 76: `tests/s76_body_deadline.rs`, with a raw socket that stalls mid-body on each of the four
+  routes, and `a_head_on_authorize_is_limited_at_the_same_count_as_a_get` in
+  `tests/s43_rate_limits.rs`.
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
   a walk-through of every page in a real browser at 390 px and desktop width in both
   themes, which also measures control heights and sideways scroll; screenshots kept under

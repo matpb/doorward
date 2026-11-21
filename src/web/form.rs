@@ -1,4 +1,3 @@
-use axum::body::to_bytes;
 use axum::extract::{FromRequest, Request};
 use axum::http::HeaderMap;
 use axum::http::header::{CONTENT_TYPE, ORIGIN};
@@ -7,6 +6,7 @@ use axum::response::Response;
 use crate::app::AppState;
 use crate::crypto::constant_time_eq;
 
+use super::body::{self, ReadError};
 use super::page::forbidden;
 use super::viewer::Viewer;
 
@@ -57,7 +57,12 @@ impl FromRequest<AppState> for VerifiedForm {
             return Err(forbidden());
         }
         let viewer = Viewer::resolve(&parts, state).await;
-        let bytes = to_bytes(body, FORM_LIMIT).await.map_err(|_| forbidden())?;
+        let seconds = state.config.limits.body_read_seconds;
+        let bytes = match body::read(body, FORM_LIMIT, seconds).await {
+            Ok(bytes) => bytes,
+            Err(ReadError::TooLarge) => return Err(forbidden()),
+            Err(ReadError::TimedOut) => return Err(body::timed_out()),
+        };
         let text = std::str::from_utf8(&bytes).map_err(|_| forbidden())?;
         let mut pairs: Vec<(String, String)> = form_urlencoded::parse(text.as_bytes())
             .map(|(key, value)| (key.into_owned(), value.into_owned()))

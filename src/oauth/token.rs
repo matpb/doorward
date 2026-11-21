@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use axum::body::{Body, to_bytes};
+use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
@@ -21,6 +21,7 @@ use crate::crypto::{
 };
 use crate::mail::{self, templates};
 use crate::report;
+use crate::web::body::{ReadError, read, timed_out};
 
 use super::clients;
 use super::families::{self, NewFamily, Pair};
@@ -150,8 +151,10 @@ struct UserRow {
 /// Answers every token request. Reads no cookie and checks no Origin.
 pub async fn post_token(State(state): State<AppState>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
-    let Some(form) = read_form(&parts.headers, body).await else {
-        return refuse(INVALID_REQUEST);
+    let form = match read_form(&parts.headers, body, state.config.limits.body_read_seconds).await {
+        Ok(Some(form)) => form,
+        Ok(None) | Err(ReadError::TooLarge) => return refuse(INVALID_REQUEST),
+        Err(ReadError::TimedOut) => return timed_out(),
     };
     let grant = match precheck(&form) {
         Ok(grant) => grant,
@@ -210,12 +213,17 @@ fn refuse(error: &str) -> Response {
 }
 
 /// The body as a form: a form media type, at most 16 KiB, and no name twice. None otherwise.
-async fn read_form(headers: &HeaderMap, body: Body) -> Option<Form> {
+/// `Err` when the body is too large or was not sent in time.
+async fn read_form(
+    headers: &HeaderMap,
+    body: Body,
+    seconds: u64,
+) -> Result<Option<Form>, ReadError> {
     if !is_media_type(headers, FORM_TYPE) {
-        return None;
+        return Ok(None);
     }
-    let bytes = to_bytes(body, BODY_LIMIT).await.ok()?;
-    Form::parse(&bytes)
+    let bytes = read(body, BODY_LIMIT, seconds).await?;
+    Ok(Form::parse(&bytes))
 }
 
 /// The media type before any `;`, compared without regard to letter case.

@@ -29,7 +29,7 @@ pub fn class_of(method: &Method, path: &str) -> Class {
     let segments: Vec<&str> = path.split('/').collect();
     match segments.as_slice() {
         ["", "oauth", "token" | "register"] if post => Class::Oauth,
-        ["", "oauth", "authorize"] if *method == Method::GET => Class::Oauth,
+        ["", "oauth", "authorize"] if matches!(*method, Method::GET | Method::HEAD) => Class::Oauth,
         ["", "login" | "setup" | "forgot"] | ["", "account", "password"] if post => {
             Class::Credentials
         }
@@ -207,6 +207,7 @@ mod tests {
             (Method::POST, "/oauth/token", Class::Oauth),
             (Method::POST, "/oauth/register", Class::Oauth),
             (Method::GET, "/oauth/authorize", Class::Oauth),
+            (Method::HEAD, "/oauth/authorize", Class::Oauth),
             (Method::POST, "/login", Class::Credentials),
             (Method::POST, "/setup", Class::Credentials),
             (Method::POST, "/forgot", Class::Credentials),

@@ -214,6 +214,18 @@ async fn get_from(browser: &TestClient, forwarded: &str, target: &str) -> Page {
         .await
 }
 
+/// A HEAD with an explicit X-Forwarded-For and no cookies.
+async fn head_from(w: &World, forwarded: &str, path: &str) -> Page {
+    let response =
+        w.gw.http
+            .head(w.gw.url(path))
+            .header("X-Forwarded-For", forwarded)
+            .send()
+            .await
+            .unwrap_or_else(|err| panic!("HEAD {path} failed: {err}"));
+    page_of(response).await
+}
+
 /// The authorization request of the test app for `resource`.
 fn authorize_path(resource: &str, state: &str, challenge: &str) -> String {
     let query = form(&[
@@ -969,4 +981,40 @@ async fn health_from_the_host_itself_is_never_limited() {
             "health request {n} from the host itself must be answered"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_head_on_authorize_is_limited_at_the_same_count_as_a_get() {
+    let mut w = World::start().await;
+    w.tighten(|c| {
+        trust_loopback(c);
+        c.limits.oauth_burst = 2;
+        c.limits.general_burst = 50;
+    })
+    .await;
+    let browser = w.client();
+
+    let by_get = "192.0.2.50";
+    for n in 1..=2 {
+        let page = get_from(&browser, by_get, "/oauth/authorize").await;
+        assert_answered(page.status, &format!("GET authorize {n}"));
+    }
+    let page = head_from(&w, by_get, "/oauth/authorize").await;
+    assert_limited(
+        page.status,
+        &page.headers,
+        "the third request to authorize, a HEAD after two GETs",
+    );
+
+    let by_head = "192.0.2.51";
+    for n in 1..=2 {
+        let page = head_from(&w, by_head, "/oauth/authorize").await;
+        assert_answered(page.status, &format!("HEAD authorize {n}"));
+    }
+    let page = get_from(&browser, by_head, "/oauth/authorize").await;
+    assert_limited(
+        page.status,
+        &page.headers,
+        "the third request to authorize, a GET after two HEADs",
+    );
 }

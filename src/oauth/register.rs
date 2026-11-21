@@ -3,7 +3,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use axum::Json;
-use axum::body::to_bytes;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::request::Parts;
@@ -15,6 +14,7 @@ use serde_json::{Map, Value, json};
 use crate::app::AppState;
 use crate::crypto::random_token;
 use crate::report;
+use crate::web::body::{ReadError, read, timed_out};
 use crate::web::limit;
 use crate::web::{client_address, throttle_key};
 
@@ -67,8 +67,10 @@ pub async fn post_register(State(state): State<AppState>, request: Request) -> R
     if !is_json(&parts.headers) {
         return refuse(Refusal::Metadata);
     }
-    let Ok(bytes) = to_bytes(body, BODY_LIMIT).await else {
-        return refuse(Refusal::Metadata);
+    let bytes = match read(body, BODY_LIMIT, state.config.limits.body_read_seconds).await {
+        Ok(bytes) => bytes,
+        Err(ReadError::TooLarge) => return refuse(Refusal::Metadata),
+        Err(ReadError::TimedOut) => return timed_out(),
     };
     let Some(object) = parse_object(&bytes) else {
         return refuse(Refusal::Metadata);

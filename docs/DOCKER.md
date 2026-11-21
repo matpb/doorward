@@ -96,6 +96,7 @@ message names the variable and never prints the value.
 | `DOORWARD_LIFETIMES_FAMILY_DAYS` | `90` | Days one client connection (a token family) may last. |
 | `DOORWARD_LIFETIMES_REFRESH_REPLAY_SECONDS` | `30` | Seconds in which a just-used refresh token may be presented again. `0` turns this off. |
 | `DOORWARD_LIMITS_BODY_BYTES` | `1048576` | Largest request body in bytes. Caddy uses the same limit. |
+| `DOORWARD_LIMITS_BODY_READ_SECONDS` | `15` | Seconds a client has to send a request body. A slower body is answered with `408` and the connection is closed. At most `300`; a larger value refuses the start. |
 | `DOORWARD_LIMITS_TOOLS_LIST_BYTES` | `4194304` | Largest answer in bytes that a server may send in one piece: a tool list, any other JSON answer such as a tool result, or one event of a stream. A larger JSON answer from one server is refused with `502`, and a larger stream event ends that stream. On the combined endpoint, a server whose answer is too large, or whose tools would take the merged list over this size, is left out of the list instead, and the gateway logs which one. |
 | `DOORWARD_LIMITS_UPSTREAM_TIMEOUT_SECONDS` | `300` | Seconds an upstream server may stay silent before the call ends. At most `86400` (one day); a larger value refuses the start. |
 | `DOORWARD_LIMITS_ACCOUNT_FAILURES` | `5` | Wrong passwords for one account from one client address, inside `DOORWARD_LIMITS_BLOCK_MINUTES`, after which a sign-in to that account from that address answers `429`, right password included. Other addresses are not affected. |

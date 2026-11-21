@@ -117,6 +117,11 @@ pub const SETTINGS: &[Setting] = &[
         kind: Kind::Whole,
     },
     Setting {
+        variable: "DOORWARD_LIMITS_BODY_READ_SECONDS",
+        path: "limits.body_read_seconds",
+        kind: Kind::Whole,
+    },
+    Setting {
         variable: "DOORWARD_LIMITS_TOOLS_LIST_BYTES",
         path: "limits.tools_list_bytes",
         kind: Kind::Whole,
@@ -274,6 +279,7 @@ pub struct Lifetimes {
 #[serde(deny_unknown_fields, default)]
 pub struct Limits {
     pub body_bytes: u64,
+    pub body_read_seconds: u64,
     pub tools_list_bytes: u64,
     pub upstream_timeout_seconds: u64,
     pub account_failures: u64,
@@ -323,6 +329,7 @@ impl Default for Limits {
     fn default() -> Self {
         Limits {
             body_bytes: 1_048_576,
+            body_read_seconds: 15,
             tools_list_bytes: 4_194_304,
             upstream_timeout_seconds: 300,
             account_failures: 5,
@@ -690,6 +697,8 @@ fn check_trusted_proxies(ranges: &[Range]) -> Result<(), ConfigError> {
 
 /// The longest `limits.upstream_timeout_seconds`: one day.
 const UPSTREAM_TIMEOUT_MAX: u64 = 86_400;
+/// The longest `limits.body_read_seconds`: five minutes.
+const BODY_READ_MAX: u64 = 300;
 
 /// Refuses an `allowed_origins` list that breaks statement 48.
 fn check_allowed_origins(entries: &[String]) -> Result<(), ConfigError> {
@@ -775,6 +784,7 @@ impl Limits {
             "limits",
             &[
                 ("body_bytes", self.body_bytes),
+                ("body_read_seconds", self.body_read_seconds),
                 ("tools_list_bytes", self.tools_list_bytes),
                 ("upstream_timeout_seconds", self.upstream_timeout_seconds),
                 ("account_failures", self.account_failures),
@@ -802,6 +812,11 @@ impl Limits {
             return Err(ConfigError::Invalid(
                 "limits.account_ceiling must be at least limits.account_failures".to_owned(),
             ));
+        }
+        if self.body_read_seconds > BODY_READ_MAX {
+            return Err(ConfigError::Invalid(format!(
+                "limits.body_read_seconds must be at most {BODY_READ_MAX}"
+            )));
         }
         if self.upstream_timeout_seconds > UPSTREAM_TIMEOUT_MAX {
             return Err(ConfigError::Invalid(format!(
@@ -1131,6 +1146,33 @@ mod tests {
             Config::from_sources(None, &with(&[("DOORWARD_SHARED_CLIENT_ADDRESS", "true")]))
                 .expect("the flag loads");
         assert!(config.shared_client_address);
+    }
+
+    #[test]
+    fn the_body_read_limit_is_15_seconds_by_default() {
+        let config = Config::from_sources(None, &with(&[])).expect("the defaults load");
+        assert_eq!(config.limits.body_read_seconds, 15);
+        assert_eq!(Limits::default().body_read_seconds, 15);
+    }
+
+    #[test]
+    fn a_body_read_limit_of_zero_is_refused() {
+        assert_eq!(
+            refusal(&[("DOORWARD_LIMITS_BODY_READ_SECONDS", "0")]),
+            "invalid config: limits.body_read_seconds must be at least 1"
+        );
+    }
+
+    #[test]
+    fn a_body_read_limit_of_300_is_valid_and_301_is_refused() {
+        let config =
+            Config::from_sources(None, &with(&[("DOORWARD_LIMITS_BODY_READ_SECONDS", "300")]))
+                .expect("a body read limit of 300 loads");
+        assert_eq!(config.limits.body_read_seconds, 300);
+        assert_eq!(
+            refusal(&[("DOORWARD_LIMITS_BODY_READ_SECONDS", "301")]),
+            "invalid config: limits.body_read_seconds must be at most 300"
+        );
     }
 
     #[test]

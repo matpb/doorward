@@ -1,6 +1,7 @@
 //! Shared browser-page machinery: the viewer, verified forms, the page shell and headers.
 
 mod address;
+pub mod body;
 mod cookies;
 pub mod drain;
 mod form;

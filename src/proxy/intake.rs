@@ -1,6 +1,6 @@
 //! The checks every POST passes before its method is looked at: encoding, body cap, JSON, shape and headers.
 
-use axum::body::{Body, Bytes, to_bytes};
+use axum::body::{Body, Bytes};
 use axum::http::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
@@ -14,6 +14,7 @@ use crate::mcp::json::{JsonRefusal, parse_strict};
 use crate::mcp::message::{
     Generation, Message, Refusal, Shape, classify, meta_capabilities, meta_version,
 };
+use crate::web::body::{ReadError, read, timed_out};
 
 const MISSING_META: &str = "Invalid params: missing _meta, protocol version or client capabilities";
 
@@ -39,9 +40,10 @@ pub(super) async fn intake(
         ));
     }
     let limit = usize::try_from(state.config.limits.body_bytes).unwrap_or(usize::MAX);
-    let bytes = match to_bytes(body, limit).await {
+    let bytes = match read(body, limit, state.config.limits.body_read_seconds).await {
         Ok(bytes) => bytes,
-        Err(_) => return Err(bare(StatusCode::PAYLOAD_TOO_LARGE)),
+        Err(ReadError::TooLarge) => return Err(bare(StatusCode::PAYLOAD_TOO_LARGE)),
+        Err(ReadError::TimedOut) => return Err(timed_out()),
     };
     let value = match parse_strict(&bytes) {
         Ok(value) => value,
