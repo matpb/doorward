@@ -7,11 +7,16 @@ SQLite database.
 
 Status: pre-release (0.1.0).
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.png">
+  <img src="docs/images/overview-light.png" alt="The Doorward admin panel: the navigation on the left, a warning about two servers that answer without the gateway, counts of servers, users, invitations and rules, and the latest activity" width="720">
+</picture>
+
 ## What it does
 
 - **One address per server.** Each MCP server you add gets a path, `https://gateway.example.com/<slug>`.
   A combined endpoint, `/mcp`, offers the tools of every server a person may use, named
-  `<slug>__<tool>`.
+  `<path>__<tool>`.
 - **Its own OAuth server.** MCP clients discover it, send the person to the gateway's own
   sign-in and consent pages, and get tokens that only work at the gateway. The upstream
   servers never see them.
@@ -43,9 +48,9 @@ The gateway runs on Linux; Windows is not supported. Build it with Rust 1.89 or 
 cargo build --release
 ```
 
-Write a config file. Four settings are enough to start; `doorward.example.toml` lists the
-rest, and every setting can also come from an environment variable (see
-[docs/DOCKER.md](docs/DOCKER.md#settings)).
+Write a config file. Four settings are enough to start. `doorward.example.toml` shows the
+main settings; the settings table in [docs/DOCKER.md](docs/DOCKER.md#settings) lists all of
+them, and every setting can also come from an environment variable.
 
 ```toml
 public_url = "https://gateway.example.com"
@@ -113,16 +118,23 @@ location / {
 
 ## Add a server and lock it down
 
-In the admin panel, add a server with a name, a slug and its address. Then make sure the
-server only answers the gateway:
+In the admin panel, add a server with a name, a path and its upstream address. Then make sure
+the server only answers the gateway:
 
 1. Give the server a secret header (a name and a value) and configure the server to refuse
    any request without it. The gateway adds the header to every request it forwards and
    removes the visitor's own credentials.
 2. Press "Check lock-down" on the server page. The gateway calls the server without the
-   secret and reports `ok` when it is refused, or `open` when it answers. An open server
-   can be used by anyone who can reach its address, gateway or not.
+   secret and shows one of three states. "Locked down" means the server refused a request
+   without the secret. "Answers without the gateway" means anyone who can reach its address
+   can use it, gateway or not. "Not checked" means the check has not run yet, or the server
+   did not answer the check.
 3. Where you can, also restrict the server's network so that only the gateway reaches it.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/servers-dark.png">
+  <img src="docs/images/servers-light.png" alt="The servers page: each server with its path, tool count, user count and lock-down state" width="720">
+</picture>
 
 The gateway never follows redirects from a server, and only relays the answers an MCP
 server is expected to give.
@@ -165,6 +177,11 @@ codex mcp login <name>
 The browser opens the gateway's sign-in page, then a consent page that names the client,
 the server and the signed-in person. Approve only a sign-in you started yourself.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/consent-dark.png">
+  <img src="docs/images/consent-light.png" alt="The consent page on a phone: where the sign-in will be sent, a warning about the client's name, the server, the signed-in person, Approve and Deny" width="320">
+</picture>
+
 Each person sees their connected clients on their account page and can disconnect one
 there. Claude Code, Codex and the Cursor command line client were run against 0.1.0.
 
@@ -180,6 +197,19 @@ there. Claude Code, Codex and the Cursor command line client were run against 0.
 - Access tokens last 60 minutes and refresh tokens rotate. A refresh token presented again
   within 30 seconds gets the same new pair, which covers a lost answer; presented later, it
   ends that client's connection.
+
+## Run the tests
+
+`./check.sh` runs formatting, lints, every test, the dependency audits and the repository
+hygiene scan, and prints `CHECK PASS` when all of them pass.
+
+The proof scripts (`scripts/prove-*.sh`, with helpers in `scripts/prove/`) drive real clients
+and real HTTP against a throwaway gateway. [CONTRIBUTING.md](CONTRIBUTING.md) describes them.
+
+## Questions and bugs
+
+Bugs and questions go to the repository's issue tracker. Security reports do not: see
+[SECURITY.md](SECURITY.md) for how to make one.
 
 ## More
 

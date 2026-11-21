@@ -19,8 +19,10 @@ You need Linux, Rust 1.89 or newer, `cargo-audit` and `cargo-deny`.
 
 `check.sh` runs the formatter, clippy with warnings as errors, every test, the advisory and
 licence checks, and a scan of the tracked files for home directory paths, email addresses
-outside the example domains and IPv4 addresses outside the loopback and documentation
-ranges. The scan does not find everything: host names and secrets are yours to keep out.
+outside the example domains and IPv4 addresses. The scan allows only `127.0.0.1`, `0.0.0.0`,
+the documentation ranges `192.0.2.0/24`, `198.51.100.0/24` and `203.0.113.0/24`, and the
+`10.213.87.0/24` subnet that the Compose files use. The scan does not find everything: host
+names and secrets are yours to keep out.
 It must pass before a change is proposed. There is no hosted CI: the same script is the
 gate everywhere.
 
