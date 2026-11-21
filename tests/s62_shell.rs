@@ -219,14 +219,14 @@ async fn covered(s: &Seeded) -> Vec<Shot> {
             "/account (owner)",
             w.owner.get("/account").await,
             200,
-            PAGE,
+            PANEL,
             "/account",
         ),
         shot(
             "/account (admin)",
             s.admin.get("/account").await,
             200,
-            PAGE,
+            PANEL,
             "/account",
         ),
         shot(
@@ -432,7 +432,9 @@ async fn a_panel_page_holds_the_navigation_in_its_header() {
             "{} must keep no navigation inside main",
             shot.name
         );
-        assert_panel_items(page, &shot.name, true);
+        // Every panel shot is the owner's view except the admin's account page, which has no Mail.
+        let owner = shot.name != "/account (admin)";
+        assert_panel_items(page, &shot.name, owner);
     }
     let admin_page = s.admin.get("/admin").await;
     assert_eq!(admin_page.status, 200, "the admin must reach /admin");
@@ -510,28 +512,33 @@ async fn the_account_page_holds_its_own_navigation() {
         );
         assert_eq!(
             page.count(&format!(
-                r#"{HEADER} nav#account-nav[data-nav="account"][aria-label="Account"]"#
+                r#"{HEADER} nav#panel-nav[data-nav="panel"][aria-label="Admin"]"#
             )),
             1,
-            "the account page of {who} must hold nav#account-nav in its header"
+            "the account page of {who} must hold nav#panel-nav in its header"
         );
         assert_eq!(
             page.count(&format!(
-                r#"{HEADER} > div.site-bar > a.brand[href="/account"]"#
+                r#"{HEADER} > div.site-bar > a.brand[href="/admin"]"#
             )),
             1,
-            "the account page of {who} must hold a.brand to /account"
+            "the account page of {who} must hold a.brand to /admin"
         );
         assert_eq!(
-            page.text(r#"#account-nav a[href="/account"][aria-current="page"]"#)
+            page.text(r#"#panel-nav a[href="/account"][aria-current="page"]"#)
                 .as_deref(),
             Some("Your account"),
             "the account page of {who} must mark Your account as the current link"
         );
         assert_eq!(
-            page.count(r#"#account-nav li.nav-end > a[href="/admin"][data-nav="to-panel"]"#),
+            page.count(r#"#panel-nav li.nav-end > a[href="/account"][aria-current="page"]"#),
             1,
-            "the account page of {who} must link to the panel from the foot of its navigation"
+            "the account page of {who} must mark Your account at the foot of its navigation"
+        );
+        assert_eq!(
+            page.count("#account-nav"),
+            0,
+            "the account page of {who} must hold no #account-nav"
         );
     }
     let page = s.bob.get("/account").await;

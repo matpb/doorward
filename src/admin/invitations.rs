@@ -425,6 +425,60 @@ fn mail_warning(error: &str, owner: bool) -> Markup {
     }
 }
 
+/// The link cut once before the first `/` after its host: the origin, and the path from that `/` on.
+/// None when the link is not `scheme://host/...` shaped.
+fn split_link(link: &str) -> Option<(&str, &str)> {
+    let scheme_end = link.find("://")?;
+    let scheme = &link[..scheme_end];
+    let scheme_ok = !scheme.is_empty()
+        && scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'));
+    if !scheme_ok {
+        return None;
+    }
+    let host_start = scheme_end + 3;
+    let host_len = link[host_start..]
+        .find('/')
+        .unwrap_or(link.len() - host_start);
+    if host_len == 0 {
+        return None;
+    }
+    let origin_end = host_start + host_len;
+    Some((&link[..origin_end], &link[origin_end..]))
+}
+
+/// The link as a code element, copied by hand: the origin and the path in two spans, with one wbr
+/// between them and no white space inside.
+fn invite_link_code(link: &str) -> Markup {
+    let parts = split_link(link);
+    html! {
+        code.copy data-invite-link=(link) {
+            @match parts {
+                Some((origin, "")) => span { (ui::breakable(origin)) },
+                Some((origin, path)) => {
+                    span { (ui::breakable(origin)) }
+                    wbr;
+                    span { (path) }
+                }
+                None => span { (ui::breakable(link)) },
+            }
+        }
+    }
+}
+
+/// The invitation link as a labelled field, the one thing the person copies by hand.
+fn invite_link_field(link: &str) -> Markup {
+    html! {
+        div.fields.narrow {
+            div.field role="group" aria-labelledby="invite-link-label" {
+                span.label id="invite-link-label" { "Invitation link" }
+                (invite_link_code(link))
+            }
+        }
+    }
+}
+
 /// The answer when the mail did not leave: the error, and the link once for copying by hand.
 fn invitation_created(viewer: &Viewer, error: &str, link: &str) -> Response {
     let owner = viewer.is_owner();
@@ -449,8 +503,10 @@ fn invitation_created(viewer: &Viewer, error: &str, link: &str) -> Response {
                     p { "Copy this link and send it to the person you invited." }
                 }
                 div.part-body.flow {
-                    code.copy data-invite-link=(link) { (ui::breakable(link)) }
-                    p { a.button data-kind="secondary" href="/admin/invitations" { "Back to invitations" } }
+                    (invite_link_field(link))
+                    div.form-actions {
+                        a.button data-kind="secondary" href="/admin/invitations" { "Back to invitations" }
+                    }
                 }
             }
         },
@@ -466,6 +522,62 @@ mod tests {
         assert_eq!(
             mail_warning("any other error", true).into_string(),
             "<p>any other error</p>"
+        );
+    }
+
+    #[test]
+    fn a_link_is_cut_before_the_first_slash_after_its_host() {
+        assert_eq!(
+            split_link("https://example.com/invite/abc"),
+            Some(("https://example.com", "/invite/abc"))
+        );
+        assert_eq!(
+            split_link("https://example.com:8443/a/b"),
+            Some(("https://example.com:8443", "/a/b"))
+        );
+        assert_eq!(
+            split_link("https://example.com"),
+            Some(("https://example.com", ""))
+        );
+    }
+
+    #[test]
+    fn a_link_that_is_not_scheme_host_shaped_is_not_cut() {
+        assert_eq!(split_link("example.com/invite/abc"), None);
+        assert_eq!(split_link("https:///invite/abc"), None);
+        assert_eq!(split_link("a b://example.com/x"), None);
+        assert_eq!(split_link("://example.com/x"), None);
+    }
+
+    #[test]
+    fn the_link_code_holds_origin_and_path_in_two_spans_with_one_wbr() {
+        assert_eq!(
+            invite_link_code("https://example.com/invite/abc").into_string(),
+            r#"<code class="copy" data-invite-link="https://example.com/invite/abc"><span>https://<wbr>example<wbr>.com</span><wbr><span>/invite/abc</span></code>"#
+        );
+    }
+
+    #[test]
+    fn a_link_without_a_path_has_one_span_and_no_wbr_between() {
+        assert_eq!(
+            invite_link_code("https://example.com").into_string(),
+            r#"<code class="copy" data-invite-link="https://example.com"><span>https://<wbr>example<wbr>.com</span></code>"#
+        );
+    }
+
+    #[test]
+    fn a_link_that_is_not_shaped_is_one_span_with_no_path_span() {
+        assert_eq!(
+            invite_link_code("example.com/invite/abc").into_string(),
+            r#"<code class="copy" data-invite-link="example.com/invite/abc"><span>example<wbr>.com/<wbr>invite/<wbr>abc</span></code>"#
+        );
+    }
+
+    #[test]
+    fn the_invitation_link_is_a_labelled_field_of_one_narrow_row() {
+        assert_eq!(
+            invite_link_field("https://example.com/invite/abc").into_string(),
+            r#"<div class="fields narrow"><div class="field" role="group" aria-labelledby="invite-link-label"><span class="label" id="invite-link-label">Invitation link</span><code class="copy" data-invite-link="https://example.com/invite/abc"><span>https://<wbr>example<wbr>.com</span><wbr><span>/invite/abc</span></code></div></div>"#
         );
     }
 

@@ -30,10 +30,16 @@ pub fn account_page(
     let Some(user) = viewer.user.as_ref() else {
         return redirect("/login");
     };
+    let nav = if viewer.is_admin() {
+        Nav::Panel {
+            current: "/account",
+            owner: viewer.is_owner(),
+        }
+    } else {
+        Nav::Account
+    };
     let data = MainData {
-        nav: Nav::Account {
-            admin: viewer.is_admin(),
-        },
+        nav,
         ..MainData::default()
     };
     form_page_with(viewer, status, "account", "Your account", &data, |csrf| {

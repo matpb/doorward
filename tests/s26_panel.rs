@@ -527,14 +527,18 @@ async fn the_account_page_links_to_the_panel_for_admins_only() {
         let page = browser.get("/account").await;
         assert_eq!(page.status, 200, "/account must answer 200 to {who}");
         assert_eq!(
-            page.attrs(r#"a[data-nav="to-panel"]"#, "href"),
+            page.attrs("header[data-brand] a.brand", "href"),
             vec!["/admin".to_string()],
-            "/account must link to the panel for {who}"
+            "the brand on /account must link to the panel for {who}"
+        );
+        assert!(
+            !page.texts("a").iter().any(|text| text == "Admin panel"),
+            "/account must hold no Admin panel link for {who}"
         );
         assert_eq!(
-            page.texts(r#"a[data-nav="to-panel"]"#),
-            vec!["Admin panel".to_string()],
-            "the panel link on /account must read Admin panel for {who}"
+            page.count(r#"a[data-nav="to-panel"]"#),
+            0,
+            "/account must hold no to-panel link for {who}"
         );
     }
     let page = bob.get("/account").await;
@@ -542,6 +546,11 @@ async fn the_account_page_links_to_the_panel_for_admins_only() {
         page.count(r#"a[data-nav="to-panel"]"#),
         0,
         "/account must not link to the panel for a plain user"
+    );
+    assert_eq!(
+        page.count(r#"a[href^="/admin"]"#),
+        0,
+        "/account must link to no /admin path for a plain user"
     );
 }
 

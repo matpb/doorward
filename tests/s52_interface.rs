@@ -236,7 +236,12 @@ async fn covered(s: &Seeded) -> Vec<Shot> {
     let mut shots = vec![
         shot("/login", anonymous.get("/login").await, 200, CARD),
         shot("/forgot", anonymous.get("/forgot").await, 200, CARD),
-        shot("/account (owner)", w.owner.get("/account").await, 200, WIDE),
+        shot(
+            "/account (owner)",
+            w.owner.get("/account").await,
+            200,
+            PANEL,
+        ),
         shot("/account (bob)", s.bob.get("/account").await, 200, WIDE),
     ];
     let panel_paths = [

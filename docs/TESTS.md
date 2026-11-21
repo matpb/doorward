@@ -2126,6 +2126,60 @@ New unit tests for the `span.whole` places: `oauth::authorize::tests::the_cannot
 `admin::users::tests::the_server_of_a_tool_sits_in_a_whole_span_as_code`,
 `admin::rules::tests::the_applies_to_names_sit_in_whole_spans_as_code`.
 
+## s73_account_nav.rs (statement 73)
+
+Each test builds its own world. The account page of an owner or admin is checked against the
+links the panel pages show, so the two cannot drift apart.
+
+1. `the_owners_account_page_is_a_panel_page_marked_on_your_account`: `body[data-layout="panel"]`, one
+   `nav#panel-nav` with the nine owner links in order (Mail included) and the same links as GET /admin,
+   the brand to `/admin`, Your account the only `aria-current="page"` and the last item, no
+   `#account-nav`, no link reading Admin panel. Red before the change.
+2. `an_admins_account_page_is_a_panel_page_marked_on_your_account`: the same for an admin, with the
+   eight links and no Mail. Red before the change.
+3. `a_plain_users_account_page_holds_one_link_and_no_panel_link`: `body[data-layout="page"]`, no
+   `nav#panel-nav`, no `a[href^="/admin"]`, one navigation link reading Your account, no Menu button.
+   Passes before and after the change.
+4. `a_plain_user_refused_a_panel_page_links_to_the_start_page`: GET /admin for a plain user answers 403
+   with `data-page="forbidden"`, and one `p.back a[href="/"]` reading `Go to the start page`. Red before.
+5. `a_refused_form_post_links_to_the_start_page`: a post without the anti-forgery token answers 403 with
+   the same page and link. Red before.
+6. `the_too_many_requests_page_holds_no_link_in_its_main`: the 429 page holds no `a` inside `main`.
+   Passes before and after the change.
+7. `an_invitation_not_sent_shows_its_link_in_a_labelled_field`: the page holds `span.label#invite-link-label`
+   reading Invitation link, one `div.field[role="group"][aria-labelledby="invite-link-label"]` inside
+   `div.fields.narrow`, and `code.copy[data-invite-link]` whose raw text equals the stored link. The code
+   holds two spans (origin, then path), one `wbr` as its own child between them, and no text node of its
+   own. The way back sits in `div.form-actions`. Red before.
+
+Rewritten tests (old expectation, then new; roles and counts kept):
+
+- `s62_shell::the_account_page_holds_its_own_navigation`, owner and admin part: was `nav#account-nav` in
+  the header, brand to `/account`, the Your account link current, and a `li.nav-end` link to `/admin`
+  reading Admin panel. Now `nav#panel-nav` in the header, brand to `/admin`, Your account current and
+  marked at the foot, and no `#account-nav`. The plain user part is unchanged.
+- `s62_shell::every_page_holds_the_site_header_and_its_layout`, the covered list: `/account (owner)` and
+  `/account (admin)` expected layout `page`, now `panel`. `/account (bob)` stays `page`.
+- `s62_shell::a_panel_page_holds_the_navigation_in_its_header`: the call site gave the owner's nine links
+  for every panel shot. The admin's account page has eight, so it is checked with `owner = false`.
+- `s52_interface::every_page_has_the_header_and_its_layout`: `/account (owner)` expected layout `page`,
+  now `panel`. `/account (bob)` stays `page`.
+- `s26_panel::the_account_page_links_to_the_panel_for_admins_only`: was a `a[data-nav="to-panel"]` link
+  to `/admin` reading Admin panel for the owner and an admin. Now the brand `header[data-brand] a.brand`
+  links to `/admin`, no link reads Admin panel and no to-panel link exists. For a plain user, no
+  `a[href^="/admin"]` at all.
+- `web::page::tests::a_plain_users_account_nav_is_one_link_with_no_popover_and_no_menu`: only the
+  constructor changed (`Nav::Account { admin: false }` is now `Nav::Account`). The expected header string
+  is unchanged.
+
+New unit tests: `web::page::tests` `the_refusal_page_links_to_the_start_page_after_its_lede`,
+`an_account_page_takes_its_layout_from_its_navigation` (a plain user's account page stays `page`) and
+`a_panel_navigation_does_not_change_the_layout_of_another_kind`; `admin::invitations::tests`
+`a_link_is_cut_before_the_first_slash_after_its_host`, `a_link_that_is_not_scheme_host_shaped_is_not_cut`,
+`the_link_code_holds_origin_and_path_in_two_spans_with_one_wbr`,
+`a_link_without_a_path_has_one_span_and_no_wbr_between` and
+`a_link_that_is_not_shaped_is_one_span_with_no_path_span`.
+
 ## Round 5: tests added and rewritten for the design changes
 
 Each entry names the change of the round 5 list it proves, and why an existing test changed.

@@ -14,8 +14,8 @@ pub enum Nav<'a> {
     None,
     /// The admin panel's list; `current` is the path of the section shown, `owner` adds Mail.
     Panel { current: &'a str, owner: bool },
-    /// The account page's list; `admin` adds the link to the panel.
-    Account { admin: bool },
+    /// The navigation of a plain user's account page: its one link.
+    Account,
 }
 
 /// Extra data attributes of the main element. A None leaves the attribute out.
@@ -91,25 +91,6 @@ fn panel_nav(current: &str, owner: bool) -> Markup {
     }
 }
 
-/// The account page's list: the account page itself, and the link to the panel for admins.
-fn account_nav() -> Markup {
-    html! {
-        nav id="account-nav" data-nav="account" aria-label="Account" popover {
-            ul {
-                li {
-                    a href="/account" aria-current="page" {
-                        span class="nav-mark" aria-hidden="true" {}
-                        "Your account"
-                    }
-                }
-                li class="nav-end" {
-                    a href="/admin" data-nav="to-panel" { "Admin panel" }
-                }
-            }
-        }
-    }
-}
-
 /// The navigation of a plain user's account page: its one link, with no menu to open it.
 fn plain_account_nav() -> Markup {
     html! {
@@ -141,9 +122,8 @@ fn menu_button(target: &str) -> Markup {
 fn header(layout: &str, nav: Nav<'_>) -> Markup {
     let (menu, list) = match nav {
         Nav::None => (None, None),
-        Nav::Account { admin: false } => (None, Some(plain_account_nav())),
+        Nav::Account => (None, Some(plain_account_nav())),
         Nav::Panel { current, owner } => (Some("panel-nav"), Some(panel_nav(current, owner))),
-        Nav::Account { admin: true } => (Some("account-nav"), Some(account_nav())),
     };
     html! {
         header.site data-brand {
@@ -176,7 +156,11 @@ pub fn page_with(
     data: &MainData<'_>,
     body: Markup,
 ) -> Response {
-    let layout = layout_of(kind);
+    let layout = match (kind, data.nav) {
+        // The account page of an owner or admin carries the panel navigation, so it is a panel page.
+        ("account", Nav::Panel { .. }) => "panel",
+        _ => layout_of(kind),
+    };
     let document = html! {
         (DOCTYPE)
         html lang="en" {
@@ -256,6 +240,7 @@ pub fn forbidden() -> Response {
         html! {
             h1 data-tone="bad" { "Request refused" }
             p.lede { "Doorward did not carry out this request. If you were sending a form, go back, reload the page and send it again. If you followed a link, your account may not open it." }
+            p.back { a href="/" { "Go to the start page" } }
         },
     )
 }
@@ -574,9 +559,75 @@ mod tests {
     #[test]
     fn a_plain_users_account_nav_is_one_link_with_no_popover_and_no_menu() {
         assert_eq!(
-            header("page", Nav::Account { admin: false }).into_string(),
+            header("page", Nav::Account).into_string(),
             r#"<header class="site" data-brand><div class="site-bar"><a class="brand" href="/account"><svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M6.5 2h11A1.5 1.5 0 0 1 19 3.5v17a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20.5v-17A1.5 1.5 0 0 1 6.5 2Zm8.25 9.25a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"></svg><span>Doorward</span></a></div><nav data-nav="account" aria-label="Account"><ul><li><a href="/account" aria-current="page"><span class="nav-mark" aria-hidden="true"></span>Your account</a></li></ul></nav></header>"#
         );
+    }
+
+    #[test]
+    fn an_owners_account_header_is_the_panel_header_marked_on_your_account() {
+        assert_eq!(
+            header(
+                "panel",
+                Nav::Panel {
+                    current: "/account",
+                    owner: true
+                }
+            )
+            .into_string(),
+            r#"<header class="site" data-brand><div class="site-bar"><a class="brand" href="/admin"><svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M6.5 2h11A1.5 1.5 0 0 1 19 3.5v17a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20.5v-17A1.5 1.5 0 0 1 6.5 2Zm8.25 9.25a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"></svg><span>Doorward</span></a><button class="menu-button" type="button" data-kind="secondary" popovertarget="panel-nav"><span class="when-closed">Menu</span><span class="when-open">Close</span></button></div><nav id="panel-nav" data-nav="panel" aria-label="Admin" popover><ul><li><a href="/admin">Overview</a></li><li class="nav-break"><a href="/admin/users">Users</a></li><li><a href="/admin/invitations">Invitations</a></li><li class="nav-break"><a href="/admin/servers">Servers</a></li><li><a href="/admin/rules">Rules</a></li><li><a href="/admin/redirects">Redirects</a></li><li class="nav-break"><a href="/admin/activity">Activity</a></li><li><a href="/admin/mail">Mail</a></li><li class="nav-end"><a href="/account" aria-current="page"><span class="nav-mark" aria-hidden="true"></span>Your account</a></li></ul></nav></header>"#
+        );
+    }
+
+    #[tokio::test]
+    async fn the_refusal_page_links_to_the_start_page_after_its_lede() {
+        let doc = Html::parse_document(&text_of(forbidden()).await);
+        let links: Vec<_> = doc
+            .select(&Selector::parse("main p.back a").expect("selector"))
+            .collect();
+        assert_eq!(links.len(), 1, "the refusal page must hold one back link");
+        assert_eq!(links[0].value().attr("href"), Some("/"));
+        assert_eq!(links[0].text().collect::<String>(), "Go to the start page");
+    }
+
+    #[tokio::test]
+    async fn an_account_page_takes_its_layout_from_its_navigation() {
+        let plain = MainData {
+            nav: Nav::Account,
+            ..MainData::default()
+        };
+        let panel = MainData {
+            nav: Nav::Panel {
+                current: "/account",
+                owner: false,
+            },
+            ..MainData::default()
+        };
+        for (data, layout) in [(&plain, "page"), (&panel, "panel")] {
+            let doc = Html::parse_document(
+                &text_of(page_with(StatusCode::OK, "account", "T", data, html! {})).await,
+            );
+            assert_eq!(
+                count(&doc, &format!(r#"body[data-layout="{layout}"]"#)),
+                1,
+                "the account page must carry body data-layout {layout}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_panel_navigation_does_not_change_the_layout_of_another_kind() {
+        let data = MainData {
+            nav: Nav::Panel {
+                current: "/admin",
+                owner: false,
+            },
+            ..MainData::default()
+        };
+        let doc = Html::parse_document(
+            &text_of(page_with(StatusCode::OK, "login", "T", &data, html! {})).await,
+        );
+        assert_eq!(count(&doc, r#"body[data-layout="card"]"#), 1);
     }
 
     #[tokio::test]

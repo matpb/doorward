@@ -267,6 +267,19 @@ code,
 .whole {
   display: inline-block;
   max-inline-size: 100%;
+  white-space: normal;
+}
+
+/* An inline block starts lines of its own. An indent inherited from the text around it
+   would move its first line, onto its neighbour when the indent is negative: never inherit. */
+.whole,
+.state,
+.email,
+.email > span,
+.notice a,
+.back > a,
+.button {
+  text-indent: 0;
 }
 
 q {
@@ -487,13 +500,16 @@ body[data-layout="card"] main > .lede + .back {
   margin-block-start: var(--s5);
 }
 
+/* The size of the paragraph it follows; its target is a control's height (36 px, 44 on
+   touch) while the line it stands in stays 28 px. */
 .back {
-  font: 400 13px/20px var(--sans);
+  font: 400 16px/24px var(--sans);
 }
 
 .back > a {
   display: inline-block;
-  padding-block: 2px;
+  margin-block: calc((28px - var(--control)) / 2);
+  padding-block: calc((var(--control) - 24px) / 2);
   color: var(--ink-2);
 }
 
@@ -703,6 +719,15 @@ body[data-layout="page"] main > .notice {
   margin-block-start: var(--s7);
 }
 
+/* A list that a part follows is closed by that part's rule: its last row keeps its room
+   and gives up its own hairline, so no two rules run parallel with nothing between. */
+.list:has(+ .part) > tbody > tr:last-child,
+.list:has(+ .part) > tbody > tr:last-child > td,
+:is(.block, .part):has(+ .part) .list:last-child > tbody > tr:last-child,
+:is(.block, .part):has(+ .part) .list:last-child > tbody > tr:last-child > td {
+  border-block-end-color: transparent;
+}
+
 .block-head > a {
   padding-block: var(--r1);
 }
@@ -767,7 +792,8 @@ label,
   color: var(--ink);
 }
 
-.field > label {
+.field > label,
+.field > .label {
   grid-area: 1 / 1;
   align-self: end;
   margin-block-end: var(--s1);
@@ -1544,11 +1570,17 @@ body[data-layout="card"] [data-kind="danger"]:hover {
   line-height: 1;
 }
 
+/* The slash stays with the server; a tool that does not fit beside it goes to the next
+   line whole, and breaks inside only when it is longer than a line. */
 .activity .where code + code {
+  display: inline-block;
+  max-inline-size: 100%;
+  line-height: 20px;
+  text-indent: 0;
   color: var(--ink-2);
 }
 
-.activity .where code + code::before {
+.activity .where code:first-child:not(:only-child)::after {
   content: " / ";
   color: var(--ink-3);
 }
@@ -1667,6 +1699,11 @@ body[data-layout="card"] [data-kind="danger"]:hover {
 
 .count-state > .state + .state {
   margin-inline-start: var(--s3);
+}
+
+/* A line without a mark keeps the mark's room: one edge for the words of the four lines. */
+.count-state:not(:has(> .state)) {
+  padding-inline-start: 20px;
 }
 
 /* A date inside a sentence: the mono face's word space, 8 px, is halved. */
@@ -1956,16 +1993,27 @@ body[data-layout="card"] main > .lede + .actions {
   margin-block-start: var(--s6);
 }
 
+/* A link to copy, in a box as wide as a field. Its origin and its path are one piece each:
+   the line breaks between them first, and inside one only when it is longer than a line. */
 .copy {
   display: block;
-  inline-size: fit-content;
-  max-inline-size: 100%;
   line-height: 20px;
   padding: var(--s3) var(--s4);
   border: 1px solid var(--line-strong);
   border-radius: var(--r2);
   background: var(--surface);
   user-select: all;
+}
+
+.copy > span {
+  display: inline-block;
+  max-inline-size: 100%;
+  text-indent: 0;
+}
+
+/* The path ends in a token: it fills its line to the end and never stops at a hyphen. */
+.copy > span + span {
+  word-break: break-all;
 }
 
 /* ---------- Narrow windows: the rail becomes a bar, the menu a sheet ---------- */
@@ -2215,6 +2263,18 @@ body[data-layout="card"] main > .lede + .actions {
     padding-inline-start: var(--s2);
   }
 
+  /* Under a lead cell the second half runs to the record's edge: the action's column is
+     on the first line only, and must not take room from a line it is not on. */
+  .list:not(.activity) td:not(.half) ~ td.half + td.half {
+    grid-column: 2 / -1;
+  }
+
+  /* A lead-in phrase wraps like the sentence it starts; only a unit after a number is glued. */
+  .invitations td > .unit,
+  .blocked td > .unit {
+    white-space: normal;
+  }
+
   .list:not(.activity) td.half + td.half::before {
     content: "\00B7";
     margin-inline-end: var(--s2);
@@ -2266,8 +2326,10 @@ body[data-layout="card"] main > .lede + .actions {
     line-height: 20px;
   }
 
-  .tools.list .state {
-    text-indent: 0;
+  /* The list's wider word space is for the gaps between cells, not for words in a piece. */
+  .tools.list .state,
+  .tools.list .whole {
+    word-spacing: normal;
   }
 
   /* One space after each cell, whether or not the markup has white space between cells. */
@@ -2281,26 +2343,6 @@ body[data-layout="card"] main > .lede + .actions {
 
   .tools.list td:last-child {
     white-space: nowrap;
-  }
-
-  /* An address needs the whole width, so in the two address lists the action is the
-     record's last line, starting on the left edge. */
-  .redirects.list td:first-child,
-  .blocked.list td:first-child {
-    grid-column: 1 / -1;
-  }
-
-  .redirects.list td.act,
-  .blocked.list td.act {
-    grid-column: 1 / -1;
-    grid-row: auto;
-    padding-inline-start: 0;
-    --first-line: 20px;
-  }
-
-  .redirects.list td.act button,
-  .blocked.list td.act button {
-    margin-inline: calc((var(--s2) + 1px) * -1) 0;
   }
 
   /* Rules lead with their number and verdict. */
@@ -2353,11 +2395,6 @@ body[data-layout="card"] main > .lede + .actions {
   .counts > a:nth-child(odd) {
     padding-inline-start: 0;
     border-inline-start: 0;
-  }
-
-  /* Stacked, a line without a mark keeps the mark's room: one edge for the four lines. */
-  .count-state:not(:has(> .state)) {
-    padding-inline-start: 20px;
   }
 
   .activity,
