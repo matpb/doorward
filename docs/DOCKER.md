@@ -30,6 +30,10 @@ variants.
 6. Open `<DOORWARD_PUBLIC_URL>/setup` in a browser and sign up with the setup code. The first
    person to sign up becomes the owner. After that, only invitations open new accounts.
 
+`IMAGE` sets the name of the image that both Compose files build and run. Compose reads it from
+`.env` to fill the `image:` line; the gateway does not read it, so it is not in the settings
+table. When it is unset, the image is `doorward:local`, built from this repository.
+
 To use another HTTPS port, set `HTTPS_PORT` in `.env` and put the same port in
 `DOORWARD_PUBLIC_URL`, for example `https://doorward.example.com:8443`. The two must match,
 because Caddy listens on the port in the address and the host publishes that same number.
@@ -37,6 +41,17 @@ because Caddy listens on the port in the address and the host publishes that sam
 The Compose file follows the `caddy:2.11` tag, so patch releases with security fixes arrive
 on `docker compose -f compose.caddy.yaml pull`. A person who wants a frozen image can append
 `@sha256:<digest>` to the `image: caddy:2.11` line.
+
+### What the Caddyfile does
+
+- The admin API is off (`admin off`), so nothing can change the running configuration.
+- Request bodies over `DOORWARD_LIMITS_BODY_BYTES` get `413` at Caddy, before the gateway sees
+  them. The default is `1048576` bytes, the same limit the gateway uses.
+- Streamed answers pass through unbuffered (`flush_interval -1`), so event streams are not held
+  back.
+- For `/oauth/token` and `/oauth/register` only, an error with status 502 to 504, such as an
+  unreachable gateway, is answered with `503`, `Content-Type: application/json` and the body
+  `{"error":"temporarily_unavailable"}`. Other paths and other statuses keep their own status.
 
 ## Quick start without Caddy
 
@@ -80,7 +95,7 @@ message names the variable and never prints the value.
 | `DOORWARD_LIFETIMES_FAMILY_DAYS` | `90` | Days one client connection (a token family) may last. |
 | `DOORWARD_LIFETIMES_REFRESH_REPLAY_SECONDS` | `30` | Seconds in which a just-used refresh token may be presented again. `0` turns this off. |
 | `DOORWARD_LIMITS_BODY_BYTES` | `1048576` | Largest request body in bytes. Caddy uses the same limit. |
-| `DOORWARD_LIMITS_TOOLS_LIST_BYTES` | `4194304` | Largest answer in bytes that a server may send in one piece: a tool list, any other JSON answer such as a tool result, or one event of a stream. A larger one is refused with `502`. |
+| `DOORWARD_LIMITS_TOOLS_LIST_BYTES` | `4194304` | Largest answer in bytes that a server may send in one piece: a tool list, any other JSON answer such as a tool result, or one event of a stream. A larger JSON answer from one server is refused with `502`, and a larger stream event ends that stream. On the combined endpoint, a server whose answer is too large, or whose tools would take the merged list over this size, is left out of the list instead, and the gateway logs which one. |
 | `DOORWARD_LIMITS_UPSTREAM_TIMEOUT_SECONDS` | `300` | Seconds an upstream server may stay silent before the call ends. At most `86400` (one day); a larger value refuses the start. |
 | `DOORWARD_LIMITS_ACCOUNT_FAILURES` | `5` | Wrong passwords for one account from one client address, inside `DOORWARD_LIMITS_BLOCK_MINUTES`, after which a sign-in to that account from that address answers `429`, right password included. Other addresses are not affected. |
 | `DOORWARD_LIMITS_ACCOUNT_CEILING` | `50` | Wrong passwords for one account from all client addresses together, inside `DOORWARD_LIMITS_BLOCK_MINUTES`, that block the account for every address. Must be at least `DOORWARD_LIMITS_ACCOUNT_FAILURES`. |
@@ -110,8 +125,10 @@ Names that are not settings:
 | `DOORWARD_KEY` | The encryption key itself, as 64 hexadecimal characters. Use a key file instead. Do not put it in `.env`. |
 | `DOORWARD_CONFIG` | Path of a TOML config file. The containers do not use one. |
 
-Mail settings, the setup code, the first owner and upstream secrets are not environment
-settings. Set mail and upstream secrets in the admin panel.
+The mail provider, its addresses and its secrets, the setup code, the first owner and
+upstream secrets are not environment settings. Mail and upstream secrets are set in the admin
+panel. The one mail setting that does come from the environment is the SMTP CA file,
+`DOORWARD_MAIL_SMTP_CA_FILE`.
 
 ## Hardening keys
 
@@ -135,6 +152,11 @@ Each key in the Compose files, and what it is for:
 | `ipv4_address` and `ipam` subnets | Fixed addresses, so the gateway trusts exactly one proxy address. |
 | `ports: 127.0.0.1:8717:8717` | The gateway port is published on loopback only. |
 | `enable_ipv6: true` on `edge` | IPv6 for Caddy's public side. Remove it on a host without IPv6. |
+
+`compose.yaml` sets these keys on its one service, `doorward`. It has no `proxy` or `edge`
+network and no `ipv4_address`, so `internal`, `enable_ipv6` and `ipv4_address` are absent there.
+`compose.caddy.yaml` sets the service keys on both `caddy` and `doorward`, except `user` and
+`tmpfs`, which only `doorward` sets, and the gateway's `ports`, which that file does not set.
 
 Caddy keeps the image's default user. All its capabilities are still dropped.
 
