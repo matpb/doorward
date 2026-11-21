@@ -219,6 +219,9 @@ there. Claude Code, Codex and the Cursor command line client were run against 0.
   Keep the network restriction in step 3 as well.
 - A new deny rule applies to the next call. It does not end a call that is already running.
 - A tool call still succeeds when its activity row cannot be written, for example on a full disk.
+- `Mcp-Param-*` request headers go to the server as the client sent them. The gateway does not
+  compare them with the message, and it decides nothing from them. The MCP specification
+  leaves that check to the server.
 
 ## Run the tests
 
