@@ -12,6 +12,7 @@ use crate::mcp::answer;
 use crate::oauth::guard::Caller;
 use crate::web::limit::peer_of;
 
+pub mod budget;
 pub mod catalog;
 pub mod combined;
 mod combined_stream;

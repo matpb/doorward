@@ -16,9 +16,10 @@ use serde_json::{Map, Value, json};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tokio::time::{Instant, timeout, timeout_at};
 
+use super::budget::Reservation;
 use super::catalog::{self, RefreshError, SESSION, STATELESS};
 use super::combined_stream::{self, Call};
-use super::handle::{INVALID, NOT_LISTED, Owed, TOOL_LIMIT, bare, cut, not_allowed};
+use super::handle::{INVALID, NOT_LISTED, Owed, TOOL_LIMIT, answer_for, bare, cut, not_allowed};
 use super::intake::{Intake, intake};
 use super::links::{self, Answer, Ask, Owner};
 use super::stream::{ACCESS_LOST, CHECK_FAILED, Owned, detail_of};
@@ -33,6 +34,7 @@ use crate::oauth::guard::{Caller, Recheck, combined_still_valid_at};
 use crate::policy;
 use crate::report;
 use crate::servers::valid_slug;
+use crate::web::limit::hold;
 
 /// The most pages one upstream list may take.
 const MAX_PAGES: usize = 20;
@@ -302,7 +304,7 @@ async fn call(
     }
     let definition = match found.definition {
         Some(definition) => definition,
-        None => match refetch(state, caller, &found.server, tool).await {
+        None => match refetch(state, caller, &found.server, tool, started).await {
             Ok(Some(definition)) => definition,
             Ok(None) => {
                 return deny_call(state, caller, started, id, name, row, NOT_LISTED).await;
@@ -358,7 +360,11 @@ async fn call(
     let client_stateless = message.generation == Generation::Stateless;
     let sent = match state.links.send(state, owner, &target, ask).await {
         Ok(Answer::Sent(sent)) => sent,
-        Ok(Answer::Refused { status, answer }) => {
+        Ok(Answer::Refused {
+            status,
+            answer,
+            held,
+        }) => {
             let (reply, outcome) = reissue(id, &answer, client_stateless);
             let detail = detail_of(&answer, outcome);
             match combined_still_valid_at(state, caller, server_id, caller.admitted).await {
@@ -375,7 +381,7 @@ async fn call(
             } else {
                 StatusCode::OK
             };
-            return respond(status, &reply);
+            return hold(respond(status, &reply), held);
         }
         Err(Fault(cause)) => return unavailable(owed, slug, cause).await,
     };
@@ -392,7 +398,8 @@ async fn call(
         return streamed(combined_stream::relay(call, sent.response));
     }
     let cap = state.config.limits.tools_list_bytes;
-    let upstream_answer = match links::read(state, sent, cap).await {
+    let mut held = state.links.budget().reservation(Some(caller.user_id));
+    let upstream_answer = match links::read(state, sent, cap, &mut held).await {
         Ok(upstream_answer) => upstream_answer,
         Err(Fault(cause)) => return unavailable(owed, slug, cause).await,
     };
@@ -407,7 +414,7 @@ async fn call(
         Recheck::Failed => return check_failed(owed).await,
     }
     owed.settle(outcome, detail).await;
-    respond(StatusCode::OK, &reply)
+    hold(respond(StatusCode::OK, &reply), held)
 }
 
 /// The server a slug names with the caller's assignment, rules and stored definition of `tool`, in one read.
@@ -458,9 +465,10 @@ fn definition_of(
 /// None when the refresh is held off, failed, or the tool is still absent.
 async fn refetch(
     state: &AppState,
-    caller: &Caller,
+    caller: &Arc<Caller>,
     server: &Assigned,
     tool: &str,
+    started: std::time::Instant,
 ) -> Result<Option<String>, Response> {
     let server_id = server.server_id;
     let mut last = state.turns.misses.lock(server_id).await;
@@ -498,15 +506,24 @@ async fn refetch(
     match refresh.await {
         Ok(Refetch::Definition(definition)) => Ok(definition),
         Ok(Refetch::Refused) => Ok(None),
+        Ok(Refetch::Busy) => {
+            let owed = Owed::of(
+                owned_of(state, caller, started, &server.slug, server_id),
+                tool,
+            );
+            Err(unavailable(owed, &server.slug, Cause::Busy).await)
+        }
         Ok(Refetch::Database) => Err(bare(StatusCode::INTERNAL_SERVER_ERROR)),
         Err(_) => Ok(None),
     }
 }
 
-/// What one miss refresh found: the tool's definition, a refused list, or a database error.
+/// What one miss refresh found: the tool's definition, a refused list, a list the budget refused, or a
+/// database error.
 enum Refetch {
     Definition(Option<String>),
     Refused,
+    Busy,
     Database,
 }
 
@@ -523,9 +540,14 @@ async fn refresh_list(
         Ok(fetched) => fetched,
         Err(cause) => {
             refuse(state, slug, server_id, cause).await;
-            return Refetch::Refused;
+            return if cause == Cause::Busy {
+                Refetch::Busy
+            } else {
+                Refetch::Refused
+            };
         }
     };
+    // `fetched.held` is dropped when this function returns, after the list is stored.
     let tools = fetched.tools;
     let now = state.clock.now().unix_timestamp();
     match state
@@ -583,7 +605,7 @@ fn streamed(body: Body) -> Response {
 async fn unavailable(owed: Owed, slug: &str, cause: Cause) -> Response {
     let phrase = upstream::fail(slug, cause);
     owed.settle("unavailable", &phrase).await;
-    answer::unavailable(slug)
+    answer_for(slug, cause)
 }
 
 /// The answer when the access check could not be made: the call is recorded unavailable.
@@ -687,21 +709,25 @@ async fn list(state: &AppState, caller: &Caller, message: &Message) -> Response 
     let built = collect(state, caller, deadline).await;
     drop(turn);
     match built {
-        Ok(tools) if message.generation == Generation::Stateless => result(
-            id,
-            json!({"tools": tools, "resultType": "complete", "ttlMs": TTL_MS, "cacheScope": "private"}),
+        Ok((tools, holds)) if message.generation == Generation::Stateless => hold(
+            result(
+                id,
+                json!({"tools": tools, "resultType": "complete", "ttlMs": TTL_MS, "cacheScope": "private"}),
+            ),
+            holds,
         ),
-        Ok(tools) => result(id, json!({"tools": tools})),
+        Ok((tools, holds)) => hold(result(id, json!({"tools": tools})), holds),
         Err(refusal) => refusal,
     }
 }
 
-/// The listed tools of the caller's servers, or the answer that refuses the list.
+/// The listed tools of the caller's servers and the reservations of their upstream bytes, or the answer
+/// that refuses the list.
 async fn collect(
     state: &AppState,
     caller: &Caller,
     deadline: Instant,
-) -> Result<Vec<Value>, Response> {
+) -> Result<(Vec<Value>, Vec<Reservation>), Response> {
     let user = caller.user_id;
     let assigned = match state.db.call(move |conn| assigned(conn, user)).await {
         Ok(assigned) => assigned,
@@ -711,7 +737,7 @@ async fn collect(
         }
     };
     if assigned.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let owner = Owner {
         user_id: caller.user_id,
@@ -728,6 +754,12 @@ async fn collect(
         match outcome {
             Ok(list) => fetched.push((position, list)),
             Err(cause) => {
+                if cause == Cause::Busy {
+                    note(format!(
+                        "tools/list: {} left out, the answer memory budget is exhausted",
+                        assigned[position].slug
+                    ));
+                }
                 refuse(
                     state,
                     &assigned[position].slug,
@@ -766,12 +798,14 @@ async fn collect(
         })
         .collect();
     let admitted = admit(&candidates, state.config.limits.tools_list_bytes);
-    Ok(candidates
+    let tools = candidates
         .into_iter()
         .zip(admitted)
         .filter(|(_, keep)| *keep)
         .flat_map(|(candidate, _)| candidate.entries)
-        .collect())
+        .collect();
+    let holds = fetched.into_iter().map(|(_, list)| list.held).collect();
+    Ok((tools, holds))
 }
 
 /// A server the caller is assigned to now, with the caller's rules on it.
@@ -781,10 +815,12 @@ struct Assigned {
     rules: Vec<policy::Rule>,
 }
 
-/// One server's tools as the upstream answered them, and whether its link is stateless.
+/// One server's tools as the upstream answered them, whether its link is stateless, and the reservation
+/// of the bytes they came in.
 struct Fetched {
     tools: Vec<Value>,
     stateless: bool,
+    held: Reservation,
 }
 
 /// The entries one server lists, and their size in bytes.
@@ -982,6 +1018,7 @@ async fn fetch_pages(state: &AppState, owner: Owner, server_id: i64) -> Result<F
     let mut cursor: Option<String> = None;
     let mut used: u64 = 0;
     let mut stateless = false;
+    let mut held = state.links.budget().reservation(Some(owner.user_id));
     for page in 0..MAX_PAGES {
         let sent = match state
             .links
@@ -1002,10 +1039,14 @@ async fn fetch_pages(state: &AppState, owner: Owner, server_id: i64) -> Result<F
         if page == 0 {
             stateless = sent.stateless;
         }
-        let reply = links::read(state, sent, limit.saturating_sub(used))
+        let mut page_held = state.links.budget().reservation(Some(owner.user_id));
+        let reply = links::read(state, sent, limit.saturating_sub(used), &mut page_held)
             .await
             .map_err(|Fault(cause)| cause)?;
         used = used.saturating_add(u64::try_from(reply.to_string().len()).unwrap_or(u64::MAX));
+        if !held.set(usize::try_from(used).unwrap_or(usize::MAX)) {
+            return Err(Cause::Busy);
+        }
         let result = reply.get("result").ok_or(Cause::NotMcp)?;
         let page_tools = result
             .get("tools")
@@ -1018,7 +1059,11 @@ async fn fetch_pages(state: &AppState, owner: Owner, server_id: i64) -> Result<F
             Some(_) => return Err(Cause::NotMcp),
         };
         if cursor.is_none() {
-            return Ok(Fetched { tools, stateless });
+            return Ok(Fetched {
+                tools,
+                stateless,
+                held,
+            });
         }
     }
     Err(Cause::TooLarge)
@@ -1030,7 +1075,7 @@ async fn refuse(state: &AppState, slug: &str, server_id: i64, cause: Cause) {
     let error = match cause {
         Cause::TooLarge => RefreshError::TooLarge,
         // The gateway's own causes store no refresh error: the upstream was not silent.
-        Cause::SecretUnreadable | Cause::Written => return,
+        Cause::SecretUnreadable | Cause::Written | Cause::Busy => return,
         _ => RefreshError::Unavailable,
     };
     // catalog::fail reports its own database error.

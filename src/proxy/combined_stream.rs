@@ -72,6 +72,12 @@ async fn run(call: Call, mut response: reqwest::Response, tx: Sender<Item>) {
     tokio::pin!(idle);
     let mut framing = Framing::default();
     let mut pending: Vec<u8> = Vec::new();
+    let mut held = call
+        .owned
+        .state
+        .links
+        .budget()
+        .reservation(Some(call.owned.caller.user_id));
     let end = loop {
         let next = tokio::select! {
             biased;
@@ -96,6 +102,10 @@ async fn run(call: Call, mut response: reqwest::Response, tx: Sender<Item>) {
         pending.extend_from_slice(&bytes);
         let (datas, used) = sse_events(&pending);
         pending.drain(..used);
+        let open = usize::try_from(framing.open).unwrap_or(usize::MAX);
+        if !held.set(open.saturating_add(pending.len())) {
+            break End::Unavailable(Cause::Busy);
+        }
         match pass(&call, &tx, &mut ticks, datas).await {
             Ok(None) => {}
             Ok(Some((outcome, detail))) => break End::Answered(outcome, detail),

@@ -12,6 +12,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 
+use super::budget::Reservation;
 use super::catalog;
 use super::intake::{Intake, intake};
 use super::sessions;
@@ -29,6 +30,7 @@ use crate::oauth::guard::{self, Caller, Recheck, still_valid, still_valid_at};
 use crate::policy;
 use crate::report;
 use crate::servers;
+use crate::web::limit::hold;
 
 const MCP_PROTOCOL_VERSION: HeaderName = HeaderName::from_static("mcp-protocol-version");
 const MCP_SESSION_ID: HeaderName = HeaderName::from_static("mcp-session-id");
@@ -388,16 +390,22 @@ async fn listed(ctx: &Ctx<'_>, target: &Target, name: &str) -> Result<bool, Resp
     *last = Some(now);
     let state = ctx.state.clone();
     let target = target.clone();
+    let user = ctx.caller.user_id;
     let refresh = tokio::spawn(async move {
         let limit = time_limit(&state).min(LIST_LIMIT);
-        let outcome = catalog::refresh_within(&state, &target, limit).await;
+        let outcome = catalog::refresh_within(&state, &target, limit, Some(user)).await;
         *last = Some(state.clock.now().unix_timestamp());
         outcome
     });
-    Ok(match refresh.await {
-        Ok(Ok(fresh)) => fresh.iter().any(|known| known == name),
-        _ => false,
-    })
+    match refresh.await {
+        Ok(Ok(fresh)) => Ok(fresh.iter().any(|known| known == name)),
+        Ok(Err(catalog::RefreshError::Busy)) => {
+            let phrase = Fault(Cause::Busy).to_string();
+            record(ctx, name, "allow", "unavailable", &phrase).await;
+            Err(answer::busy())
+        }
+        _ => Ok(false),
+    }
 }
 
 /// True when the stored catalog of the server has `name`.
@@ -550,7 +558,12 @@ async fn relay_post(
         return relayed(status, Some("text/event-stream"), body, None);
     }
     let id = message.id.clone().unwrap_or(Value::Null);
-    let (mut value, raw) = match read_answer(ctx, response, kind, &id).await {
+    let mut held = ctx
+        .state
+        .links
+        .budget()
+        .reservation(Some(ctx.caller.user_id));
+    let (mut value, raw) = match read_answer(ctx, response, kind, &id, &mut held).await {
         Ok(read) => read,
         Err(Fault(cause)) => return fault(ctx, owed, cause).await,
     };
@@ -564,11 +577,14 @@ async fn relay_post(
             let (outcome, detail) = stream::settled_by(&value);
             owed.settle(outcome, detail).await;
         }
-        return relayed(
-            status,
-            Some("application/json"),
-            Body::from(raw.unwrap_or_default()),
-            None,
+        return hold(
+            relayed(
+                status,
+                Some("application/json"),
+                Body::from(raw.unwrap_or_default()),
+                None,
+            ),
+            held,
         );
     }
     let stateless = message.generation == Generation::Stateless;
@@ -597,26 +613,31 @@ async fn relay_post(
         Some(raw) if !changed => raw,
         _ => Bytes::from(value.to_string()),
     };
-    relayed(status, Some("application/json"), Body::from(body), session)
+    hold(
+        relayed(status, Some("application/json"), Body::from(body), session),
+        held,
+    )
 }
 
-/// Reads an answer as a JSON object: a body under the cap, or the matching answer of a stream.
+/// Reads an answer as a JSON object: a body under the cap, or the matching answer of a stream. `held`
+/// covers the bytes read.
 async fn read_answer(
     ctx: &Ctx<'_>,
     response: reqwest::Response,
     kind: Kind,
     id: &Value,
+    held: &mut Reservation,
 ) -> Result<(Value, Option<Bytes>), Fault> {
     let cap = ctx.state.config.limits.tools_list_bytes;
     match kind {
         Kind::Stream => {
-            let (answer, _) = catalog::stream_answer(ctx.state, response, cap, id)
+            let (answer, _) = catalog::stream_answer(ctx.state, response, cap, id, held)
                 .await
                 .map_err(upstream::BodyError::into_fault)?;
             Ok((answer, None))
         }
         _ => {
-            let bytes = upstream::body(ctx.state, response, cap).await?;
+            let bytes = upstream::body(ctx.state, response, cap, held).await?;
             let value = parse_strict(&bytes).map_err(|_| Fault(Cause::NotJson))?;
             if !value.is_object() {
                 return Err(Fault(Cause::NotMcp));
@@ -626,10 +647,18 @@ async fn read_answer(
     }
 }
 
-/// The 502 of a fault, with the one line the fault writes.
+/// The 502 of a fault, or the 503 of a used-up budget, with the one line the fault writes.
 fn unavailable_for(ctx: &Ctx<'_>, cause: Cause) -> Response {
     upstream::fail(ctx.slug, cause);
-    answer::unavailable(ctx.slug)
+    answer_for(ctx.slug, cause)
+}
+
+/// The answer to an upstream fault: 503 while the answer memory budget is used up, else 502.
+pub(super) fn answer_for(slug: &str, cause: Cause) -> Response {
+    match cause {
+        Cause::Busy => answer::busy(),
+        _ => answer::unavailable(slug),
+    }
 }
 
 /// A GET answer: a 200 event stream is relayed as a watched stream, a 405 without its body. Any other
@@ -673,7 +702,12 @@ async fn relay_plain(ctx: &Ctx<'_>, response: reqwest::Response) -> Response {
         }
         Ok(Kind::Json) => {
             let cap = ctx.state.config.limits.tools_list_bytes;
-            match upstream::body(ctx.state, response, cap).await {
+            let mut held = ctx
+                .state
+                .links
+                .budget()
+                .reservation(Some(ctx.caller.user_id));
+            match upstream::body(ctx.state, response, cap, &mut held).await {
                 Ok(bytes) => match parse_strict(&bytes) {
                     Ok(value) if value.is_object() => {
                         match still_valid(ctx.state, &ctx.caller, ctx.slug).await {
@@ -681,7 +715,10 @@ async fn relay_plain(ctx: &Ctx<'_>, response: reqwest::Response) -> Response {
                             Recheck::Lost => return access_lost(ctx, None, &Value::Null).await,
                             Recheck::Failed => return check_failed(ctx, None).await,
                         }
-                        relayed(status, Some("application/json"), Body::from(bytes), None)
+                        hold(
+                            relayed(status, Some("application/json"), Body::from(bytes), None),
+                            held,
+                        )
                     }
                     Ok(_) => unavailable_for(ctx, Cause::NotMcp),
                     Err(_) => unavailable_for(ctx, Cause::NotJson),
@@ -699,7 +736,7 @@ async fn fault(ctx: &Ctx<'_>, owed: Option<Owed>, cause: Cause) -> Response {
     if let Some(owed) = owed {
         owed.settle("unavailable", &phrase).await;
     }
-    answer::unavailable(ctx.slug)
+    answer_for(ctx.slug, cause)
 }
 
 /// The answer to a request whose caller lost access while it was awaited. A tools/call answers the

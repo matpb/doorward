@@ -512,6 +512,9 @@ async fn server_page(
     }
 }
 
+/// The tool list's notice while the answer memory budget is used up.
+const BUSY_NOTICE: &str = "The gateway is busy. Try again in a moment.";
+
 /// Refreshes the tool list. A failure is recorded and still answers 303 to the server page.
 pub async fn post_refresh_tools(
     State(state): State<AppState>,
@@ -530,7 +533,7 @@ pub async fn post_refresh_tools(
         Err(err) => return internal_error("tool refresh", &err),
     };
     let outcome = match upstream::target(&state, id).await {
-        Ok(Some(target)) => catalog::refresh(&state, &target).await.map(|_| ()),
+        Ok(Some(target)) => catalog::refresh(&state, &target, None).await.map(|_| ()),
         Ok(None) => return not_found(),
         Err(TargetError::Secret) => {
             match catalog::fail(&state, id, RefreshError::Unavailable).await {
@@ -540,6 +543,7 @@ pub async fn post_refresh_tools(
         }
         Err(TargetError::Db(err)) => return internal_error("tool refresh", &err),
     };
+    let busy = matches!(outcome, Err(RefreshError::Busy));
     let detail = match outcome {
         Ok(()) => "tools refreshed",
         Err(RefreshError::Db) => {
@@ -548,8 +552,31 @@ pub async fn post_refresh_tools(
         Err(_) => "tool refresh failed",
     };
     match record_change(&state, &actor, id, &server.slug, detail).await {
+        Ok(()) if busy => busy_page(&state, &form.viewer, id).await,
         Ok(()) => redirect(&format!("/admin/servers/{id}")),
         Err(err) => internal_error("tool refresh record", &err),
+    }
+}
+
+/// The server page again, saying the gateway is busy in the tool list's notice. The notice is not stored.
+async fn busy_page(state: &AppState, viewer: &Viewer, id: i64) -> Response {
+    match load(state, id).await {
+        Ok(Some(mut server)) => {
+            server.catalog_error = Some(BUSY_NOTICE.to_owned());
+            let draft = draft_of(&server);
+            server_page(
+                state,
+                viewer,
+                StatusCode::SERVICE_UNAVAILABLE,
+                &server,
+                &draft,
+                None,
+                false,
+            )
+            .await
+        }
+        Ok(None) => not_found(),
+        Err(err) => internal_error("server page", &err),
     }
 }
 

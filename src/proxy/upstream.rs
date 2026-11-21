@@ -7,6 +7,7 @@ use axum::body::Bytes;
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method};
 
+use super::budget::Reservation;
 use crate::app::AppState;
 use crate::db::DbError;
 use crate::report;
@@ -93,6 +94,8 @@ pub enum Cause {
     NotMcp,
     /// The stored secret of the server cannot be opened; the gateway's fault, not the upstream's.
     SecretUnreadable,
+    /// The answer memory budget is used up; the gateway's condition, not the upstream's.
+    Busy,
     /// A database error, already written to standard error where it arose.
     Written,
 }
@@ -112,6 +115,7 @@ impl fmt::Display for Fault {
             Cause::NotJson => f.write_str("an answer that is not valid JSON"),
             Cause::NotMcp => f.write_str("an answer that is not an MCP answer"),
             Cause::SecretUnreadable => f.write_str("the stored secret cannot be opened"),
+            Cause::Busy => f.write_str("the answer memory budget is exhausted"),
             Cause::Written => f.write_str("the database could not be read"),
         }
     }
@@ -199,8 +203,14 @@ pub fn accept(response: &reqwest::Response) -> Result<Kind, Fault> {
 }
 
 /// The whole body, at most `cap` bytes, within `limits.upstream_timeout_seconds`.
-pub async fn body(state: &AppState, response: reqwest::Response, cap: u64) -> Result<Bytes, Fault> {
-    read_body(state, response, cap)
+/// `held` covers the bytes read.
+pub async fn body(
+    state: &AppState,
+    response: reqwest::Response,
+    cap: u64,
+    held: &mut Reservation,
+) -> Result<Bytes, Fault> {
+    read_body(state, response, cap, held)
         .await
         .map_err(BodyError::into_fault)
 }
@@ -220,12 +230,13 @@ impl BodyError {
     }
 }
 
-/// Reads chunk by chunk under the cap and the time limit, handing each chunk to `feed`.
+/// Reads under the cap and the time limit, setting `held` to the bytes read before each chunk is fed.
 /// `feed` returns true to stop early; the result is the number of bytes read.
 pub(crate) async fn read_stream<F>(
     state: &AppState,
     mut response: reqwest::Response,
     cap: u64,
+    held: &mut Reservation,
     mut feed: F,
 ) -> Result<u64, BodyError>
 where
@@ -241,6 +252,11 @@ where
             total = total.saturating_add(chunk.len() as u64);
             if total > cap {
                 return Err(BodyError::TooLarge);
+            }
+            if !held.set(usize::try_from(total).unwrap_or(usize::MAX)) {
+                // The read is abandoned, so the bytes it held go back to the budget now.
+                held.set(0);
+                return Err(BodyError::Fault(Cause::Busy));
             }
             if feed(chunk.as_ref()) {
                 break;
@@ -259,9 +275,10 @@ pub(crate) async fn read_body(
     state: &AppState,
     response: reqwest::Response,
     cap: u64,
+    held: &mut Reservation,
 ) -> Result<Bytes, BodyError> {
     let mut bytes: Vec<u8> = Vec::new();
-    read_stream(state, response, cap, |chunk| {
+    read_stream(state, response, cap, held, |chunk| {
         bytes.extend_from_slice(chunk);
         false
     })

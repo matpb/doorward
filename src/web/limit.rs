@@ -18,7 +18,7 @@ use serde_json::json;
 
 use crate::app::AppState;
 use crate::clock::Clock;
-use crate::rate::{Class, Key, Open};
+use crate::rate::{Class, Key};
 
 use super::address::client_address;
 use super::page;
@@ -151,13 +151,13 @@ pub fn window_seconds(minutes: u64) -> u64 {
     minutes.saturating_mul(60).max(1)
 }
 
-/// A response body that keeps one open-request slot until the body ends or is dropped.
-struct Held {
+/// A response body that keeps its guard until the body ends or is dropped.
+struct Held<G> {
     inner: Body,
-    _open: Open,
+    _guard: G,
 }
 
-impl http_body::Body for Held {
+impl<G: Unpin> http_body::Body for Held<G> {
     type Data = Bytes;
     type Error = axum::Error;
 
@@ -177,14 +177,14 @@ impl http_body::Body for Held {
     }
 }
 
-/// Keeps `open` until the body of `response` ends or is dropped; the response is otherwise unchanged.
-pub fn hold(response: Response, open: Open) -> Response {
+/// Keeps `guard` until the body of `response` ends or is dropped; the response is otherwise unchanged.
+pub fn hold<G: Unpin + Send + 'static>(response: Response, guard: G) -> Response {
     let (parts, body) = response.into_parts();
     Response::from_parts(
         parts,
         Body::new(Held {
             inner: body,
-            _open: open,
+            _guard: guard,
         }),
     )
 }
@@ -322,5 +322,38 @@ mod tests {
             limiter.open(7).is_some(),
             "dropping the response frees the slot"
         );
+    }
+
+    /// Sets its flag when it is dropped.
+    struct Guard(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_held_body_keeps_its_guard_until_it_is_dropped() {
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let body = Body::from_stream(futures_util::stream::pending::<
+            Result<axum::body::Bytes, std::io::Error>,
+        >());
+        let response = hold(Response::new(body), Guard(Arc::clone(&released)));
+        assert!(!released.load(std::sync::atomic::Ordering::SeqCst));
+        drop(response);
+        assert!(released.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_finished_body_releases_its_guard() {
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let response = hold(
+            Response::new(Body::from("abc")),
+            Guard(Arc::clone(&released)),
+        );
+        let bytes = to_bytes(response.into_body(), 16).await.expect("the body");
+        assert_eq!(&bytes[..], b"abc");
+        assert!(released.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

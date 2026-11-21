@@ -28,6 +28,7 @@ use crate::config::{Config, ConfigError};
 use crate::crypto::{CryptoError, KeyError, Keys, PasswordHasher, random_token};
 use crate::db::{Db, DbError};
 use crate::oauth;
+use crate::proxy::budget::Budget;
 use crate::proxy::combined;
 use crate::proxy::links::Links;
 use crate::rate;
@@ -117,6 +118,10 @@ pub(crate) async fn assemble(
     };
     let http = http_client()?;
     let limiter = Arc::new(rate::Limiter::new(&config.limits));
+    let budget = Budget::new(
+        config.limits.answer_memory_bytes,
+        config.limits.answer_share(),
+    );
     let state = AppState {
         config,
         db,
@@ -128,7 +133,7 @@ pub(crate) async fn assemble(
         setup_code: setup_code.clone(),
         reset_requests: Arc::new(Semaphore::new(RESET_REQUEST_PERMITS)),
         limiter,
-        links: Arc::new(Links::new()),
+        links: Arc::new(Links::with_budget(budget)),
         turns: Arc::new(combined::Turns::default()),
     };
     spawn_sweeps(&state);

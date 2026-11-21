@@ -15,12 +15,14 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 
+use super::budget::{Budget, Reservation};
 use super::catalog::{self, SESSION, STATELESS, request_headers};
 use super::sse::sse_events;
 use super::upstream::{
     self, BodyError, Cause, Fault, Kind, Outgoing, Target, read_body, read_stream, time_limit,
 };
 use crate::app::AppState;
+use crate::config::Limits;
 use crate::crypto::token_hash;
 use crate::mcp::json::parse_strict;
 use crate::report;
@@ -82,14 +84,26 @@ pub struct Sent {
 }
 
 /// What an upstream sent for one request: an answer to read, or a JSON-RPC error with HTTP 400 or 404.
+/// `held` covers the bytes of a refused answer while `answer` is in memory.
 pub enum Answer {
     Sent(Sent),
-    Refused { status: StatusCode, answer: Value },
+    Refused {
+        status: StatusCode,
+        answer: Value,
+        held: Reservation,
+    },
 }
 
-/// The kept links, keyed by (family, server), with their bounds.
+/// The budget of the default limits.
+fn default_budget() -> Budget {
+    let limits = Limits::default();
+    Budget::new(limits.answer_memory_bytes, limits.answer_share())
+}
+
+/// The kept links, keyed by (family, server), with their bounds and the answer memory budget.
 pub struct Links {
     inner: Arc<Inner>,
+    budget: Budget,
 }
 
 impl Default for Links {
@@ -100,10 +114,15 @@ impl Default for Links {
 
 impl Links {
     pub fn new() -> Self {
-        Self::with_limits(MAX_LINKS, MAX_PER_USER)
+        Self::with_budget(default_budget())
     }
 
-    fn with_limits(total_limit: usize, user_limit: usize) -> Self {
+    /// Links whose upstream answers draw on `budget`.
+    pub fn with_budget(budget: Budget) -> Self {
+        Self::with_limits(MAX_LINKS, MAX_PER_USER, budget)
+    }
+
+    fn with_limits(total_limit: usize, user_limit: usize, budget: Budget) -> Self {
         Links {
             inner: Arc::new(Inner {
                 table: Mutex::new(Table::default()),
@@ -111,13 +130,19 @@ impl Links {
                 total_limit,
                 user_limit,
             }),
+            budget,
         }
     }
 
     /// Test-only bounds: the total and the per-user limit.
     #[cfg(test)]
     pub(crate) fn with_bounds(total: usize, per_user: usize) -> Self {
-        Self::with_limits(total, per_user)
+        Self::with_limits(total, per_user, default_budget())
+    }
+
+    /// The budget of the upstream answer bytes the gateway holds in memory, over all requests.
+    pub fn budget(&self) -> &Budget {
+        &self.budget
     }
 
     /// Sends `ask` on the owner's link to `target`, making the link first when needed. A tools/call
@@ -157,8 +182,17 @@ impl Links {
                 }
                 400 | 404 => {
                     let status = response.status();
-                    if relays && let Some(answer) = refusal(state, response, &json!(id)).await {
-                        return Ok(Answer::Refused { status, answer });
+                    if relays {
+                        let mut held = state.links.budget().reservation(Some(owner.user_id));
+                        if let Some(answer) =
+                            refusal(state, response, &json!(id), &mut held).await?
+                        {
+                            return Ok(Answer::Refused {
+                                status,
+                                answer,
+                                held,
+                            });
+                        }
                     }
                     if status == StatusCode::BAD_REQUEST
                         && self.inner.drop_link(key, link.generation)
@@ -225,6 +259,7 @@ impl Links {
         let inner = Arc::clone(&self.inner);
         let state = state.clone();
         let target = owned_target(target);
+        let user = owner.user_id;
         let task = tokio::spawn(async move {
             let _turn = gate.lock_owned().await;
             if let Some(link) = inner.usable(key, &target) {
@@ -232,7 +267,7 @@ impl Links {
             }
             let form = match timeout(
                 time_limit(&state).min(HANDSHAKE_LIMIT),
-                handshake(&state, &target),
+                handshake(&state, &target, user),
             )
             .await
             {
@@ -677,7 +712,7 @@ struct Exchange {
 
 /// The handshake: the stateless probe, then, when the probe has no result, initialize and
 /// the initialized notice. A transport fault at any step is a Fault.
-async fn handshake(state: &AppState, target: &Target) -> Result<Form, Fault> {
+async fn handshake(state: &AppState, target: &Target, user: i64) -> Result<Form, Fault> {
     let cap = state.config.limits.tools_list_bytes;
     let probe_id = PROBE_ID;
     let probe = exchange(
@@ -691,6 +726,7 @@ async fn handshake(state: &AppState, target: &Target) -> Result<Form, Fault> {
         )?,
         probe_id,
         cap,
+        user,
     )
     .await?;
     if probe.status == 200
@@ -713,6 +749,7 @@ async fn handshake(state: &AppState, target: &Target) -> Result<Form, Fault> {
         )?,
         init_id,
         cap,
+        user,
     )
     .await?;
     let answer = match (init.status, init.answer) {
@@ -808,6 +845,7 @@ async fn exchange(
     body: Bytes,
     id: u64,
     cap: u64,
+    user: i64,
 ) -> Result<Exchange, Fault> {
     let response = send_post(state, target, headers, body).await?;
     let status = response.status().as_u16();
@@ -822,7 +860,8 @@ async fn exchange(
     }
     let (answer, reason) = match upstream::accept(&response) {
         Ok(kind @ (Kind::Json | Kind::Stream)) => {
-            match read_answer(state, response, kind, cap, &json!(id)).await? {
+            let mut held = state.links.budget().reservation(Some(user));
+            match read_answer(state, response, kind, cap, &json!(id), &mut held).await? {
                 Ok(answer) => (Some(answer), Cause::NotMcp),
                 Err(cause) => (None, cause),
             }
@@ -838,15 +877,29 @@ async fn exchange(
     })
 }
 
-/// The whole answer of a 400 or 404 JSON body that is a JSON-RPC error to `id`: `jsonrpc` 2.0, no `result`,
-/// and an `error` with an integer code and a string message. None for any other body, or one over the cap.
-async fn refusal(state: &AppState, response: reqwest::Response, id: &Value) -> Option<Value> {
+/// The whole answer of a 400 or 404 JSON body that is a JSON-RPC error to `id`; None for any other body,
+/// or one over the cap. A body the budget refuses is `Busy`.
+async fn refusal(
+    state: &AppState,
+    response: reqwest::Response,
+    id: &Value,
+    held: &mut Reservation,
+) -> Result<Option<Value>, Fault> {
     if !matches!(upstream::accept(&response), Ok(Kind::Json)) {
-        return None;
+        return Ok(None);
     }
     let cap = state.config.limits.tools_list_bytes;
-    let bytes = upstream::body(state, response, cap).await.ok()?;
-    let value = parse_strict(&bytes).ok()?;
+    match upstream::body(state, response, cap, held).await {
+        Ok(bytes) => Ok(whole_refusal(&bytes, id)),
+        Err(Fault(Cause::Busy)) => Err(Fault(Cause::Busy)),
+        Err(Fault(_)) => Ok(None),
+    }
+}
+
+/// The value of a JSON body that is a JSON-RPC error to `id`: `jsonrpc` 2.0, no `result`, and an `error`
+/// with an integer code and a string message.
+fn whole_refusal(bytes: &[u8], id: &Value) -> Option<Value> {
+    let value = parse_strict(bytes).ok()?;
     let object = value.as_object()?;
     let error = object.get("error")?.as_object()?;
     let well_formed = object.get("jsonrpc") == Some(&json!("2.0"))
@@ -864,10 +917,11 @@ async fn read_answer(
     kind: Kind,
     cap: u64,
     id: &Value,
+    held: &mut Reservation,
 ) -> Result<Result<Value, Cause>, Fault> {
     match kind {
         Kind::Json => {
-            let bytes = read_body(state, response, cap)
+            let bytes = read_body(state, response, cap, held)
                 .await
                 .map_err(BodyError::into_fault)?;
             Ok(match parse_strict(&bytes) {
@@ -875,7 +929,7 @@ async fn read_answer(
                 Err(_) => Err(Cause::NotJson),
             })
         }
-        Kind::Stream => Ok(stream_answer(state, response, cap, id)
+        Kind::Stream => Ok(stream_answer(state, response, cap, id, held)
             .await?
             .ok_or(Cause::NotMcp)),
         Kind::Empty => Ok(Err(Cause::NotMcp)),
@@ -888,10 +942,11 @@ async fn stream_answer(
     response: reqwest::Response,
     cap: u64,
     id: &Value,
+    held: &mut Reservation,
 ) -> Result<Option<Value>, Fault> {
     let mut pending: Vec<u8> = Vec::new();
     let mut found: Option<Value> = None;
-    let read = read_stream(state, response, cap, |chunk| {
+    let read = read_stream(state, response, cap, held, |chunk| {
         pending.extend_from_slice(chunk);
         let (events, used) = sse_events(&pending);
         pending.drain(..used);
@@ -923,11 +978,17 @@ fn whole_answer(value: Value, expected: &Value) -> Option<Value> {
 }
 
 /// Reads the answer to `sent.id`: an object with that id and exactly one of `result` and `error`.
-pub async fn read(state: &AppState, sent: Sent, cap: u64) -> Result<Value, Fault> {
+/// `held` covers the bytes read.
+pub async fn read(
+    state: &AppState,
+    sent: Sent,
+    cap: u64,
+    held: &mut Reservation,
+) -> Result<Value, Fault> {
     let Sent {
         response, id, kind, ..
     } = sent;
-    read_answer(state, response, kind, cap, &id)
+    read_answer(state, response, kind, cap, &id, held)
         .await?
         .map_err(Fault)
 }

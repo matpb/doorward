@@ -315,7 +315,13 @@ async fn ask(
     let Answer::Sent(sent) = links.send(state, owner, target, request).await? else {
         return Err(Fault(Cause::NotMcp));
     };
-    read(state, sent, CAP).await
+    read(
+        state,
+        sent,
+        CAP,
+        &mut state.links.budget().reservation(None),
+    )
+    .await
 }
 
 /// The sent request of an answer that is not a refusal; a list is never refused.
@@ -622,7 +628,14 @@ async fn ten_concurrent_first_sends_make_one_link() {
     let sent = join_all((0..10).map(|_| links.send(&fx.state, owned(1, 1), &target, list()))).await;
     for result in sent {
         let sent = sent_of(result.expect("sent"));
-        read(&fx.state, sent, CAP).await.expect("answered");
+        read(
+            &fx.state,
+            sent,
+            CAP,
+            &mut fx.state.links.budget().reservation(None),
+        )
+        .await
+        .expect("answered");
     }
     assert_eq!(up.count("initialize"), 1);
     assert_eq!(up.count("tools/list"), 10);
@@ -949,7 +962,13 @@ async fn an_answer_for_another_id_is_a_fault() {
         .expect("sent");
     let sent = sent_of(sent);
     assert!(matches!(
-        read(&fx.state, sent, CAP).await,
+        read(
+            &fx.state,
+            sent,
+            CAP,
+            &mut fx.state.links.budget().reservation(None)
+        )
+        .await,
         Err(Fault(Cause::NotMcp))
     ));
 }
@@ -969,7 +988,13 @@ async fn an_object_with_both_result_and_error_is_a_fault() {
         .expect("sent");
     let sent = sent_of(sent);
     assert!(matches!(
-        read(&fx.state, sent, CAP).await,
+        read(
+            &fx.state,
+            sent,
+            CAP,
+            &mut fx.state.links.budget().reservation(None)
+        )
+        .await,
         Err(Fault(Cause::NotMcp))
     ));
 }
@@ -991,7 +1016,13 @@ async fn an_array_is_a_fault() {
         .expect("sent");
     let sent = sent_of(sent);
     assert!(matches!(
-        read(&fx.state, sent, CAP).await,
+        read(
+            &fx.state,
+            sent,
+            CAP,
+            &mut fx.state.links.budget().reservation(None)
+        )
+        .await,
         Err(Fault(Cause::NotMcp))
     ));
 }
@@ -1016,7 +1047,14 @@ async fn a_stream_answer_comes_after_a_request_and_a_notification() {
         .await
         .expect("sent");
     let sent = sent_of(sent);
-    let answer = read(&fx.state, sent, CAP).await.expect("the answer");
+    let answer = read(
+        &fx.state,
+        sent,
+        CAP,
+        &mut fx.state.links.budget().reservation(None),
+    )
+    .await
+    .expect("the answer");
     assert_eq!(answer["id"], json!(3));
     assert_eq!(answer["result"]["tools"][0]["name"], json!("echo"));
 }

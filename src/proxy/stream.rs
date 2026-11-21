@@ -59,6 +59,7 @@ enum End {
     Broken,
     Idle,
     Oversize,
+    Busy,
     Refused,
     CheckFailed,
     ClientGone,
@@ -93,6 +94,11 @@ async fn run(ctx: Owned, mut response: reqwest::Response, watch: Watch, tx: Send
     let idle = tokio::time::sleep(idle_for);
     tokio::pin!(idle);
     let mut observer = Observer::default();
+    let mut held = ctx
+        .state
+        .links
+        .budget()
+        .reservation(Some(ctx.caller.user_id));
     let at = watch.at;
     let end = loop {
         let next = tokio::select! {
@@ -120,6 +126,9 @@ async fn run(ctx: Owned, mut response: reqwest::Response, watch: Watch, tx: Send
         if observer.feed(&bytes, watch.call.is_some().then_some(&watch.id), limit) {
             break End::Oversize;
         }
+        if !held.set(observer.buffered()) {
+            break End::Busy;
+        }
     };
     if let Some(call) = watch.call.as_deref() {
         let (outcome, detail) = match (observer.answer.outcome, end) {
@@ -131,6 +140,7 @@ async fn run(ctx: Owned, mut response: reqwest::Response, watch: Watch, tx: Send
             (None, End::Broken) => ("unavailable", fail(&ctx.slug, Cause::NoConnection)),
             (None, End::Idle) => ("unavailable", fail(&ctx.slug, Cause::NoAnswerInTime)),
             (None, End::Oversize) => ("unavailable", fail(&ctx.slug, Cause::TooLarge)),
+            (None, End::Busy) => ("unavailable", fail(&ctx.slug, Cause::Busy)),
             (None, End::Done) => ("unavailable", fail(&ctx.slug, Cause::NotMcp)),
         };
         record(&ctx, call, "allow", outcome, &detail).await;
@@ -265,6 +275,12 @@ pub(super) struct Observer {
 }
 
 impl Observer {
+    /// The open event's bytes and the unread tail: what the relay holds of the stream.
+    pub(super) fn buffered(&self) -> usize {
+        let open = usize::try_from(self.framing.open).unwrap_or(usize::MAX);
+        open.saturating_add(self.answer.pending.len())
+    }
+
     /// Feeds one chunk; `id` is the watched request's id, None when nothing is watched. True when the
     /// stream must end as oversize.
     pub(super) fn feed(&mut self, chunk: &[u8], id: Option<&Value>, limit: u64) -> bool {

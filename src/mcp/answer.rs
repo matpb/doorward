@@ -91,6 +91,19 @@ pub fn unavailable(slug: &str) -> Response {
     )
 }
 
+/// The 503 of a request refused while the answer memory budget is used up, with `Retry-After`.
+pub fn busy() -> Response {
+    crate::web::limit::retry_after(
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            None,
+            -32000,
+            "The gateway is busy",
+        ),
+        1,
+    )
+}
+
 /// The answer for a `tools/call` whose name is not in the server's list.
 pub fn unknown_tool(id: &Value, name: &str) -> Response {
     error(

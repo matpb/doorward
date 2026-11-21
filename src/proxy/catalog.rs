@@ -11,6 +11,7 @@ use rusqlite::{Connection, TransactionBehavior, params};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
+use super::budget::Reservation;
 use super::sse::sse_events;
 use super::upstream::{
     self, BodyError, Cause, Fault, Kind, Outgoing, Target, read_body, read_stream, time_limit,
@@ -33,6 +34,8 @@ const TOO_LARGE: &str = "The last refresh failed: the tool list is larger than t
 pub enum RefreshError {
     Unavailable,
     TooLarge,
+    /// The answer memory budget is used up; the stored refresh error is left as it was.
+    Busy,
     Db,
 }
 
@@ -45,8 +48,12 @@ struct Failure {
 
 impl Failure {
     fn upstream(cause: Cause) -> Failure {
+        let error = match cause {
+            Cause::Busy => RefreshError::Busy,
+            _ => RefreshError::Unavailable,
+        };
         Failure {
-            error: RefreshError::Unavailable,
+            error,
             cause: Some(cause),
         }
     }
@@ -135,6 +142,7 @@ async fn post(
     headers: HeaderMap,
     with_secret: bool,
     cap: u64,
+    user: Option<i64>,
 ) -> (Reply, Option<HeaderValue>) {
     let outgoing = Outgoing {
         method: Method::POST,
@@ -151,13 +159,14 @@ async fn post(
     if matches!(status, 401 | 403) {
         return (Reply::Denied(status), session);
     }
+    let mut page = state.links.budget().reservation(user);
     let reply = match upstream::accept(&response) {
-        Ok(Kind::Json) => match read_body(state, response, cap).await {
+        Ok(Kind::Json) => match read_body(state, response, cap, &mut page).await {
             Ok(bytes) => reply_of(&bytes, &id()),
             Err(BodyError::TooLarge) => Reply::TooLarge,
             Err(BodyError::Fault(cause)) => Reply::Other(cause),
         },
-        Ok(Kind::Stream) => stream_reply(state, response, cap, &id()).await,
+        Ok(Kind::Stream) => stream_reply(state, response, cap, &id(), &mut page).await,
         Ok(Kind::Empty) => Reply::Other(Cause::NotMcp),
         Err(Fault(cause)) => Reply::Other(cause),
     };
@@ -206,10 +215,11 @@ pub(crate) async fn stream_answer(
     response: reqwest::Response,
     cap: u64,
     expected: &Value,
+    held: &mut Reservation,
 ) -> Result<(Value, u64), BodyError> {
     let mut pending: Vec<u8> = Vec::new();
     let mut found: Option<Value> = None;
-    let read = read_stream(state, response, cap, |chunk| {
+    let read = read_stream(state, response, cap, held, |chunk| {
         pending.extend_from_slice(chunk);
         let (events, used) = sse_events(&pending);
         pending.drain(..used);
@@ -236,8 +246,9 @@ async fn stream_reply(
     response: reqwest::Response,
     cap: u64,
     expected: &Value,
+    held: &mut Reservation,
 ) -> Reply {
-    match stream_answer(state, response, cap, expected).await {
+    match stream_answer(state, response, cap, expected, held).await {
         Ok((answer, total)) => reply_of_answer(answer, total),
         Err(BodyError::TooLarge) => Reply::TooLarge,
         Err(BodyError::Fault(cause)) => Reply::Other(cause),
@@ -255,13 +266,16 @@ fn page_of(result: &Value) -> Option<(Vec<Value>, Option<String>)> {
     Some((tools, next))
 }
 
-/// Pages through tools/list. None when the first answer is not a JSON-RPC result.
+/// Pages through tools/list. None when the first answer is not a JSON-RPC result. `held` covers the
+/// bytes of every page so far.
 async fn list_pages(
     state: &AppState,
     target: &Target,
     stateless: bool,
     session: Option<&HeaderValue>,
     with_secret: bool,
+    user: Option<i64>,
+    held: &mut Reservation,
 ) -> Result<Option<Vec<Value>>, Failure> {
     let limit = state.config.limits.tools_list_bytes;
     let mut tools = Vec::new();
@@ -275,10 +289,12 @@ async fn list_pages(
         };
         let body = list_body(stateless, cursor.as_deref());
         let cap = limit.saturating_sub(used);
-        let (reply, _) = post(state, target, &body, headers, with_secret, cap).await;
+        let (reply, _) = post(state, target, &body, headers, with_secret, cap, user).await;
         let (result, size) = match reply {
             Reply::Result(result, size) => (result, size),
             Reply::TooLarge => return Err(Failure::too_large()),
+            // The budget's refusal is the gateway's, so it is no reason to try the session form.
+            Reply::Other(Cause::Busy) => return Err(Failure::upstream(Cause::Busy)),
             _ if page == 0 => return Ok(None),
             Reply::Denied(code) => return Err(Failure::upstream(Cause::Status(code))),
             Reply::Other(cause) => return Err(Failure::upstream(cause)),
@@ -286,6 +302,9 @@ async fn list_pages(
         let (page_tools, next) = page_of(&result).ok_or(Failure::upstream(Cause::NotMcp))?;
         tools.extend(page_tools);
         used = used.saturating_add(size);
+        if !held.set(usize::try_from(used).unwrap_or(usize::MAX)) {
+            return Err(Failure::upstream(Cause::Busy));
+        }
         match next {
             None => return Ok(Some(tools)),
             Some(next) => cursor = Some(next),
@@ -311,7 +330,12 @@ pub(super) async fn close_session(
 }
 
 /// The session form: initialize, the notification, the list, then DELETE of the session.
-async fn session_tools(state: &AppState, target: &Target) -> Result<Vec<Value>, Failure> {
+async fn session_tools(
+    state: &AppState,
+    target: &Target,
+    user: Option<i64>,
+    held: &mut Reservation,
+) -> Result<Vec<Value>, Failure> {
     let limit = state.config.limits.tools_list_bytes;
     let (reply, session) = post(
         state,
@@ -320,6 +344,7 @@ async fn session_tools(state: &AppState, target: &Target) -> Result<Vec<Value>, 
         request_headers(SESSION, None, None),
         true,
         limit,
+        user,
     )
     .await;
     match reply {
@@ -336,9 +361,10 @@ async fn session_tools(state: &AppState, target: &Target) -> Result<Vec<Value>, 
         request_headers(SESSION, None, session.as_ref()),
         true,
         limit,
+        user,
     )
     .await;
-    let listed = list_pages(state, target, false, session.as_ref(), true).await;
+    let listed = list_pages(state, target, false, session.as_ref(), true, user, held).await;
     if let Some(session) = session.as_ref() {
         close_session(state, target, session, true).await;
     }
@@ -346,17 +372,26 @@ async fn session_tools(state: &AppState, target: &Target) -> Result<Vec<Value>, 
 }
 
 /// Asks the upstream for its tools: the stateless form first, then the session form.
-async fn fetch(state: &AppState, target: &Target) -> Result<Vec<Value>, Failure> {
-    if let Some(tools) = list_pages(state, target, true, None, true).await? {
+async fn fetch(
+    state: &AppState,
+    target: &Target,
+    user: Option<i64>,
+    held: &mut Reservation,
+) -> Result<Vec<Value>, Failure> {
+    if let Some(tools) = list_pages(state, target, true, None, true, user, held).await? {
         return Ok(tools);
     }
-    session_tools(state, target).await
+    session_tools(state, target, user, held).await
 }
 
 /// Asks the upstream for its tools as the gateway itself, within one time limit, and replaces the catalog.
 /// A failure writes the server's fixed message and leaves the stored tools as they were.
-pub async fn refresh(state: &AppState, target: &Target) -> Result<Vec<String>, RefreshError> {
-    refresh_within(state, target, time_limit(state)).await
+pub async fn refresh(
+    state: &AppState,
+    target: &Target,
+    user: Option<i64>,
+) -> Result<Vec<String>, RefreshError> {
+    refresh_within(state, target, time_limit(state), user).await
 }
 
 /// As `refresh`, with `limit` as the time the upstream may take.
@@ -364,8 +399,11 @@ pub async fn refresh_within(
     state: &AppState,
     target: &Target,
     limit: Duration,
+    user: Option<i64>,
 ) -> Result<Vec<String>, RefreshError> {
-    let fetched = match tokio::time::timeout(limit, fetch(state, target)).await {
+    // Held until the parsed list is stored, which is when the gateway no longer needs its bytes.
+    let mut held = state.links.budget().reservation(user);
+    let fetched = match tokio::time::timeout(limit, fetch(state, target, user, &mut held)).await {
         Ok(result) => result,
         Err(_) => Err(Failure::upstream(Cause::NoAnswerInTime)),
     };
@@ -409,6 +447,7 @@ pub async fn fail(
     let message = match error {
         RefreshError::Unavailable => UNAVAILABLE,
         RefreshError::TooLarge => TOO_LARGE,
+        RefreshError::Busy => return Ok(()),
         RefreshError::Db => return Err(RefreshError::Db),
     };
     state
@@ -432,7 +471,16 @@ pub async fn fail(
 pub async fn lockdown(state: &AppState, target: &Target) -> &'static str {
     let limit = state.config.limits.tools_list_bytes;
     let headers = request_headers(STATELESS, Some("tools/list"), None);
-    let (reply, _) = post(state, target, &list_body(true, None), headers, false, limit).await;
+    let (reply, _) = post(
+        state,
+        target,
+        &list_body(true, None),
+        headers,
+        false,
+        limit,
+        None,
+    )
+    .await;
     match reply {
         Reply::Result(..) => return "open",
         Reply::Denied(_) => return "ok",
@@ -445,6 +493,7 @@ pub async fn lockdown(state: &AppState, target: &Target) -> &'static str {
         request_headers(SESSION, None, None),
         false,
         limit,
+        None,
     )
     .await;
     if let (Reply::Result(..), Some(session)) = (&reply, session.as_ref()) {

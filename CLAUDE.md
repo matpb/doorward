@@ -327,6 +327,14 @@ L. Added after the owner's auth review
     or a name that differs only in letter case from one the gateway reads there, such as
     `Name` for `name`. Member names inside `params.arguments` belong to the tool and are not
     checked.
+75. The bytes of server answers that the gateway holds in memory at one time are bounded by
+    `limits.answer_memory_bytes` (32 MiB by default) over all requests, and one user's
+    requests together hold at most a quarter of it, or one largest answer
+    (`limits.tools_list_bytes`) when that is more. An answer that does not fit is not read
+    further: a plain answer gets `503` with `Retry-After: 1` and JSON-RPC `-32000` with
+    message `The gateway is busy`, an open stream ends, and the combined tool list leaves
+    that server out. Nothing is stored as a server error, and the bytes count until the
+    client has received them. A user at their share does not stop another user's answers.
 76. A request body that is not sent in full within `limits.body_read_seconds` (15 by default)
     is answered with `408` and the connection is closed, for browser forms, the token and
     registration endpoints and MCP posts alike. Nothing is processed or forwarded, and no
@@ -384,6 +392,8 @@ into the test harness. In addition:
 - 73: `tests/s73_account_nav.rs`.
 - 74: `tests/s74_key_case.rs`, on the per-server and the combined route under both protocol
   generations, and the classify rows in `src/mcp/tests.rs`.
+- 75: `tests/s75_answer_memory.rs`, with a fake upstream that holds its answers open, and the
+  unit tests in `src/proxy/budget.rs`, `src/web/limit.rs` and `src/proxy/tests_combined.rs`.
 - 76: `tests/s76_body_deadline.rs`, with a raw socket that stalls mid-body on each of the four
   routes, and `a_head_on_authorize_is_limited_at_the_same_count_as_a_get` in
   `tests/s43_rate_limits.rs`.

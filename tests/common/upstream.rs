@@ -13,7 +13,7 @@ use futures_util::StreamExt;
 use futures_util::stream;
 use serde_json::{Map, Value, json};
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 
 const STATELESS_VERSION: &str = "2026-07-28";
@@ -115,7 +115,22 @@ pub enum Mode {
     /// initialize and server/discover declare a completions capability.
     #[allow(dead_code)]
     DeclaresCompletions,
+    /// tools/call answers 200 application/json of about `bytes` bytes: the first half is sent, then the
+    /// rest waits until `FakeUpstream::release`.
+    #[allow(dead_code)]
+    HeldAnswer {
+        bytes: usize,
+    },
+    /// tools/call answers 200 text/event-stream with one event of about `bytes` bytes: its first 4096
+    /// bytes are sent, then the rest waits until `FakeUpstream::release`.
+    #[allow(dead_code)]
+    HeldStream {
+        bytes: usize,
+    },
 }
+
+/// The bytes a held stream sends before it waits.
+const HELD_STREAM_HEAD: usize = 4096;
 
 #[derive(Clone, Debug)]
 pub struct UpstreamOptions {
@@ -219,6 +234,9 @@ struct Store {
     requests: Vec<Recorded>,
     sessions: HashSet<String>,
     sessions_started: u64,
+    /// Held answers that have begun, and the gate their tails wait for.
+    held_begun: usize,
+    gate: watch::Sender<bool>,
 }
 
 struct Shared {
@@ -243,6 +261,8 @@ impl FakeUpstream {
                 requests: Vec::new(),
                 sessions: HashSet::new(),
                 sessions_started: 0,
+                held_begun: 0,
+                gate: watch::channel(false).0,
             }),
         });
         let router = Router::new().fallback(handle).with_state(shared.clone());
@@ -299,6 +319,31 @@ impl FakeUpstream {
         self.lock().options.tools = tools.iter().map(|t| t.to_string()).collect();
     }
 
+    /// Lets every held answer send its tail. Answers that begin later are not held.
+    #[allow(dead_code)]
+    pub fn release(&self) {
+        self.lock().gate.send_replace(true);
+    }
+
+    /// How many held answers have begun.
+    #[allow(dead_code)]
+    pub fn held_begun(&self) -> usize {
+        self.lock().held_begun
+    }
+
+    /// Waits until `count` held answers have begun; false when `within` passes first.
+    #[allow(dead_code)]
+    pub async fn wait_held(&self, count: usize, within: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + within;
+        while self.held_begun() < count {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        true
+    }
+
     /// Closes the listener, then waits briefly for open connections to finish.
     pub async fn shutdown(&mut self) {
         if let Some(stop) = self.stop.take() {
@@ -340,6 +385,12 @@ enum Reply {
         message: Value,
     },
     Hang,
+    /// The head is sent at once and the tail after the gate opens.
+    Held {
+        head: Bytes,
+        tail: Bytes,
+        content_type: &'static str,
+    },
 }
 
 async fn handle(State(shared): State<Arc<Shared>>, request: Request) -> Response {
@@ -373,6 +424,11 @@ async fn handle(State(shared): State<Arc<Shared>>, request: Request) -> Response
         } => progress_response(steps, interval, message),
         Reply::ServerRequest { message } => server_request_response(message),
         Reply::Hang => std::future::pending().await,
+        Reply::Held {
+            head,
+            tail,
+            content_type,
+        } => held_response(&shared, head, tail, content_type),
     };
     if set_cookie {
         response.headers_mut().append(
@@ -689,6 +745,24 @@ fn answer(
                 });
                 return Reply::Now(json_response(StatusCode::OK, &body));
             }
+            Mode::HeldAnswer { bytes } => {
+                let body = held_result(id, *bytes).into_bytes();
+                let (head, tail) = body.split_at(body.len() / 2);
+                return Reply::Held {
+                    head: Bytes::copy_from_slice(head),
+                    tail: Bytes::copy_from_slice(tail),
+                    content_type: "application/json",
+                };
+            }
+            Mode::HeldStream { bytes } => {
+                let event = format!("data: {}\n\n", held_result(id, *bytes)).into_bytes();
+                let (head, tail) = event.split_at(HELD_STREAM_HEAD.min(event.len()));
+                return Reply::Held {
+                    head: Bytes::copy_from_slice(head),
+                    tail: Bytes::copy_from_slice(tail),
+                    content_type: "text/event-stream",
+                };
+            }
             _ => {}
         }
     }
@@ -696,6 +770,42 @@ fn answer(
         StatusCode::OK,
         &dispatch(id, method, params, options, stateless),
     ))
+}
+
+/// A tools/call result whose text is `bytes` characters long, as JSON text.
+fn held_result(id: Value, bytes: usize) -> String {
+    let text = "x".repeat(bytes);
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {"content": [{"type": "text", "text": text}], "isError": false},
+    })
+    .to_string()
+}
+
+/// A response whose head is sent now and whose tail follows once the upstream's gate opens.
+fn held_response(
+    shared: &Shared,
+    head: Bytes,
+    tail: Bytes,
+    content_type: &'static str,
+) -> Response {
+    let gate = {
+        let mut state = shared.state.lock().expect("fake upstream state");
+        state.held_begun += 1;
+        state.gate.subscribe()
+    };
+    let rest = stream::once(async move {
+        let mut gate = gate;
+        let _ = gate.wait_for(|open| *open).await;
+        Ok::<Bytes, io::Error>(tail)
+    });
+    let body = stream::once(async move { Ok::<Bytes, io::Error>(head) }).chain(rest);
+    let mut response = Response::new(Body::from_stream(body));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
 }
 
 fn dispatch(

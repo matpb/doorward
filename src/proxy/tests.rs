@@ -17,6 +17,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
+use super::budget::Budget;
 use super::catalog::{self, RefreshError};
 use super::combined;
 use super::links::Links;
@@ -396,6 +397,10 @@ pub async fn fixture_with(edit: impl FnOnce(&mut Config)) -> Fixture {
         .build()
         .expect("http client");
     let limiter = Arc::new(crate::rate::Limiter::new(&config.limits));
+    let budget = Budget::new(
+        config.limits.answer_memory_bytes,
+        config.limits.answer_share(),
+    );
     let state = AppState {
         config,
         db,
@@ -407,7 +412,7 @@ pub async fn fixture_with(edit: impl FnOnce(&mut Config)) -> Fixture {
         http,
         reset_requests: Arc::new(Semaphore::new(1)),
         limiter,
-        links: Arc::new(Links::new()),
+        links: Arc::new(Links::with_budget(budget)),
         turns: Arc::new(combined::Turns::default()),
     };
     let server_id = state
@@ -760,7 +765,8 @@ async fn body_refuses_what_passes_the_cap_and_keeps_what_fits() {
         )
         .await
         .expect("headers arrive");
-        let read = upstream::body(&fixture.state, response, cap).await;
+        let mut held = fixture.state.links.budget().reservation(None);
+        let read = upstream::body(&fixture.state, response, cap, &mut held).await;
         if expect_ok {
             let bytes = read.expect("a body that fits is read");
             assert_eq!(bytes.len(), size);
@@ -805,7 +811,8 @@ async fn a_body_that_stalls_is_a_fault_after_the_time_limit() {
     .await
     .expect("headers arrive");
     let started = Instant::now();
-    let read = upstream::body(&fixture.state, response, 1000).await;
+    let mut held = fixture.state.links.budget().reservation(None);
+    let read = upstream::body(&fixture.state, response, 1000, &mut held).await;
     assert!(
         matches!(read, Err(Fault(Cause::NoAnswerInTime))),
         "a stalled body is a fault"
@@ -817,7 +824,7 @@ async fn a_body_that_stalls_is_a_fault_after_the_time_limit() {
 async fn a_stateless_upstream_gives_its_tools_in_its_own_order() {
     let up = TestUpstream::start(stateless(vec![tool("beta"), tool("alpha")])).await;
     let fixture = fixture().await;
-    let names_seen = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url))
+    let names_seen = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None)
         .await
         .expect("the refresh");
     assert_eq!(names_seen, vec!["beta", "alpha"]);
@@ -829,7 +836,7 @@ async fn a_stateless_upstream_gives_its_tools_in_its_own_order() {
 async fn a_session_upstream_is_initialized_listed_and_closed_with_the_secret() {
     let up = TestUpstream::start(session_style(vec![tool("alpha")])).await;
     let fixture = fixture().await;
-    let names_seen = catalog::refresh(&fixture.state, &secret_target_at(&fixture, &up.url))
+    let names_seen = catalog::refresh(&fixture.state, &secret_target_at(&fixture, &up.url), None)
         .await
         .expect("the refresh");
     assert_eq!(names_seen, vec!["alpha"]);
@@ -881,7 +888,7 @@ async fn a_session_upstream_that_answers_its_notice_as_text_is_listed() {
     })
     .await;
     let fixture = fixture().await;
-    let names_seen = catalog::refresh(&fixture.state, &secret_target_at(&fixture, &up.url))
+    let names_seen = catalog::refresh(&fixture.state, &secret_target_at(&fixture, &up.url), None)
         .await
         .expect("the refresh");
     assert_eq!(names_seen, vec!["alpha"], "the list after a text notice");
@@ -901,7 +908,7 @@ async fn three_pages_are_stored_whole() {
     ]))
     .await;
     let fixture = fixture().await;
-    let names_seen = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url))
+    let names_seen = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None)
         .await
         .expect("the refresh");
     assert_eq!(names_seen, vec!["a", "b", "c", "d", "e"]);
@@ -912,14 +919,14 @@ async fn three_pages_are_stored_whole() {
 async fn more_than_twenty_pages_is_too_large_and_keeps_the_catalog() {
     let fixture = fixture().await;
     let previous = TestUpstream::start(stateless(vec![tool("old")])).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url), None)
         .await
         .expect("the first refresh");
     let pages: Vec<Vec<Value>> = (0..25)
         .map(|index| vec![tool(&format!("t{index}"))])
         .collect();
     let up = TestUpstream::start(paged(pages)).await;
-    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url)).await;
+    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None).await;
     assert_eq!(result, Err(RefreshError::TooLarge));
     assert_eq!(up.seen().len(), 20, "at most 20 pages are asked for");
     assert_eq!(names(&fixture.state, fixture.server_id).await, vec!["old"]);
@@ -932,10 +939,31 @@ async fn more_than_twenty_pages_is_too_large_and_keeps_the_catalog() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_refresh_the_budget_refuses_keeps_the_catalog_and_stores_no_error() {
+    let fixture = fixture().await;
+    let previous = TestUpstream::start(stateless(vec![tool("old")])).await;
+    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url), None)
+        .await
+        .expect("the first refresh");
+    let up = TestUpstream::start(stateless(vec![tool("new")])).await;
+    // Another holder takes every permit of the 32 MiB budget.
+    let mut others = fixture.state.links.budget().reservation(None);
+    assert!(others.set(33_554_432), "the other holder takes the budget");
+    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None).await;
+    assert_eq!(result, Err(RefreshError::Busy));
+    assert_eq!(names(&fixture.state, fixture.server_id).await, vec!["old"]);
+    assert_eq!(
+        catalog_error(&fixture.state, fixture.server_id).await,
+        None,
+        "a refusal by the budget stores no refresh error"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn more_than_the_byte_limit_in_total_is_too_large_and_keeps_the_catalog() {
     let fixture = fixture_with(|config| config.limits.tools_list_bytes = 500).await;
     let previous = TestUpstream::start(stateless(vec![tool("old")])).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url), None)
         .await
         .expect("the first refresh");
     let long = "n".repeat(200);
@@ -945,7 +973,7 @@ async fn more_than_the_byte_limit_in_total_is_too_large_and_keeps_the_catalog() 
         vec![tool(&format!("{long}3"))],
     ]))
     .await;
-    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url)).await;
+    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None).await;
     assert_eq!(result, Err(RefreshError::TooLarge));
     assert_eq!(names(&fixture.state, fixture.server_id).await, vec!["old"]);
 }
@@ -954,11 +982,11 @@ async fn more_than_the_byte_limit_in_total_is_too_large_and_keeps_the_catalog() 
 async fn a_failed_fetch_keeps_the_catalog_and_a_later_success_clears_the_error() {
     let fixture = fixture().await;
     let good = TestUpstream::start(stateless(vec![tool("alpha"), tool("beta")])).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &good.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &good.url), None)
         .await
         .expect("the first refresh");
     let down = closed_url().await;
-    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &down)).await;
+    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &down), None).await;
     assert_eq!(result, Err(RefreshError::Unavailable), "a stopped upstream");
     assert_eq!(
         names(&fixture.state, fixture.server_id).await,
@@ -984,7 +1012,7 @@ async fn a_failed_fetch_keeps_the_catalog_and_a_later_success_clears_the_error()
     ];
     for (what, script) in answers {
         let up = TestUpstream::start(script).await;
-        let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url)).await;
+        let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None).await;
         assert_eq!(result, Err(RefreshError::Unavailable), "{what}");
         assert_eq!(
             names(&fixture.state, fixture.server_id).await,
@@ -992,7 +1020,7 @@ async fn a_failed_fetch_keeps_the_catalog_and_a_later_success_clears_the_error()
             "{what} keeps the catalog"
         );
     }
-    let later = catalog::refresh(&fixture.state, &target_at(&fixture, &good.url)).await;
+    let later = catalog::refresh(&fixture.state, &target_at(&fixture, &good.url), None).await;
     assert!(later.is_ok());
     assert_eq!(catalog_error(&fixture.state, fixture.server_id).await, None);
 }
@@ -1045,7 +1073,7 @@ async fn replace_leaves_out_bad_names_and_keeps_the_upstream_order() {
 async fn the_first_refresh_writes_no_tool_appeared_rows() {
     let fixture = fixture().await;
     let up = TestUpstream::start(stateless(vec![tool("alpha")])).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &up.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None)
         .await
         .expect("the refresh");
     assert!(appeared(&fixture.state).await.is_empty());
@@ -1055,11 +1083,11 @@ async fn the_first_refresh_writes_no_tool_appeared_rows() {
 async fn a_new_name_on_a_later_refresh_writes_one_row() {
     let fixture = fixture().await;
     let first = TestUpstream::start(stateless(vec![tool("alpha"), tool("beta")])).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &first.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &first.url), None)
         .await
         .expect("the first refresh");
     let second = TestUpstream::start(stateless(vec![tool("alpha"), tool("gamma")])).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &second.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &second.url), None)
         .await
         .expect("the second refresh");
     assert_eq!(appeared(&fixture.state).await, vec!["gamma"]);
@@ -1069,12 +1097,12 @@ async fn a_new_name_on_a_later_refresh_writes_one_row() {
 async fn at_most_fifty_tool_appeared_rows_are_written_per_refresh() {
     let fixture = fixture().await;
     let first = TestUpstream::start(stateless(vec![tool("t0")])).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &first.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &first.url), None)
         .await
         .expect("the first refresh");
     let many: Vec<Value> = (0..=60).map(|index| tool(&format!("t{index}"))).collect();
     let second = TestUpstream::start(stateless(many)).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &second.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &second.url), None)
         .await
         .expect("the second refresh");
     assert_eq!(appeared(&fixture.state).await.len(), 50);
@@ -1189,9 +1217,10 @@ async fn a_session_upstream_answering_event_streams_is_stored() {
         ))
         .await;
         let fixture = fixture().await;
-        let names_seen = catalog::refresh(&fixture.state, &secret_target_at(&fixture, &up.url))
-            .await
-            .expect("the refresh");
+        let names_seen =
+            catalog::refresh(&fixture.state, &secret_target_at(&fixture, &up.url), None)
+                .await
+                .expect("the refresh");
         assert_eq!(names_seen, vec!["alpha"], "crlf {crlf}, split {split}");
     }
 }
@@ -1207,7 +1236,7 @@ async fn a_stateless_upstream_answering_an_event_stream_is_stored() {
         },
     ))
     .await;
-    let names_seen = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url))
+    let names_seen = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None)
         .await
         .expect("the refresh");
     assert_eq!(names_seen, vec!["s1", "s2"]);
@@ -1217,7 +1246,7 @@ async fn a_stateless_upstream_answering_an_event_stream_is_stored() {
 async fn a_stream_that_stays_open_after_a_notification_is_unavailable_in_time() {
     let fixture = fixture_with(|config| config.limits.upstream_timeout_seconds = 1).await;
     let previous = TestUpstream::start(stateless(vec![tool("old")])).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url), None)
         .await
         .expect("the first refresh");
     let notice = json!({"jsonrpc": "2.0", "method": "notifications/message",
@@ -1225,7 +1254,7 @@ async fn a_stream_that_stays_open_after_a_notification_is_unavailable_in_time() 
     let events = format!(": keep-alive\ndata: {notice}\n\n");
     let up = TestUpstream::start(move |_| open_stream(events.clone())).await;
     let started = Instant::now();
-    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url)).await;
+    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None).await;
     assert_eq!(result, Err(RefreshError::Unavailable));
     assert!(
         started.elapsed() < Duration::from_secs(3),
@@ -1244,7 +1273,7 @@ async fn a_stream_that_stays_open_after_a_notification_is_unavailable_in_time() 
 async fn a_stream_larger_than_the_byte_limit_before_its_answer_is_too_large() {
     let fixture = fixture_with(|config| config.limits.tools_list_bytes = 500).await;
     let previous = TestUpstream::start(stateless(vec![tool("old")])).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url), None)
         .await
         .expect("the first refresh");
     let notice = json!({"jsonrpc": "2.0", "method": "notifications/message",
@@ -1252,7 +1281,7 @@ async fn a_stream_larger_than_the_byte_limit_before_its_answer_is_too_large() {
     let body = format!("data: {notice}\n\n");
     let up =
         TestUpstream::start(move |_| answer(200, None, Some("text/event-stream"), &body)).await;
-    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url)).await;
+    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None).await;
     assert_eq!(result, Err(RefreshError::TooLarge));
     assert_eq!(names(&fixture.state, fixture.server_id).await, vec!["old"]);
     assert_eq!(
@@ -1267,7 +1296,7 @@ async fn a_stream_larger_than_the_byte_limit_before_its_answer_is_too_large() {
 async fn a_stream_whose_answer_is_an_error_is_unavailable() {
     let fixture = fixture().await;
     let previous = TestUpstream::start(stateless(vec![tool("old")])).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url), None)
         .await
         .expect("the first refresh");
     let up = TestUpstream::start(always(
@@ -1276,7 +1305,7 @@ async fn a_stream_whose_answer_is_an_error_is_unavailable() {
         "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}\n\n",
     ))
     .await;
-    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url)).await;
+    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None).await;
     assert_eq!(result, Err(RefreshError::Unavailable));
     assert_eq!(names(&fixture.state, fixture.server_id).await, vec!["old"]);
 }
@@ -1285,7 +1314,7 @@ async fn a_stream_whose_answer_is_an_error_is_unavailable() {
 async fn a_refresh_that_runs_past_one_time_limit_is_unavailable_and_keeps_the_catalog() {
     let fixture = fixture_with(|config| config.limits.upstream_timeout_seconds = 1).await;
     let previous = TestUpstream::start(stateless(vec![tool("old")])).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url), None)
         .await
         .expect("the first refresh");
     let pages: Vec<Vec<Value>> = (0..6)
@@ -1293,7 +1322,7 @@ async fn a_refresh_that_runs_past_one_time_limit_is_unavailable_and_keeps_the_ca
         .collect();
     let up = TestUpstream::start(delayed(Duration::from_millis(300), paged(pages.clone()))).await;
     let started = Instant::now();
-    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url)).await;
+    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None).await;
     assert_eq!(result, Err(RefreshError::Unavailable));
     assert!(
         started.elapsed() < Duration::from_secs(3),
@@ -1308,7 +1337,7 @@ async fn a_refresh_that_runs_past_one_time_limit_is_unavailable_and_keeps_the_ca
     );
     let patient = self::fixture().await;
     let slow = TestUpstream::start(delayed(Duration::from_millis(300), paged(pages))).await;
-    let all = catalog::refresh(&patient.state, &target_at(&patient, &slow.url))
+    let all = catalog::refresh(&patient.state, &target_at(&patient, &slow.url), None)
         .await
         .expect("the same upstream fits a longer limit");
     assert_eq!(all, vec!["p0", "p1", "p2", "p3", "p4", "p5"]);
@@ -1351,7 +1380,7 @@ async fn send_hands_back_a_redirect_and_does_not_follow_it() {
 async fn a_result_for_another_id_is_not_the_tool_list() {
     let fixture = fixture().await;
     let previous = TestUpstream::start(stateless(vec![tool("old")])).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url), None)
         .await
         .expect("the first refresh");
     let up = TestUpstream::start(|seen: &Seen| {
@@ -1363,7 +1392,7 @@ async fn a_result_for_another_id_is_not_the_tool_list() {
         }
     })
     .await;
-    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url)).await;
+    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None).await;
     assert_eq!(result, Err(RefreshError::Unavailable));
     assert_eq!(names(&fixture.state, fixture.server_id).await, vec!["old"]);
     assert_eq!(
@@ -1390,7 +1419,7 @@ async fn the_stream_answer_taken_is_the_one_to_request_one() {
         }
     })
     .await;
-    let names_seen = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url))
+    let names_seen = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None)
         .await
         .expect("the refresh");
     assert_eq!(names_seen, vec!["right"]);
@@ -1419,7 +1448,7 @@ async fn a_403_is_a_refusal_at_either_form() {
 async fn a_failed_later_page_does_not_start_the_session_form() {
     let fixture = fixture().await;
     let previous = TestUpstream::start(stateless(vec![tool("old")])).await;
-    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url))
+    catalog::refresh(&fixture.state, &target_at(&fixture, &previous.url), None)
         .await
         .expect("the first refresh");
     let up = TestUpstream::start(|seen: &Seen| {
@@ -1441,7 +1470,7 @@ async fn a_failed_later_page_does_not_start_the_session_form() {
         }
     })
     .await;
-    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url)).await;
+    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None).await;
     assert_eq!(result, Err(RefreshError::Unavailable));
     assert_eq!(names(&fixture.state, fixture.server_id).await, vec!["old"]);
     assert!(
@@ -1466,7 +1495,7 @@ async fn a_stream_that_answers_and_stays_open_is_read_only_until_the_answer() {
     })
     .await;
     let started = Instant::now();
-    let names_seen = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url))
+    let names_seen = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None)
         .await
         .expect("the refresh");
     assert_eq!(names_seen, vec!["alpha"]);
@@ -1491,7 +1520,7 @@ async fn an_error_answer_in_a_stream_ends_the_wait() {
     })
     .await;
     let started = Instant::now();
-    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url)).await;
+    let result = catalog::refresh(&fixture.state, &target_at(&fixture, &up.url), None).await;
     assert_eq!(result, Err(RefreshError::Unavailable));
     assert!(
         started.elapsed() < Duration::from_secs(2),

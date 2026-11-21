@@ -127,6 +127,11 @@ pub const SETTINGS: &[Setting] = &[
         kind: Kind::Whole,
     },
     Setting {
+        variable: "DOORWARD_LIMITS_ANSWER_MEMORY_BYTES",
+        path: "limits.answer_memory_bytes",
+        kind: Kind::Whole,
+    },
+    Setting {
         variable: "DOORWARD_LIMITS_CATALOG_REFRESH_SECONDS",
         path: "limits.catalog_refresh_seconds",
         kind: Kind::Whole,
@@ -281,6 +286,7 @@ pub struct Limits {
     pub body_bytes: u64,
     pub body_read_seconds: u64,
     pub tools_list_bytes: u64,
+    pub answer_memory_bytes: u64,
     pub upstream_timeout_seconds: u64,
     pub account_failures: u64,
     pub account_ceiling: u64,
@@ -331,6 +337,7 @@ impl Default for Limits {
             body_bytes: 1_048_576,
             body_read_seconds: 15,
             tools_list_bytes: 4_194_304,
+            answer_memory_bytes: 33_554_432,
             upstream_timeout_seconds: 300,
             account_failures: 5,
             account_ceiling: 50,
@@ -779,6 +786,12 @@ impl Lifetimes {
 }
 
 impl Limits {
+    /// The bytes of answers one user may hold at once: a quarter of the budget, and never less than one
+    /// largest answer.
+    pub fn answer_share(&self) -> u64 {
+        (self.answer_memory_bytes / 4).max(self.tools_list_bytes)
+    }
+
     fn validate(&self) -> Result<(), ConfigError> {
         require_at_least_one(
             "limits",
@@ -786,6 +799,7 @@ impl Limits {
                 ("body_bytes", self.body_bytes),
                 ("body_read_seconds", self.body_read_seconds),
                 ("tools_list_bytes", self.tools_list_bytes),
+                ("answer_memory_bytes", self.answer_memory_bytes),
                 ("upstream_timeout_seconds", self.upstream_timeout_seconds),
                 ("account_failures", self.account_failures),
                 ("account_ceiling", self.account_ceiling),
@@ -817,6 +831,11 @@ impl Limits {
             return Err(ConfigError::Invalid(format!(
                 "limits.body_read_seconds must be at most {BODY_READ_MAX}"
             )));
+        }
+        if self.answer_memory_bytes < self.tools_list_bytes {
+            return Err(ConfigError::Invalid(
+                "limits.answer_memory_bytes must be at least limits.tools_list_bytes".to_owned(),
+            ));
         }
         if self.upstream_timeout_seconds > UPSTREAM_TIMEOUT_MAX {
             return Err(ConfigError::Invalid(format!(
@@ -1212,6 +1231,36 @@ mod tests {
         let config = Config::from_sources(None, &with(&[("DOORWARD_LIMITS_ACTIVITY_DAYS", "7")]))
             .expect("the period loads");
         assert_eq!(config.limits.activity_days, 7);
+    }
+
+    #[test]
+    fn a_memory_budget_below_the_tools_list_limit_is_refused() {
+        assert_eq!(
+            refusal(&[
+                ("DOORWARD_LIMITS_TOOLS_LIST_BYTES", "2000"),
+                ("DOORWARD_LIMITS_ANSWER_MEMORY_BYTES", "1999"),
+            ]),
+            "invalid config: limits.answer_memory_bytes must be at least limits.tools_list_bytes"
+        );
+    }
+
+    #[test]
+    fn a_memory_budget_equal_to_the_tools_list_limit_is_valid() {
+        let config = Config::from_sources(
+            None,
+            &with(&[
+                ("DOORWARD_LIMITS_TOOLS_LIST_BYTES", "2000"),
+                ("DOORWARD_LIMITS_ANSWER_MEMORY_BYTES", "2000"),
+            ]),
+        )
+        .expect("a budget equal to the limit loads");
+        assert_eq!(config.limits.answer_memory_bytes, 2000);
+    }
+
+    #[test]
+    fn the_memory_budget_defaults_to_32_mib() {
+        let config = Config::from_sources(None, &with(&[])).expect("the defaults load");
+        assert_eq!(config.limits.answer_memory_bytes, 33_554_432);
     }
 
     fn started(public_url: &str, extra: &[(&str, &str)]) -> Config {

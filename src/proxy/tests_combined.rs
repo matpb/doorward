@@ -2663,3 +2663,74 @@ async fn a_stateless_discover_on_mcp_names_the_server_in_result_meta() {
         }}))
     );
 }
+
+/// A stateless upstream whose tools/list waits `delay` before it answers `tools`.
+async fn delayed_up(tools: Vec<Value>, delay: Duration) -> String {
+    let state: DelayedState = (Arc::new(tools), delay);
+    let app = Router::new()
+        .route("/mcp", post(delayed_answer))
+        .with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    format!("http://{address}/mcp")
+}
+
+type DelayedState = (Arc<Vec<Value>>, Duration);
+
+async fn delayed_answer(State((tools, delay)): State<DelayedState>, body: Bytes) -> Response {
+    let request: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let result = match request["method"].as_str() {
+        Some("tools/list") => {
+            tokio::time::sleep(delay).await;
+            json!({"tools": tools.as_ref()})
+        }
+        _ => discover(),
+    };
+    Json(json!({"jsonrpc": "2.0", "id": request["id"], "result": result})).into_response()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_the_budget_refuses_is_left_out_and_keeps_no_refresh_error() {
+    let fx = fixture().await;
+    // About 20 KB of tools: five permits, more than the four left free below.
+    let big = json!({
+        "name": "big",
+        "description": "d".repeat(20_000),
+        "inputSchema": {"type": "object"},
+    });
+    let busy_url = delayed_up(vec![big], Duration::from_millis(1500)).await;
+    let good = stateless_up(vec![tool("s1")]).await;
+    let busy_id = server(&fx.state, "aaa", &busy_url).await;
+    let good_id = server(&fx.state, "bbb", &good.url).await;
+    user(&fx.state, 1, vec![busy_id, good_id]).await;
+    // Another holder keeps all but four permits of the 32 MiB budget while the lists run.
+    let mut others = fx.state.links.budget().reservation(None);
+    assert!(
+        others.set(33_554_432 - 4 * 4096),
+        "the others take their bytes"
+    );
+    let reply = list(&fx.state, 1).await;
+    assert_eq!(
+        names(&reply),
+        vec!["bbb__s1"],
+        "the server the budget refuses is left out, the other one answers"
+    );
+    assert_eq!(
+        catalog_error(&fx.state, busy_id).await,
+        None,
+        "a list the budget refused stores no refresh error"
+    );
+    assert_eq!(catalog_error(&fx.state, good_id).await, None);
+    let logged = NOTES
+        .lock()
+        .expect("notes")
+        .iter()
+        .any(|line| line == "tools/list: aaa left out, the answer memory budget is exhausted");
+    assert!(
+        logged,
+        "the left out server is logged with the budget as its cause"
+    );
+}
