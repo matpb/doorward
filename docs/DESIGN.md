@@ -5,9 +5,10 @@ S32 to S36 replace S15, S19, S21 and S22 and add the resources and prompts switc
 
 ## Shape
 
-One Rust crate, library plus binary. The library exposes `build(config, deps) -> Router` so
-tests start the real gateway in-process on a free local port and talk to it over real HTTP.
-`deps` carries the only seams: clock, Client ID Metadata Document fetcher, DNS resolver.
+One Rust crate, library plus binary. The library exposes
+`build(config, deps) -> Result<Gateway, StartError>` so tests start the real gateway
+in-process on a free local port and talk to it over real HTTP. `deps` carries the only
+seams: clock and Client ID Metadata Document fetcher.
 
 Modules. Those marked (core) are the reviewed security core. Nothing outside the core
 holds an upstream secret, parses a request body for a decision, or issues a credential.
@@ -17,18 +18,18 @@ holds an upstream secret, parses a request body for a decision, or issues a cred
 | `config` | TOML file: `public_url` (origin only), listen address, database path, key file, trusted proxies, lifetimes, limits |
 | `db` | SQLite (WAL, `foreign_keys=ON`, writes in `BEGIN IMMEDIATE`), embedded migrations run at start |
 | `crypto` (core) | token generation, SHA-256 token hashing, secret encryption (XChaCha20-Poly1305 with key id and associated data), Argon2id behind a semaphore, off the async executor |
-| `accounts` (core) | users, roles, setup code, invitations, password reset, browser sessions, CSRF, login throttling |
+| `accounts` (core) | users, roles, setup code, invitations, password reset, browser sessions, CSRF, login throttling, the account page |
 | `oauth` (core) | metadata, authorize, consent, token endpoint, client registration (CIMD and DCR), redirect policy |
-| `guard` (core) | bearer check for MCP paths |
+| `oauth::guard` (core) | bearer check for MCP paths |
 | `policy` (core) | tool rule evaluation |
 | `mcp` (core) | strict JSON-RPC parsing, message shapes, method allowlists per generation, SSE reading |
-| `upstream` (core) | the only holder of upstream secrets; request and response header allowlists; the HTTP client |
-| `catalog` (core) | each server's cached tool list |
-| `proxy` | per-server pass-through, built on `guard`, `mcp`, `policy`, `catalog`, `upstream` |
-| `combined` | the combined endpoint, same building blocks |
-| `mail` | `Mailer` trait with SMTP, Resend and Mailgun providers |
+| `proxy::upstream` (core) | the only holder of upstream secrets; request and response header allowlists; the HTTP client |
+| `proxy::catalog` (core) | each server's cached tool list |
+| `proxy` | per-server pass-through, built on `oauth::guard`, `mcp`, `policy`, `proxy::catalog`, `proxy::upstream` |
+| `proxy::combined` | the combined endpoint, same building blocks |
+| `mail` | sends through the provider named by the stored `mail.provider` setting: SMTP, Resend or Mailgun |
 | `audit` | activity log |
-| `admin` | panel and account pages, server-rendered HTML, no script |
+| `admin` | the admin panel: overview, users, invitations, servers, rules, redirects, activity and mail pages; server-rendered HTML, no script |
 
 ## HTTP surface
 
@@ -48,7 +49,7 @@ characters, never a reserved word. Reserved first segments: `-`, `.well-known`, 
 | `/.well-known/oauth-protected-resource/{slug}` and `/mcp` | RFC 9728 metadata, answered for every syntactically valid slug |
 | `/.well-known/oauth-authorization-server` | RFC 8414 metadata |
 | `/oauth/authorize`, `/oauth/consent`, `/oauth/token`, `/oauth/register` | authorization server |
-| `/setup`, `/login`, `/logout`, `/invite/{token}`, `/forgot`, `/reset/{token}`, `/account` | accounts |
+| `/setup`, `/login`, `/logout`, `/invite/{token}`, `/forgot`, `/reset/{token}`, `/account`, `/account/password`, `/account/clients/{public_id}/disconnect`, `/account/disconnect/{token}` | accounts |
 | `/admin/...` | panel |
 | `/healthz` | liveness |
 
@@ -166,7 +167,8 @@ it and allows it.
    secret header. Redirects are not followed.
 8. Responses: content type must be `application/json` or `text/event-stream`; headers go
    through an allowlist; `Set-Cookie` and `WWW-Authenticate` never pass; `nosniff` and
-   `Content-Security-Policy: sandbox` are added. Upstream 401 or 403 becomes 502.
+   `Content-Security-Policy: sandbox` are added. Upstream statuses 200, 202, 400, 404 and 405
+   are accepted; any other status, 401 and 403 among them, becomes 502.
 9. `tools/list` responses are buffered (capped), filtered by policy, and refresh the
    catalog. JSON answers are buffered and re-checked; event streams stream through as they arrive, and
    the stream is observed for the
@@ -214,12 +216,13 @@ change applies to tokens already issued. A rule that cannot be read refuses the 
 
 ## Storage
 
-Tables: `users`, `invitations`, `password_resets`, `sessions`, `servers`, `user_servers`,
-`rules`, `redirect_allow`, `oauth_clients`, `auth_requests`, `auth_codes`,
-`token_families`, `access_tokens`, `refresh_tokens`, `upstream_sessions`, `tool_catalog`,
-`settings`, `activity`. Activity rows snapshot email, slug, tool and client and do not
-cascade. Ciphertexts carry a key id and are bound to their table, column and row. The
-database and key files are created with owner-only permissions.
+Tables: `users`, `invitations`, `password_resets`, `sessions`, `login_failures`, `servers`,
+`user_servers`, `rules`, `redirect_allow`, `oauth_clients`, `dcr_attempts`, `known_clients`,
+`auth_requests`, `auth_codes`, `token_families`, `access_tokens`, `refresh_tokens`,
+`disconnect_links`, `upstream_sessions`, `tool_catalog`, `settings`, `activity`. Activity rows
+snapshot email, slug, tool and client and do not cascade. Ciphertexts carry a key id and are
+bound to their table, column and row. The database and key files are created with owner-only
+permissions.
 
 ## Tests
 

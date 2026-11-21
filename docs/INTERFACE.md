@@ -9,7 +9,11 @@ what. `PUB` is the configured `public_url`.
   Every page starts with a `header[data-brand]` naming Doorward, and `body[data-layout]` is
   `card`, `page` or `panel`. The outermost `<main>` has a `data-page` attribute naming the
   page (`login`, `consent`, `error`, ...). Notices are `div.notice` with `data-notice` naming the tone: `ok`, `warning` or `error`.
-- The stylesheet `assets/doorward.css` sets its colours as custom properties in `:root` and in the dark media block. Field borders (`input`, `select`, `textarea`) use `--field-line`, which reaches 3 to 1 against the field background `--bg`.
+- The stylesheet `assets/doorward.css` sets its colours as custom properties in `:root` and in
+  the dark media block. Field borders (`input`, `select`, `textarea`) use `--line-strong`, which
+  reaches 3 to 1 against the field background `--surface`.
+- `GET /assets/fonts/{name}` serves the font files compiled into the binary, by file name, as
+  `font/woff2`. Any other name answers `404`.
 - Every form has `<input type="hidden" name="csrf" value="...">`. Forms are
   `application/x-www-form-urlencoded`. A successful POST answers `303` with `Location`.
 - A form POST with a missing, repeated or wrong `csrf`, or whose `Origin` header is absent,
@@ -134,6 +138,7 @@ refresh_replay_seconds = 30
 body_bytes = 1048576
 tools_list_bytes = 4194304
 upstream_timeout_seconds = 300 # at most 86400 (one day)
+catalog_refresh_seconds = 30  # least seconds between two catalog refreshes of one server
 account_failures = 5          # wrong passwords for one account from one address inside the window
 account_ceiling = 50          # wrong passwords for one account from all addresses inside the window
 address_failures = 30         # wrong passwords per address, for any accounts, inside the window
@@ -165,7 +170,7 @@ and leaves the link or code usable. A wrong `current_password` answers `400` as 
 | Route | Fields | Outcome |
 |---|---|---|
 | `GET /` | | `303 /account` for a signed-in person (a plain user, an admin or the owner). Otherwise `303 /setup` while no owner exists, `303 /login` once one does. Every other unknown path keeps its answer |
-| `GET /setup` | | `200` `data-page="setup"` while no owner exists, else `404` |
+| `GET /setup` | | `200` `data-page="setup"` while no owner exists and the instance was started with a setup code, else `404` |
 | `POST /setup` | `setup_code`, `email`, `password` | owner created, session set, `303 /admin`. Wrong code: `403`, nothing created. Owner exists: `404`. Two concurrent valid posts create one owner |
 | `GET /login` | | `200` `data-page="login"`; optional `?req=<auth request id>` is carried in a hidden `req` field |
 | `POST /login` | `email`, `password`, `req` | `303 /account`, or `303 /oauth/consent?req=...`. Wrong credentials or unknown address: `401`, same page, error "Wrong email or password." Blocked: `429`. More than 64 password checks in flight: `503` |
@@ -406,6 +411,9 @@ Errors, `400`: `invalid_grant` (unknown, expired, used or mismatched code; wrong
 unknown, expired or revoked refresh token; user disabled; server no longer assigned),
 `invalid_request` (missing field, repeated field), `invalid_client` (unknown `client_id`),
 `invalid_target` (`resource` differs), `unsupported_grant_type`.
+
+Any method other than `POST`, `GET` included, answers `405` with an empty body and
+`Cache-Control: no-store`.
 
 Bearer use on `/{slug}` and `/mcp`: header only. Anything not fully valid answers
 
