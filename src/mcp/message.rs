@@ -1,12 +1,29 @@
 //! Classifies one JSON-RPC message by generation, shape and method, and decides its fate.
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use time::{Date, Month};
 
 const META_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
 const META_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
 /// The first revision of the stateless rules; well-formed dates compare as strings.
 const STATELESS_FROM: &str = "2026-07-28";
+/// The only members a message may carry at top level.
+const TOP_LEVEL: [&str; 6] = ["jsonrpc", "id", "method", "params", "result", "error"];
+/// Names the gateway reads from `params`, `params._meta` and `params.ref`; each is matched exactly.
+const DECISION_KEYS: &[&str] = &[
+    "name",
+    "uri",
+    "task",
+    "arguments",
+    "cursor",
+    "protocolVersion",
+    "_meta",
+    "ref",
+    "progressToken",
+    "type",
+    META_VERSION,
+    META_CAPABILITIES,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Generation {
@@ -39,6 +56,9 @@ pub enum Refusal {
 /// `version_header` is the single MCP-Protocol-Version value, when one was sent.
 pub fn classify(value: Value, version_header: Option<&str>) -> Result<Message, Refusal> {
     let object = value.as_object().ok_or(Refusal::InvalidRequest)?;
+    if refused_key(object) {
+        return Err(Refusal::InvalidRequest);
+    }
     let id = object.get("id").cloned();
     if id.as_ref().is_some_and(|id| !is_valid_id(id)) {
         return Err(Refusal::InvalidRequest);
@@ -78,6 +98,32 @@ pub fn classify(value: Value, version_header: Option<&str>) -> Result<Message, R
         id,
         tool,
         value,
+    })
+}
+
+/// True when a top-level name is not one of TOP_LEVEL, or `params` holds a name that `unsafe_names`
+/// refuses, or `params._meta` or `params.ref` does.
+fn refused_key(object: &Map<String, Value>) -> bool {
+    if object.keys().any(|key| !TOP_LEVEL.contains(&key.as_str())) {
+        return true;
+    }
+    let Some(params) = object.get("params").and_then(Value::as_object) else {
+        return false;
+    };
+    unsafe_names(params)
+        || ["_meta", "ref"]
+            .iter()
+            .filter_map(|key| params.get(*key)?.as_object())
+            .any(unsafe_names)
+}
+
+/// True when a name has a non-ASCII character, or differs from a decision key only in ASCII case.
+fn unsafe_names(object: &Map<String, Value>) -> bool {
+    object.keys().any(|name| {
+        !name.is_ascii()
+            || DECISION_KEYS
+                .iter()
+                .any(|key| name.as_str() != *key && name.eq_ignore_ascii_case(key))
     })
 }
 

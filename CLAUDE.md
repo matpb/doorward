@@ -320,6 +320,13 @@ L. Added after the owner's auth review
     never a panel link. The "Request refused" page links to the start page. An invitation
     whose email was not sent shows its link in a field labelled Invitation link.
     For someone signed in, the start page is their account page.
+74. A message that a server could read differently than the gateway judged it is refused with
+    `400` and JSON-RPC `-32600`, and never reaches the upstream: one with a top-level member
+    other than `jsonrpc`, `id`, `method`, `params`, `result` and `error`; or one where
+    `params`, `params._meta` or `params.ref` holds a member name with a non-ASCII character,
+    or a name that differs only in letter case from one the gateway reads there, such as
+    `Name` for `name`. Member names inside `params.arguments` belong to the tool and are not
+    checked.
 
 ### Proof
 
@@ -363,6 +370,8 @@ into the test harness. In addition:
 - 71: `tests/s71_refused_forms.rs`.
 - 72: `tests/s72_overview_state.rs`.
 - 73: `tests/s73_account_nav.rs`.
+- 74: `tests/s74_key_case.rs`, on the per-server and the combined route under both protocol
+  generations, and the classify rows in `src/mcp/tests.rs`.
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
   a walk-through of every page in a real browser at 390 px and desktop width in both
   themes, which also measures control heights and sideways scroll; screenshots kept under

@@ -569,6 +569,210 @@ fn classify_fills_method_id_tool_and_keeps_the_value() {
     assert_eq!(classify(notice, None).expect("classifies").id, None);
 }
 
+/// One text row: a name, a body as written, the version header and the expected generation and shape.
+type TextRow = (
+    &'static str,
+    String,
+    Option<&'static str>,
+    Result<(Generation, Shape), Refusal>,
+);
+
+fn text_body(text: &str) -> Value {
+    serde_json::from_str(text).expect("the test body is JSON")
+}
+
+#[test]
+fn classify_refuses_member_names_the_upstream_may_read_differently() {
+    let rows: Vec<TextRow> = vec![
+        (
+            "body A: Name beside name in params",
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","Name":"search","arguments":{}}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "body B: Method beside method at top level",
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/list","Method":"tools/call","params":{"Name":"search"}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "body C: Method, Params and result on a response",
+            r#"{"jsonrpc":"2.0","id":5,"Method":"tools/call","Params":{"name":"search"},"result":{}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a top-level extra member",
+            r#"{"jsonrpc":"2.0","id":1,"method":"ping","extra":1}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a top-level member with a non-ASCII name",
+            r#"{"jsonrpc":"2.0","id":1,"method":"ping","idé":1}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a top-level member that differs from id by case",
+            r#"{"jsonrpc":"2.0","ID":1,"method":"ping"}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a top-level extra member on a stateless request",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","extra":true,"params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#.into(),
+            Some(STATELESS_HEADER),
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a non-ASCII name in params",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","namé":1}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a fold-to-task key in params with U+017F and U+212A",
+            format!(
+                r#"{{"method":"tools/call","id":1,"jsonrpc":"2.0","params":{{"name":"echo","ta{}{}":"search"}}}}"#,
+                '\u{017F}', '\u{212A}'
+            ),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "an upper-case name in params",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"NAME":"echo"}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "an upper-case _meta in params",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_Meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "ProgressToken in _meta",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"ProgressToken":1}}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a non-ASCII name in _meta",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"progressToken":1,"ü":2}}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a case variant of the io protocol version key in _meta",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"Io.ModelContextProtocol/protocolVersion":"2026-07-28"}}}"#.into(),
+            Some(STATELESS_HEADER),
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a case variant of ref's type key",
+            r#"{"jsonrpc":"2.0","id":1,"method":"completion/complete","params":{"ref":{"Type":"ref/prompt","name":"x"},"argument":{"name":"a","value":"b"}}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a non-ASCII name in params.ref",
+            r#"{"jsonrpc":"2.0","id":1,"method":"completion/complete","params":{"ref":{"typé":"ref/prompt"}}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "body A with a stateless _meta",
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","Name":"search","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#.into(),
+            Some(STATELESS_HEADER),
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a plain request",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}"#.into(),
+            None,
+            Ok((Generation::Session, Shape::Request)),
+        ),
+        (
+            "a plain notification",
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.into(),
+            None,
+            Ok((Generation::Session, Shape::Notification)),
+        ),
+        (
+            "a plain response",
+            r#"{"jsonrpc":"2.0","id":1,"result":{}}"#.into(),
+            None,
+            Ok((Generation::Session, Shape::Response)),
+        ),
+        (
+            "mixed-case and non-ASCII names inside arguments",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"Name":"x","näme":"y"}}}"#.into(),
+            None,
+            Ok((Generation::Session, Shape::Request)),
+        ),
+        (
+            "an ASCII key that folds to no decision key",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","Foo":1}}"#.into(),
+            None,
+            Ok((Generation::Session, Shape::Request)),
+        ),
+        (
+            "a stateless _meta with an unlisted key",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"x"}}}}"#.into(),
+            Some(STATELESS_HEADER),
+            Ok((Generation::Stateless, Shape::Request)),
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (name, text, header, expected) in rows {
+        let got = classify(text_body(&text), header).map(|m| (m.generation, m.shape));
+        if got != expected {
+            wrong.push(format!("{name}: got {got:?}, want {expected:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "rows that differ:\n{}", wrong.join("\n"));
+}
+
+#[test]
+fn classify_reads_the_tool_of_a_call_with_odd_argument_names() {
+    let text = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"Name":"x","näme":"y"}}}"#;
+    let message = classify(text_body(text), None).expect("classifies");
+    assert_eq!(message.tool.as_deref(), Some("echo"));
+}
+
+#[test]
+fn classify_applies_the_key_rules_to_large_bodies() {
+    let mut wide =
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo"}});
+    for i in 0..5000 {
+        wide["params"][format!("key{i}")] = json!(i);
+    }
+    let message = classify(wide.clone(), None).expect("5000 unlisted keys in params classify");
+    assert_eq!(message.tool.as_deref(), Some("echo"));
+
+    wide["extra"] = json!(true);
+    assert_eq!(
+        classify(wide, None).map(|m| m.tool),
+        Err(Refusal::InvalidRequest),
+        "one extra top-level member beside 5000 params keys is refused"
+    );
+
+    let mut meta =
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo"}});
+    for i in 0..5000 {
+        meta["params"]["_meta"][format!("k{i}")] = json!(i);
+    }
+    meta["params"]["_meta"]["ProgressToken"] = json!(1);
+    assert_eq!(
+        classify(meta, None).map(|m| m.tool),
+        Err(Refusal::InvalidRequest),
+        "a case variant of progressToken is refused beside 5000 other _meta keys"
+    );
+}
+
 #[test]
 fn decide_session_table_under_every_switch_combination() {
     use Decision::{EmptyList as List, Forward as Fwd, MethodNotFound as Nope};
@@ -875,8 +1079,8 @@ fn decide_refuses_any_message_with_params_task() {
     }
     let top_level = json!({"id": 4, "method": "tools/call", "task": {},
         "params": {"name": "echo"}});
-    let message = classify(top_level, Some(SESSION_HEADER)).expect("classifies");
-    assert_decisions(&message, [Decision::Forward; 4], "task outside params");
+    let refused = classify(top_level, Some(SESSION_HEADER)).map(|message| message.method);
+    assert_eq!(refused, Err(Refusal::InvalidRequest), "task outside params");
 }
 
 #[test]
