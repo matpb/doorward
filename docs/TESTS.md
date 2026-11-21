@@ -2151,6 +2151,19 @@ links the panel pages show, so the two cannot drift apart.
    `div.fields.narrow`, and `code.copy[data-invite-link]` whose raw text equals the stored link. The code
    holds two spans (origin, then path), one `wbr` as its own child between them, and no text node of its
    own. The way back sits in `div.form-actions`. Red before.
+8. `the_start_page_leads_a_signed_in_person_to_their_account`: a plain user, an admin and the owner each
+   get `303` to `/account` from `GET /`. Red before the change of `root`.
+9. `the_start_page_still_leads_an_anonymous_visitor_to_sign_in`: an anonymous `GET /` is `303` to
+   `/login`. Passes before and after. `tests/s01_install.rs` keeps the `/setup` and `/login` answers.
+10. `a_plain_user_refused_a_panel_page_reaches_their_account_by_the_start_link`: the refusal page's
+    `p.back a` link, followed through its redirects (at most three), ends on a `200` page whose `h1`
+    reads Your account. Red before.
+11. `a_demoted_admin_keeps_the_session_and_sees_a_plain_users_account`: an admin on `/account` holds the
+    panel navigation; the owner changes that account's role to `user` through the real form (`303`); the
+    same session's next `GET /account` is `200` with `body[data-layout="page"]`, one `nav[data-nav="account"]`,
+    no `nav#panel-nav` and no `a[href^="/admin"]`; its `GET /admin` is `403`. Observed: a role change does
+    not end the session, because the role is read from the users row on every request. Passes on the code
+    as it was; it records the behaviour for the security review and changes nothing.
 
 Rewritten tests (old expectation, then new; roles and counts kept):
 

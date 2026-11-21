@@ -319,6 +319,7 @@ L. Added after the owner's auth review
     the marked section; a plain user's account page holds the one link Your account and
     never a panel link. The "Request refused" page links to the start page. An invitation
     whose email was not sent shows its link in a field labelled Invitation link.
+    For someone signed in, the start page is their account page.
 
 ### Proof
 

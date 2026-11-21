@@ -412,8 +412,12 @@ async fn healthz(State(state): State<AppState>) -> Response {
     }
 }
 
-/// Leads to sign-up while no owner exists, and to sign-in after that.
-async fn root(State(state): State<AppState>) -> Response {
+/// Leads a signed-in person to their account. Otherwise leads to sign-up while no owner
+/// exists, and to sign-in after that.
+async fn root(State(state): State<AppState>, viewer: web::Viewer) -> Response {
+    if viewer.user.is_some() {
+        return web::redirect("/account");
+    }
     match setup::owner_exists(&state.db).await {
         Ok(true) => web::redirect("/login"),
         Ok(false) => web::redirect("/setup"),

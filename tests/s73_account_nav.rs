@@ -305,3 +305,120 @@ async fn an_invitation_not_sent_shows_its_link_in_a_labelled_field() {
         "the path must hold no wbr"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_start_page_leads_a_signed_in_person_to_their_account() {
+    let w = World::start().await;
+    let bob = w.user(BOB).await;
+    let carol = w.admin(CAROL).await;
+    for (who, browser) in [
+        ("a plain user", &bob),
+        ("an admin", &carol),
+        ("the owner", &w.owner),
+    ] {
+        let page = browser.get("/").await;
+        assert_eq!(page.status, 303, "GET / for {who} must redirect");
+        assert_eq!(
+            page.location().as_deref(),
+            Some("/account"),
+            "GET / for {who} must lead to /account"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_start_page_still_leads_an_anonymous_visitor_to_sign_in() {
+    let w = World::start().await;
+    let page = w.client().get("/").await;
+    assert_eq!(
+        page.status, 303,
+        "GET / for an anonymous visitor must redirect"
+    );
+    assert_eq!(
+        page.location().as_deref(),
+        Some("/login"),
+        "GET / for an anonymous visitor must lead to /login"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plain_user_refused_a_panel_page_reaches_their_account_by_the_start_link() {
+    let w = World::start().await;
+    let bob = w.user(BOB).await;
+    let refused = bob.get("/admin").await;
+    assert_eq!(
+        refused.status, 403,
+        "a plain user's GET /admin must answer 403"
+    );
+    let link = refused
+        .attr(r#"main p.back a[href="/"]"#, "href")
+        .expect("the refusal page must link to the start page");
+    let mut page = bob.get(&link).await;
+    let mut hops = 0;
+    while (300..400).contains(&page.status) {
+        hops += 1;
+        assert!(
+            hops <= 3,
+            "the start link must reach a page within three redirects"
+        );
+        page = bob.follow(&page).await;
+    }
+    assert_eq!(page.status, 200, "the start link must end on a 200 page");
+    assert_eq!(
+        page.text("main h1").as_deref(),
+        Some("Your account"),
+        "the start link must end on the account page of the signed-in user"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_demoted_admin_keeps_the_session_and_sees_a_plain_users_account() {
+    let w = World::start().await;
+    let carol = w.admin(CAROL).await;
+    let before = carol.get("/account").await;
+    assert_eq!(
+        before.status, 200,
+        "an admin's account page must answer 200"
+    );
+    assert_eq!(
+        before.count("nav#panel-nav"),
+        1,
+        "an admin's account page must hold the panel navigation before the change"
+    );
+    let carol_id = w.user_id(CAROL).await;
+    let changed = admin::set_role(&w.owner, &carol_id, "user").await;
+    assert_eq!(
+        changed.status, 303,
+        "the owner's role change must be saved with 303"
+    );
+    let after = carol.get("/account").await;
+    assert_eq!(
+        after.status, 200,
+        "the same session must still answer after the role change"
+    );
+    assert_eq!(
+        after.attr("body", "data-layout").as_deref(),
+        Some("page"),
+        "the demoted account must carry the plain user's layout"
+    );
+    assert_eq!(
+        after.count(r#"a[href^="/admin"]"#),
+        0,
+        "the demoted account must link to no /admin path"
+    );
+    assert_eq!(
+        after.count(r#"nav[data-nav="account"]"#),
+        1,
+        "the demoted account must hold the plain user's navigation"
+    );
+    assert_eq!(
+        after.count("nav#panel-nav"),
+        0,
+        "the demoted account must hold no panel navigation"
+    );
+    assert_eq!(
+        carol.get("/admin").await.status,
+        403,
+        "the demoted session must be refused on /admin"
+    );
+}

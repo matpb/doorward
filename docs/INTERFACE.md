@@ -164,7 +164,7 @@ and leaves the link or code usable. A wrong `current_password` answers `400` as 
 
 | Route | Fields | Outcome |
 |---|---|---|
-| `GET /` | | `303 /setup` while no owner exists, `303 /login` once one does. Every other unknown path keeps its answer |
+| `GET /` | | `303 /account` for a signed-in person (a plain user, an admin or the owner). Otherwise `303 /setup` while no owner exists, `303 /login` once one does. Every other unknown path keeps its answer |
 | `GET /setup` | | `200` `data-page="setup"` while no owner exists, else `404` |
 | `POST /setup` | `setup_code`, `email`, `password` | owner created, session set, `303 /admin`. Wrong code: `403`, nothing created. Owner exists: `404`. Two concurrent valid posts create one owner |
 | `GET /login` | | `200` `data-page="login"`; optional `?req=<auth request id>` is carried in a hidden `req` field |
