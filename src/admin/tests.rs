@@ -15,6 +15,10 @@ use tokio::net::TcpListener;
 use url::form_urlencoded::Serializer;
 
 use super::activity::{label_of, offset_of, page_number, plain_time};
+use super::mail::{
+    MAILGUN_SECRET_HINT, RESEND_SECRET_HINT, SMTP_SECRET_HINT, mailgun_plan, open_provider,
+    resend_plan, smtp_plan,
+};
 use super::servers::{Stored, store_lockdown};
 use crate::app::{Deps, assemble, serve};
 use crate::audit::{self, Event};
@@ -2024,8 +2028,9 @@ async fn the_secret_value_is_never_shown_and_never_stored_in_clear() {
     assert_eq!(page.status, 200);
     assert_eq!(page.kind().as_deref(), Some("server"));
     assert!(
-        page.body
-            .contains("Stored, never shown again. Leave empty to keep it."),
+        page.body.contains(
+            "Stored, never shown again. Leave empty to keep it. If you change the upstream address, enter it again."
+        ),
         "a stored secret is noted"
     );
     assert!(
@@ -4250,6 +4255,120 @@ async fn a_post_naming_no_provider_is_refused_at_the_top_of_the_mail_page() {
     );
 }
 
+#[test]
+fn the_open_provider_is_the_refused_one_else_the_one_in_use_else_none() {
+    assert_eq!(open_provider(Some("smtp"), Some("resend")), Some("resend"));
+    assert_eq!(open_provider(Some("smtp"), None), Some("smtp"));
+    assert_eq!(open_provider(None, None), None);
+}
+
+/// The posted fields as a getter: a name not in `pairs` reads as "".
+fn posted_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> String {
+    let owned: Vec<(String, String)> = pairs
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+    move |name: &str| {
+        owned
+            .iter()
+            .find(|(key, _)| key == name)
+            .map_or(String::new(), |(_, value)| value.clone())
+    }
+}
+
+/// The hint names the label of every connection field, and `labels` lists exactly those fields.
+fn names_each_field(hint: &str, connection: &[(&str, String)], labels: &[(&str, &str)]) {
+    assert_eq!(
+        connection.len(),
+        labels.len(),
+        "every connection field must have its label listed in the test"
+    );
+    for (key, _) in connection {
+        let label = labels
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, label)| *label)
+            .unwrap_or_else(|| panic!("{key} has no label listed in the test"));
+        assert!(
+            hint.contains(&format!("the {label}")),
+            "the hint must name the {label} field ({key}): {hint:?}"
+        );
+    }
+}
+
+#[test]
+fn the_smtp_hint_names_every_connection_field_of_its_plan() {
+    let dir = tempfile::tempdir().expect("dir");
+    let keys = keys_of(dir.path(), "http://127.0.0.1:8080");
+    let posted = posted_of(&[
+        ("smtp_host", "mail.example.com"),
+        ("smtp_port", "587"),
+        ("smtp_username", "mailer"),
+        ("smtp_tls", "starttls"),
+    ]);
+    let Ok(plan) = smtp_plan(posted, &keys, String::new()) else {
+        panic!("the smtp plan must be built from a valid post");
+    };
+    names_each_field(
+        SMTP_SECRET_HINT,
+        &plan.connection,
+        &[
+            ("mail.smtp_host", "server"),
+            ("mail.smtp_port", "port"),
+            ("mail.smtp_username", "username"),
+            ("mail.smtp_tls", "TLS setting"),
+        ],
+    );
+    assert_eq!(
+        SMTP_SECRET_HINT,
+        "Leave empty to keep the stored one. If you change the server, the port, the username or the TLS setting, enter it again."
+    );
+}
+
+#[test]
+fn the_resend_hint_names_every_connection_field_of_its_plan() {
+    let dir = tempfile::tempdir().expect("dir");
+    let keys = keys_of(dir.path(), "http://127.0.0.1:8080");
+    let posted = posted_of(&[("resend_base_url", "https://api.example.com")]);
+    let Ok(plan) = resend_plan(posted, &keys, String::new()) else {
+        panic!("the resend plan must be built from a valid post");
+    };
+    names_each_field(
+        RESEND_SECRET_HINT,
+        &plan.connection,
+        &[("mail.resend_base_url", "base address")],
+    );
+    assert_eq!(
+        RESEND_SECRET_HINT,
+        "Leave empty to keep the stored one. If you change the base address, enter it again."
+    );
+}
+
+#[test]
+fn the_mailgun_hint_names_every_connection_field_of_its_plan() {
+    let dir = tempfile::tempdir().expect("dir");
+    let keys = keys_of(dir.path(), "http://127.0.0.1:8080");
+    let posted = posted_of(&[
+        ("mailgun_domain", "mail.example.com"),
+        ("mailgun_base_url", "https://api.example.com"),
+    ]);
+    let Ok(plan) = mailgun_plan(posted, &keys, String::new()) else {
+        panic!("the mailgun plan must be built from a valid post");
+    };
+    names_each_field(
+        MAILGUN_SECRET_HINT,
+        &plan.connection,
+        &[
+            ("mail.mailgun_domain", "domain"),
+            ("mail.mailgun_base_url", "base address"),
+        ],
+    );
+    assert_eq!(
+        MAILGUN_SECRET_HINT,
+        "Leave empty to keep the stored one. If you change the domain or the base address, enter it again."
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_overview_names_every_open_server_in_name_order_and_cuts_none() {
     let dir = tempfile::tempdir().expect("dir");
@@ -4325,6 +4444,12 @@ async fn a_refused_server_form_says_so_and_marks_its_path_field() {
         Some(
             "The server was not added. Another server already uses that path. Go to the path field"
         )
+    );
+    assert!(
+        page.body.contains(
+            r##"<div class="notice" data-notice="error" role="alert"><p><strong>The server was not added.</strong> Another server already uses that path. <a href="#server-slug">Go to the path field</a></p></div>"##
+        ),
+        "the refused server notice must be exactly its markup"
     );
     assert_eq!(
         attr_of(&page.body, r##"a[href="#server-slug"]"##, "href").as_deref(),

@@ -45,17 +45,26 @@ pub fn breakable(text: &str) -> Markup {
     }
 }
 
-/// The notice above a refused form: its lead-in when it has one, the refusal, and a link to the
-/// field it is about, given as (id, label), when it is about one field.
-pub fn refused(lead: Option<&str>, message: &str, field: Option<(&str, &str)>) -> Markup {
+/// The notice above a refused form: its lead-in when it has one, the refusal when it has a message,
+/// and a link to the field it is about, given as (id, label), when it is about one field.
+pub fn refused<'a>(
+    lead: Option<&str>,
+    message: impl Into<Option<&'a str>>,
+    field: Option<(&str, &str)>,
+) -> Markup {
+    let message = message.into();
     html! {
         div.notice data-notice="error" role="alert" {
             p {
                 @if let Some(lead) = lead {
                     strong { (lead) }
-                    " "
                 }
-                (message)
+                @if let Some(message) = message {
+                    @if lead.is_some() {
+                        " "
+                    }
+                    (message)
+                }
                 @if let Some((id, label)) = field {
                     " "
                     a href=(format!("#{id}")) { "Go to the " (label) " field" }
@@ -430,7 +439,7 @@ mod tests {
     fn a_field_note_below_the_control_is_wrapped_in_div_below() {
         let control = html! { input id="secret-value" name="secret_header_value" type="password"; };
         let below = html! {
-            (hint("secret-value-hint", "Stored, never shown again. Leave empty to keep it."))
+            (hint("secret-value-hint", "Stored, never shown again. Leave empty to keep it. If you change the upstream address, enter it again."))
         };
         assert_eq!(
             field(
@@ -441,7 +450,7 @@ mod tests {
                 Note::Below("secret-value-hint", below)
             )
             .into_string(),
-            r#"<div class="field"><label for="secret-value">Header value <span class="optional">(optional)</span></label><input id="secret-value" name="secret_header_value" type="password"><div class="below"><p class="hint" id="secret-value-hint">Stored, never shown again. Leave empty to keep it.</p></div></div>"#
+            r#"<div class="field"><label for="secret-value">Header value <span class="optional">(optional)</span></label><input id="secret-value" name="secret_header_value" type="password"><div class="below"><p class="hint" id="secret-value-hint">Stored, never shown again. Leave empty to keep it. If you change the upstream address, enter it again.</p></div></div>"#
         );
     }
 

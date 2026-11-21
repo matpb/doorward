@@ -294,9 +294,7 @@ fn reset_form(csrf: &str, error: Option<&str>) -> Markup {
     html! {
         h1 { "Choose a new password" }
         @if error.is_some() {
-            div.notice data-notice="error" role="alert" {
-                p { strong { "The password was not changed." } }
-            }
+            (ui::refused(Some("The password was not changed."), None, None))
         }
         form.flow method="post" {
             input type="hidden" name="csrf" value=(csrf);
@@ -379,6 +377,16 @@ mod tests {
             1
         );
         assert_eq!(count(&doc, "div.field > p.field-error#password-error"), 1);
+    }
+
+    #[test]
+    fn a_refused_password_notice_is_exactly_its_lead_in() {
+        let markup =
+            reset_form("token", Some("The password must be 12 to 256 characters.")).into_string();
+        assert!(
+            markup.contains(r#"<div class="notice" data-notice="error" role="alert"><p><strong>The password was not changed.</strong></p></div>"#),
+            "the refused reset notice must be exactly its lead-in markup: {markup}"
+        );
     }
 
     #[tokio::test]

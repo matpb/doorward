@@ -41,9 +41,6 @@ pub fn account_page(
     })
 }
 
-/// The server name a connected client shows when no server is named: the words, not a path.
-const ALL_SERVERS: &str = "all servers";
-
 fn account_body(csrf: &str, email: &str, error: Option<&str>, clients: &[Connected]) -> Markup {
     let new_note = Note::Hint("12 to 256 characters.");
     let new_described = new_note.describer("new_password");
@@ -79,7 +76,7 @@ fn account_body(csrf: &str, email: &str, error: Option<&str>, clients: &[Connect
                                 td.lead.strong { (row.client_name) }
                                 td.half {
                                     "on "
-                                    @if row.server == ALL_SERVERS {
+                                    @if row.server == connected::ALL_SERVERS {
                                         (row.server)
                                     } @else {
                                         code { (row.server) }

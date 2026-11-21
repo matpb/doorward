@@ -677,37 +677,6 @@ fn refused_field(refusal: Refusal) -> Option<(&'static str, &'static str)> {
     }
 }
 
-/// The notice above a refused form: its lead-in, the refusal, and a link to its field when it has one.
-fn refusal_notice(lead: &str, refusal: Refusal) -> Markup {
-    let field = refused_field(refusal);
-    html! {
-        div.notice data-notice="error" role="alert" {
-            p {
-                strong { (lead) }
-                " " (refusal)
-                @if let Some((id, label)) = field {
-                    " "
-                    a href=(format!("#{id}")) { "Go to the " (label) " field" }
-                }
-            }
-        }
-    }
-}
-
-/// The note under a field: the refusal about it when there is one, else its hint, if it has one.
-fn note_under<'a>(error: Option<&'a str>, hint: Option<&'a str>) -> ui::Note<'a> {
-    match (error, hint) {
-        (Some(text), _) => ui::Note::Error(text),
-        (None, Some(text)) => ui::Note::Hint(text),
-        (None, None) => ui::Note::None,
-    }
-}
-
-/// The aria-invalid of a control: "true" when a refusal is about it.
-fn invalid(error: Option<&str>) -> Option<&'static str> {
-    error.map(|_| "true")
-}
-
 fn servers_body(csrf: &str, rows: &[ServerRow], draft: &Draft, refusal: Option<Refusal>) -> Markup {
     html! {
         div.page-head {
@@ -719,7 +688,7 @@ fn servers_body(csrf: &str, rows: &[ServerRow], draft: &Draft, refusal: Option<R
             }
         }
         @if let Some(refusal) = refusal {
-            (refusal_notice("The server was not added.", refusal))
+            (ui::refused(Some("The server was not added."), refusal.to_string().as_str(), refused_field(refusal)))
         }
         @if rows.is_empty() {
             div.empty {
@@ -801,7 +770,7 @@ fn server_body(
             }
         }
         @if let Some(refusal) = refusal {
-            (refusal_notice("The server was not saved.", refusal))
+            (ui::refused(Some("The server was not saved."), refusal.to_string().as_str(), refused_field(refusal)))
         }
         @if server.lockdown == "open" {
             div.notice data-notice="error" data-lockdown-alert {
@@ -926,19 +895,19 @@ fn settings_fields(draft: &Draft, refusal: Option<Refusal>, stored: bool) -> Mar
     let error_on = |id: &str| message.as_deref().filter(|_| refused == Some(id));
 
     let name_error = error_on("server-name");
-    let name_note = note_under(name_error, None);
+    let name_note = ui::note_under(name_error, None);
     let name_described = name_note.describer("server-name");
     let slug_error = error_on("server-slug");
-    let slug_note = note_under(
+    let slug_note = ui::note_under(
         slug_error,
         Some("Letters, digits and hyphens, at most 24 characters."),
     );
     let slug_described = slug_note.describer("server-slug");
     let url_error = error_on("server-url");
-    let url_note = note_under(url_error, Some("An http or https address."));
+    let url_note = ui::note_under(url_error, Some("An http or https address."));
     let url_described = url_note.describer("server-url");
     let secret_name_error = error_on("secret-name");
-    let secret_name_note = note_under(secret_name_error, None);
+    let secret_name_note = ui::note_under(secret_name_error, None);
     let secret_name_described = secret_name_note.describer("secret-name");
     let value_error = error_on("secret-value");
     let value_note = if stored {
@@ -958,13 +927,13 @@ fn settings_fields(draft: &Draft, refusal: Option<Refusal>, stored: bool) -> Mar
             None => ui::Note::Below(
                 "secret-value-hint",
                 html! {
-                    (ui::hint("secret-value-hint", "Stored, never shown again. Leave empty to keep it."))
+                    (ui::hint("secret-value-hint", "Stored, never shown again. Leave empty to keep it. If you change the upstream address, enter it again."))
                     (remove)
                 },
             ),
         }
     } else {
-        note_under(value_error, Some("Kept encrypted and never shown again."))
+        ui::note_under(value_error, Some("Kept encrypted and never shown again."))
     };
     let value_described = value_note.describer("secret-value");
 
@@ -976,7 +945,7 @@ fn settings_fields(draft: &Draft, refusal: Option<Refusal>, stored: bool) -> Mar
                 false,
                 html! {
                     input id="server-name" name="name" type="text" value=(draft.name) required
-                        aria-invalid=[invalid(name_error)] aria-describedby=[name_described.as_deref()];
+                        aria-invalid=[ui::invalid(name_error)] aria-describedby=[name_described.as_deref()];
                 },
                 name_note,
             ))
@@ -986,7 +955,7 @@ fn settings_fields(draft: &Draft, refusal: Option<Refusal>, stored: bool) -> Mar
                 false,
                 html! {
                     input.mono id="server-slug" name="slug" type="text" value=(draft.slug) required
-                        aria-invalid=[invalid(slug_error)] aria-describedby=[slug_described.as_deref()];
+                        aria-invalid=[ui::invalid(slug_error)] aria-describedby=[slug_described.as_deref()];
                 },
                 slug_note,
             ))
@@ -998,7 +967,7 @@ fn settings_fields(draft: &Draft, refusal: Option<Refusal>, stored: bool) -> Mar
                 false,
                 html! {
                     input id="server-url" name="upstream_url" type="url" value=(draft.upstream_url) required
-                        aria-invalid=[invalid(url_error)] aria-describedby=[url_described.as_deref()];
+                        aria-invalid=[ui::invalid(url_error)] aria-describedby=[url_described.as_deref()];
                 },
                 url_note,
             ))
@@ -1013,7 +982,7 @@ fn settings_fields(draft: &Draft, refusal: Option<Refusal>, stored: bool) -> Mar
                     true,
                     html! {
                         input.mono id="secret-name" name="secret_header_name" type="text" value=(draft.secret_header_name)
-                            aria-invalid=[invalid(secret_name_error)] aria-describedby=[secret_name_described.as_deref()];
+                            aria-invalid=[ui::invalid(secret_name_error)] aria-describedby=[secret_name_described.as_deref()];
                     },
                     secret_name_note,
                 ))
@@ -1023,7 +992,7 @@ fn settings_fields(draft: &Draft, refusal: Option<Refusal>, stored: bool) -> Mar
                     true,
                     html! {
                         input id="secret-value" name="secret_header_value" type="password" autocomplete="new-password"
-                            aria-invalid=[invalid(value_error)] aria-describedby=[value_described.as_deref()];
+                            aria-invalid=[ui::invalid(value_error)] aria-describedby=[value_described.as_deref()];
                     },
                     value_note,
                 ))

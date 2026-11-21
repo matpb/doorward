@@ -1,5 +1,7 @@
 mod common;
 
+use std::collections::HashSet;
+
 use common::TestGateway;
 use common::admin;
 use common::client::{Page, TestClient};
@@ -343,6 +345,33 @@ fn check_problems(root: ElementRef<'_>) -> Vec<String> {
     problems
 }
 
+/// Problems with the ids of a page: an id on two elements, a label[for] or an aria-describedby naming no id.
+fn id_problems(root: ElementRef<'_>) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut ids: HashSet<String> = HashSet::new();
+    for element in all(root, "[id]") {
+        let id = element.value().attr("id").unwrap_or("");
+        if !ids.insert(id.to_owned()) {
+            problems.push(format!("the id {id:?} is on more than one element"));
+        }
+    }
+    for label in all(root, "label[for]") {
+        let target = label.value().attr("for").unwrap_or("");
+        if !ids.contains(target) {
+            problems.push(format!("the label for {target:?} names no id on the page"));
+        }
+    }
+    for element in all(root, "[aria-describedby]") {
+        let described = element.value().attr("aria-describedby").unwrap_or("");
+        for id in described.split_whitespace() {
+            if !ids.contains(id) {
+                problems.push(format!("aria-describedby names the missing id {id:?}"));
+            }
+        }
+    }
+    problems
+}
+
 /// Runs one check over every page and asserts that none has a problem.
 fn assert_pages(pages: &[(String, Page)], check: fn(ElementRef<'_>) -> Vec<String>, rule: &str) {
     for (name, page) in pages {
@@ -408,6 +437,20 @@ async fn checkboxes_sit_in_a_check_beside_their_label() {
     assert!(
         server.count(r#"input[type="checkbox"]"#) >= 1,
         "the server page must hold a checkbox, or the check would say nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ids_are_unique_and_every_description_exists() {
+    let s = seeded().await;
+    let mut pages = form_pages(&s).await;
+    for list in lists(&s).await {
+        pages.push((list.name.to_string(), list.page));
+    }
+    assert_pages(
+        &pages,
+        id_problems,
+        "no id is on two elements, every label[for] names an id, and every aria-describedby id exists",
     );
 }
 

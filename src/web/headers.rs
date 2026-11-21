@@ -216,11 +216,31 @@ mod tests {
 
     #[tokio::test]
     async fn each_font_is_served_as_woff2_for_a_year() {
-        for name in [
-            "atkinson-hyperlegible-mono-latin-ext-wght-normal.woff2",
-            "atkinson-hyperlegible-mono-latin-wght-normal.woff2",
-            "atkinson-hyperlegible-next-latin-ext-wght-normal.woff2",
-            "atkinson-hyperlegible-next-latin-wght-normal.woff2",
+        for (name, file) in [
+            (
+                "atkinson-hyperlegible-mono-latin-ext-wght-normal.woff2",
+                &include_bytes!(
+                    "../../assets/fonts/atkinson-hyperlegible-mono-latin-ext-wght-normal.woff2"
+                )[..],
+            ),
+            (
+                "atkinson-hyperlegible-mono-latin-wght-normal.woff2",
+                &include_bytes!(
+                    "../../assets/fonts/atkinson-hyperlegible-mono-latin-wght-normal.woff2"
+                )[..],
+            ),
+            (
+                "atkinson-hyperlegible-next-latin-ext-wght-normal.woff2",
+                &include_bytes!(
+                    "../../assets/fonts/atkinson-hyperlegible-next-latin-ext-wght-normal.woff2"
+                )[..],
+            ),
+            (
+                "atkinson-hyperlegible-next-latin-wght-normal.woff2",
+                &include_bytes!(
+                    "../../assets/fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2"
+                )[..],
+            ),
         ] {
             let response = font(Path(name.to_owned())).await;
             assert_eq!(response.status(), StatusCode::OK, "{name}");
@@ -241,6 +261,7 @@ mod tests {
             );
             let body = body_of(response).await;
             assert!(body.starts_with(b"wOF2"), "{name} must be a woff2 file");
+            assert_eq!(body, file, "{name} must be served exactly as its file");
         }
     }
 

@@ -183,7 +183,8 @@ The other tests of this file check other settings and are not listed here.
     `oauth::connected::tests::a_server_path_is_code_and_all_servers_is_plain_words` and
     `web::page::tests::each_message_page_is_a_heading_and_one_lede`. The consent test
     `the_consent_page_shows_its_parts_in_order_with_two_decisions` also asserts that the server
-    value is a `dl.facts > dd.grant`.
+    value is a `dl.facts > dd.grant` reading `all servers`, and that the `dd` after `Signed in as`
+    reads the signed-in address.
     Integration: `s17_activity.rs` and `s59_counts_paging.rs` read rows as `tr[data-kind]`;
     `s52_interface.rs`: `an_activity_row_reads_in_plain_words` (rows `tr`),
     `the_mail_page_with_no_provider_shows_all_three_closed` (section 10 replaces "No provider
@@ -470,14 +471,15 @@ to the gateway with `World::start_with(|c| c.mail.smtp_ca_file = Some(M.ca_pem_p
 ## s08_mail_failure.rs (statement 8)
 
 1. `failed_invitation_shows_the_error_and_the_link`: `fail_next(Fail::SmtpReject)`;
-   `admin::invite` is 200 `invitation-created` with a non-empty `notice()` (changed for
+   `admin::invite` is 200 `invitation-created` with a non-empty `[data-notice="warning"]` (changed for
    statement 65: the failure is the warning notice, not the old `p.error`) and a
    `data-invite-link` attribute starting `{base}/invite/`; that link accepts a password.
 2. `mail_failure_is_in_the_activity_log`: after 1, `admin::activity` has a row of kind
    `mail_failed`.
 3. `unreachable_mail_server_does_not_hang_the_panel`: SMTP pointed at a closed local port;
-   the invitation answers within 10 seconds with the failure page, whose non-empty `notice()`
-   is the warning notice (changed for statement 65 from `error()`), and `/healthz` is 200.
+   the invitation answers within 10 seconds with the failure page, whose non-empty
+   `[data-notice="warning"]` text is the failure (changed for statement 65 from `error()`),
+   and `/healthz` is 200.
 4. `failed_reset_mail_reveals_nothing`: with `fail_next(Fail::SmtpReject)`, `/forgot` for
    bob answers the same body as for an unknown address; within 5 seconds the activity has
    `mail_failed` (the reset mail is sent after the response).
@@ -1738,9 +1740,11 @@ activity of allowed, denied and failed tool calls.
 9. `the_mail_page_with_no_provider_shows_all_three_closed`: on a gateway with no mail
    settings, all three disclosures are closed and the lead line says `Current provider: none.`
    It is red before the change.
-10. `a_refused_provider_form_is_open_with_its_reason`: a resend form with a control character
-    in its from address is refused with 400; the resend disclosure is open and holds
-    a paragraph of a `div.notice[data-notice="error"]` reading "A field contains a control character.". It is red before the change.
+10. `a_refused_provider_form_is_open_with_its_reason`: with smtp in use, a resend form and then a
+    mailgun form, each with a control character in its from address, are refused with 400; on
+    each page the only open `details` is the refused provider's, and that disclosure holds
+    a paragraph of a `div.notice[data-notice="error"]` reading "A field contains a control character.".
+    It is red before the change, since smtp stayed open beside the refused resend form.
 11. `consent_has_one_primary_button`: on the local-client and the web-client consent pages,
     one primary button reads Approve, Deny is secondary, the sentence "Approve only if you
     started this sign-in yourself." is present; on the local-client page `p.local-app` sits
@@ -1767,8 +1771,9 @@ activity of allowed, denied and failed tool calls.
 20. `no_covered_page_holds_a_script`: no covered page holds `<script`, in any case. It passes
     before the change, since no page carries one; it guards statement 58.
 21. `every_src_and_href_is_a_same_site_path`: every `src` and `href` on every covered page
-    starts with `/` and not `//`, or is a fragment `#...` naming a place on the same page, so
-    no page names an address outside the gateway. It passes
+    starts with `/` and not `//` or `/\`, or is a fragment `#...` naming a place on the same
+    page, so no page names an address outside the gateway. The rule is `is_same_site_path`,
+    which `a_same_site_path_is_a_fragment_or_a_slash_path_that_names_no_host` checks directly. It passes
     before the change, since no page does; it guards statement 58.
 22. `the_stylesheet_loads_no_url_and_no_import`: removed: replaced by s62_shell,
     statement 64 (the stylesheet names its four fonts by `url()`, and the gateway serves them).
@@ -1951,6 +1956,9 @@ connected client. Each test builds that world, except the setup page, which has 
     `td.duration` whose text is digits then ` ms`. It is red before the change.
 13. `the_duration_cell_keeps_its_text_on_one_line`: the stylesheet holds a rule whose selector
     mentions `.duration` and declares `white-space: nowrap`. It is red before the change.
+14. `ids_are_unique_and_every_description_exists`: on every page above and on each list page, no
+    id is on two elements, every `label[for]` names an id on the page, and every id in an
+    `aria-describedby` exists. It passed on the pages as they stood, so no page was changed.
 
 ## s68_exposed.rs (statement 68)
 

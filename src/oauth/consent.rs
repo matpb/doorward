@@ -21,6 +21,7 @@ use crate::web::{
 
 use super::authorize::{self, Stored, back_url, error_page, is_request_id};
 use super::clients::{self, Client};
+use super::connected::ALL_SERVERS;
 use super::policy::{self, Verdict};
 use super::register::is_plain_text;
 use super::uri::{self, Redirect};
@@ -28,7 +29,6 @@ use super::uri::{self, Redirect};
 const FETCH_LIMIT: Duration = Duration::from_secs(5);
 const NAME_LIMIT: usize = 100;
 const CODE_PREFIX: &str = "dw_ac_";
-const ALL_SERVERS: &str = "all servers";
 const LISTENING_SENTENCE: &str =
     "The sign-in will be handed to whatever program is listening on this computer.";
 const PRIVATE_SENTENCE: &str =

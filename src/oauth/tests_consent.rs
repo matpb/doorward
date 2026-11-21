@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use form_urlencoded::Serializer;
 use rusqlite::{Connection, params};
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -1385,6 +1385,25 @@ async fn the_consent_page_shows_its_parts_in_order_with_two_decisions() {
         doc.select(&grants).count(),
         1,
         "the server of the consent page is the grant of a dl.facts list"
+    );
+    let grant = doc
+        .select(&grants)
+        .next()
+        .map(|dd| dd.text().collect::<String>());
+    assert_eq!(
+        grant.as_deref(),
+        Some("all servers"),
+        "the grant of a combined request must read all servers"
+    );
+    let signed_in = doc
+        .select(&Selector::parse("dl.facts > dt").expect("selector"))
+        .find(|dt| dt.text().collect::<String>() == "Signed in as")
+        .and_then(|dt| dt.next_siblings().find_map(ElementRef::wrap))
+        .map(|dd| dd.text().collect::<String>());
+    assert_eq!(
+        signed_in.as_deref(),
+        Some("bob@example.com"),
+        "the dd after Signed in as must hold the signed-in address"
     );
     let forms = Selector::parse(r#"form[action="/oauth/consent"]"#).expect("selector");
     let decisions: Vec<String> = doc

@@ -19,7 +19,7 @@ use super::families;
 use super::guard::is_token_shape;
 
 const LINK_PREFIX: &str = "dw_dl_";
-const ALL_SERVERS: &str = "all servers";
+pub(crate) const ALL_SERVERS: &str = "all servers";
 const CLIENT_DISCONNECTED: &str = "client_disconnected";
 
 /// One connected client as the account page lists it.

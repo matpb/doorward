@@ -869,15 +869,21 @@ async fn the_mail_page_with_no_provider_shows_all_three_closed() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refused_provider_form_is_open_with_its_reason() {
     let w = World::start().await;
+    let mail = w.owner.get("/admin/mail").await;
+    assert_eq!(
+        mail.attrs("details[open]", "data-provider"),
+        vec!["smtp".to_string()],
+        "smtp must be the provider in use and open before any refusal"
+    );
     let refused = admin::mail_resend(&w.owner, "gateway\u{7}@example.com", "key-example", "").await;
     assert_eq!(
         refused.status, 400,
         "a mail form with a control character must be refused with 400"
     );
     assert_eq!(
-        refused.attrs(r#"details[data-provider="resend"][open]"#, "data-provider"),
+        refused.attrs("details[open]", "data-provider"),
         vec!["resend".to_string()],
-        "the refused resend form must be open"
+        "the refused resend form must be the only open provider disclosure"
     );
     assert_eq!(
         refused
@@ -885,6 +891,30 @@ async fn a_refused_provider_form_is_open_with_its_reason() {
             .as_deref(),
         Some("A field contains a control character."),
         "the refused resend form must hold its reason in an error notice"
+    );
+    let refused = admin::mail_mailgun(
+        &w.owner,
+        "gateway\u{7}@example.com",
+        "key-example",
+        "example.com",
+        "",
+    )
+    .await;
+    assert_eq!(
+        refused.status, 400,
+        "a mailgun form with a control character must be refused with 400"
+    );
+    assert_eq!(
+        refused.attrs("details[open]", "data-provider"),
+        vec!["mailgun".to_string()],
+        "the refused mailgun form must be the only open provider disclosure"
+    );
+    assert_eq!(
+        refused
+            .text(r#"details[data-provider="mailgun"] div.notice[data-notice="error"] p"#)
+            .as_deref(),
+        Some("A field contains a control character."),
+        "the refused mailgun form must hold its reason in an error notice"
     );
 }
 
@@ -1157,6 +1187,22 @@ async fn no_covered_page_holds_a_script() {
     }
 }
 
+/// True for a fragment, or for a path that is neither a network path (`//host`) nor one a browser
+/// reads as a host (`/\host`).
+fn is_same_site_path(value: &str) -> bool {
+    value.starts_with('#')
+        || (value.starts_with('/') && !value.starts_with("//") && !value.starts_with("/\\"))
+}
+
+#[test]
+fn a_same_site_path_is_a_fragment_or_a_slash_path_that_names_no_host() {
+    assert!(!is_same_site_path("/\\example.com"), "/\\ names a host");
+    assert!(!is_same_site_path("//example.com"), "// names a host");
+    assert!(!is_same_site_path("https://example.com"), "a full address");
+    assert!(is_same_site_path("#x"), "a fragment is same-site");
+    assert!(is_same_site_path("/admin"), "a slash path is same-site");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn every_src_and_href_is_a_same_site_path() {
     let s = seeded().await;
@@ -1165,9 +1211,8 @@ async fn every_src_and_href_is_a_same_site_path() {
         for element in all(doc.root_element(), "[src], [href]") {
             for attribute in ["src", "href"] {
                 if let Some(value) = element.value().attr(attribute) {
-                    let fragment = value.starts_with('#');
                     assert!(
-                        fragment || (value.starts_with('/') && !value.starts_with("//")),
+                        is_same_site_path(value),
                         "{} holds a {attribute} that is not a same-site path: {value:?}",
                         shot.name
                     );

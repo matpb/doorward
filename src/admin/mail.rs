@@ -49,15 +49,17 @@ pub struct Plan {
     plain: Vec<(&'static str, String)>,
     secret_key: &'static str,
     sealed: Option<String>,
-    connection: Vec<(&'static str, String)>,
+    pub(super) connection: Vec<(&'static str, String)>,
 }
 
-/// The stored secret is dropped when a connection setting changes and none is posted.
-const SECRET_HINT: &str =
-    "Leave empty to keep the stored one. If you change the connection settings, enter it again.";
+/// The hints of the secret fields: a change of the named fields drops a stored secret not re-entered.
+pub(super) const SMTP_SECRET_HINT: &str = "Leave empty to keep the stored one. If you change the server, the port, the username or the TLS setting, enter it again.";
+pub(super) const RESEND_SECRET_HINT: &str =
+    "Leave empty to keep the stored one. If you change the base address, enter it again.";
+pub(super) const MAILGUN_SECRET_HINT: &str = "Leave empty to keep the stored one. If you change the domain or the base address, enter it again.";
 
 /// A refused post answers 400; a failed seal answers 500.
-enum PlanError {
+pub(super) enum PlanError {
     Invalid(&'static str),
     Seal(CryptoError),
 }
@@ -190,11 +192,12 @@ fn plan_from(fields: &FormFields, keys: &Keys) -> Result<Plan, PlanError> {
     {
         return Err(PlanError::Invalid(CONTROL_MESSAGE));
     }
-    let from = fields.get("from").to_owned();
+    let posted = |name: &str| fields.get(name).to_owned();
+    let from = posted("from");
     match fields.get("provider") {
-        "smtp" => smtp_plan(fields, keys, from),
-        "resend" => resend_plan(fields, keys, from),
-        "mailgun" => mailgun_plan(fields, keys, from),
+        "smtp" => smtp_plan(posted, keys, from),
+        "resend" => resend_plan(posted, keys, from),
+        "mailgun" => mailgun_plan(posted, keys, from),
         _ => Err(PlanError::Invalid(PROVIDER_MESSAGE)),
     }
 }
@@ -210,19 +213,24 @@ fn seal_secret(keys: &Keys, secret_key: &str, secret: &str) -> Result<Option<Str
         .map_err(PlanError::Seal)
 }
 
-fn smtp_plan(fields: &FormFields, keys: &Keys, from: String) -> Result<Plan, PlanError> {
-    let port = port_text(fields.get("smtp_port"))?;
-    let tls = fields.get("smtp_tls");
-    if !matches!(tls, "off" | "starttls" | "implicit") {
+/// The plan of a raw SMTP post. `posted` returns a field's value; a missing field is "".
+pub(super) fn smtp_plan(
+    posted: impl Fn(&str) -> String,
+    keys: &Keys,
+    from: String,
+) -> Result<Plan, PlanError> {
+    let port = port_text(&posted("smtp_port"))?;
+    let tls = posted("smtp_tls");
+    if !matches!(tls.as_str(), "off" | "starttls" | "implicit") {
         return Err(PlanError::Invalid(TLS_MESSAGE));
     }
-    let host = fields.get("smtp_host").to_owned();
-    let username = fields.get("smtp_username").to_owned();
+    let host = posted("smtp_host");
+    let username = posted("smtp_username");
     let connection = vec![
         ("mail.smtp_host", host.clone()),
         ("mail.smtp_port", port.clone()),
         ("mail.smtp_username", username.clone()),
-        ("mail.smtp_tls", tls.to_owned()),
+        ("mail.smtp_tls", tls.clone()),
     ];
     let plain = vec![
         ("mail.provider", "smtp".to_owned()),
@@ -230,18 +238,23 @@ fn smtp_plan(fields: &FormFields, keys: &Keys, from: String) -> Result<Plan, Pla
         ("mail.smtp_host", host),
         ("mail.smtp_port", port),
         ("mail.smtp_username", username),
-        ("mail.smtp_tls", tls.to_owned()),
+        ("mail.smtp_tls", tls),
     ];
     Ok(Plan {
         plain,
         secret_key: "mail.smtp_password",
-        sealed: seal_secret(keys, "mail.smtp_password", fields.get("smtp_password"))?,
+        sealed: seal_secret(keys, "mail.smtp_password", &posted("smtp_password"))?,
         connection,
     })
 }
 
-fn resend_plan(fields: &FormFields, keys: &Keys, from: String) -> Result<Plan, PlanError> {
-    let base_url = fields.get("resend_base_url").to_owned();
+/// The plan of a Resend post. `posted` returns a field's value; a missing field is "".
+pub(super) fn resend_plan(
+    posted: impl Fn(&str) -> String,
+    keys: &Keys,
+    from: String,
+) -> Result<Plan, PlanError> {
+    let base_url = posted("resend_base_url");
     Ok(Plan {
         plain: vec![
             ("mail.provider", "resend".to_owned()),
@@ -249,14 +262,19 @@ fn resend_plan(fields: &FormFields, keys: &Keys, from: String) -> Result<Plan, P
             ("mail.resend_base_url", base_url.clone()),
         ],
         secret_key: "mail.resend_api_key",
-        sealed: seal_secret(keys, "mail.resend_api_key", fields.get("resend_api_key"))?,
+        sealed: seal_secret(keys, "mail.resend_api_key", &posted("resend_api_key"))?,
         connection: vec![("mail.resend_base_url", base_url)],
     })
 }
 
-fn mailgun_plan(fields: &FormFields, keys: &Keys, from: String) -> Result<Plan, PlanError> {
-    let domain = fields.get("mailgun_domain").to_owned();
-    let base_url = fields.get("mailgun_base_url").to_owned();
+/// The plan of a Mailgun post. `posted` returns a field's value; a missing field is "".
+pub(super) fn mailgun_plan(
+    posted: impl Fn(&str) -> String,
+    keys: &Keys,
+    from: String,
+) -> Result<Plan, PlanError> {
+    let domain = posted("mailgun_domain");
+    let base_url = posted("mailgun_base_url");
     Ok(Plan {
         plain: vec![
             ("mail.provider", "mailgun".to_owned()),
@@ -265,7 +283,7 @@ fn mailgun_plan(fields: &FormFields, keys: &Keys, from: String) -> Result<Plan, 
             ("mail.mailgun_base_url", base_url.clone()),
         ],
         secret_key: "mail.mailgun_api_key",
-        sealed: seal_secret(keys, "mail.mailgun_api_key", fields.get("mailgun_api_key"))?,
+        sealed: seal_secret(keys, "mail.mailgun_api_key", &posted("mailgun_api_key"))?,
         connection: vec![
             ("mail.mailgun_domain", domain),
             ("mail.mailgun_base_url", base_url),
@@ -373,6 +391,7 @@ fn mail_forms(
 ) -> Markup {
     let provider = shown(view, "mail.provider");
     let in_use = provider_named(provider);
+    let open = open_provider(in_use, refused.and_then(|refusal| refusal.provider));
     let refusal_of = |name: &str| {
         refused.and_then(|refusal| (refusal.provider == Some(name)).then_some(refusal.reason))
     };
@@ -387,9 +406,9 @@ fn mail_forms(
             (ui::refused(None, message, None))
         }
         div.providers {
-            (provider_disclosure("smtp", "Raw SMTP", in_use == Some("smtp"), refusal_of("smtp"), smtp_form(csrf, view, refusal_of("smtp"))))
-            (provider_disclosure("resend", "Resend", in_use == Some("resend"), refusal_of("resend"), resend_form(csrf, view, refusal_of("resend"))))
-            (provider_disclosure("mailgun", "Mailgun", in_use == Some("mailgun"), refusal_of("mailgun"), mailgun_form(csrf, view, refusal_of("mailgun"))))
+            (provider_disclosure("smtp", "Raw SMTP", in_use == Some("smtp"), open == Some("smtp"), smtp_form(csrf, view, refusal_of("smtp"))))
+            (provider_disclosure("resend", "Resend", in_use == Some("resend"), open == Some("resend"), resend_form(csrf, view, refusal_of("resend"))))
+            (provider_disclosure("mailgun", "Mailgun", in_use == Some("mailgun"), open == Some("mailgun"), mailgun_form(csrf, view, refusal_of("mailgun"))))
         }
         section.part aria-labelledby="test-title" {
             div.part-head {
@@ -433,16 +452,22 @@ fn title_of(name: &str) -> Option<&'static str> {
     }
 }
 
-/// One provider's disclosure. It is open when it is in use or its save was refused, and it is
-/// marked as in use when it is the provider in use.
+/// The one provider whose disclosure is open: the provider a refusal names, else the one in use.
+pub(super) fn open_provider(
+    in_use: Option<&'static str>,
+    refused: Option<&'static str>,
+) -> Option<&'static str> {
+    refused.or(in_use)
+}
+
+/// One provider's disclosure, open when `is_open` is set. It is marked as in use when it is in use.
 fn provider_disclosure(
     name: &str,
     title: &str,
     in_use: bool,
-    reason: Option<&str>,
+    is_open: bool,
     form: Markup,
 ) -> Markup {
-    let is_open = in_use || reason.is_some();
     html! {
         details.provider name="provider" data-provider=(name) open[is_open] {
             summary {
@@ -462,7 +487,7 @@ fn provider_disclosure(
 /// The notice of a refused save sits first in its form, when that form was posted.
 fn smtp_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
     let tls = shown(view, "mail.smtp_tls");
-    let password_note = Note::Hint(SECRET_HINT);
+    let password_note = Note::Hint(SMTP_SECRET_HINT);
     let password_described = password_note.describer("smtp-password");
     let tls_note = Note::Hint("Off sends the password and the mail unencrypted.");
     let tls_described = tls_note.describer("smtp-tls");
@@ -540,7 +565,7 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
 }
 
 fn resend_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
-    let key_note = Note::Hint(SECRET_HINT);
+    let key_note = Note::Hint(RESEND_SECRET_HINT);
     let key_described = key_note.describer("resend-key");
     let base_note = Note::Hint("Empty means the provider's own address.");
     let base_described = base_note.describer("resend-base");
@@ -592,7 +617,7 @@ fn resend_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
 }
 
 fn mailgun_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
-    let key_note = Note::Hint(SECRET_HINT);
+    let key_note = Note::Hint(MAILGUN_SECRET_HINT);
     let key_described = key_note.describer("mailgun-key");
     let base_note = Note::Hint("Empty means the provider's own address.");
     let base_described = base_note.describer("mailgun-base");
