@@ -45,4 +45,6 @@ echo "check: ${#red[@]} test file(s) still expected to fail"
 cargo audit
 cargo deny check
 ./scripts/hygiene.sh
+# The proof scripts' fake upstream has its own check; it needs only python3.
+python3 -I scripts/prove/test_fake_upstream.py
 echo "CHECK PASS"
