@@ -393,7 +393,9 @@ into the test harness. In addition:
 - 74: `tests/s74_key_case.rs`, on the per-server and the combined route under both protocol
   generations, and the classify rows in `src/mcp/tests.rs`.
 - 75: `tests/s75_answer_memory.rs`, with a fake upstream that holds its answers open, and the
-  unit tests in `src/proxy/budget.rs`, `src/web/limit.rs` and `src/proxy/tests_combined.rs`.
+  unit tests in `src/proxy/budget.rs`, `src/web/limit.rs` and `src/proxy/tests_combined.rs`;
+  and `tests/s75_process_memory.rs`, which runs the real binary, holds 64 answers of 4 MB
+  open at once and reads the peak resident memory of the gateway process from `/proc`.
 - 76: `tests/s76_body_deadline.rs`, with a raw socket that stalls mid-body on each of the four
   routes, and `a_head_on_authorize_is_limited_at_the_same_count_as_a_get` in
   `tests/s43_rate_limits.rs`.
