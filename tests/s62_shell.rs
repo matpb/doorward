@@ -37,7 +37,7 @@ const PANEL_ITEMS: [(&str, &str, &str); 9] = [
     ("Your account", "/account", "nav-end"),
 ];
 /// (text colour, background colour) pairs that must reach 4.5 to 1 in both themes.
-const TEXT_PAIRS: [(&str, &str); 19] = [
+const TEXT_PAIRS: [(&str, &str); 22] = [
     ("--ink", "--paper"),
     ("--ink", "--surface"),
     ("--ink", "--sunken"),
@@ -55,7 +55,10 @@ const TEXT_PAIRS: [(&str, &str); 19] = [
     ("--ink-2", "--allow-wash"),
     ("--on-door", "--door"),
     ("--on-door-2", "--door"),
-    ("--on-deny", "--deny"),
+    ("--on-deny", "--deny-fill"),
+    ("--on-deny", "--deny-hover"),
+    ("--deny", "--paper"),
+    ("--deny", "--surface"),
     ("--paper", "--ink"),
 ];
 /// (colour, background) pairs that must reach 3 to 1 in both themes.

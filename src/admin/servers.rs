@@ -943,7 +943,7 @@ fn settings_fields(draft: &Draft, refusal: Option<Refusal>, stored: bool) -> Mar
     let value_described = value_note.describer("secret-value");
 
     html! {
-        div.fields data-cols="2" {
+        div.fields {
             (ui::field(
                 "server-name",
                 "Name",
@@ -954,6 +954,8 @@ fn settings_fields(draft: &Draft, refusal: Option<Refusal>, stored: bool) -> Mar
                 },
                 name_note,
             ))
+        }
+        div.fields data-cols="2" {
             (ui::field(
                 "server-slug",
                 "Path",
