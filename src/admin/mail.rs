@@ -128,6 +128,29 @@ const POSTED_SETTINGS: [(&str, &str); 8] = [
 /// The secret fields of the provider forms, by posted name.
 const SECRET_FIELDS: [&str; 3] = ["smtp_password", "resend_api_key", "mailgun_api_key"];
 
+/// The controls of the raw SMTP form: posted name, the id of its control, and the label the notice links by.
+const SMTP_CONTROLS: [(&str, &str, &str); 6] = [
+    ("from", "smtp-from", "from address"),
+    ("smtp_host", "smtp-host", "server"),
+    ("smtp_port", "smtp-port", "port"),
+    ("smtp_username", "smtp-username", "username"),
+    ("smtp_password", "smtp-password", "password"),
+    ("smtp_tls", "smtp-tls", "TLS setting"),
+];
+/// The controls of the Resend form, in the same form as `SMTP_CONTROLS`.
+const RESEND_CONTROLS: [(&str, &str, &str); 3] = [
+    ("from", "resend-from", "from address"),
+    ("resend_api_key", "resend-key", "API key"),
+    ("resend_base_url", "resend-base", "base address"),
+];
+/// The controls of the Mailgun form, in the same form as `SMTP_CONTROLS`.
+const MAILGUN_CONTROLS: [(&str, &str, &str); 4] = [
+    ("from", "mailgun-from", "from address"),
+    ("mailgun_api_key", "mailgun-key", "API key"),
+    ("mailgun_domain", "mailgun-domain", "domain"),
+    ("mailgun_base_url", "mailgun-base", "base address"),
+];
+
 /// What a refused post held, shown again: the plain settings it posted, the test address it typed,
 /// and the secret fields it filled in, which are asked for again.
 struct Typed {
@@ -556,6 +579,18 @@ fn error_on(refusal: Option<Refused>, field: &str) -> Option<&'static str> {
     refusal.and_then(|refusal| (refusal.field == Some(field)).then_some(refusal.reason))
 }
 
+/// The notice above a refused form: the outcome and a link to the field the refusal is about, when that
+/// field is one of `controls`; otherwise the refusal itself. The reason of a field sits under it.
+fn refusal_notice(refusal: Refused, outcome: &str, controls: &[(&str, &str, &str)]) -> Markup {
+    match controls
+        .iter()
+        .find(|(name, _, _)| Some(*name) == refusal.field)
+    {
+        Some((_, id, label)) => ui::refused(Some(outcome), None::<&str>, Some((*id, *label))),
+        None => ui::refused(None, refusal.reason, None),
+    }
+}
+
 /// The ids a control names in aria-describedby: its refusal, then its hint, each when there is one.
 fn described_by(id: &str, error: Option<&str>, hint: Option<&str>) -> Option<String> {
     let mut ids = Vec::new();
@@ -725,7 +760,7 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<Refused>, entered_again: b
             input type="hidden" name="csrf" value=(csrf);
             input type="hidden" name="provider" value="smtp";
             @if let Some(refusal) = refusal {
-                (ui::refused(None, refusal.reason, None))
+                (refusal_notice(refusal, "The Raw SMTP settings were not saved.", &SMTP_CONTROLS))
             }
             div.fields {
                 (ui::field(
@@ -823,7 +858,7 @@ fn resend_form(csrf: &str, view: &View, refusal: Option<Refused>, entered_again:
             input type="hidden" name="csrf" value=(csrf);
             input type="hidden" name="provider" value="resend";
             @if let Some(refusal) = refusal {
-                (ui::refused(None, refusal.reason, None))
+                (refusal_notice(refusal, "The Resend settings were not saved.", &RESEND_CONTROLS))
             }
             div.fields {
                 (ui::field(
@@ -889,7 +924,7 @@ fn mailgun_form(csrf: &str, view: &View, refusal: Option<Refused>, entered_again
             input type="hidden" name="csrf" value=(csrf);
             input type="hidden" name="provider" value="mailgun";
             @if let Some(refusal) = refusal {
-                (ui::refused(None, refusal.reason, None))
+                (refusal_notice(refusal, "The Mailgun settings were not saved.", &MAILGUN_CONTROLS))
             }
             div.fields {
                 (ui::field(

@@ -38,6 +38,10 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
 
+    def _read_body(self):
+        """Reads the whole body before any answer, so a refused request leaves the connection in step."""
+        return self.rfile.read(int(self.headers.get("Content-Length", "0")))
+
     def _reply(self, status, body=b"", headers=()):
         self.send_response(status)
         for name, value in headers:
@@ -57,18 +61,20 @@ class Handler(BaseHTTPRequestHandler):
         self._json(status, {"jsonrpc": "2.0", "id": request_id, "error": error})
 
     def do_GET(self):
+        self._read_body()
         self._reply(405)
 
     def do_DELETE(self):
+        self._read_body()
         self._reply(405)
 
     def do_POST(self):
+        body = self._read_body()
         if self.headers.get(SECRET_HEADER) != SECRET:
             self._reply(401)
             return
-        length = int(self.headers.get("Content-Length", "0"))
         try:
-            message = json.loads(self.rfile.read(length))
+            message = json.loads(body)
         except ValueError:
             self._rpc_error(400, None, -32700, "Parse error")
             return

@@ -397,7 +397,7 @@ async fn mail_settings_are_checked_and_sealed() {
     assert_eq!(bad_port.kind().as_deref(), Some("mail"));
     assert_eq!(
         bad_port.error().as_deref(),
-        Some("The SMTP port must be a number from 1 to 65535.")
+        Some("The Raw SMTP settings were not saved. Go to the port field")
     );
     assert_eq!(
         stored_text(dir.path(), "mail.provider"),
@@ -425,7 +425,7 @@ async fn mail_settings_are_checked_and_sealed() {
     assert_eq!(control.status, 400, "a control character must be refused");
     assert_eq!(
         control.error().as_deref(),
-        Some("The from address contains a control character.")
+        Some("The Resend settings were not saved. Go to the from address field")
     );
 
     let bad_tls = owner
@@ -706,15 +706,38 @@ async fn each_refused_mail_field_is_the_one_marked_and_named() {
             sentence,
             "{what}: the error under the field"
         );
-        let notice = matching(
+        let outcome = match provider {
+            "smtp" => "The Raw SMTP settings were not saved.",
+            "resend" => "The Resend settings were not saved.",
+            _ => "The Mailgun settings were not saved.",
+        };
+        let lead = matching(
             &doc,
-            &format!(r#"details[data-provider="{provider}"] div.notice[data-notice="error"] p"#),
+            &format!(
+                r#"details[data-provider="{provider}"] div.notice[data-notice="error"] p strong"#
+            ),
         );
-        assert_eq!(notice.len(), 1, "{what}: one notice above the form");
+        assert_eq!(lead.len(), 1, "{what}: one notice above the form");
         assert_eq!(
-            notice[0].text().collect::<String>(),
-            sentence,
-            "{what}: the notice holds the sentence"
+            lead[0].text().collect::<String>(),
+            outcome,
+            "{what}: the notice names the outcome"
+        );
+        let links = matching(
+            &doc,
+            &format!(r#"details[data-provider="{provider}"] div.notice[data-notice="error"] a"#),
+        );
+        assert_eq!(links.len(), 1, "{what}: the notice holds one link");
+        assert_eq!(
+            links[0].value().attr("href"),
+            Some(format!("#{marked_id}").as_str()),
+            "{what}: the link goes to the marked field"
+        );
+        let form = matching(&doc, &format!(r#"details[data-provider="{provider}"]"#));
+        assert_eq!(
+            form[0].text().collect::<String>().matches(sentence).count(),
+            1,
+            "{what}: the reason appears once, under the field"
         );
     }
 }

@@ -1751,12 +1751,15 @@ activity of allowed, denied and failed tool calls.
 10. `a_refused_provider_form_is_open_with_its_reason`: with smtp in use, a resend form and then a
     mailgun form, each with a control character in its from address, are refused with 400; on
     each page the only open `details` is the refused provider's, and that disclosure holds
-    a paragraph of a `div.notice[data-notice="error"]` reading "The from address contains a control character.".
+    a paragraph of a `div.notice[data-notice="error"]` reading "The Resend settings were not
+    saved. Go to the from address field", with one link to the field, and the reason "The from
+    address contains a control character." under the field (`p.field-error`).
     It is red before the change, since smtp stayed open beside the refused resend form.
     `a_refused_base_address_is_the_one_marked_field_of_its_form`: a resend post with a control
-    character in the base address marks only `#resend-base` with `aria-invalid`, names its
-    `-error` element, which reads "The base address contains a control character.", and the
-    notice repeats that sentence.
+    character in the base address marks only `#resend-base` with `aria-invalid`; its
+    `-error` element reads "The base address contains a control character."; the notice reads
+    "The Resend settings were not saved. Go to the base address field" with one link to
+    `#resend-base`; the reason appears once in the resend form, under the field.
 11. `consent_has_one_primary_button` (statement 57, replaced by 70: the buttons and the warning;
     the sentence for a self-registered client is pinned by `tests/s33_consent.rs`
     `a_registered_client_is_shown_as_a_claim`): on the local-client and the web-client consent pages,
@@ -2094,8 +2097,9 @@ Further new tests:
 
 - `admin::tests::each_refused_mail_field_is_the_one_marked_and_named`: for each provider and
   each field a refusal can name (the control character of each, the port, the TLS setting),
-  the one marked input is that field, its `-error` element holds the sentence and the notice
-  holds the same sentence. `admin::tests::a_refusal_about_another_providers_field_marks_nothing`:
+  the one marked input is that field, its `-error` element holds the sentence, the notice names
+  the outcome of its provider with one link to the marked field, and the sentence appears once
+  in the form, under the field. `admin::tests::a_refusal_about_another_providers_field_marks_nothing`:
   a control character in another provider's field keeps the general sentence and marks nothing.
 - `web::page::tests::the_not_found_page_links_to_the_start_page_after_its_lede` and
   `the_bare_not_found_has_an_empty_body`; `accounts::reset::tests::the_check_email_page_links_back_to_sign_in_after_its_sentence`;

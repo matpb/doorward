@@ -891,8 +891,15 @@ async fn a_refused_provider_form_is_open_with_its_reason() {
         refused
             .text(r#"details[data-provider="resend"] div.notice[data-notice="error"] p"#)
             .as_deref(),
+        Some("The Resend settings were not saved. Go to the from address field"),
+        "the refused resend form must name its outcome and link to the field"
+    );
+    assert_eq!(
+        refused
+            .text(r#"details[data-provider="resend"] p.field-error"#)
+            .as_deref(),
         Some("The from address contains a control character."),
-        "the refused resend form must hold its reason in an error notice"
+        "the refused resend form must hold its reason under the field"
     );
     let refused = admin::mail_mailgun(
         &w.owner,
@@ -915,8 +922,15 @@ async fn a_refused_provider_form_is_open_with_its_reason() {
         refused
             .text(r#"details[data-provider="mailgun"] div.notice[data-notice="error"] p"#)
             .as_deref(),
+        Some("The Mailgun settings were not saved. Go to the from address field"),
+        "the refused mailgun form must name its outcome and link to the field"
+    );
+    assert_eq!(
+        refused
+            .text(r#"details[data-provider="mailgun"] p.field-error"#)
+            .as_deref(),
         Some("The from address contains a control character."),
-        "the refused mailgun form must hold its reason in an error notice"
+        "the refused mailgun form must hold its reason under the field"
     );
 }
 
@@ -981,8 +995,20 @@ async fn a_refused_base_address_is_the_one_marked_field_of_its_form() {
     );
     assert_eq!(
         text_of(notice[0]),
-        SENTENCE,
-        "the notice must hold the same sentence"
+        "The Resend settings were not saved. Go to the base address field",
+        "the notice must name the outcome and link to the field"
+    );
+    let links = all(notice[0], "a");
+    assert_eq!(links.len(), 1, "the notice must hold exactly one link");
+    assert_eq!(
+        links[0].attr("href"),
+        Some(format!("#{}", marked[0].attr("id").unwrap_or("")).as_str()),
+        "the link must go to the marked input"
+    );
+    assert_eq!(
+        text_of(resend[0]).matches(SENTENCE).count(),
+        1,
+        "the reason must appear once in the resend form, under the field"
     );
 }
 
