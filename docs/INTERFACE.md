@@ -138,7 +138,7 @@ refresh_replay_seconds = 30
 body_bytes = 1048576
 body_read_seconds = 15 # at most 300; a body slower than this is answered 408 and the connection closed
 tools_list_bytes = 4194304
-answer_memory_bytes = 33554432 # held at once across all users, a quarter of it per user; at least tools_list_bytes
+answer_memory_bytes = 33554432 # held at once across all users; per user a quarter of it, or tools_list_bytes if that is more; at least tools_list_bytes
 upstream_timeout_seconds = 300 # at most 86400 (one day)
 catalog_refresh_seconds = 30  # least seconds between two catalog refreshes of one server
 account_failures = 5          # wrong passwords for one account from one address inside the window
@@ -175,7 +175,7 @@ and leaves the link or code usable. A wrong `current_password` answers `400` as 
 | `GET /setup` | | `200` `data-page="setup"` while no owner exists and the instance was started with a setup code, else `404` |
 | `POST /setup` | `setup_code`, `email`, `password` | owner created, session set, `303 /admin`. Wrong code: `403`, nothing created. Owner exists: `404`. Two concurrent valid posts create one owner |
 | `GET /login` | | `200` `data-page="login"`; optional `?req=<auth request id>` is carried in a hidden `req` field |
-| `POST /login` | `email`, `password`, `req` | `303 /account`, or `303 /oauth/consent?req=...`. Wrong credentials or unknown address: `401`, same page, error "Wrong email or password." Blocked: `429`. More than 64 password checks in flight: `503` |
+| `POST /login` | `email`, `password`, `req` | `303 /account`, or `303 /oauth/consent?req=...`. Wrong credentials or unknown address: `401`, same page, error "Wrong email or password." Blocked: `429`. More than 64 password checks in flight: `503`. A failed sign-in for an address that matches no account writes a `login_failed` row with no user and the detail `unknown address`, at most 20 in any hour over the whole instance. A failed sign-in for an existing account always writes its own `login_failed` row, naming the account; a blocked attempt writes none |
 | `POST /logout` | | session ended, `303 /login` |
 | `GET /invite/{token}` | | `200` `data-page="invite"` if usable, else `404` `data-page="link-invalid"`. A GET never consumes the link |
 | `POST /invite/{token}` | `password` | account created, session set, `303 /account`. Unusable link: `404` |
@@ -304,6 +304,8 @@ Retention: the housekeeping run, at start and every ten minutes, deletes every a
 row older than `activity_days` days, whatever its kind.
 
 ## Authorization server
+
+The token, registration and discovery answers carry `X-Content-Type-Options: nosniff`.
 
 `GET /.well-known/oauth-protected-resource/{slug}` and `/mcp`, for any syntactically valid
 slug:
@@ -604,6 +606,7 @@ Answers that both endpoints share:
 | `Content-Encoding` present, charset other than UTF-8, byte order mark | `400`, JSON-RPC `-32600` |
 | Not valid JSON, duplicate key at any depth (compared after unescaping), lone surrogate, trailing data, nesting deeper than 64 | `400`, JSON-RPC `-32700` |
 | JSON array, `tools/call` without an `id`, a client-sent response under the stateless rules or without a session of the caller | `400`, JSON-RPC `-32600` |
+| A top-level member other than `jsonrpc`, `id`, `method`, `params`, `result` or `error`; or a member name in `params`, `params._meta` or `params.ref` with a non-ASCII character, or one that differs only in letter case from a name the gateway reads there (`Name` for `name`). Names inside `params.arguments` are not checked | `400`, JSON-RPC `-32600`, message `Invalid request`; upstream not contacted |
 | Method outside the allowlist, `tasks/*`, `params.task` present | `404` under the stateless rules, else `200`; JSON-RPC `-32601`, upstream not contacted |
 | `tools/call` for a tool that is not in the server's list or is denied | `200`, JSON-RPC `-32602` with message `Unknown tool: {name}`, upstream not contacted |
 | Stateless request with no `params._meta`, no string protocol version, or no object client capabilities in it; or any stateless message whose `_meta` version is not a string | `400`, JSON-RPC `-32602`, message `Invalid params: missing _meta, protocol version or client capabilities` |
@@ -633,6 +636,8 @@ anonymous request, except when the client address is a loopback address and the 
 no `X-Forwarded-For` header: then it takes no bucket, so the local probe never uses one up. A limited `/healthz` answers the JSON `429` of
 the rate limits below and does not read the database.
 
+The answers of `GET /healthz` carry `X-Content-Type-Options: nosniff`.
+
 ## Stopping
 
 On the first `SIGINT` or `SIGTERM` the gateway stops accepting connections and writes one line
@@ -650,7 +655,7 @@ no `X-Forwarded-For` header (see Health). Classes and keys:
 
 | Class | Key | Requests |
 |---|---|---|
-| oauth | client address | `POST /oauth/token`, `POST /oauth/register`, `GET /oauth/authorize` |
+| oauth | client address | `POST /oauth/token`, `POST /oauth/register`, `GET /oauth/authorize`, `HEAD /oauth/authorize` |
 | credentials | client address | `POST` on `/login`, `/setup`, `/forgot`, `/invite/{token}`, `/reset/{token}`, `/account/password`, `/account/disconnect/{token}` |
 | general | client address | everything else, and every request on `/mcp` and `/{slug}` until its bearer check passes |
 | mcp | user | every request on `/mcp` and `/{slug}` whose bearer check passed |

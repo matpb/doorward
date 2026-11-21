@@ -2198,6 +2198,144 @@ New unit tests: `web::page::tests` `the_refusal_page_links_to_the_start_page_aft
 `a_link_without_a_path_has_one_span_and_no_wbr_between` and
 `a_link_that_is_not_shaped_is_one_span_with_no_path_span`.
 
+## s74_key_case.rs (statement 74)
+
+Each test builds its own world: bob on the `demo` server, whose tool `search` is denied for
+everyone. The test checks that the deny rule is stored, sends the trick bodies to one route, and
+checks each refusal. An ordinary call and a call with odd argument names follow.
+
+1. `per_server_session_refuses_each_trick_body`: on `/demo` under the session rules. Body A has
+   `params.name` as `echo` and `params.Name` as `search`. Body B has a top-level `Method` member
+   and `params.Name`. Body C is a response with a top-level `Method` and `Params`. Each answers
+   `400` with JSON-RPC `-32600` and message `Invalid request`, reaches no upstream, and adds no
+   allowed row for `echo` or `search` to the activity log. Then `echo` answers `200` with the
+   text `called: echo`, and the upstream gets one `tools/call`. Last, a call whose
+   `params.arguments` holds `Name`, `näme`, `ProgressToken` and `Arguments` reaches the upstream
+   with the same bytes.
+2. `per_server_stateless_refuses_each_trick_body`: the same on `/demo` under the stateless rules,
+   with `params._meta` in each body. Bodies A and B are sent. Body C is a response, and it is
+   sent on a session only. The odd-argument call is forwarded with the same bytes.
+3. `combined_session_refuses_each_trick_body`: the same on `/mcp` under the session rules, with
+   the tool names `demo__echo` and `demo__search`. The odd-argument call is not compared byte for
+   byte. The test compares the parsed `arguments` value with the one it sent.
+4. `combined_stateless_refuses_each_trick_body`: the same on `/mcp` under the stateless rules,
+   with the names `demo__echo` and `demo__search`. Bodies A and B are sent. The odd-argument
+   call is compared as in item 3.
+
+## s75_answer_memory.rs (statement 75)
+
+Each test sets `limits.tools_list_bytes` to 262144 and `limits.answer_memory_bytes` to a budget of
+its own. The fake upstream holds its answers open, so the test sees the budget while the answers
+are held and again after they are released. A held answer is 200000 bytes of text.
+
+1. `a_burst_past_the_budget_is_refused_while_held_and_the_budget_comes_back`: the budget is
+   524288 bytes. Six `echo` calls on the session route start at once, and the upstream holds all
+   six. While they are held, at least one call is refused. The refusals that arrive then are `503`
+   with `Retry-After: 1`, `Cache-Control: no-store`, JSON-RPC `-32000`, message
+   `The gateway is busy` and a null id. Every call answers `200` or `503`, at most two answer
+   `200`, and each `200` holds the whole text. After the release, a new call answers `200` with
+   the whole text within 10 seconds.
+2. `the_same_burst_on_the_stateless_generation`: the same burst on the stateless route, in its own
+   world with a budget of 524288 bytes. The call after the burst uses a new stateless client and
+   must answer `200` with the whole text within 10 seconds.
+3. `a_stream_event_past_the_remaining_budget_ends_the_stream`: five plain `echo` calls start first
+   and use most of the budget. Then one `echo` call on a second server gets a stream whose one
+   event is about 200000 bytes, of which the first 4096 bytes are sent at once. The test
+   releases the stream. The call's reply has no `result`, so the stream ended before its event
+   was whole. The activity log holds one `tool_call` row for that server, with outcome
+   `unavailable` and the detail `the answer memory budget is exhausted`. The five held answers
+   are released last.
+4. `a_user_at_its_share_is_refused_and_another_user_still_answers`: the budget is 1048576 bytes,
+   so one user's share is 262144 bytes. Alice starts four stateless `echo` calls on a held server,
+   and the test waits until all four begin. At least two of her calls are refused while the
+   others are held, each in the busy form of item 1. Bob calls a second server whose answer is
+   200000 bytes, sent at once. His call must answer `200` with a result within 20 seconds. After
+   the release, exactly one of Alice's held answers answers `200` with the whole text, and the
+   other is refused in the busy form. All four of her calls are answered.
+5. `a_refresh_the_budget_refuses_says_the_gateway_is_busy`: the budget is 262144 bytes. Alice and
+   Bob each call one held server whose answers are 262000 bytes, and both answers are held. An
+   admin's refresh of that server's tool list answers `503`. The server page shows
+   `The gateway is busy. Try again in a moment.` in its error notice. After the release, each of
+   the two calls answers `200` or `503`.
+
+## s75_process_memory.rs (statement 75)
+
+This file runs the real gateway binary with a config file of its own, not the test world. The
+owner signs in through the setup code that the binary prints. A fake upstream answers the `echo`
+calls. Each burst sends 64 calls at once, and each answer is 4000000 bytes. The upstream sends
+half of each answer, waits until all 64 have begun and two seconds have passed, then sends the
+rest. The first test's budget is 33554432 bytes (32 MiB) for `limits.answer_memory_bytes`, and
+`limits.tools_list_bytes` is set to the same value. The second test's budget is 8589934592 bytes
+(8 GiB). The ceiling is 262144 KiB (256 MiB) of growth in the peak, and the upstream has 60
+seconds to begin every answer.
+
+The file reads the peak resident memory of the gateway process, `VmHWM` in `/proc/<pid>/status`.
+The process is found by its config path on its command line. The file reads `/proc`, so it is
+Linux only.
+
+1. `the_gateway_process_stays_under_its_ceiling_in_a_burst_of_large_answers`: with the 32 MiB
+   budget, every call answers `200` or `503`, at least one answers `200`, at least one answers
+   `503`, and the peak resident memory grows by less than 262144 KiB during the burst. The counts
+   are written to standard error.
+2. `the_same_burst_passes_the_ceiling_when_no_budget_is_reached`: with the 8 GiB budget, all 64
+   calls answer `200`, and the peak grows by more than 262144 KiB. So the first test would catch a
+   missing budget.
+
+## s76_body_deadline.rs (statement 76)
+
+Each test builds its own world with `limits.body_read_seconds` set to 1. A raw socket sends the
+head of a POST that promises 100 body bytes, sends the first few bytes of the body, and stops.
+The gateway must answer within 5 seconds and close the connection. The answer must be `408` with
+`Connection: close` and an empty body. Then a complete request on the same route is sent, and it
+keeps its usual answer.
+
+1. `a_stalled_token_request_is_answered_408_and_closed`: a form POST to `/oauth/token` stalls
+   after `grant`. A complete token request with `client_id=x` and no grant then answers `400`.
+2. `a_stalled_registration_is_answered_408_and_closed`: a JSON POST to `/oauth/register` stalls
+   after `{"cli`. A complete registration with a client name and one redirect address then
+   answers `201`.
+3. `a_stalled_logout_is_answered_408_and_closed`: a form POST to `/logout`, with the gateway's
+   own origin, stalls after `csrf=`. A complete logout with a wrong anti-forgery value then
+   answers `403`.
+4. `a_stalled_mcp_post_is_answered_408_forwards_nothing_and_writes_no_activity`: a JSON POST to
+   `/demo` with bob's bearer token stalls after `{"jso`. The activity log gains no row, and the
+   upstream gets no `echo` call. Then a complete stateless `echo` call answers `200`, the upstream
+   gets one `echo` call, and the activity log gains its row.
+
+## s77_account_abuse.rs (statement 77)
+
+Each test builds its own world. The first test raises `limits.credentials_burst` to 100, so the
+per-address limit of sign-in does not answer first. Tests that need a later time move the harness
+clock. One test restarts the gateway to run the housekeeping sweep.
+
+1. `unknown_address_rows_stop_at_twenty_an_hour`: 25 sign-ins for 25 made-up addresses each
+   answer `401`. Then exactly 20 `login_failed` rows exist, and none names an account. A wrong
+   password for the owner answers `401` and adds one row, so there are 21 rows, and exactly one
+   names the owner. The clock moves 3601 seconds. A new unknown address answers `401`, and the
+   count is 22.
+2. `a_failed_sign_in_for_an_existing_account_writes_one_row_naming_it`: a wrong password for the
+   owner answers `401`, and the activity log holds exactly one `login_failed` row, naming the
+   owner.
+3. `an_unknown_address_and_a_wrong_password_get_the_same_answer`: a sign-in for an unknown address
+   and one for the owner with a wrong password both answer `401`. The two bodies are equal once
+   the anti-forgery value and each typed address are replaced by placeholders.
+4. `six_reset_requests_in_a_day_send_five_mails_and_a_day_later_one_more`: five anonymous
+   `POST /forgot` requests for bob, 301 seconds apart, each send one reset mail. The sixth request,
+   301 seconds later, answers the same status and body as the fifth. After one second no sixth mail
+   has arrived, and the stored reset link is unchanged. The clock is then set to one day after the
+   first mail. A request answers `200`, and a sixth mail reaches bob.
+5. `the_daily_cap_survives_a_sweep_while_its_day_is_current`: a wrong password for the owner adds a
+   `login_failures` row. Five reset requests for bob are sent as in item 4. The clock moves two
+   hours, and the gateway restarts. The test waits until the `login_failures` table is empty, which
+   shows the sweep ran. The `password_resets` table still holds one row. The link from the newest
+   reset mail shows the `link-invalid` page. A sixth request answers `200`, and after one second
+   there are still five reset mails.
+6. `every_discovery_health_token_and_register_answer_carries_nosniff_once`: six anonymous requests
+   with one server, `demo`, in place: `GET` of the authorization server metadata, `GET` of the
+   protected resource metadata for `demo`, `POST /oauth/token` with an empty form,
+   `POST /oauth/register` with `{}`, `GET /healthz`, and `POST /mcp` without a token. Each answer
+   has exactly one `X-Content-Type-Options` header, with the value `nosniff`.
+
 ## Round 5: tests added and rewritten for the design changes
 
 Each entry names the change of the round 5 list it proves, and why an existing test changed.
