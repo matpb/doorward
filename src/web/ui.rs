@@ -45,6 +45,26 @@ pub fn breakable(text: &str) -> Markup {
     }
 }
 
+/// A web address in a table cell: its origin, then each path piece in a `span.whole` behind a `wbr`.
+/// The cuts are on ASCII `://` and `/` only, so the text is unchanged.
+pub fn web_address(text: &str) -> Markup {
+    let host_start = text.find("://").map_or(0, |index| index + 3);
+    let Some(origin_len) = text[host_start..]
+        .find('/')
+        .map(|index| host_start + index + 1)
+    else {
+        return breakable(text);
+    };
+    let (origin, path) = text.split_at(origin_len);
+    html! {
+        (breakable(origin))
+        @for piece in path.split_inclusive('/') {
+            wbr;
+            span.whole { (breakable(piece)) }
+        }
+    }
+}
+
 /// The notice above a refused form: its lead-in when it has one, the refusal when it has a message,
 /// and a link to the field it is about, given as (id, label), when it is about one field.
 pub fn refused<'a>(
@@ -521,5 +541,135 @@ mod tests {
         assert_eq!(sent_back(&"é".repeat(4), 3), "");
         assert_eq!(sent_back(&format!("{}x", "\u{7}".repeat(3)), 4), "x");
         assert_eq!(sent_back(&format!("{}x", "\u{7}".repeat(3)), 3), "");
+    }
+
+    /// The text a web address shows once its markup is parsed.
+    fn shown_text(text: &str) -> String {
+        let markup = web_address(text).into_string();
+        scraper::Html::parse_fragment(&markup)
+            .root_element()
+            .text()
+            .collect()
+    }
+
+    /// The inputs a web address may hold: the sample, the other schemes and shapes, markup characters,
+    /// non-ASCII text and a 2000 character piece.
+    fn address_inputs() -> Vec<String> {
+        [
+            "https://claude.ai/api/mcp/auth_callback",
+            "cursor://anysphere.cursor-retrieval/oauth/",
+            "http://example.net/cb",
+            "https://example.com",
+            "https://example.com/",
+            "no-scheme/path/x",
+            "plain",
+            "",
+            "///",
+            "https://example.com//a///b",
+            "https://example.com/a<script>&\"x\"/b",
+            "https://example.com/café/日本語/ünï",
+        ]
+        .iter()
+        .map(|text| text.to_string())
+        .chain([format!("https://example.com/{}", "auth_".repeat(400))])
+        .collect()
+    }
+
+    #[test]
+    fn a_web_address_breaks_after_each_slash_and_keeps_each_piece_whole() {
+        assert_eq!(
+            web_address("https://claude.ai/api/mcp/auth_callback").into_string(),
+            r#"https://<wbr>claude<wbr>.ai/<wbr><span class="whole">api/</span><wbr><span class="whole">mcp/</span><wbr><span class="whole">auth_<wbr>callback</span>"#
+        );
+    }
+
+    #[test]
+    fn the_other_samples_break_as_the_prototype_does() {
+        assert_eq!(
+            web_address("cursor://anysphere.cursor-retrieval/oauth/").into_string(),
+            r#"cursor://<wbr>anysphere<wbr>.cursor-retrieval/<wbr><span class="whole">oauth/</span>"#
+        );
+        assert_eq!(
+            web_address("http://example.net/cb").into_string(),
+            r#"http://<wbr>example<wbr>.net/<wbr><span class="whole">cb</span>"#
+        );
+        assert_eq!(
+            web_address("https://example.com").into_string(),
+            "https://<wbr>example<wbr>.com"
+        );
+        assert_eq!(
+            web_address("https://example.com/").into_string(),
+            "https://<wbr>example<wbr>.com/"
+        );
+        assert_eq!(
+            web_address("no-scheme/path/x").into_string(),
+            r#"no-scheme/<wbr><span class="whole">path/</span><wbr><span class="whole">x</span>"#
+        );
+        assert_eq!(web_address("plain").into_string(), "plain");
+        assert_eq!(web_address("").into_string(), "");
+    }
+
+    #[test]
+    fn empty_pieces_are_not_emitted_and_slashes_stay_as_pieces() {
+        assert_eq!(
+            web_address("https://example.com//a///b").into_string(),
+            r#"https://<wbr>example<wbr>.com/<wbr><span class="whole">/</span><wbr><span class="whole">a/</span><wbr><span class="whole">/</span><wbr><span class="whole">/</span><wbr><span class="whole">b</span>"#
+        );
+        assert_eq!(
+            web_address("///").into_string(),
+            r#"/<wbr><span class="whole">/</span><wbr><span class="whole">/</span>"#
+        );
+    }
+
+    #[test]
+    fn markup_characters_in_a_piece_are_escaped() {
+        assert_eq!(
+            web_address("https://example.com/a<script>&\"x\"/b").into_string(),
+            r#"https://<wbr>example<wbr>.com/<wbr><span class="whole">a&lt;script&gt;&amp;<wbr>&quot;x&quot;/</span><wbr><span class="whole">b</span>"#
+        );
+        assert!(
+            !web_address("https://example.com/<script>")
+                .into_string()
+                .contains("<script")
+        );
+    }
+
+    #[test]
+    fn the_text_shown_is_the_text_given_for_every_input() {
+        for input in address_inputs() {
+            assert_eq!(
+                shown_text(&input),
+                input,
+                "the text of {input:?} must be unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn every_whole_span_follows_a_wbr_and_no_white_space_is_emitted() {
+        for input in address_inputs() {
+            let markup = web_address(&input).into_string();
+            let doc = scraper::Html::parse_fragment(&markup);
+            for node in doc.root_element().descendants() {
+                if let Some(text) = node.value().as_text() {
+                    assert!(
+                        !text.chars().any(char::is_whitespace),
+                        "the text of {input:?} must hold no white space between its tags"
+                    );
+                }
+            }
+            let selector = scraper::Selector::parse("span.whole").expect("selector");
+            for span in doc.select(&selector) {
+                let before = span
+                    .prev_sibling()
+                    .and_then(scraper::ElementRef::wrap)
+                    .map(|element| element.value().name().to_owned());
+                assert_eq!(
+                    before.as_deref(),
+                    Some("wbr"),
+                    "each span.whole of {input:?} must follow a wbr"
+                );
+            }
+        }
     }
 }

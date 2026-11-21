@@ -846,3 +846,49 @@ async fn a_document_client_gets_no_error_redirect_to_a_listed_callback() {
         "a document client with no response_type and a listed callback",
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_address_cells_hold_their_addresses_whole_and_unchanged() {
+    let w = World::start().await;
+    let (bob, _upstream) = bob_on_demo(&w).await;
+    let added = admin::add_redirect(&w.owner, "https", "app.example.com", "/oauth/").await;
+    assert_eq!(
+        added.status, 303,
+        "adding an allowed address must answer 303"
+    );
+    let client_id = register_client(&w, "Claude", &["https://claude.ai/evil"]).await;
+    let _refused = authorize_as(
+        &bob,
+        &client_id,
+        "https://claude.ai/evil",
+        &w.resource("demo"),
+    )
+    .await;
+    let page = w.owner.get("/admin/redirects").await;
+    assert_eq!(
+        page.status, 200,
+        "the redirects page must load for the owner"
+    );
+    let allowed = r#"tr[data-redirect-id][data-host="app.example.com"] td.lead code"#;
+    assert_eq!(
+        page.text(allowed).as_deref(),
+        Some("https://app.example.com/oauth/"),
+        "the allowed address must read as its address"
+    );
+    assert_eq!(
+        page.count(&format!("{allowed} span.whole")),
+        1,
+        "the allowed address must hold its path piece in a span.whole"
+    );
+    let blocked = r#"tr[data-blocked="yes"] td.lead code"#;
+    assert_eq!(
+        page.text(blocked).as_deref(),
+        Some("https://claude.ai/evil"),
+        "the blocked attempt must read as the address it asked for"
+    );
+    assert_eq!(
+        page.count(&format!("{blocked} span.whole")),
+        1,
+        "the blocked address must hold its path piece in a span.whole"
+    );
+}

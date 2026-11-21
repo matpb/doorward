@@ -329,7 +329,7 @@ fn entry_row(csrf: &str, entry: &Entry) -> Markup {
             data-path-prefix=(entry.path_prefix) data-source=(entry.source)
             data-enabled=(yes_or_no(entry.enabled)) {
             td.lead {
-                code { (ui::breakable(&address_text(&entry.scheme, &entry.host, &entry.path_prefix))) }
+                code { (ui::web_address(&address_text(&entry.scheme, &entry.host, &entry.path_prefix))) }
             }
             td.half { (entry.source) }
             td.half { (enabled_pill(entry.enabled)) }
@@ -351,7 +351,7 @@ fn blocked_row(csrf: &str, row: &Blocked) -> Markup {
     html! {
         tr data-blocked="yes" {
             td.lead {
-                code { (ui::breakable(&row.detail)) }
+                code { (ui::web_address(&row.detail)) }
             }
             td {
                 span.unit { "asked by a client that calls itself " }
@@ -425,4 +425,41 @@ fn toggle_action(entry: &Entry) -> String {
 
 fn yes_or_no(flag: bool) -> &'static str {
     if flag { "yes" } else { "no" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_allowed_address_cell_breaks_after_each_slash_and_keeps_each_piece_whole() {
+        let entry = Entry {
+            id: 7,
+            scheme: "https".to_string(),
+            host: "claude.ai".to_string(),
+            path_prefix: "/api/mcp/auth_callback".to_string(),
+            source: "shipped".to_string(),
+            enabled: true,
+        };
+        assert!(
+            entry_row("token", &entry).into_string().contains(
+                r#"<td class="lead"><code>https://<wbr>claude<wbr>.ai/<wbr><span class="whole">api/</span><wbr><span class="whole">mcp/</span><wbr><span class="whole">auth_<wbr>callback</span></code></td>"#
+            ),
+            "the allowed address cell must hold the address in whole path pieces"
+        );
+    }
+
+    #[test]
+    fn a_blocked_address_cell_keeps_its_path_piece_whole() {
+        let row = Blocked {
+            client: "Claude".to_string(),
+            detail: "https://claude.ai/evil".to_string(),
+        };
+        assert!(
+            blocked_row("token", &row).into_string().contains(
+                r#"<td class="lead"><code>https://<wbr>claude<wbr>.ai/<wbr><span class="whole">evil</span></code></td>"#
+            ),
+            "the blocked address cell must hold its path in a whole piece"
+        );
+    }
 }

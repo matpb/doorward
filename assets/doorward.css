@@ -262,6 +262,11 @@ code,
   overflow-wrap: anywhere;
 }
 
+/* A time in a line of text is mono in a sans line: on its own leading it made the line 21 px. */
+time {
+  line-height: 1;
+}
+
 /* .whole holds an identifier inside a sentence, with the stop after it: it goes to the next
    line in one piece and breaks inside, where it may, only when longer than a whole line. */
 .whole {
@@ -295,8 +300,10 @@ a {
   transition: text-decoration-color var(--t-fast);
 }
 
-a:hover {
-  text-decoration-color: currentColor;
+@media (hover: hover) {
+  a:hover {
+    text-decoration-color: currentColor;
+  }
 }
 
 :focus-visible {
@@ -444,9 +451,11 @@ body[data-layout="card"] .site::after {
   transition: background-color var(--t-fast), color var(--t-fast);
 }
 
-.site nav a:hover {
-  background: var(--door-hover);
-  color: var(--on-door);
+@media (hover: hover) {
+  .site nav a:hover {
+    background: var(--door-hover);
+    color: var(--on-door);
+  }
 }
 
 .site nav a[aria-current="page"] {
@@ -855,9 +864,11 @@ input[type="url"] {
   font-size: calc(var(--control-text) - 1px);
 }
 
-input:where([type="text"], [type="email"], [type="password"], [type="url"]):hover,
-select:hover {
-  border-color: var(--ink);
+@media (hover: hover) {
+  input:where([type="text"], [type="email"], [type="password"], [type="url"]):hover,
+  select:hover {
+    border-color: var(--ink);
+  }
 }
 
 input:where([type="text"], [type="email"], [type="password"], [type="url"]):focus-visible,
@@ -976,8 +987,10 @@ input[type="checkbox"]::after {
   transition: transform var(--t-fast) var(--ease-out);
 }
 
-input[type="checkbox"]:hover::before {
-  border-color: var(--ink);
+@media (hover: hover) {
+  input[type="checkbox"]:hover::before {
+    border-color: var(--ink);
+  }
 }
 
 input[type="checkbox"]:checked::before {
@@ -1020,17 +1033,21 @@ button:active,
   color: var(--paper);
 }
 
-[data-kind="primary"]:hover {
-  background: var(--ink-2);
+@media (hover: hover) {
+  [data-kind="primary"]:hover {
+    background: var(--ink-2);
+  }
 }
 
 [data-kind="secondary"] {
   border-color: var(--line-strong);
 }
 
-[data-kind="secondary"]:hover {
-  border-color: var(--ink);
-  background: var(--sunken);
+@media (hover: hover) {
+  [data-kind="secondary"]:hover {
+    border-color: var(--ink);
+    background: var(--sunken);
+  }
 }
 
 /* data-kind="danger" marks every action that deletes, revokes, removes or disconnects.
@@ -1041,9 +1058,11 @@ body[data-layout="card"] [data-kind="danger"] {
   color: var(--on-deny);
 }
 
-.confirm [data-kind="danger"]:hover,
-body[data-layout="card"] [data-kind="danger"]:hover {
-  background: var(--deny-hover);
+@media (hover: hover) {
+  .confirm [data-kind="danger"]:hover,
+  body[data-layout="card"] [data-kind="danger"]:hover {
+    background: var(--deny-hover);
+  }
 }
 
 /* Row actions act at once and can be repeated, so they take a quiet link look, never red.
@@ -1066,12 +1085,14 @@ body[data-layout="card"] [data-kind="danger"]:hover {
   transition: background-color var(--t-fast), color var(--t-fast), text-decoration-color var(--t-fast), transform 125ms var(--ease-out);
 }
 
-.row-action[data-kind]:hover,
-.list td.act button[data-kind]:hover {
-  border-color: transparent;
-  background: var(--sunken);
-  color: var(--ink);
-  text-decoration-color: currentColor;
+@media (hover: hover) {
+  .row-action[data-kind]:hover,
+  .list td.act button[data-kind]:hover {
+    border-color: transparent;
+    background: var(--sunken);
+    color: var(--ink);
+    text-decoration-color: currentColor;
+  }
 }
 
 .row-action[data-kind]:focus-visible,
@@ -1275,9 +1296,11 @@ body[data-layout="card"] [data-kind="danger"]:hover {
   white-space: nowrap;
 }
 
+/* The action hangs on the row's baseline and is never what makes the row tall:
+   a row with an action is as high as a row without one. */
 .list .act {
   text-align: end;
-  padding-block: var(--s2);
+  padding-block: var(--s1);
 }
 
 .list .act form {
@@ -1291,8 +1314,10 @@ body[data-layout="card"] [data-kind="danger"]:hover {
   text-decoration-color: transparent;
 }
 
-.list a.name:hover {
-  text-decoration-color: currentColor;
+@media (hover: hover) {
+  .list a.name:hover {
+    text-decoration-color: currentColor;
+  }
 }
 
 .list .sub {
@@ -1414,13 +1439,15 @@ body[data-layout="card"] [data-kind="danger"]:hover {
   font-weight: 650;
 }
 
+/* Every shape is centred 17 px left of the label: the 8 px ones start 1 px further in. */
 .event[data-tone]::before {
   position: absolute;
-  inset-inline-start: -22px;
+  inset-inline-start: -21px;
   inset-block-start: 6px;
 }
 
 .event[data-tone="bad"]::before {
+  inset-inline-start: -22px;
   inset-block-start: 8px;
 }
 
@@ -1685,9 +1712,11 @@ body[data-layout="card"] [data-kind="danger"]:hover {
   transition: text-decoration-color var(--t-fast), color var(--t-fast);
 }
 
-.counts > a:hover .count-label {
-  color: var(--ink);
-  text-decoration-color: currentColor;
+@media (hover: hover) {
+  .counts > a:hover .count-label {
+    color: var(--ink);
+    text-decoration-color: currentColor;
+  }
 }
 
 .count-state {
@@ -1838,9 +1867,11 @@ details[open] > summary .chevron {
   transition: background-color var(--t-fast), border-color var(--t-fast);
 }
 
-.confirm > summary:hover > .confirm-open {
-  border-color: var(--ink);
-  background: var(--sunken);
+@media (hover: hover) {
+  .confirm > summary:hover > .confirm-open {
+    border-color: var(--ink);
+    background: var(--sunken);
+  }
 }
 
 .confirm-note {
@@ -2065,9 +2096,11 @@ body[data-layout="card"] main > .lede + .actions {
       font-size: 14px;
     }
 
-    .menu-button:hover {
-      border-color: transparent;
-      background: var(--door-hover);
+    @media (hover: hover) {
+      .menu-button:hover {
+        border-color: transparent;
+        background: var(--door-hover);
+      }
     }
 
     .site nav[popover] {
@@ -2307,14 +2340,38 @@ body[data-layout="card"] main > .lede + .actions {
     padding-inline-start: 0;
   }
 
-  /* A tool verdict is one sentence, "Deny echo on demo", that wraps as text does;
-     a second line starts under the verdict word, and "on server" never splits. */
+  /* One mark column in every list: a mark stands on the list's edge and its word 20 px in.
+     What follows a verdict on its line starts after a column of one width, on one edge. */
+  .list {
+    --c-verdict: calc(20px + var(--s7));
+  }
+
+  /* The state of an address is the record's last line, alone, as in servers and users. */
+  .list.redirects:not(.activity) td.lead ~ td.half + td.half {
+    grid-column: 1 / -1;
+    padding-inline-start: 0;
+  }
+
+  .list.redirects:not(.activity) td.lead ~ td.half + td.half::before {
+    content: none;
+  }
+
+  /* A tool verdict: the verdict in its column, then "echo on demo" as text that wraps
+     under the tool, never under the mark. "on server" never splits. */
   .tools.list tr {
     display: block;
     padding-block: var(--s3) 11px;
-    padding-inline-start: 20px;
-    text-indent: -20px;
+    padding-inline-start: var(--c-verdict);
+    font-size: 14px;
+    line-height: 20px;
     word-spacing: var(--s1);
+  }
+
+  /* Out of the line, so no space of the markup stands between the column and the tool. */
+  .tools.list td:first-child {
+    float: inline-start;
+    inline-size: var(--c-verdict);
+    margin-inline-start: calc(var(--c-verdict) * -1);
   }
 
   .tools.list td,
@@ -2356,8 +2413,21 @@ body[data-layout="card"] main > .lede + .actions {
     align-items: center;
   }
 
+  /* A rule leads with its verdict, in the verdict column; its number follows on one edge. */
+  .rules.list td.half {
+    grid-row: 1;
+    grid-column: 2 / 4;
+  }
+
   .rules.list td.half + td.half {
+    grid-column: 1;
+    inline-size: var(--c-verdict);
+    padding-inline-start: 0;
     color: inherit;
+  }
+
+  .rules.list td.half + td.half::before {
+    content: none;
   }
 
   .unit {
@@ -2699,13 +2769,22 @@ main {
   overflow: clip;
 }
 
+/* The room is cropped at the door's edge only. Its box is never shorter than the window,
+   so a page taller than the one before is not cut along a line that travels down. */
+::view-transition-old(room),
+::view-transition-new(room) {
+  block-size: max(100%, 100vb);
+  mix-blend-mode: plus-lighter;
+}
+
+/* One dissolve: the old room leaves while the new one arrives, on the same curve, and the
+   two add up, so the column is never empty and what both pages share stands still. */
 ::view-transition-old(room) {
-  animation: room-out calc(var(--t-page) * 0.3) ease-in both;
+  animation: room-out var(--t-fast) var(--ease-out) both;
 }
 
 ::view-transition-new(room) {
-  /* Nothing of the new room shows until the old one is gone. */
-  animation: room-in calc(var(--t-page) * 2 / 3) var(--ease-out) calc(var(--t-page) / 3) both;
+  animation: room-in var(--t-fast) var(--ease-out) both;
 }
 
 @keyframes room-out {
@@ -2723,7 +2802,6 @@ main {
 @keyframes room-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
   }
 }
 

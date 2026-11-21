@@ -1293,6 +1293,11 @@ bob is assigned to demo and signed in. `A` is `W.app()`.
 22. `a_document_client_gets_no_error_redirect_to_a_listed_callback`: the document lists
     `https://claude.ai/api/mcp/auth_callback`; a valid request is accepted; the same request
     with no `response_type` is an error page with no `Location`.
+23. `the_address_cells_hold_their_addresses_whole_and_unchanged` (the redirects page, round 10): an allowed
+    address `https://app.example.com/oauth/` and a blocked attempt `https://claude.ai/evil` each read
+    as their address in the `code` of their first cell, and each holds its path piece in one
+    `span.whole`. The unit tests of `web::ui` (`web_address`) and `admin::redirects` pin the markup,
+    and the text of every input (the samples, markup characters, non-ASCII, a 2000 character piece).
 
 ## s35_tokens.rs (statement 35)
 
