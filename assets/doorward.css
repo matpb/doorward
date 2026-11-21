@@ -563,6 +563,12 @@ body[data-layout="card"] .lede {
   font-size: 14px;
 }
 
+/* The host a refusal names is the one fact in its sentence. */
+.lede .client-host {
+  color: var(--ink);
+  font-weight: 600;
+}
+
 .muted {
   color: var(--ink-2);
 }
@@ -738,8 +744,19 @@ body[data-layout="page"] main > .notice {
   border-block-end-color: transparent;
 }
 
+/* The link ending a list's head stands on the action column's edge and takes a row
+   action's hover: the fill overhangs the label by 8 px each side, the label does not move. */
 .block-head > a {
-  padding-block: var(--r1);
+  margin: calc(var(--r1) * -1) calc(var(--s2) * -1) calc(var(--r1) * -1) 0;
+  padding: var(--s1) var(--s2);
+  border-radius: var(--r2);
+  transition: background-color var(--t-fast), text-decoration-color var(--t-fast);
+}
+
+@media (hover: hover) {
+  .block-head > a:hover {
+    background: var(--sunken);
+  }
 }
 
 .block-head {
@@ -1109,6 +1126,14 @@ body[data-layout="card"] [data-kind="danger"] {
   color: var(--ink);
 }
 
+/* The ring of a quiet action stands on its hover fill's box, 1 px off it: one box for both
+   states, for a row's action and for the link that ends a list's head. */
+.block-head > a:focus-visible,
+.row-action[data-kind]:focus-visible,
+.list td.act button[data-kind]:focus-visible {
+  outline-offset: 1px;
+}
+
 /* ---------- Status: a word with a shape ---------- */
 
 .state {
@@ -1132,6 +1157,7 @@ body[data-layout="card"] [data-kind="danger"] {
 
 .state::before,
 .notice::before,
+.notice > .local-app + p::before,
 .event[data-tone]::before,
 .field-error::before {
   content: "";
@@ -1162,6 +1188,7 @@ body[data-layout="card"] [data-kind="danger"] {
 /* Unverified, not checked: a hollow diamond. */
 .state[data-tone="warn"]::before,
 .notice[data-notice="warning"]::before,
+.notice > .local-app + p::before,
 .event[data-tone="warn"]::before {
   inline-size: 8px;
   block-size: 8px;
@@ -1227,6 +1254,19 @@ body[data-layout="card"] [data-kind="danger"] {
 /* The box runs as wide as its place; the text keeps a reading measure. */
 .notice > p {
   max-inline-size: 64ch;
+}
+
+/* Two warnings in one box, on the consent page: 8 px apart, and the second has its own diamond
+   in the mark's column. */
+.notice > .local-app + p {
+  position: relative;
+  margin-block-start: var(--s2);
+}
+
+.notice > .local-app + p::before {
+  position: absolute;
+  inset-inline-start: calc(var(--r1) - var(--s5));
+  inset-block-start: 6px;
 }
 
 /* A link goes to the next line whole; it breaks only when it is longer than a line.
@@ -1359,6 +1399,14 @@ body[data-layout="card"] [data-kind="danger"] {
 .users .c-num { inline-size: 12%; }
 .users .c-state { inline-size: 20%; }
 
+/* 48 px from a count to the state after it, so a numeral is not read with the state's mark.
+   Users have the room from 900 px, where the table starts; servers from 1280 px, below. */
+@media (min-width: 900px) {
+  .users .num {
+    padding-inline-end: var(--s7);
+  }
+}
+
 .rules .c-rule { inline-size: 48px; }
 .rules .c-effect { inline-size: 80px; }
 .rules .c-subject { inline-size: 32%; }
@@ -1481,6 +1529,12 @@ body[data-layout="card"] [data-kind="danger"] {
 /* A path is 24 characters at most: 208 px holds it, and the name takes the rest. */
 @media (min-width: 1280px) {
   .servers .c-path { inline-size: 208px; }
+
+  /* The two counts share their 16%: the second is wider and holds the 48 px before the state. */
+  .servers .c-num { inline-size: 6.5%; }
+  .servers .c-num + .c-num { inline-size: 9.5%; }
+  .servers .num + .num { padding-inline-end: var(--s7); }
+
   .invitations .c-when { inline-size: 20%; }
   .invitations .c-by { inline-size: 28%; }
 
@@ -1970,6 +2024,24 @@ body[data-layout="card"] .facts dd + dt {
   color: var(--ink-2);
 }
 
+/* What stands under the destination explains it: 12 px under the digits to the eye, and the
+   facts start 32 px after it. A box needs 4 and 28 px for that, a plain line 0 and 24. */
+main[data-page="consent"] > .consent-title + * {
+  margin-block-start: var(--s1);
+}
+
+main[data-page="consent"] > .consent-title + p {
+  margin-block-start: 0;
+}
+
+main[data-page="consent"] > .facts {
+  margin-block-start: 28px;
+}
+
+main[data-page="consent"] > p + .facts {
+  margin-block-start: var(--s5);
+}
+
 .dest {
   display: block;
   margin-block-start: var(--s1);
@@ -2200,7 +2272,22 @@ body[data-layout="card"] main > .lede + .actions {
   }
 }
 
-@media (max-width: 899.98px) {
+/* From 720 px a card page keeps the door beside the room: a 240 px door, and the 400 px column
+   centred in the paper until it stands 64 px from the seam (40 at 720, 64 from 768). */
+@media (min-width: 720px) and (max-width: 899.98px) {
+  body[data-layout="card"] {
+    --rail: 240px;
+    --card-inset: clamp(40px, calc((100% - 400px) / 2), 64px);
+  }
+
+  @supports (inline-size: round(down, 1px, 4px)) {
+    body[data-layout="card"] {
+      --card-inset: round(down, clamp(40px, calc((100% - 400px) / 2), 64px), 4px);
+    }
+  }
+}
+
+@media (max-width: 719.98px) {
   body[data-layout="card"] {
     display: block;
     background-image: none;
@@ -2226,35 +2313,27 @@ body[data-layout="card"] main > .lede + .actions {
     max-inline-size: none;
   }
 
-  /* No margin to hang in: the bar stands on the page edge and the title moves in. */
-  h1[data-tone="bad"] {
-    padding-inline-start: 28px;
-  }
-
+  /* No margin to hang in: the bar stands on its own line, 12 px above the title, and the
+     title and every paragraph keep the page's edge. */
   h1[data-tone="bad"]::before {
-    inset-inline-start: 0;
+    position: static;
+    display: block;
+    margin-block-end: var(--s3);
   }
 
   body[data-layout="card"] main {
     padding: var(--s7) var(--gutter) var(--s8);
   }
+}
 
-  /* With :has() the page keeps a 32 px column for the bar instead: the title and every
-     paragraph start at 52, under the wordmark, and the bar stands under the door mark. */
-  @supports selector(:has(a)) {
-    body[data-layout="card"] main:has(> h1[data-tone="bad"]) {
-      padding-inline-start: calc(var(--gutter) + var(--s6));
-    }
-
-    h1[data-tone="bad"] {
-      padding-inline-start: 0;
-    }
-
-    h1[data-tone="bad"]::before {
-      inset-inline-start: calc(var(--s6) * -1);
-    }
+/* Under 360 px the sentence would take three lines of the bar: the bar is the name alone. */
+@media (max-width: 359.98px) {
+  .site-note {
+    display: none;
   }
+}
 
+@media (max-width: 899.98px) {
   .part {
     grid-template-columns: minmax(0, 1fr);
     row-gap: var(--s5);
@@ -2609,10 +2688,6 @@ body[data-layout="card"] main > .lede + .actions {
     line-height: 32px;
   }
 
-  h1[data-tone="bad"]::before {
-    inset-block-start: 12px;
-  }
-
   /* A title that is an address: between the phone title and h2, so it breaks less. */
   .title-id {
     font-size: 24px;
@@ -2871,6 +2946,7 @@ main {
 @media (forced-colors: active) {
   .state::before,
   .notice::before,
+  .notice > .local-app + p::before,
   .event[data-tone]::before,
   .field-error::before,
   h1[data-tone="bad"]::before,

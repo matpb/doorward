@@ -150,7 +150,7 @@ pub fn error_page(host: Option<&str>) -> Response {
         html! {
             h1 data-tone="bad" { "This sign-in cannot continue" }
             @if let Some(host) = host.filter(|text| !text.is_empty()) {
-                p.lede { "Doorward will not send you to " span.whole { span.client-host { (breakable(host)) } "." } }
+                p.lede { "Doorward will not send you to " span.whole { span.client-host { (breakable(host)) } } }
             }
             p.lede { "Start the sign-in again from the app." }
         },
@@ -492,7 +492,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_cannot_continue_host_and_its_full_stop_sit_in_one_whole_span() {
+    async fn the_cannot_continue_host_sits_in_one_whole_span() {
         let response = error_page(Some("notes.example.net"));
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -500,9 +500,9 @@ mod tests {
         let text = String::from_utf8(bytes.to_vec()).expect("utf-8");
         assert!(
             text.contains(
-                r#"<p class="lede">Doorward will not send you to <span class="whole"><span class="client-host">notes<wbr>.example<wbr>.net</span>.</span></p>"#
+                r#"<p class="lede">Doorward will not send you to <span class="whole"><span class="client-host">notes<wbr>.example<wbr>.net</span></span></p>"#
             ),
-            "the host and its full stop must sit in span.whole: {text}"
+            "the host must sit in span.whole: {text}"
         );
     }
 

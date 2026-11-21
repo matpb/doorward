@@ -421,15 +421,12 @@ fn render(viewer: &Viewer, req: &str, consent: &ConsentPage) -> Response {
 fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
     html! {
         h1.consent-title { "You will be sent to " span.dest { (ui::breakable(&consent.redirect_host)) } }
-        (client_line(&consent.client, consent.claim))
+        (client_line(&consent.client, consent.claim, consent.local_sentence))
         dl.facts {
             dt { "Server" }
             dd class=(if consent.server == ALL_SERVERS { "grant" } else { "grant id" }) { (consent.server) }
             dt { "Signed in as" }
             dd { (ui::email(&consent.email)) }
-        }
-        @if let Some(sentence) = consent.local_sentence {
-            (ui::notice("warning", html! { p.local-app { (sentence) } }))
         }
         p.strong data-consent-notice { "Approve only if you started this " span.nowrap { "sign-in" } " yourself." }
         div.actions {
@@ -451,11 +448,12 @@ fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
 
 /// The client line: a claim for a registered client, a publisher for a web document, and a claim
 /// from a host for a document on a redirect that is not an https address.
-fn client_line(client: &Shown, claim: bool) -> Markup {
+fn client_line(client: &Shown, claim: bool, local: Option<&str>) -> Markup {
     match client.client_host.as_deref() {
         None => ui::notice(
             "warning",
             html! {
+                @if let Some(sentence) = local { p.local-app { (sentence) } }
                 p data-client="registered" {
                     "An app that calls itself " q.client-name { (client.name) } " is asking to sign in as you. Doorward cannot check this name."
                 }
@@ -464,6 +462,7 @@ fn client_line(client: &Shown, claim: bool) -> Markup {
         Some(host) if claim => ui::notice(
             "warning",
             html! {
+                @if let Some(sentence) = local { p.local-app { (sentence) } }
                 p data-client="document-loopback" {
                     "Says it is " q.client-name { (client.name) } " from " span.whole { span.client-host { (ui::breakable(host)) } "." }
                     " Any program on this computer can use that description."
@@ -766,6 +765,24 @@ mod tests {
     }
 
     #[test]
+    fn a_local_sentence_leads_the_one_notice_of_the_body() {
+        for page in [consent(true, None), consent(true, Some("example.com"))] {
+            let doc = Html::parse_fragment(&consent_body("token", "req", &page).into_string());
+            assert_eq!(count(&doc, "div.notice"), 1, "the body holds one notice");
+            assert_eq!(
+                count(&doc, "div.notice > p.local-app:first-child"),
+                1,
+                "the local sentence is the first child of that notice"
+            );
+            assert_eq!(
+                count(&doc, "p.local-app + p[data-client]"),
+                1,
+                "the client's line follows the local sentence"
+            );
+        }
+    }
+
+    #[test]
     fn a_confirmed_publisher_is_a_plain_line() {
         let page = consent(false, Some("example.com"));
         let doc = Html::parse_fragment(&consent_body("token", "req", &page).into_string());
@@ -790,7 +807,7 @@ mod tests {
             client_host: None,
         };
         assert_eq!(
-            client_line(&shown, false).into_string(),
+            client_line(&shown, false, None).into_string(),
             r#"<div class="notice" data-notice="warning"><p data-client="registered">An app that calls itself <q class="client-name">Claude Code</q> is asking to sign in as you. Doorward cannot check this name.</p></div>"#
         );
     }
@@ -803,11 +820,11 @@ mod tests {
             client_host: Some("example.com".to_owned()),
         };
         assert_eq!(
-            client_line(&publisher, false).into_string(),
+            client_line(&publisher, false, None).into_string(),
             r#"<p data-client="document"><q class="client-name">Claude Code</q>, published by <span class="whole"><span class="client-host">example<wbr>.com</span>.</span></p>"#
         );
         assert_eq!(
-            client_line(&publisher, true).into_string(),
+            client_line(&publisher, true, None).into_string(),
             r#"<div class="notice" data-notice="warning"><p data-client="document-loopback">Says it is <q class="client-name">Claude Code</q> from <span class="whole"><span class="client-host">example<wbr>.com</span>.</span> Any program on this computer can use that description.</p></div>"#
         );
     }

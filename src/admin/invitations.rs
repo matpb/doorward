@@ -94,7 +94,8 @@ pub async fn post_invitation(State(state): State<AppState>, form: VerifiedForm) 
         Err(err) => return internal_error("invitation", &err),
     }
     let link = format!("{}/invite/{token}", state.config.public_url);
-    let message = templates::invitation(&link).to(email);
+    let host = templates::host_and_port(&state.config.public_url);
+    let message = templates::invitation(&link, host).to(email);
     match mail::send(&state, "invitation", message).await {
         Ok(()) => redirect("/admin/invitations"),
         Err(error) => invitation_created(&form.viewer, &error.0, &link),

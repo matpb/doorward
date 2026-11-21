@@ -2125,7 +2125,7 @@ Rewritten tests (the old markup they pinned, before the round 8 `span.whole` wra
   `the_word_after_a_number_still_breaks_as_an_identifier`): a non-address word with a break point is
   in `span.whole`; the text is unchanged.
 
-New unit tests for the `span.whole` places: `oauth::authorize::tests::the_cannot_continue_host_and_its_full_stop_sit_in_one_whole_span`,
+New unit tests for the `span.whole` places: `oauth::authorize::tests::the_cannot_continue_host_sits_in_one_whole_span`,
 `oauth::connected::tests::the_server_path_sits_in_a_whole_span_as_code`,
 `accounts::account::tests::the_server_of_a_connected_app_sits_in_a_whole_span_as_code`,
 `admin::users::tests::the_server_of_a_tool_sits_in_a_whole_span_as_code`,
@@ -2335,6 +2335,48 @@ clock. One test restarts the gateway to run the housekeeping sweep.
    protected resource metadata for `demo`, `POST /oauth/token` with an empty form,
    `POST /oauth/register` with `{}`, `GET /healthz`, and `POST /mcp` without a token. Each answer
    has exactly one `X-Content-Type-Options` header, with the value `nosniff`.
+
+## s78_bounded_writes.rs (statement 78)
+
+Each test builds its own world.
+
+1. `a_long_tool_name_is_stored_cut_and_clean`: a call to a tool name of 5000 characters that
+   begins with a right-to-left override and a bell character answers `-32602`, Unknown tool. The
+   stored `tool` of its refused row holds at most 128 characters, and neither the override nor the
+   bell.
+2. `refused_rows_stop_at_one_hundred_an_hour`: bob calls 105 missing tools on `/demo`, each
+   answering `-32602`. Exactly 100 refused rows exist for bob, and the 100th row's detail is `not in
+   the tool list` followed by the notice that later refusals are not recorded. Carol's refused call
+   still writes its row, and an allowed `echo` call writes one `allow` row. The clock moves 3601
+   seconds; bob's next refused call writes row 101 with the detail `not in the tool list` and no
+   notice.
+3. `refused_rows_stop_at_one_hundred_an_hour_on_the_combined_route`: the same 105 calls on `/mcp`
+   write exactly 100 refused rows, and the 100th carries the notice.
+4. `a_catalog_keeps_at_most_one_thousand_tools`: an upstream lists 1200 tools. The server page
+   shows 1000, from `tool_0` to `tool_999`. Bob calls `tool_999` and gets `called: tool_999`;
+   `tool_1000` answers `Unknown tool: tool_1000`.
+
+## s79_mails.rs (statement 79)
+
+Each test builds its own world. The mail catcher holds what the gateway sends.
+
+1. `a_first_connection_to_one_server_is_announced_with_its_facts`: a server named `Internal
+   documentation search` (slug `docs`) is granted to bob, and the client's metadata document names
+   the client `Sneaky Name 4711`. Bob's first connection to `/docs` sends the new connection mail.
+   Its text holds `It can use Internal documentation search.`, `The sign-in was sent to
+   127.0.0.1:53535.`, a line that begins `Connected on` and ends ` UTC.`, and the closing sentence
+   with the gateway's host. Its HTML holds the host in its last span, before ` Doorward decides`,
+   and the server name. Neither part holds `Sneaky Name 4711`.
+2. `a_first_connection_through_the_combined_endpoint_says_so`: the first connection to `/mcp` says
+   `It can use every server assigned to you.` in the text part and `every server assigned to you`
+   in the HTML part, and the server's name is in neither.
+3. `the_reset_mail_says_what_to_do_when_it_was_not_asked_for`: a reset request for bob answers 200.
+   The reset mail's text holds `If this was not you, ignore this mail. Your password stays the
+   same.`, its HTML holds the same sentence with a non-breaking space before `same.`, and its text
+   closes with the gateway's host.
+4. `the_invitation_mail_closes_with_the_gateway_sentence`: the invitation to carol has the subject
+   `You are invited to Doorward`; its text closes with the gateway's host, and its HTML holds the
+   closing sentence with a non-breaking space before `call.`.
 
 ## Round 5: tests added and rewritten for the design changes
 

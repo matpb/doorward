@@ -939,7 +939,7 @@ async fn a_url_shaped_client_writes_no_blocked_row() {
         assert!(reply.is_error(), "request {index} is an error page");
         assert!(
             text_of(&reply.body).contains(&format!(
-                "Doorward will not send you to n{index}.attacker.example.com."
+                "Doorward will not send you to n{index}.attacker.example.com"
             )),
             "request {index} names its redirect host as before"
         );

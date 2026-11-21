@@ -356,6 +356,15 @@ L. Added after the owner's auth review
     character; the refresh still succeeds and logs how many tools were left out. When the
     table of sign-ins in progress is full, or one address holds 200 of them, a request whose
     consent page has never been shown is dropped before one that has.
+79. The three mails share one layout and say who sent them. Each closes with `Sent by the
+    Doorward gateway at <host>.` and one sentence about what Doorward does, where the host is
+    the gateway's public address. The reset mail says `If this was not you, ignore this mail.
+    Your password stays the same.` The new-connection mail names what the app can use (the
+    server's name, or `every server assigned to you` for the combined endpoint), the host the
+    sign-in was sent to and the time in UTC; the name the app gave itself is not in the mail.
+    The HTML part equals the designed mail byte for byte, a host in it breaks only before a
+    dot, and the address shown as text equals the link with no character added. On the
+    consent page the sentence about a local app sits inside the one warning box.
 
 ### Proof
 
@@ -414,6 +423,10 @@ into the test harness. In addition:
 - 78: `tests/s78_bounded_writes.rs` on both endpoints and with a fake upstream that lists
   1200 tools, the unit tests in `src/audit.rs` and `src/proxy/catalog.rs`, and the two
   eviction tests in `src/oauth/tests_consent.rs`.
+- 79: `tests/s79_mails.rs`, which reads the mails a first connection, a reset and an
+  invitation send; the byte for byte, host rule and address rule tests in
+  `src/mail/templates.rs` against `src/mail/fixtures/`; the destination and time tests in
+  `src/oauth/token.rs`; and the notice test in `src/oauth/consent.rs`.
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
   a walk-through of every page in a real browser at 390 px and desktop width in both
   themes, which also measures control heights and sideways scroll; screenshots kept under

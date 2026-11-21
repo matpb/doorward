@@ -104,7 +104,8 @@ async fn send_reset_mail(state: &AppState, email: String) {
         }
     }
     let link = format!("{}/reset/{token}", state.config.public_url);
-    let message = templates::reset(&link).to(recipient);
+    let host = templates::host_and_port(&state.config.public_url);
+    let message = templates::reset(&link, host).to(recipient);
     // mail::send has already recorded any failure in the activity log.
     let _ = mail::send(state, "reset", message).await;
 }

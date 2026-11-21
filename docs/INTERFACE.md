@@ -233,6 +233,8 @@ Emails (plain text and HTML parts, links built from `PUB`):
 | New connection (first connection of that client for that user) | `A new app was connected to your Doorward account` | `PUB/account/disconnect/{token}` |
 | Test | `Doorward test email` | none |
 
+The HTML part of each mail is one document: the title, one to three lines, the action, the link as text, and the closing line `Sent by the Doorward gateway at HOST. Doorward decides who reaches which MCP server and which tool, and keeps a record of every call.` HOST is the host of `PUB`, with its port only when `public_url` writes one. The reset mail adds the line `If this was not you, ignore this mail. Your password stays the same.` The new connection mail names the server (the name the administrator wrote, cut to 60 characters, or `every server assigned to you` on the combined endpoint), the destination (the host of the redirect address with its port, cut to 80 characters) and the time in UTC, as `21 November 2026, 14:05 UTC`. It does not name the app. The text part holds the same words without markup.
+
 ## Admin panel
 
 Anonymous: `303 /login`. Signed in without the owner or admin role: `403`
@@ -393,11 +395,11 @@ client is `p[data-client="registered"]` reading "An app that calls itself
 redirect is `p[data-client="document"]`, "NAME, published by `<span class="client-host">`
 HOST."; a document with a redirect that is not https, loopback or private scheme, is `p[data-client="document-loopback"]`, "Says it
 is NAME from HOST. Any program on this computer can use that description." The registered line and the
-loopback document line each sit in `div.notice[data-notice="warning"]`, as does the local-app sentence;
-the https document line is plain. A page for a
+loopback document line each sit in `div.notice[data-notice="warning"]`; the https document line is plain. A page for a
 loopback redirect address, of any client kind, also holds `p.local-app` reading "The sign-in
 will be handed to whatever program is listening on this computer." A page for a private-scheme
 redirect of any client kind holds `p.local-app` reading "The sign-in will be handed to whatever program on this computer opens addresses of this kind."
+That sentence is the first child of the warning notice, directly before the client line, so such a page holds one `div.notice` in the body, and `p.local-app` comes directly before `p[data-client]`.
 
 `POST /oauth/consent`: `req`, `decision` (`approve` or `deny`). `303` to the redirect
 address with `code`, `state`, `iss`; or with `error=access_denied`, `state`, `iss`. The

@@ -86,7 +86,7 @@ Authorize flow:
    approved before a password reset dies with the reset. Concurrent redemption yields one
    success. A second use by a caller who holds the code verifier revokes the family it
    produced; a caller without the verifier changes nothing.
-8. A new connection sends the user an email with a disconnect link.
+8. A new connection sends the user an email with a disconnect link. It names the server, the host the sign-in was sent to and the time, and never the app's own name, which the app chose.
 
 Client registration:
 

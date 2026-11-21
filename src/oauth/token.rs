@@ -12,6 +12,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::app::AppState;
 use crate::audit::{self, Event};
@@ -38,6 +39,9 @@ const TOKEN_BODY_LEN: usize = 43;
 const REPLAY_CONTEXT: &str = "refresh_tokens.replay:";
 const SCOPE: &str = "mcp";
 const CODE_REPLAY: &str = "code replay";
+const EVERY_SERVER: &str = "every server assigned to you";
+const SERVER_LIMIT: usize = 60;
+const DESTINATION_LIMIT: usize = 80;
 const REFRESH_REPLAY: &str = "refresh replay";
 const INVALID_REQUEST: &str = "invalid_request";
 const INVALID_GRANT: &str = "invalid_grant";
@@ -92,6 +96,9 @@ enum Outcome {
 struct Welcome {
     email: String,
     token: String,
+    server: String,
+    destination: String,
+    time: String,
 }
 
 /// What the transaction needs from the request and the configuration.
@@ -99,6 +106,7 @@ struct Job {
     form: Form,
     grant: Grant,
     now: i64,
+    at: OffsetDateTime,
     lifetimes: Lifetimes,
     issuer: String,
 }
@@ -160,10 +168,12 @@ pub async fn post_token(State(state): State<AppState>, request: Request) -> Resp
         Ok(grant) => grant,
         Err(error) => return refuse(error),
     };
+    let at = state.clock.now();
     let job = Job {
         form,
         grant,
-        now: state.clock.now().unix_timestamp(),
+        now: at.unix_timestamp(),
+        at,
         lifetimes: state.config.lifetimes.clone(),
         issuer: state.config.public_url.clone(),
     };
@@ -412,7 +422,7 @@ fn issue_from_code(
         client_name: &stored.client_name,
     };
     record(tx, job.now, "client_connected", &who, "")?;
-    let welcome = first_connection(tx, job.now, family_id, stored, user)?;
+    let welcome = first_connection(tx, job, family_id, stored, user)?;
     Ok(Outcome::Issued {
         body: token_body(&pair, &job.lifetimes),
         welcome,
@@ -422,7 +432,7 @@ fn issue_from_code(
 /// The first redemption of a client for a user makes a disconnect link and asks for the mail.
 fn first_connection(
     tx: &Transaction<'_>,
-    now: i64,
+    job: &Job,
     family_id: i64,
     stored: &StoredCode,
     user: UserRow,
@@ -431,7 +441,7 @@ fn first_connection(
     let inserted = tx.execute(
         "INSERT OR IGNORE INTO known_clients (user_id, client_id, redirect_key, first_at) \
          VALUES (?1, ?2, ?3, ?4)",
-        params![stored.user_id, stored.client_id, redirect_key, now],
+        params![stored.user_id, stored.client_id, redirect_key, job.now],
     )?;
     if inserted == 0 {
         return Ok(None);
@@ -439,11 +449,18 @@ fn first_connection(
     let token = random_token("dw_dl_");
     tx.execute(
         "INSERT INTO disconnect_links (token_hash, family_id, created_at) VALUES (?1, ?2, ?3)",
-        params![token_hash(&token), family_id, now],
+        params![token_hash(&token), family_id, job.now],
     )?;
+    let server = match stored.server_id {
+        Some(id) => truncated(&server_name(tx, id)?.unwrap_or_default(), SERVER_LIMIT),
+        None => EVERY_SERVER.to_owned(),
+    };
     Ok(Some(Welcome {
         email: user.email,
         token,
+        server,
+        destination: destination_of(&stored.redirect_uri),
+        time: utc_text(job.at),
     }))
 }
 
@@ -697,7 +714,13 @@ fn send_welcome(state: &AppState, welcome: Welcome) {
             "{}/account/disconnect/{}",
             state.config.public_url, welcome.token
         );
-        let message = templates::new_connection(&link).to(welcome.email);
+        let host = templates::host_and_port(&state.config.public_url);
+        let facts = templates::Connection {
+            server: &welcome.server,
+            destination: &welcome.destination,
+            time: &welcome.time,
+        };
+        let message = templates::new_connection(&link, &facts, host).to(welcome.email);
         // mail::send has already recorded any failure in the activity log.
         let _ = mail::send(&state, "new_connection", message).await;
     });
@@ -787,4 +810,76 @@ fn server_slug(conn: &Connection, server_id: i64) -> rusqlite::Result<Option<Str
         |row| row.get(0),
     )
     .optional()
+}
+
+fn server_name(conn: &Connection, server_id: i64) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT name FROM servers WHERE id = ?1",
+        params![server_id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// The host the sign-in was sent to: the redirect address's host, with its port when it has one.
+fn destination_of(redirect: &str) -> String {
+    truncated(templates::host_and_port(redirect), DESTINATION_LIMIT)
+}
+
+fn truncated(text: &str, limit: usize) -> String {
+    text.chars().take(limit).collect()
+}
+
+/// The time in UTC as the mail writes it: `21 November 2026, 14:05 UTC`.
+fn utc_text(at: OffsetDateTime) -> String {
+    let at = at.to_offset(UtcOffset::UTC);
+    format!(
+        "{} {} {}, {:02}:{:02} UTC",
+        at.day(),
+        at.month(),
+        at.year(),
+        at.hour(),
+        at.minute()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use time::OffsetDateTime;
+
+    use super::{destination_of, truncated, utc_text};
+
+    #[test]
+    fn the_destination_is_the_host_and_the_port_the_code_was_issued_for() {
+        assert_eq!(
+            destination_of("http://127.0.0.1:53535/callback"),
+            "127.0.0.1:53535"
+        );
+        assert_eq!(
+            destination_of("https://claude.ai/api/mcp/auth_callback"),
+            "claude.ai"
+        );
+        assert_eq!(destination_of("http://[::1]:8000/cb"), "[::1]:8000");
+    }
+
+    #[test]
+    fn a_destination_and_a_server_name_are_cut_to_their_limits() {
+        let long = format!("https://{}.example.com/cb", "a".repeat(90));
+        assert_eq!(destination_of(&long), "a".repeat(80));
+        assert_eq!(truncated(&"b".repeat(70), 60), "b".repeat(60));
+        assert_eq!(truncated("short", 60), "short");
+    }
+
+    #[test]
+    fn the_time_is_utc_with_a_day_without_a_zero_and_a_24_hour_clock() {
+        // date -u -d @1795269900 gives Sat 21 Nov 2026 02:05:00 PM UTC.
+        let at = OffsetDateTime::from_unix_timestamp(1_795_269_900).expect("in range");
+        assert_eq!(utc_text(at), "21 November 2026, 14:05 UTC");
+        // date -u -d @1772608140 gives Wed 04 Mar 2026 07:09:00 AM UTC.
+        let at = OffsetDateTime::from_unix_timestamp(1_772_608_140).expect("in range");
+        assert_eq!(utc_text(at), "4 March 2026, 07:09 UTC");
+        // date -u -d @1767225600 gives Thu 01 Jan 2026 12:00:00 AM UTC.
+        let at = OffsetDateTime::from_unix_timestamp(1_767_225_600).expect("in range");
+        assert_eq!(utc_text(at), "1 January 2026, 00:00 UTC");
+    }
 }
