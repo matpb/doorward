@@ -1688,3 +1688,164 @@ more than 100 rows; the expected order and counts come from the same table.
 4. `filters_reset_to_the_first_page`: the filter form holds no `page` field, and a submit
    built from its user and server fields shows page 1 of the filtered rows. It is red before
    the change.
+
+## s62_shell.rs (statements 62 to 64, 67 and 69)
+
+The shell and the stylesheet, read from the served pages and the served stylesheet. Most tests
+read one world, `seeded()`: an owner, bob as a plain user granted `demo`, an admin, `demo` with
+the tools `echo`, `search` and `delete_db`, and an open invitation for dave. The covered pages
+are the sign-in and forgot pages, the account page for the owner, an admin and bob, the panel
+pages (overview, servers, one server, users, one user, invitations, rules, redirects, mail,
+activity), the local and the web consent pages, the invitation page, the reset page, the 403
+page for bob on `/admin`, and the "link is not valid" 404 page. The unknown address is
+`/no/such/page`: a single segment such as `/no-such-page` is a server path, which answers 401
+for a client with no token (statement 18), so it cannot be the 404 of statement 62.
+
+The stylesheet checks read the rules of `assets/doorward.css` as served; the colour checks
+convert each token from oklch to sRGB with the OKLab matrices, then compute the WCAG contrast.
+The conversion is guarded by `the_oklch_conversion_matches_known_colours`.
+
+1. `every_page_holds_the_site_header_and_its_layout`: each covered page and the unknown
+   address hold one `body > header.site[data-brand]` naming Doorward, before `main`, with
+   `body[data-layout]` of `panel`, `page` or `card` as the page kind requires. It is red
+   before the change, since the unknown address answers without a header.
+2. `the_not_found_page_is_a_full_card_page`: the unknown address answers 404 with the header,
+   `body[data-layout="card"]`, `main[data-page="not-found"]` and the h1 `Page not found`. It is
+   red before the change.
+3. `a_panel_page_holds_the_navigation_in_its_header`: each panel page holds one
+   `nav#panel-nav[data-nav="panel"][aria-label="Admin"][popover]` inside the header, no nav in
+   `main`, and `a.brand` to `/admin`; the links read Overview, Users, Invitations, Servers,
+   Rules, Redirects, Activity, Mail and Your account in that order, with `nav-break` on Users,
+   Servers and Activity and `nav-end` on Your account, and the admin's list has no Mail. It is
+   red before the change.
+4. `the_current_section_is_marked_once`: each covered page holds exactly one `span.nav-mark`
+   (aria-hidden), inside the link to its section, which is the only link with `aria-current`;
+   pages with no section hold none. It is red before the change.
+5. `the_account_page_holds_its_own_navigation`: the owner's and an admin's account pages hold
+   `nav#account-nav[data-nav="account"][aria-label="Account"]` in the header, with `Your account`
+   as the current link and `li.nav-end > a[href="/admin"][data-nav="to-panel"]`;
+   bob's account page holds no `nav` and no `button.menu-button`. It is red before the change.
+6. `a_card_page_holds_the_note_and_no_navigation`: each card page and the unknown address hold
+   one non-empty `p.site-note` in the header, and no nav and no Menu button. It is red before
+   the change.
+7. `a_rate_limited_page_holds_the_site_note`: with a general burst of 2, the third browser
+   request to `/login` answers 429 with one `p.site-note` in the header and no nav. It is red
+   before the change.
+8. `the_menu_button_opens_the_panel_without_script`: each panel page holds one
+   `button.menu-button[type="button"][popovertarget="panel-nav"]` in the site bar, with the
+   spans `Menu` (when closed) and `Close` (when open), and the panel is a `popover`. It is red
+   before the change.
+9. `every_page_links_the_gateways_stylesheet`: each covered page and the unknown address link
+   exactly one stylesheet whose href starts with `/assets/doorward.css`. It is red before the
+   change, since the unknown address page links none.
+10. `no_page_holds_a_script_or_an_inline_style`: no covered page or the unknown address holds
+    `<script`, ` style=` or `<style`. It passes before the change; it guards statement 63.
+11. `the_oklch_conversion_matches_known_colours`: `oklch(1 0 0)` gives 255 in each channel,
+    `oklch(0 0 0)` gives 0, `oklch(0.5 0 0)` gives 99 within 1, and `oklch(0.628 0.2577 29.23)`
+    gives (255, 0, 0) within 2. It passes before the change; it guards the converter.
+12. `text_reaches_4_5_to_1_on_its_background_in_both_themes`: the 19 text pairs of statement
+    63 (`--ink`, `--ink-2`, `--ink-3` on `--paper`, `--surface`, `--sunken`; `--ink` and
+    `--ink-2` on the three washes; `--on-door` and `--on-door-2` on `--door`; `--on-deny` on
+    `--deny`; `--paper` on `--ink`) reach 4.5 to 1 in the light and in the dark theme; a missing
+    token fails the test by name. It is red before the change, since the tokens do not exist.
+13. `colour_and_rules_reach_3_to_1_on_their_background_in_both_themes`: `--allow`, `--deny` and
+    `--warn` on `--paper` and `--surface`, and `--line-strong` on both, reach 3 to 1 in both
+    themes. It is red before the change, since the tokens do not exist.
+14. `the_controls_are_36_px_and_44_px_on_a_touch_or_narrow_screen`: `:root` declares
+    `--control: 36px`; the block `@media (pointer: coarse), (max-width: 639.98px)` redeclares
+    it as `44px`; a rule whose selector mentions `button`, one mentioning `input` and one
+    mentioning `select` sizes its height with `var(--control)`. It is red before the change.
+15. `the_stylesheet_names_only_the_gateways_font_files`: no `@import`; at least one
+    `@font-face` with a `src`; every `url(` has the form `url("fonts/<name>.woff2")`. It is red
+    before the change.
+16. `the_font_files_are_served_as_woff2`: each font the stylesheet names answers 200 from
+    `/assets/fonts/<name>.woff2` with `content-type` `font/woff2`, `nosniff`, and a body that
+    starts with `wOF2`. It is red before the change.
+17. `an_unknown_font_answers_404`: `/assets/fonts/nope.woff2` answers 404. It passes before the
+    change.
+18. `the_page_policy_allows_fonts_from_the_gateway_only`: the content-security-policy of the
+    sign-in page and of the consent page has the directive `font-src 'self'` and keeps
+    `default-src 'none'`. It is red before the change.
+19. `the_font_licences_are_in_the_repository`: `assets/fonts/OFL-Atkinson-Hyperlegible-Next.txt`
+    and `...-Mono.txt` exist and say SIL OPEN FONT LICENSE. It is red before the change, since
+    the font files are not in the repository yet.
+20. `the_stylesheet_moves_pages_only_when_motion_is_allowed`: `@view-transition` with
+    `navigation: auto` inside `@media (prefers-reduced-motion: no-preference)`; the names
+    `door`, `brand`, `nav-mark` and `room` for `view-transition-name`; and inside
+    `@media (prefers-reduced-motion: reduce)` a universal rule (`*`) that sets
+    `transition-duration` and `animation-duration`. It is red before the change.
+21. `colour_is_only_named_values_outside_custom_properties`: no declaration whose property does
+    not start with `--` holds `oklch(`, `rgb(`, `rgba(`, `hsl(`, `hsla(` or a `#` followed by
+    3, 4, 6 or 8 hex digits. It passes before the change, since the current stylesheet keeps
+    its colours in custom properties.
+
+## s65_forms_tables.rs (statements 65 and 66)
+
+Forms are read from the server add form, one server, the rules, redirects, invitations and
+mail pages, one user, the account page of bob, the sign-in and forgot pages, and the setup
+page of an instance with no owner. The tables are read from `seeded()`: `demo` with bob
+granted, two rules (allow everyone on the server, deny `delete_db` for everyone), a redirect,
+an open invitation for dave, and bob's allowed `echo` call and refused `delete_db` call over a
+connected client. Each test builds that world, except the setup page, which has its own gateway.
+
+1. `every_field_sits_in_a_row_under_its_label`: every input (not hidden, checkbox or radio),
+   select and textarea on each form page sits directly in a `div.field`, that in a
+   `div.fields` (or a fieldset), after a `label[for]` that is its direct child. Each page
+   holds at least one such control. It is red before the change, since the server form has
+   no field rows.
+2. `labels_are_tied_to_their_control_and_hold_no_brackets`: each label has a `for`, holds no
+   input, and holds a bracket only inside `span.optional` whose text is `(optional)`. It is red
+   before the change, since the server form's Path label holds its hint in brackets.
+3. `hints_are_tied_to_their_control`: each `p.hint` has an id that a control in its
+   `div.field` or `div.check` names in `aria-describedby`. It is red before the change.
+4. `checkboxes_sit_in_a_check_beside_their_label`: each checkbox sits directly in a `div.check`
+   with a sibling `label[for]` equal to its id; the server page holds at least one checkbox.
+   It is red before the change.
+5. `the_server_form_says_what_the_path_and_the_upstream_take`: the label `Path` has the hint
+   `Letters, digits and hyphens, at most 24 characters.` and `Upstream address` has the hint
+   `An http or https address.`. It is red before the change.
+6. `the_lists_are_tables_with_column_heads_and_rows`: servers, users, invitations, rules,
+   redirects, activity and the connected clients on `/account` each hold one `table.list` with
+   `thead th[scope="col"]` heads and `tbody tr` rows; the overview's latest activity holds one
+   such table; no list page holds `ul.rows` or `ol.rows`. It is red before the change.
+7. `the_rows_carry_their_data_on_the_row_element`: `tr[data-server-id][data-slug]` (one row),
+   `tr[data-user-id][data-email]`, `tr[data-invitation-id][data-email]` (one row),
+   `tr[data-rule-id]` (two rows), `tr[data-redirect-id]`, `tr[data-kind]` and
+   `tr[data-family]` are present, and no `li` carries those attributes. It is red before the
+   change.
+8. `the_servers_counts_carry_their_unit_in_the_cell`: the row of demo holds `td[data-tool-count]`
+   starting with 3 and `td[data-user-count]` starting with 1, each with one `span.unit`. It is
+   red before the change.
+9. `the_rule_row_starts_with_the_rule_id`: the first cell of each rule row reads its
+   `data-rule-id`, after an optional `Rule ` prefix. It is red before the change.
+10. `a_tool_name_breaks_only_after_its_underscores`: the raw server page holds `delete_<wbr>db`,
+    and an element whose text is `delete_db` holds that markup, so the text is unchanged. It is
+    red before the change.
+11. `an_email_address_breaks_only_before_the_at_sign`: the raw users page holds
+    `bob<wbr>@example.com`, and an element whose text is `bob@example.com` holds that markup.
+    It is red before the change.
+12. `a_tool_call_row_shows_its_duration_in_ms`: the activity page holds at least two
+    `tr[data-kind="tool_call"]` rows (the allowed and the refused call), each with one
+    `td.duration` whose text is digits then ` ms`. It is red before the change.
+13. `the_duration_cell_keeps_its_text_on_one_line`: the stylesheet holds a rule whose selector
+    mentions `.duration` and declares `white-space: nowrap`. It is red before the change.
+
+## s68_exposed.rs (statement 68)
+
+Each test builds its own world. An exposed server is one whose upstream asks for no secret;
+its lock-down check leaves it in the state `open`. A healthy server is one whose upstream
+refuses without the gateway's secret, so its state is `ok`.
+
+1. `an_open_server_has_an_alert_on_its_own_page`: the server page carries `data-lockdown="open"`
+   and holds one `main div.notice[data-notice="error"][data-lockdown-alert]` that says `This server answers without the gateway.` and links to `#lockdown-title`, and the page
+   holds the element `#lockdown-title`. It is red before the change.
+2. `the_overview_names_one_exposed_server`: with one open server and one healthy one, the
+   overview holds `div.notice[data-notice="error"][data-open-servers="1"]` reading `Open Demo answers without the gateway.` with a link to `/admin/servers/<id>#lockdown-title`, and the
+   healthy server is not named. It is red before the change.
+3. `the_overview_counts_two_exposed_servers`: with two open servers, the overview holds
+   `[data-open-servers="2"]` reading `2 servers answer without the gateway.` with one link per
+   server, each to `/admin/servers/<id>#lockdown-title`, whose text is the server's name. It is
+   red before the change.
+4. `no_alert_without_an_exposed_server`: with only a healthy server (`ok`), the overview holds
+   no `[data-open-servers]` and the server page holds no `[data-lockdown-alert]`. It passes
+   before the change, since the negative case has no alert today either.

@@ -1,1 +1,4 @@
 # Test files written before their code. Each must compile and fail; remove a name when its code lands.
+s62_shell
+s65_forms_tables
+s68_exposed

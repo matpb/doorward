@@ -239,7 +239,7 @@ L. Added after the owner's auth review
     for a code or token that exists) writes one line to standard error that says what failed
     and why, with no token, code, cookie, password, email or full address in it. A database
     error in the bearer check answers 503, not 401.
-52. Every page, error pages included, carries a header with the Doorward name. Panel pages
+52. (replaced by 62) Every page, error pages included, carries a header with the Doorward name. Panel pages
     show the navigation as one row of tabs that wraps on a narrow screen and marks the
     current section. Pages for signing in, setting a password, consent and errors show their
     content in one centered card; panel pages use the wide layout.
@@ -261,7 +261,7 @@ L. Added after the owner's auth review
 57. The consent page has Approve as its one primary button and Deny as a secondary button,
     and the sentence about a client whose description cannot be confirmed is shown as a
     warning. Its wording is unchanged.
-58. Text in the stylesheet's two themes has a contrast of at least 4.5 to 1 against the
+58. (replaced by 63) Text in the stylesheet's two themes has a contrast of at least 4.5 to 1 against the
     background it sits on, buttons, fields and tabs are at least 44 px tall, the pages make
     no request outside the gateway and carry no script and no inline style, and at 390 px
     wide no page scrolls sideways.
@@ -275,6 +275,34 @@ L. Added after the owner's auth review
     shows, and links to older and newer pages that keep the chosen filters. A page number
     that is not a positive number shows the first page, and a page past the end shows no
     rows and still links back to newer ones.
+62. Every page, error pages and "page not found" included, carries a header with the
+    Doorward name. On panel pages the header holds the navigation: beside the content at
+    1100 px wide and more, and under that behind a Menu button that opens it without any
+    script. The current section is marked, with exactly one mark on the page. Pages for
+    signing in, setting a password, consent and errors have no navigation and show their
+    content in one column beside the header.
+63. Text in both themes has a contrast of at least 4.5 to 1 against the background it sits
+    on, computed from the stylesheet's colour values. Buttons, fields and navigation links
+    are at least 44 px tall on a narrow or touch screen and at least 36 px otherwise. The
+    pages make no request outside the gateway and carry no script and no inline style, and
+    from 360 px wide up no page scrolls sideways.
+64. The interface has its own typeface: the font files are compiled into the gateway and
+    served by it, the page policy allows fonts from the gateway only, and the fonts'
+    licence files are in the repository.
+65. Fields that share a row line up: their inputs have the same top and the same bottom,
+    whichever of them has a hint or a label that wraps. A hint is a sentence under its
+    field, tied to it for screen readers, never text in brackets inside the label.
+66. Servers, users, invitations, rules, redirects, connected clients and activity are
+    tables with column heads at desktop width, and each row becomes a stacked record on a
+    phone. A number stays on one line with its unit, and a name or address breaks only at
+    a separator, never in the middle of a word.
+67. Moving between pages, opening a disclosure and a notice appearing are animated by the
+    stylesheet alone, and nothing moves for a person who asked for reduced motion.
+68. A server that answers without the gateway is called out: an alert at the top of its own
+    page, and on the overview an alert that names the servers concerned.
+69. Colour appears only where the gateway allowed, denied or removed something, or cannot
+    verify something. Everything else is ink and paper, the primary button included, and
+    every colour in the stylesheet comes from its table of named values.
 
 ### Proof
 
@@ -307,6 +335,12 @@ into the test harness. In addition:
   fix its findings.
 - 51: `tests/s51_failure_log.rs`, which drives the built binary and reads its standard error.
 - 59 to 61: `tests/s59_counts_paging.rs`.
+- 62 to 64, 67 and 69: `tests/s62_shell.rs`, which reads the served pages, the font files
+  and the stylesheet; 65 and 66: `tests/s65_forms_tables.rs`; 68: `tests/s68_exposed.rs`.
+  For 63, 65, 66 and 67 also a walk-through of every page in a real browser at 390 px and
+  desktop width in both themes, which measures the tops and bottoms of fields on a row,
+  control heights, contrast and sideways scroll, and captures a page change mid-way;
+  screenshots kept under `proof/` (not tracked).
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
   a walk-through of every page in a real browser at 390 px and desktop width in both
   themes, which also measures control heights and sideways scroll; screenshots kept under
