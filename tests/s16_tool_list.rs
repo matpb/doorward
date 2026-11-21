@@ -220,7 +220,8 @@ async fn an_oversized_tool_list_is_refused() {
         .await;
     let page = w.owner.get(&format!("/admin/servers/{id}")).await;
     assert!(
-        page.error().is_some_and(|error| !error.is_empty()),
+        page.text(r#"[data-notice="error"]"#)
+            .is_some_and(|error| !error.is_empty()),
         "the server page must show an error for a tool list over the limit"
     );
     assert!(
@@ -249,7 +250,8 @@ async fn a_failed_refresh_keeps_the_old_list() {
     assert_eq!(page.status, 303, "refreshing the tools must answer 303");
     let page = w.owner.get(&format!("/admin/servers/{id}")).await;
     assert!(
-        page.error().is_some_and(|error| !error.is_empty()),
+        page.text(r#"[data-notice="error"]"#)
+            .is_some_and(|error| !error.is_empty()),
         "a failed refresh must show an error on the server page"
     );
     assert_eq!(

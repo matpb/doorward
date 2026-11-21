@@ -265,7 +265,7 @@ fn assert_latest(overview: &Page, newest_first: &[String]) {
     let section = sections[0];
     let want = newest_first.len().min(5);
     assert_eq!(want, 5, "the seeded activity must hold more than five rows");
-    let shown: Vec<String> = all(section, "li[data-kind]")
+    let shown: Vec<String> = all(section, "tr[data-kind]")
         .into_iter()
         .map(|row| row.value().attr("data-time").unwrap_or("").to_string())
         .collect();
@@ -302,7 +302,7 @@ async fn the_lists_show_counts_and_states() {
         "the servers page must answer 200 to the owner"
     );
     let doc = Html::parse_document(&servers.body);
-    let rows = all(doc.root_element(), "li[data-server-id]");
+    let rows = all(doc.root_element(), "tr[data-server-id]");
     assert_eq!(rows.len(), 2, "the servers page must list both servers");
     for row in rows {
         let slug = row.value().attr("data-slug").unwrap_or("");

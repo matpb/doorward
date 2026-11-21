@@ -660,51 +660,125 @@ pub(super) fn counted(count: i64, one: &str, many: &str) -> String {
     format!("{count} {word}")
 }
 
-/// The lock-down state as a pill: a word and a marker tone.
+/// The lock-down state as a status: a word with its marker. Answering without the gateway is strong.
 fn lockdown_pill(verdict: &str) -> Markup {
     match verdict {
         "ok" => ui::pill("ok", "Locked down"),
-        "open" => ui::pill("bad", "Answers without the gateway"),
+        "open" => {
+            html! { span.state.strong data-pill data-tone="bad" { "Answers without the gateway" } }
+        }
         _ => ui::pill("warn", "Not checked"),
     }
 }
 
+/// The field a refusal is about: its input id and the words the form uses for it.
+fn refused_field(refusal: Refusal) -> Option<(&'static str, &'static str)> {
+    match refusal {
+        Refusal::Name => Some(("server-name", "name")),
+        Refusal::Slug | Refusal::Taken => Some(("server-slug", "path")),
+        Refusal::UpstreamUrl => Some(("server-url", "upstream address")),
+        Refusal::SecretName => Some(("secret-name", "header name")),
+        Refusal::SecretValue => Some(("secret-value", "header value")),
+        Refusal::UnknownUser => None,
+    }
+}
+
+/// The notice above a refused form: its lead-in, the refusal, and a link to its field when it has one.
+fn refusal_notice(lead: &str, refusal: Refusal) -> Markup {
+    let field = refused_field(refusal);
+    html! {
+        div.notice data-notice="error" role="alert" {
+            p {
+                strong { (lead) }
+                " " (refusal)
+                @if let Some((id, label)) = field {
+                    " "
+                    a href=(format!("#{id}")) { "Go to the " (label) " field" }
+                }
+            }
+        }
+    }
+}
+
+/// The note under a field: the refusal about it when there is one, else its hint, if it has one.
+fn note_under<'a>(error: Option<&'a str>, hint: Option<&'a str>) -> ui::Note<'a> {
+    match (error, hint) {
+        (Some(text), _) => ui::Note::Error(text),
+        (None, Some(text)) => ui::Note::Hint(text),
+        (None, None) => ui::Note::None,
+    }
+}
+
+/// The aria-invalid of a control: "true" when a refusal is about it.
+fn invalid(error: Option<&str>) -> Option<&'static str> {
+    error.map(|_| "true")
+}
+
 fn servers_body(csrf: &str, rows: &[ServerRow], draft: &Draft, refusal: Option<Refusal>) -> Markup {
     html! {
-        div.stack {
+        div.page-head {
             h1 { "Servers" }
-            @if let Some(refusal) = refusal {
-                p.error { (refusal) }
+            @if !rows.is_empty() {
+                div.head-actions {
+                    a.button data-kind="secondary" href="#add" { "Add a server" }
+                }
             }
-            div.split {
-                section.card.main {
-                    @if rows.is_empty() {
-                        p { "No servers yet." }
-                    }
-                    ul.servers.rows {
-                        @for row in rows {
-                            li data-server-id=(row.id) data-slug=(row.slug) {
-                                div.row-main {
-                                    a.row-title href=(format!("/admin/servers/{}", row.id)) { (row.name) }
-                                    p.row-meta { code { (row.slug) } }
-                                    p.row-meta {
-                                        span data-tool-count { (counted(row.tools, "tool", "tools")) }
-                                        " · "
-                                        span data-user-count { (counted(row.users, "user", "users")) }
-                                    }
-                                }
-                                div.row-actions { (lockdown_pill(&row.lockdown)) }
-                            }
-                        }
+        }
+        @if let Some(refusal) = refusal {
+            (refusal_notice("The server was not added.", refusal))
+        }
+        @if rows.is_empty() {
+            div.empty {
+                h2 { "No servers yet." }
+                p { "A server is an MCP server that Doorward stands in front of. Add the first one below, then choose who may reach it." }
+            }
+        } @else {
+            table.list.servers {
+                thead {
+                    tr {
+                        th scope="col" { "Name" }
+                        th scope="col" class="c-path" { "Path" }
+                        th scope="col" class="c-num num" { "Tools" }
+                        th scope="col" class="c-num num" { "Users" }
+                        th scope="col" class="c-state" { "Lock-down" }
                     }
                 }
-                form.card.side method="post" action="/admin/servers" {
-                    h2 { "Add a server" }
+                tbody {
+                    @for row in rows {
+                        (server_row(row))
+                    }
+                }
+            }
+        }
+        section.part id="add" aria-labelledby="add-title" {
+            div.part-head {
+                h2 id="add-title" { "Add a server" }
+                p { "An MCP server that Doorward stands in front of. People reach it only through the gateway." }
+            }
+            div.part-body {
+                form.flow method="post" action="/admin/servers" {
                     input type="hidden" name="csrf" value=(csrf);
-                    (fields(draft, "Secret header value (optional)", false))
-                    button type="submit" data-kind="primary" { "Add server" }
+                    (settings_fields(draft, refusal, false))
+                    div.form-actions {
+                        button type="submit" data-kind="primary" { "Add server" }
+                    }
                 }
             }
+        }
+    }
+}
+
+/// One row of the servers table: the name, the path, the two counts and the lock-down state.
+fn server_row(row: &ServerRow) -> Markup {
+    html! {
+        tr data-server-id=(row.id) data-slug=(row.slug) {
+            td.lead {
+                a.name href=(format!("/admin/servers/{}", row.id)) { (row.name) }
+            }
+            td { code { (row.slug) } }
+            td.num.half data-tool-count { (ui::count_with_unit(row.tools, "tool", "tools")) }
+            td.num.half data-user-count { (ui::count_with_unit(row.users, "user", "users")) }
+            td { (lockdown_pill(&row.lockdown)) }
         }
     }
 }
@@ -719,72 +793,113 @@ fn server_body(
 ) -> Markup {
     let path = format!("/admin/servers/{}", server.id);
     let note = lockdown_note(&server.lockdown);
+    let assigned = users.iter().filter(|user| user.assigned).count();
     html! {
-        div.stack {
+        div.page-head {
+            p.crumb { a href="/admin/servers" { "Servers" } }
             h1 { (server.name) }
-            p { "Path: " code { (server.slug) } }
-            p {
-                a href=(format!("/admin/activity?server={}", server.id)) data-link="activity" { "Activity" }
+            p.meta {
+                span { "Path " code { (server.slug) } }
+                (lockdown_pill(&server.lockdown))
             }
-            @if let Some(refusal) = refusal {
-                p.error { (refusal) }
+            div.head-actions {
+                a.button data-kind="secondary" href=(format!("/admin/activity?server={}", server.id)) data-link="activity" { "Activity" }
             }
-            @if let Some(message) = &server.catalog_error {
-                p.error { (message) }
+        }
+        @if let Some(refusal) = refusal {
+            (refusal_notice("The server was not saved.", refusal))
+        }
+        @if server.lockdown == "open" {
+            div.notice data-notice="error" data-lockdown-alert {
+                p {
+                    strong { "This server answers without the gateway." }
+                    " Anyone who can reach its address can use it, with no sign-in and no record. "
+                    a href="#lockdown-title" { "Go to lock-down" }
+                }
             }
-            section.card {
-                h2 { "Settings" }
-                form method="post" action=(path) {
+        }
+        section.part aria-labelledby="settings-title" {
+            div.part-head {
+                h2 id="settings-title" { "Settings" }
+                p { "Where the server lives and what Doorward sends to it." }
+            }
+            div.part-body {
+                form.flow method="post" action=(path) {
                     input type="hidden" name="csrf" value=(csrf);
-                    (fields(draft, "Secret header value (empty keeps the stored one)", server.has_secret))
-                    button type="submit" data-kind="primary" { "Save server" }
-                }
-            }
-            section.card {
-                h2 { "Tools" }
-                @if tools.is_empty() {
-                    p { "No tools yet. Refresh the list to fetch them from the upstream." }
-                }
-                ul.catalog.rows {
-                    @for tool in tools {
-                        li data-catalog-tool=(tool) { code { (tool) } }
+                    (settings_fields(draft, refusal, server.has_secret))
+                    div.form-actions {
+                        button type="submit" data-kind="primary" { "Save server" }
                     }
                 }
-                form method="post" action=(format!("{path}/refresh-tools")) {
+            }
+        }
+        section.part aria-labelledby="tools-title" {
+            div.part-head {
+                h2 id="tools-title" { "Tools " span.count { (tools.len()) } }
+                p { "The tools the upstream lists. Rules and the activity log use these names." }
+            }
+            div.part-body.flow {
+                @if let Some(message) = &server.catalog_error {
+                    p.notice data-notice="error" { (message) }
+                }
+                @if tools.is_empty() {
+                    p.muted { "No tools yet. Refresh the list to fetch them from the upstream." }
+                } @else {
+                    ul.catalog {
+                        @for tool in tools {
+                            li data-catalog-tool=(tool) { code { (ui::breakable(tool)) } }
+                        }
+                    }
+                }
+                form.form-actions method="post" action=(format!("{path}/refresh-tools")) {
                     input type="hidden" name="csrf" value=(csrf);
                     button type="submit" data-kind="secondary" { "Refresh tools" }
                 }
             }
-            section.card {
-                h2 { "Lock-down" }
+        }
+        section.part aria-labelledby="lockdown-title" {
+            div.part-head {
+                h2 id="lockdown-title" { "Lock-down" }
+                p { "Checks that the upstream refuses a request that does not carry the secret." }
+            }
+            div.part-body.flow {
                 p { (lockdown_pill(&server.lockdown)) }
-                p data-lockdown-note=(note) { (note) }
-                form method="post" action=(format!("{path}/check-lockdown")) {
+                p.narrow data-lockdown-note=(note) { (note) }
+                form.form-actions method="post" action=(format!("{path}/check-lockdown")) {
                     input type="hidden" name="csrf" value=(csrf);
                     button type="submit" data-kind="secondary" { "Check lock-down" }
                 }
             }
-            section.card {
-                h2 { "Users" }
-                p {
-                    "Every user reaches this server under the same identity, so anything the server caches or remembers per caller is shared."
-                }
-                form method="post" action=(format!("{path}/users")) {
+        }
+        section.part aria-labelledby="users-title" {
+            div.part-head {
+                h2 id="users-title" { "Users " span.count { (assigned) " of " (users.len()) } }
+                p { "Every user reaches this server under the same identity, so anything the server caches or remembers per caller is shared." }
+            }
+            div.part-body {
+                form.flow method="post" action=(format!("{path}/users")) {
                     input type="hidden" name="csrf" value=(csrf);
-                    @for user in users {
-                        label.check {
-                            input type="checkbox" name="user_id" value=(user.id) checked[user.assigned];
-                            " " (user.email)
+                    div.checks {
+                        @for user in users {
+                            (user_check(user))
                         }
                     }
-                    button type="submit" data-kind="primary" { "Save users" }
+                    div.form-actions {
+                        button type="submit" data-kind="secondary" { "Save users" }
+                    }
                 }
             }
-            section.card.danger-zone {
-                h2 { "Delete" }
-                details data-confirm {
-                    summary { "Delete this server (cannot be undone)" }
+        }
+        section.part aria-labelledby="delete-title" {
+            div.part-head {
+                h2 id="delete-title" { "Delete" }
+                p { "Removes the server from the gateway." }
+            }
+            div.part-body {
+                details.confirm data-confirm {
+                    summary { "Delete this server " span.chevron aria-hidden="true" {} }
                     div.confirm-body {
+                        p { "This cannot be undone. People who use " (server.name) " through Doorward lose it at once." }
                         form method="post" action=(format!("{path}/delete")) {
                             input type="hidden" name="csrf" value=(csrf);
                             button type="submit" data-kind="danger" { "Delete server" }
@@ -796,53 +911,147 @@ fn server_body(
     }
 }
 
-/// The settings inputs of the create and the edit form. The secret value is never filled in.
-/// `stored` is true when the server holds a secret, which the edit form may remove.
-fn fields(draft: &Draft, value_hint: &str, stored: bool) -> Markup {
+/// One user as a checkbox: assigned when the server has the user.
+fn user_check(user: &UserChoice) -> Markup {
+    let value = user.id.to_string();
+    ui::check(
+        &format!("user-{}", user.id),
+        "user_id",
+        Some(&value),
+        user.assigned,
+        ui::email(&user.email),
+        None,
+    )
+}
+
+/// The settings inputs of the create and the edit form; `stored` lets the edit form remove a secret.
+/// A refusal shows under the field it is about, and the secret value is never filled in.
+fn settings_fields(draft: &Draft, refusal: Option<Refusal>, stored: bool) -> Markup {
+    let refused = refusal.and_then(refused_field).map(|(id, _)| id);
+    let message = refusal.map(|refusal| refusal.to_string());
+    let error_on = |id: &str| message.as_deref().filter(|_| refused == Some(id));
+
+    let name_error = error_on("server-name");
+    let name_note = note_under(name_error, None);
+    let name_described = name_note.describer("server-name");
+    let slug_error = error_on("server-slug");
+    let slug_note = note_under(
+        slug_error,
+        Some("Letters, digits and hyphens, at most 24 characters."),
+    );
+    let slug_described = slug_note.describer("server-slug");
+    let url_error = error_on("server-url");
+    let url_note = note_under(url_error, Some("An http or https address."));
+    let url_described = url_note.describer("server-url");
+    let secret_name_error = error_on("secret-name");
+    let secret_name_note = note_under(secret_name_error, None);
+    let secret_name_described = secret_name_note.describer("secret-name");
+    let value_error = error_on("secret-value");
+    let value_note = if stored {
+        let remove = ui::check(
+            "remove-secret",
+            "remove_secret",
+            None,
+            false,
+            "Remove the stored secret",
+            None,
+        );
+        match value_error {
+            Some(text) => ui::Note::Below(
+                "secret-value-error",
+                html! { (ui::field_error("secret-value-error", text)) (remove) },
+            ),
+            None => ui::Note::Below(
+                "secret-value-hint",
+                html! {
+                    (ui::hint("secret-value-hint", "Stored, never shown again. Leave empty to keep it."))
+                    (remove)
+                },
+            ),
+        }
+    } else {
+        note_under(value_error, Some("Kept encrypted and never shown again."))
+    };
+    let value_described = value_note.describer("secret-value");
+
     html! {
+        div.fields data-cols="2" {
+            (ui::field(
+                "server-name",
+                "Name",
+                false,
+                html! {
+                    input id="server-name" name="name" type="text" value=(draft.name) required
+                        aria-invalid=[invalid(name_error)] aria-describedby=[name_described.as_deref()];
+                },
+                name_note,
+            ))
+            (ui::field(
+                "server-slug",
+                "Path",
+                false,
+                html! {
+                    input.mono id="server-slug" name="slug" type="text" value=(draft.slug) required
+                        aria-invalid=[invalid(slug_error)] aria-describedby=[slug_described.as_deref()];
+                },
+                slug_note,
+            ))
+        }
         div.fields {
-            div {
-                label for="server-name" { "Name" }
-                input id="server-name" name="name" type="text" value=(draft.name) required;
-            }
-            div {
-                label for="server-slug" { "Path (letters, digits and hyphens, at most 24 characters)" }
-                input id="server-slug" name="slug" type="text" value=(draft.slug) required;
-            }
-            div {
-                label for="server-url" { "Upstream address (http or https)" }
-                input id="server-url" name="upstream_url" type="url" value=(draft.upstream_url) required;
-            }
+            (ui::field(
+                "server-url",
+                "Upstream address",
+                false,
+                html! {
+                    input id="server-url" name="upstream_url" type="url" value=(draft.upstream_url) required
+                        aria-invalid=[invalid(url_error)] aria-describedby=[url_described.as_deref()];
+                },
+                url_note,
+            ))
         }
-        fieldset {
+        fieldset.flow {
             legend { "Secret header" }
-            div.fields {
-                div {
-                    label for="secret-name" { "Secret header name (optional)" }
-                    input id="secret-name" name="secret_header_name" type="text" value=(draft.secret_header_name);
-                }
-                div {
-                    label for="secret-value" { (value_hint) }
-                    input id="secret-value" name="secret_header_value" type="password" autocomplete="new-password";
-                    @if stored {
-                        p.hint { "A secret is stored. Its value is never shown again." }
-                    }
-                }
-            }
-            @if stored {
-                label.check {
-                    input type="checkbox" name="remove_secret";
-                    " Remove the stored secret"
-                }
+            p.muted { "Doorward sends this header with every request, so the upstream can refuse anything that did not come through the gateway." }
+            div.fields data-cols="2" {
+                (ui::field(
+                    "secret-name",
+                    "Header name",
+                    true,
+                    html! {
+                        input.mono id="secret-name" name="secret_header_name" type="text" value=(draft.secret_header_name)
+                            aria-invalid=[invalid(secret_name_error)] aria-describedby=[secret_name_described.as_deref()];
+                    },
+                    secret_name_note,
+                ))
+                (ui::field(
+                    "secret-value",
+                    "Header value",
+                    true,
+                    html! {
+                        input id="secret-value" name="secret_header_value" type="password" autocomplete="new-password"
+                            aria-invalid=[invalid(value_error)] aria-describedby=[value_described.as_deref()];
+                    },
+                    value_note,
+                ))
             }
         }
-        label.check {
-            input type="checkbox" name="pass_resources" checked[draft.pass_resources];
-            " Pass resources to the upstream (off: empty list)"
-        }
-        label.check {
-            input type="checkbox" name="pass_prompts" checked[draft.pass_prompts];
-            " Pass prompts to the upstream (off: empty list)"
+        div.checks {
+            (ui::check(
+                "pass-resources",
+                "pass_resources",
+                None,
+                draft.pass_resources,
+                "Pass resources to the upstream",
+                Some("When off, clients get an empty list."),
+            ))
+            (ui::check(
+                "pass-prompts",
+                "pass_prompts",
+                None,
+                draft.pass_prompts,
+                "Pass prompts to the upstream",
+                Some("When off, clients get an empty list."),
+            ))
         }
     }
 }

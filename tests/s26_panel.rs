@@ -560,7 +560,8 @@ async fn a_refused_form_keeps_the_navigation() {
         "a bad path must refuse the server form with 400"
     );
     assert!(
-        page.error().is_some_and(|error| !error.is_empty()),
+        page.text(r#"[data-notice="error"]"#)
+            .is_some_and(|error| !error.is_empty()),
         "the refused server form must show its error"
     );
     assert_panel_nav(

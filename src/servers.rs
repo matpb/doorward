@@ -356,6 +356,26 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<ServerRef>> {
     rows.collect()
 }
 
+/// A server whose last lock-down check found it open: its id and its name.
+#[derive(Debug)]
+pub struct OpenServer {
+    pub id: i64,
+    pub name: String,
+}
+
+/// Every server whose lock-down state is open, by name.
+pub fn open_servers(conn: &Connection) -> rusqlite::Result<Vec<OpenServer>> {
+    let mut statement =
+        conn.prepare("SELECT id, name FROM servers WHERE lockdown = 'open' ORDER BY name, id")?;
+    let rows = statement.query_map([], |row| {
+        Ok(OpenServer {
+            id: row.get(0)?,
+            name: row.get(1)?,
+        })
+    })?;
+    rows.collect()
+}
+
 /// One server, or None when no row has the id.
 pub fn load(conn: &Connection, id: i64) -> rusqlite::Result<Option<Server>> {
     conn.query_row(
@@ -779,5 +799,40 @@ mod tests {
             SecretChange::Replace(_)
         ));
         assert_eq!(secret_change(stored, &keyed, true), SecretChange::Drop);
+    }
+
+    #[tokio::test]
+    async fn the_open_servers_are_the_open_ones_by_name() {
+        let dir = tempfile::tempdir().expect("dir");
+        let db = crate::db::Db::open(&dir.path().join("doorward.db")).expect("open");
+        db.call(|conn| {
+            for (name, slug, state) in [
+                ("Zeta", "zeta", "open"),
+                ("Alpha", "alpha", "open"),
+                ("Mid", "mid", "ok"),
+                ("Beta", "beta", "unknown"),
+                ("Gamma", "gamma", "open"),
+            ] {
+                conn.execute(
+                    "INSERT INTO servers (name, slug, upstream_url, lockdown, created_at) \
+                     VALUES (?1, ?2, 'https://example.com/mcp', ?3, 0)",
+                    params![name, slug, state],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("seed");
+        let found = db.call(|conn| open_servers(conn)).await.expect("query");
+        let pairs: Vec<(i64, &str)> = found.iter().map(|s| (s.id, s.name.as_str())).collect();
+        assert_eq!(pairs, [(2, "Alpha"), (5, "Gamma"), (1, "Zeta")]);
+        db.call(|conn| {
+            conn.execute("UPDATE servers SET lockdown = 'ok'", [])?;
+            Ok(())
+        })
+        .await
+        .expect("update");
+        let none = db.call(|conn| open_servers(conn)).await.expect("query");
+        assert!(none.is_empty(), "no open server must give no rows");
     }
 }

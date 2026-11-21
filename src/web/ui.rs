@@ -1,6 +1,6 @@
 //! Small markup helpers shared by the pages: status pills, notices and identifiers.
 
-use maud::{Markup, PreEscaped, html};
+use maud::{Markup, PreEscaped, Render, html};
 
 /// A status word with a marker. tone: "ok" | "bad" | "warn" | "muted".
 pub fn pill(tone: &str, text: &str) -> Markup {
@@ -38,6 +38,123 @@ pub fn breakable(text: &str) -> Markup {
 pub fn notice(kind: &str, body: Markup) -> Markup {
     html! {
         div class="notice" data-notice=(kind) { (body) }
+    }
+}
+
+/// An email address split at its last `@`: the local part, a break, then the `@` and the domain.
+pub fn email(address: &str) -> Markup {
+    html! {
+        span.email {
+            @if let Some((local, domain)) = address.rsplit_once('@') {
+                span { (breakable(local)) }
+                wbr;
+                span { "@" (breakable(domain)) }
+            } @else {
+                span { (breakable(address)) }
+            }
+        }
+    }
+}
+
+/// A time as a `time` element. `plain` is a time as the activity page writes it, `D Mon YYYY
+/// HH:MM:SS UTC`; the date and the clock are each unbreakable, and `zone` adds the unit " UTC".
+pub fn time_cell(datetime: &str, plain: &str, zone: bool) -> Markup {
+    let words = plain.strip_suffix(" UTC").unwrap_or(plain);
+    let (date, clock) = words.rsplit_once(' ').unwrap_or((words, ""));
+    html! {
+        time datetime=(datetime) {
+            span.nowrap { (date) }
+            " "
+            span.nowrap {
+                (clock)
+                @if zone { span.unit { " UTC" } }
+            }
+        }
+    }
+}
+
+/// A count with its unit kept beside it: the number, then a unit span with the word for it.
+pub fn count_with_unit(count: i64, one: &str, many: &str) -> Markup {
+    let word = if count == 1 { one } else { many };
+    html! { (count) span.unit { " " (word) } }
+}
+
+/// What sits under a field's control. The id of a hint or an error is the field's id with
+/// `-hint` or `-error`; `Below` carries its own id and the markup of `div.below`.
+pub enum Note<'a> {
+    None,
+    Hint(&'a str),
+    Error(&'a str),
+    Below(&'a str, Markup),
+}
+
+impl Note<'_> {
+    /// The id the control of field `id` names in aria-describedby, or None when nothing describes it.
+    pub fn describer(&self, id: &str) -> Option<String> {
+        match self {
+            Note::None => None,
+            Note::Hint(_) => Some(format!("{id}-hint")),
+            Note::Error(_) => Some(format!("{id}-error")),
+            Note::Below(describer, _) => Some((*describer).to_owned()),
+        }
+    }
+}
+
+/// One labelled field: its label, then the control, then its note. `optional` adds "(optional)".
+/// The control names the note in aria-describedby.
+pub fn field(id: &str, label: &str, optional: bool, control: Markup, note: Note<'_>) -> Markup {
+    html! {
+        div.field {
+            label for=(id) {
+                (label)
+                @if optional { " " span.optional { "(optional)" } }
+            }
+            (control)
+            (note_markup(id, note))
+        }
+    }
+}
+
+/// The note of a field as markup.
+fn note_markup(id: &str, note: Note<'_>) -> Markup {
+    match note {
+        Note::None => html! {},
+        Note::Hint(text) => hint(&format!("{id}-hint"), text),
+        Note::Error(text) => field_error(&format!("{id}-error"), text),
+        Note::Below(_, markup) => html! { div.below { (markup) } },
+    }
+}
+
+/// A hint under a control: a `p.hint` with the id the control names in aria-describedby.
+pub fn hint(id: &str, text: &str) -> Markup {
+    html! { p.hint id=(id) { (text) } }
+}
+
+/// The error that refused a field, under it: a `p.field-error` with the id its control names.
+pub fn field_error(id: &str, text: &str) -> Markup {
+    html! { p.field-error id=(id) { (text) } }
+}
+
+/// A checkbox beside its label, with an optional hint under the label. The checkbox has no value
+/// unless one is given, so a form posts "on" for it.
+pub fn check(
+    id: &str,
+    name: &str,
+    value: Option<&str>,
+    checked: bool,
+    label: impl Render,
+    note: Option<&str>,
+) -> Markup {
+    let hint_id = format!("{id}-hint");
+    let described = note.map(|_| hint_id.as_str());
+    html! {
+        div.check {
+            input type="checkbox" id=(id) name=(name) value=[value] checked[checked] aria-describedby=[described];
+            label for=(id) { (label) }
+            @if let Some(text) = note {
+                (hint(&hint_id, text))
+            }
+        }
     }
 }
 
@@ -116,6 +233,160 @@ mod tests {
         assert_eq!(
             notice("error", html! { "a < b" }).into_string(),
             r#"<div class="notice" data-notice="error">a &lt; b</div>"#
+        );
+    }
+
+    #[test]
+    fn an_email_breaks_before_the_at_and_inside_each_half_at_a_separator() {
+        assert_eq!(
+            email("tomasz.wisniewski@example.com").into_string(),
+            r#"<span class="email"><span>tomasz<wbr>.wisniewski</span><wbr><span>@example<wbr>.com</span></span>"#
+        );
+        assert_eq!(
+            email("oluwaseun.adebayo-richardson@contractors.example.com").into_string(),
+            r#"<span class="email"><span>oluwaseun<wbr>.adebayo-richardson</span><wbr><span>@contractors<wbr>.example<wbr>.com</span></span>"#
+        );
+    }
+
+    #[test]
+    fn an_email_splits_at_the_last_at_and_escapes_its_halves() {
+        assert_eq!(
+            email("a<b@x@example.com").into_string(),
+            r#"<span class="email"><span>a&lt;b<wbr>@x</span><wbr><span>@example<wbr>.com</span></span>"#
+        );
+    }
+
+    #[test]
+    fn an_email_without_an_at_is_one_span() {
+        assert_eq!(
+            email("deploy-bot").into_string(),
+            r#"<span class="email"><span>deploy-bot</span></span>"#
+        );
+    }
+
+    #[test]
+    fn a_time_keeps_its_datetime_and_splits_date_and_clock_into_nowrap_spans() {
+        assert_eq!(
+            time_cell("2026-11-20T14:32:07Z", "20 Nov 2026 14:32:07 UTC", true).into_string(),
+            r#"<time datetime="2026-11-20T14:32:07Z"><span class="nowrap">20 Nov 2026</span> <span class="nowrap">14:32:07<span class="unit"> UTC</span></span></time>"#
+        );
+    }
+
+    #[test]
+    fn a_time_without_zone_has_no_unit_span() {
+        assert_eq!(
+            time_cell("2026-11-20T14:32:07Z", "20 Nov 2026 14:32:07 UTC", false).into_string(),
+            r#"<time datetime="2026-11-20T14:32:07Z"><span class="nowrap">20 Nov 2026</span> <span class="nowrap">14:32:07</span></time>"#
+        );
+    }
+
+    #[test]
+    fn a_count_keeps_its_unit_in_a_span_in_the_singular_and_the_plural() {
+        assert_eq!(
+            count_with_unit(3, "tool", "tools").into_string(),
+            r#"3<span class="unit"> tools</span>"#
+        );
+        assert_eq!(
+            count_with_unit(1, "user", "users").into_string(),
+            r#"1<span class="unit"> user</span>"#
+        );
+        assert_eq!(
+            count_with_unit(0, "tool", "tools").into_string(),
+            r#"0<span class="unit"> tools</span>"#
+        );
+    }
+
+    #[test]
+    fn a_field_is_a_label_then_its_control_then_its_hint() {
+        let control = html! {
+            input id="server-slug" name="slug" type="text" class="mono" aria-describedby="server-slug-hint";
+        };
+        assert_eq!(
+            field(
+                "server-slug",
+                "Path",
+                false,
+                control,
+                Note::Hint("Letters.")
+            )
+            .into_string(),
+            r#"<div class="field"><label for="server-slug">Path</label><input id="server-slug" name="slug" type="text" class="mono" aria-describedby="server-slug-hint"><p class="hint" id="server-slug-hint">Letters.</p></div>"#
+        );
+    }
+
+    #[test]
+    fn an_optional_field_marks_its_label_with_a_span() {
+        let control = html! { input id="secret-name" name="secret_header_name" type="text"; };
+        assert_eq!(
+            field("secret-name", "Header name", true, control, Note::None).into_string(),
+            r#"<div class="field"><label for="secret-name">Header name <span class="optional">(optional)</span></label><input id="secret-name" name="secret_header_name" type="text"></div>"#
+        );
+    }
+
+    #[test]
+    fn a_refused_field_shows_its_error_in_place_of_the_hint() {
+        let control = html! { input id="server-slug" name="slug" type="text" aria-invalid="true" aria-describedby="server-slug-error"; };
+        assert_eq!(
+            field(
+                "server-slug",
+                "Path",
+                false,
+                control,
+                Note::Error("Another server already uses that path.")
+            )
+            .into_string(),
+            r#"<div class="field"><label for="server-slug">Path</label><input id="server-slug" name="slug" type="text" aria-invalid="true" aria-describedby="server-slug-error"><p class="field-error" id="server-slug-error">Another server already uses that path.</p></div>"#
+        );
+    }
+
+    #[test]
+    fn a_field_note_below_the_control_is_wrapped_in_div_below() {
+        let control = html! { input id="secret-value" name="secret_header_value" type="password"; };
+        let below = html! {
+            (hint("secret-value-hint", "Stored, never shown again. Leave empty to keep it."))
+        };
+        assert_eq!(
+            field(
+                "secret-value",
+                "Header value",
+                true,
+                control,
+                Note::Below("secret-value-hint", below)
+            )
+            .into_string(),
+            r#"<div class="field"><label for="secret-value">Header value <span class="optional">(optional)</span></label><input id="secret-value" name="secret_header_value" type="password"><div class="below"><p class="hint" id="secret-value-hint">Stored, never shown again. Leave empty to keep it.</p></div></div>"#
+        );
+    }
+
+    #[test]
+    fn a_checkbox_row_is_an_input_beside_its_label_and_a_hint() {
+        assert_eq!(
+            check(
+                "pass-resources",
+                "pass_resources",
+                None,
+                true,
+                "Pass resources to the upstream",
+                Some("When off, clients get an empty list.")
+            )
+            .into_string(),
+            r#"<div class="check"><input type="checkbox" id="pass-resources" name="pass_resources" checked aria-describedby="pass-resources-hint"><label for="pass-resources">Pass resources to the upstream</label><p class="hint" id="pass-resources-hint">When off, clients get an empty list.</p></div>"#
+        );
+    }
+
+    #[test]
+    fn a_checkbox_row_without_a_hint_names_no_description_and_can_carry_a_value() {
+        assert_eq!(
+            check(
+                "user-7",
+                "user_id",
+                Some("7"),
+                false,
+                html! { "Priya" },
+                None
+            )
+            .into_string(),
+            r#"<div class="check"><input type="checkbox" id="user-7" name="user_id" value="7"><label for="user-7">Priya</label></div>"#
         );
     }
 }

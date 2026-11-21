@@ -14,6 +14,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::app::AppState;
 use crate::db::{Db, DbError};
+use crate::web::ui::{breakable, email, time_cell};
 use crate::web::{MainData, Viewer, internal_error, page_with};
 
 use super::panel_nav;
@@ -339,17 +340,75 @@ fn rows_list(rows: &[Row]) -> Markup {
     }
 }
 
-/// The newest `limit` rows of the activity log in the markup of the activity page, or a sentence
-/// when there are none. Used by the overview.
+/// One row of the overview's table: its label and detail, user, server and tool, decision,
+/// duration and time. An empty user, server, tool or duration leaves its cell empty.
+fn table_row(row: &Row) -> Markup {
+    let (label, tone) = label_of(&row.kind, &row.decision, &row.outcome);
+    let decision = [row.decision.as_str(), row.outcome.as_str()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let duration = row
+        .duration_ms
+        .map_or_else(String::new, |ms| format!("{ms} ms"));
+    html! {
+        tr data-kind=(row.kind) data-user=(row.user_email) data-server=(row.server_slug)
+            data-tool=(row.tool) data-decision=(row.decision) data-outcome=(row.outcome)
+            data-time=(row.time) data-duration-ms=[row.duration_ms] {
+            td.what {
+                span.event data-label data-tone=[tone] { (label) }
+                @if !row.detail.is_empty() {
+                    span.detail { (row.detail) }
+                }
+            }
+            td.user {
+                @if !row.user_email.is_empty() {
+                    (email(&row.user_email))
+                }
+            }
+            td.where {
+                @if !row.server_slug.is_empty() {
+                    code { (row.server_slug) }
+                }
+                @if !row.tool.is_empty() {
+                    code { (breakable(&row.tool)) }
+                }
+            }
+            td.decision { (decision) }
+            td.duration.num { (duration) }
+            td.when { (time_cell(&row.time, &row.plain, true)) }
+        }
+    }
+}
+
+/// The newest `limit` rows of the activity log as the overview's table, or a sentence when there
+/// are none.
 pub(super) async fn latest(db: &Db, limit: i64) -> Result<Markup, DbError> {
     let rows = db
         .call(move |conn| rows_in(conn, None, None, limit, 0))
         .await?;
     Ok(html! {
         @if rows.is_empty() {
-            p { "No activity yet." }
+            p.muted { "No activity yet." }
         } @else {
-            (rows_list(&rows))
+            table.list.activity {
+                thead {
+                    tr {
+                        th scope="col" { "Event" }
+                        th scope="col" class="c-user" { "User" }
+                        th scope="col" class="c-where" { "Server and tool" }
+                        th scope="col" class="c-decision" { "Decision" }
+                        th scope="col" class="c-duration duration num" { "Duration" }
+                        th scope="col" class="c-time" { "Time (UTC)" }
+                    }
+                }
+                tbody {
+                    @for row in &rows {
+                        (table_row(row))
+                    }
+                }
+            }
         }
     })
 }

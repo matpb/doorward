@@ -1955,7 +1955,11 @@ async fn the_create_form_refuses_each_bad_field_and_stores_nothing() {
         let page = add(&mut owner, slug, url, secret).await;
         assert_eq!(page.status, 400, "{slug} {url} {secret:?} must be refused");
         assert_eq!(page.kind().as_deref(), Some("servers"));
-        assert!(page.error().is_some(), "the refusal must name the field");
+        assert_eq!(
+            elements(&page.body, ".field-error").len(),
+            1,
+            "the refusal must name the field"
+        );
     }
     assert_eq!(count(dir.path(), "SELECT COUNT(*) FROM servers"), 0);
 }
@@ -2019,7 +2023,8 @@ async fn the_secret_value_is_never_shown_and_never_stored_in_clear() {
     assert_eq!(page.status, 200);
     assert_eq!(page.kind().as_deref(), Some("server"));
     assert!(
-        page.body.contains("A secret is stored"),
+        page.body
+            .contains("Stored, never shown again. Leave empty to keep it."),
         "a stored secret is noted"
     );
     assert!(
@@ -2325,7 +2330,10 @@ async fn refresh_tools_answers_303_and_records_a_failed_fetch() {
         "one row is written"
     );
     let shown = owner.get(&path).await;
-    assert_eq!(shown.error().as_deref(), Some(UNAVAILABLE));
+    assert_eq!(
+        text_of(&shown.body, r#"[data-notice="error"]"#).as_deref(),
+        Some(UNAVAILABLE)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2355,7 +2363,10 @@ async fn a_failed_refresh_shows_its_error_beside_the_old_tools_until_one_succeed
     healthy.store(false, Ordering::SeqCst);
     assert_eq!(owner.submit(&path, &refresh, &[]).await.status, 303);
     let shown = owner.get(&path).await;
-    assert_eq!(shown.error().as_deref(), Some(UNAVAILABLE));
+    assert_eq!(
+        text_of(&shown.body, r#"[data-notice="error"]"#).as_deref(),
+        Some(UNAVAILABLE)
+    );
     assert_eq!(
         catalog_of(&shown.body),
         vec!["alpha"],
@@ -2365,7 +2376,7 @@ async fn a_failed_refresh_shows_its_error_beside_the_old_tools_until_one_succeed
     assert_eq!(owner.submit(&path, &refresh, &[]).await.status, 303);
     let shown = owner.get(&path).await;
     assert!(
-        shown.error().is_none(),
+        text_of(&shown.body, r#"[data-notice="error"]"#).is_none(),
         "a successful refresh removes the message"
     );
     assert_eq!(catalog_of(&shown.body), vec!["alpha"]);
@@ -2526,7 +2537,9 @@ async fn the_lockdown_note_says_what_the_stored_result_means() {
             "{verdict}"
         );
         assert!(
-            attr_of(&body, "p[data-lockdown-note]", "class").is_none(),
+            !attr_of(&body, "p[data-lockdown-note]", "class")
+                .unwrap_or_default()
+                .contains("error"),
             "{verdict}: the note is not an error"
         );
     }
@@ -3553,8 +3566,8 @@ async fn the_server_list_counts_tools_and_assigned_users_and_shows_the_lock_down
     assert_eq!(assigned.status, 303, "bob must be assigned to demo");
 
     let body = owner.get("/admin/servers").await.body;
-    let demo_row = r#"li[data-slug="demo"]"#;
-    let other_row = r#"li[data-slug="other"]"#;
+    let demo_row = r#"tr[data-slug="demo"]"#;
+    let other_row = r#"tr[data-slug="other"]"#;
     assert_eq!(text_under(&body, demo_row, "[data-tool-count]"), "3 tools");
     assert_eq!(text_under(&body, demo_row, "[data-user-count]"), "1 user");
     assert_eq!(text_under(&body, other_row, "[data-tool-count]"), "1 tool");
@@ -3588,7 +3601,7 @@ async fn the_lock_down_pill_names_the_stored_state_on_the_list_and_the_page() {
             )
             .expect("store the verdict");
         let list = owner.get("/admin/servers").await.body;
-        let row = r#"li[data-slug="demo"]"#;
+        let row = r#"tr[data-slug="demo"]"#;
         assert_eq!(text_under(&list, row, "[data-pill]"), word, "{verdict}");
         assert_eq!(
             attr_of(&list, &format!("{row} [data-pill]"), "data-tone").as_deref(),
@@ -3596,9 +3609,10 @@ async fn the_lock_down_pill_names_the_stored_state_on_the_list_and_the_page() {
             "{verdict}"
         );
         let detail = owner.get(&path).await.body;
-        assert_eq!(elements(&detail, "[data-pill]").len(), 1, "{verdict}");
+        let lockdown = r#"section[aria-labelledby="lockdown-title"] [data-pill]"#;
+        assert_eq!(elements(&detail, lockdown).len(), 1, "{verdict}");
         assert_eq!(
-            text_of(&detail, "[data-pill]").as_deref(),
+            text_of(&detail, lockdown).as_deref(),
             Some(word),
             "{verdict}"
         );
@@ -4169,7 +4183,7 @@ async fn the_overview_counts_its_rows_and_shows_the_newest_five_activity_rows() 
             "the {key} count"
         );
     }
-    let stamps: Vec<String> = elements(&body, "section[data-latest-activity] li[data-kind]")
+    let stamps: Vec<String> = elements(&body, "section[data-latest-activity] tr[data-kind]")
         .iter()
         .map(|row| row["data-time"].clone())
         .collect();
@@ -4205,7 +4219,7 @@ async fn an_overview_without_activity_says_so() {
         body.contains("No activity yet."),
         "the overview must say there is no activity"
     );
-    assert!(elements(&body, "section[data-latest-activity] li[data-kind]").is_empty());
+    assert!(elements(&body, "section[data-latest-activity] tr[data-kind]").is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4232,5 +4246,122 @@ async fn a_post_naming_no_provider_is_refused_at_the_top_of_the_mail_page() {
     assert!(
         elements(&refused.body, "details[open]").is_empty(),
         "no provider disclosure may open for a post that names none"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_overview_names_every_open_server_in_name_order_and_cuts_none() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    for slug in ["gamma", "alpha", "delta", "beta"] {
+        assert_eq!(add(&mut owner, slug, SERVER_URL, None).await.status, 303);
+    }
+    open_db(dir.path())
+        .execute(
+            "UPDATE servers SET lockdown = 'open' WHERE slug != 'delta'",
+            [],
+        )
+        .expect("three servers are open");
+    let body = owner.get("/admin").await.body;
+    let notice = r#"div.notice[data-notice="error"][data-open-servers="3"]"#;
+    assert_eq!(elements(&body, notice).len(), 1, "one notice counts three");
+    assert_eq!(
+        text_of(&body, notice).as_deref(),
+        Some(
+            "3 servers answer without the gateway. Anyone who can reach their addresses can use them: alpha, beta and gamma."
+        )
+    );
+    for slug in ["alpha", "beta", "gamma"] {
+        let id = server_id_of(dir.path(), slug);
+        assert_eq!(
+            elements(
+                &body,
+                &format!(r#"{notice} a[href="/admin/servers/{id}#lockdown-title"]"#)
+            )
+            .len(),
+            1,
+            "{slug} must be a link to its lock-down part"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_activity_row_without_a_user_has_an_empty_user_cell() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let event = Event {
+        kind: "unlock",
+        ..Default::default()
+    };
+    audit::record(&open_db(dir.path()), AT + 100, &event).expect("record");
+    let body = owner.get("/admin").await.body;
+    let cell = r#"tr[data-kind="unlock"] td.user"#;
+    assert_eq!(
+        elements(&body, cell).len(),
+        1,
+        "the row must be on the overview"
+    );
+    assert_eq!(text_of(&body, cell).as_deref(), Some(""));
+    assert!(
+        body.contains(r#"<td class="user"></td>"#),
+        "the cell must hold nothing, not even a space"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_server_form_says_so_and_marks_its_path_field() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    assert_eq!(add(&mut owner, "demo", SERVER_URL, None).await.status, 303);
+    let page = add(&mut owner, "demo", NEW_URL, None).await;
+    assert_eq!(page.status, 400, "a taken path must refuse the form");
+    assert_eq!(
+        text_of(
+            &page.body,
+            r#"div.notice[data-notice="error"][role="alert"]"#
+        )
+        .as_deref(),
+        Some(
+            "The server was not added. Another server already uses that path. Go to the path field"
+        )
+    );
+    assert_eq!(
+        attr_of(&page.body, r##"a[href="#server-slug"]"##, "href").as_deref(),
+        Some("#server-slug")
+    );
+    assert_eq!(
+        attr_of(&page.body, "input#server-slug", "aria-invalid").as_deref(),
+        Some("true")
+    );
+    assert_eq!(
+        attr_of(&page.body, "input#server-slug", "aria-describedby").as_deref(),
+        Some("server-slug-error")
+    );
+    assert_eq!(
+        text_of(&page.body, "p#server-slug-error").as_deref(),
+        Some("Another server already uses that path.")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_server_page_says_the_server_was_not_saved() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    assert_eq!(add(&mut owner, "demo", SERVER_URL, None).await.status, 303);
+    assert_eq!(add(&mut owner, "other", NEW_URL, None).await.status, 303);
+    let path = format!("/admin/servers/{}", server_id_of(dir.path(), "other"));
+    let page = owner
+        .submit(&path, &path, &server_form("demo", NEW_URL, None))
+        .await;
+    assert_eq!(page.status, 400, "a taken path must refuse the save");
+    assert_eq!(
+        text_of(
+            &page.body,
+            r#"div.notice[data-notice="error"][role="alert"]"#
+        )
+        .as_deref(),
+        Some(
+            "The server was not saved. Another server already uses that path. Go to the path field"
+        )
     );
 }

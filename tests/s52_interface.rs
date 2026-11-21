@@ -429,12 +429,10 @@ fn assert_two_step_delete(page: &Page, what: &str) -> String {
         0,
         "{what} must keep its delete disclosure closed"
     );
-    let summary = page
-        .text("details[data-confirm] > summary")
-        .unwrap_or_default();
+    let disclosure = page.text("details[data-confirm]").unwrap_or_default();
     assert!(
-        summary.contains("cannot be undone"),
-        "the summary of the delete disclosure on {what} must say it cannot be undone, got {summary:?}"
+        disclosure.contains("cannot be undone"),
+        "the delete disclosure on {what} must say it cannot be undone, got {disclosure:?}"
     );
     assert_eq!(
         page.count(r#"details[data-confirm] form[action$="/delete"] input[name="csrf"]"#),
@@ -645,11 +643,20 @@ async fn the_lock_down_state_is_a_word_with_a_marker() {
         );
         let page = w.owner.get(&format!("/admin/servers/{id}")).await;
         let doc = Html::parse_document(&page.body);
-        let pills = pills_in(doc.root_element());
+        let lockdown = all(
+            doc.root_element(),
+            r#"section[aria-labelledby="lockdown-title"]"#,
+        );
+        assert_eq!(
+            lockdown.len(),
+            1,
+            "the server page must hold one lock-down part"
+        );
+        let pills = pills_in(lockdown[0]);
         assert_eq!(
             pills.len(),
             1,
-            "the server page for lock-down state {state} must hold exactly one pill"
+            "the lock-down part for lock-down state {state} must hold exactly one pill"
         );
         assert_eq!(
             pills[0].1, tone,
@@ -1147,8 +1154,9 @@ async fn every_src_and_href_is_a_same_site_path() {
         for element in all(doc.root_element(), "[src], [href]") {
             for attribute in ["src", "href"] {
                 if let Some(value) = element.value().attr(attribute) {
+                    let fragment = value.starts_with('#');
                     assert!(
-                        value.starts_with('/') && !value.starts_with("//"),
+                        fragment || (value.starts_with('/') && !value.starts_with("//")),
                         "{} holds a {attribute} that is not a same-site path: {value:?}",
                         shot.name
                     );

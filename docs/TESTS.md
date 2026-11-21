@@ -93,6 +93,20 @@ The other tests of this file check other settings and are not listed here.
    404s are machine-facing and come from `not_found_bare()`;
    `accounts::account::tests::the_panel_link_is_in_the_header_not_the_body` (replaces
    `the_admin_link_is_left_out_for_a_plain_user`, which asserted the link in the body).
+8. `web::ui::tests`, statements 65 and 66 (the shared markup): `email` splits at the last `@`
+   and breaks only before the `@` and at a dot inside each half; `time_cell` keeps its
+   `datetime` and splits the date and the clock into `nowrap` spans, with the `UTC` unit only
+   when asked; `count_with_unit` keeps the number beside a `span.unit`; `field`, `check` and
+   the notes put the label, the control and the hint or error in the order the tests read.
+9. `servers::tests::the_open_servers_are_the_open_ones_by_name`: the query behind the
+   overview's alert returns the servers whose lock-down is `open`, by name, and none when none is open.
+10. `admin::tests::the_overview_names_every_open_server_in_name_order_and_cuts_none`: three open
+    servers are named in one notice, `alpha, beta and gamma`, each a link to its lock-down part.
+11. `admin::tests::an_activity_row_without_a_user_has_an_empty_user_cell`: a row with no user
+    on the overview has `<td class="user"></td>` with nothing inside.
+12. `admin::tests::a_refused_server_form_says_so_and_marks_its_path_field` and
+    `admin::tests::a_refused_server_page_says_the_server_was_not_saved`: the refusal is an
+    alert with the lead-in, its link to the field, and the field marked `aria-invalid`.
 
 ## s01_install.rs (statement 1)
 
@@ -596,9 +610,10 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
    server page body does not contain `<img src=x` and `admin::catalog_tools` returns the
    name unchanged.
 6. `an_oversized_tool_list_is_refused`: `limits.tools_list_bytes = 2000` and an upstream
-   with 200 tools: after refresh the page shows an `error()`, the catalog is empty and
-   `/healthz` is 200.
-7. `a_failed_refresh_keeps_the_old_list`: stop the upstream, refresh: `error()` is shown
+   with 200 tools: after refresh the page shows a `[data-notice="error"]` notice, the catalog
+   is empty and `/healthz` is 200. (Changed with the rebuilt server page: the error is a notice,
+   no longer the `.error` class.)
+7. `a_failed_refresh_keeps_the_old_list`: stop the upstream, refresh: a `[data-notice="error"]` notice is shown
    and the previous tools are still listed.
 8. `a_new_tool_is_usable_without_a_manual_refresh`: `set_tools` adds `gamma` after the
    first refresh; bob's `call_tool("gamma")` succeeds (the catalog refreshes once on a
@@ -933,7 +948,7 @@ stateless `tools/call` body for that tool, sent with `raw` and explicit headers.
     `a[data-nav="to-panel"]` reading `Admin panel` with href `/admin`; a plain user does
     not.
 17. `a_refused_form_keeps_the_navigation`: the owner's `/admin/servers` form with the slug
-    `Not A Slug!` answers 400 with an error and still carries the navigation, with the
+    `Not A Slug!` answers 400 with a `[data-notice="error"]` notice and still carries the navigation, with the
     Servers link current.
 18. `the_stylesheet_wraps_the_nav_row_and_long_text`: removed: replaced by s62_shell,
     statement 62 (the navigation is a rail or a Menu sheet, not a wrapping row).
@@ -1610,7 +1625,7 @@ activity of allowed, denied and failed tool calls.
    `Disconnect` are danger; `Disable`, `Enable`, `Deny`, `Filter`, `Refresh tools`,
    `Check lock-down`, `Send test email` and `Sign out` are secondary. It is red before the change.
 4. `deleting_a_server_or_an_account_takes_two_steps`: the server and user pages each hold
-   one closed `details[data-confirm]` whose summary says "cannot be undone" and holds the
+   one closed `details[data-confirm]` whose text says "cannot be undone" and holds the
    `/delete` form with csrf, and no other `/delete` form. Posting that form without csrf is
    403 forbidden and deletes nothing; with csrf it is 303 and the row is gone. It is red
    before the change.
@@ -1620,8 +1635,9 @@ activity of allowed, denied and failed tool calls.
    bob's page holds `Allow` or `Deny` by its verdict; each redirect row holds `Enabled` (ok)
    or `Disabled` (muted). It is red before the change.
 6. `the_lock_down_state_is_a_word_with_a_marker`: three servers, one checked as ok (the
-   upstream refuses without the secret), one open (answers without it), one unchecked. Each
-   server page holds one pill with tone ok, bad and warn. It is red before the change.
+   upstream refuses without the secret), one open (answers without it), one unchecked. The
+   Lock-down part of each server page holds one pill with tone ok, bad and warn. It is red
+   before the change.
 7. `an_activity_row_reads_in_plain_words`: every `li[data-kind]` row on the activity page has
    `data-time`, one `[data-label]` that is not the raw kind, and one `time` whose `datetime`
    is `data-time` and whose text reads `20 Nov 2026 19:25:09 UTC`. The labels are `Tool call`,
@@ -1663,7 +1679,8 @@ activity of allowed, denied and failed tool calls.
 20. `no_covered_page_holds_a_script`: no covered page holds `<script`, in any case. It passes
     before the change, since no page carries one; it guards statement 58.
 21. `every_src_and_href_is_a_same_site_path`: every `src` and `href` on every covered page
-    starts with `/` and not `//`, so no page names an address outside the gateway. It passes
+    starts with `/` and not `//`, or is a fragment `#...` naming a place on the same page, so
+    no page names an address outside the gateway. It passes
     before the change, since no page does; it guards statement 58.
 22. `the_stylesheet_loads_no_url_and_no_import`: removed: replaced by s62_shell,
     statement 64 (the stylesheet names its four fonts by `url()`, and the gateway serves them).
@@ -1687,9 +1704,9 @@ more than 100 rows; the expected order and counts come from the same table.
 1. `the_overview_counts_and_shows_the_latest_activity`: `a[data-count]` links for `servers`
    (2), `users` (3), `invitations` (1) and `rules` (4), each to its page and holding
    `[data-count-value]` with that number, for the owner and for an admin; the
-   `[data-latest-activity]` section holds the five newest rows, newest first, and links to
-   `/admin/activity`. It is red before the change.
-2. `the_lists_show_counts_and_states`: each `li[data-server-id]` holds `[data-tool-count]`
+   `[data-latest-activity]` section holds the five newest rows (`tr[data-kind]`), newest first,
+   and links to `/admin/activity`. It is red before the change.
+2. `the_lists_show_counts_and_states`: each `tr[data-server-id]` holds `[data-tool-count]`
    (3 tools for demo, 1 for other), `[data-user-count]` (1 user for demo, 0 for other), its
    path and one lock-down pill; each `li[data-user-id]` holds `[data-server-count]` (0, 1
    or 0), its role and one pill, `Active` (ok) or `Disabled` (muted) for carol. It is red
@@ -1852,14 +1869,13 @@ refuses without the gateway's secret, so its state is `ok`.
 
 1. `an_open_server_has_an_alert_on_its_own_page`: the server page carries `data-lockdown="open"`
    and holds one `main div.notice[data-notice="error"][data-lockdown-alert]` that says `This server answers without the gateway.` and links to `#lockdown-title`, and the page
-   holds the element `#lockdown-title`. It is red before the change.
+   holds the element `#lockdown-title`.
 2. `the_overview_names_one_exposed_server`: with one open server and one healthy one, the
    overview holds `div.notice[data-notice="error"][data-open-servers="1"]` reading `Open Demo answers without the gateway.` with a link to `/admin/servers/<id>#lockdown-title`, and the
-   healthy server is not named. It is red before the change.
+   healthy server is not named.
 3. `the_overview_counts_two_exposed_servers`: with two open servers, the overview holds
    `[data-open-servers="2"]` reading `2 servers answer without the gateway.` with one link per
-   server, each to `/admin/servers/<id>#lockdown-title`, whose text is the server's name. It is
-   red before the change.
+   server, each to `/admin/servers/<id>#lockdown-title`, whose text is the server's name.
 4. `no_alert_without_an_exposed_server`: with only a healthy server (`ok`), the overview holds
    no `[data-open-servers]` and the server page holds no `[data-lockdown-alert]`. It passes
    before the change, since the negative case has no alert today either.

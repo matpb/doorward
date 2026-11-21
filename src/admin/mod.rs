@@ -20,6 +20,7 @@ use maud::{Markup, html};
 use rusqlite::{Connection, params};
 
 use crate::app::AppState;
+use crate::servers::OpenServer;
 use crate::web::{MainData, Nav, Viewer, forbidden, internal_error, page_with, redirect};
 
 /// The newest activity rows the overview shows.
@@ -81,8 +82,12 @@ async fn panel(viewer: Viewer, State(state): State<AppState>) -> Response {
     let now = state.clock.now().unix_timestamp();
     let counted = state.db.call(move |conn| counts_in(conn, now)).await;
     let latest = activity::latest(&state.db, LATEST_ROWS).await;
-    match (counted, latest) {
-        (Ok(counts), Ok(latest)) => page_with(
+    let open = state
+        .db
+        .call(|conn| crate::servers::open_servers(conn))
+        .await;
+    match (counted, latest, open) {
+        (Ok(counts), Ok(latest), Ok(open)) => page_with(
             StatusCode::OK,
             "admin",
             "Overview",
@@ -91,18 +96,56 @@ async fn panel(viewer: Viewer, State(state): State<AppState>) -> Response {
                 ..MainData::default()
             },
             html! {
-                div.stack {
+                div.page-head {
                     h1 { "Overview" }
-                    (counts_markup(&counts))
-                    section.card data-latest-activity {
-                        h2 { "Latest activity" }
-                        (latest)
-                        p { a href="/admin/activity" { "All activity" } }
+                }
+                (open_alert(&open))
+                (counts_markup(&counts))
+                section.block data-latest-activity aria-labelledby="latest-title" {
+                    div.block-head {
+                        h2 id="latest-title" { "Latest activity" }
+                        a href="/admin/activity" { "All activity" }
                     }
+                    (latest)
                 }
             },
         ),
-        (Err(err), _) | (_, Err(err)) => internal_error("admin overview", &err),
+        (Err(err), _, _) | (_, Err(err), _) | (_, _, Err(err)) => {
+            internal_error("admin overview", &err)
+        }
+    }
+}
+
+/// The alert above the counts while a server answers without the gateway. One server is named
+/// with a link to its lock-down part; several are all named, each one a link, so none is cut.
+fn open_alert(open: &[OpenServer]) -> Markup {
+    let lockdown = |server: &OpenServer| format!("/admin/servers/{}#lockdown-title", server.id);
+    match open {
+        [] => html! {},
+        [server] => html! {
+            div.notice data-notice="error" data-open-servers="1" {
+                p {
+                    strong { (server.name) " answers without the gateway." }
+                    " Anyone who can reach its address can use it. "
+                    a href=(lockdown(server)) { "Go to lock-down" }
+                }
+            }
+        },
+        many => html! {
+            div.notice data-notice="error" data-open-servers=(many.len()) {
+                p {
+                    strong { (many.len()) " servers answer without the gateway." }
+                    " Anyone who can reach their addresses can use them: "
+                    @for (index, server) in many.iter().enumerate() {
+                        @if index > 0 {
+                            @if index + 1 == many.len() { " and " } @else { ", " }
+                        }
+                        a href=(lockdown(server)) { (server.name) }
+                    }
+                    "."
+                }
+            }
+        },
     }
 }
 
@@ -131,7 +174,7 @@ fn counts_in(conn: &Connection, now: i64) -> rusqlite::Result<Counts> {
     )
 }
 
-/// The four counts, each a card that links to its page.
+/// The four counts, each a link to its page.
 fn counts_markup(counts: &Counts) -> Markup {
     html! {
         div.counts {
@@ -145,9 +188,9 @@ fn counts_markup(counts: &Counts) -> Markup {
 
 fn count_link(key: &str, href: &str, label: &str, value: i64) -> Markup {
     html! {
-        a.count.card data-count=(key) href=(href) {
-            span.count-label { (label) }
+        a data-count=(key) href=(href) {
             span.count-value data-count-value { (value) }
+            span.count-label { (label) }
         }
     }
 }
