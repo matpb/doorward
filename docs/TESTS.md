@@ -2080,6 +2080,52 @@ The helper `sent_back` in `src/web/ui.rs` has in-crate tests for its limit, its 
 characters and its control characters: `a_sent_back_value_*`. The sign-in form's hidden `req`
 has an in-crate test in `src/accounts/login.rs`, `a_req_that_is_a_request_id_is_sent_back_and_any_other_is_not`.
 
+## s72_overview_state.rs (statement 72)
+
+Each test builds its own world and reads the overview's count links whole, markup and text.
+A gated server is `W.upstream`; `check-lockdown` makes it `ok`, or `open` for `W.open_upstream`
+when it answers; an unchecked server is `unknown`. Dates are the harness clock (2030-01-01 at
+the start) plus the 7-day invitation lifetime.
+
+1. `one_open_server_reads_answers_without_the_gateway_in_the_singular`: one open server gives
+   `Server` and `1 answers without the gateway`, tone `bad`. Red before the change.
+2. `two_open_servers_read_answer_without_the_gateway_in_the_plural`: `2 answer without the gateway`, `bad`.
+3. `unchecked_servers_with_none_open_read_not_checked`: `2 not checked`, tone `warn`.
+4. `an_unchecked_server_beside_a_locked_down_one_reads_not_checked`: `1 not checked`, not locked.
+5. `an_open_server_hides_the_unchecked_count`: open beats not checked; one line only.
+6. `one_locked_down_server_reads_locked_down`: `Locked down`, tone `ok`, label `Server`.
+7. `every_server_locked_down_reads_all_locked_down`: `All locked down`, tone `ok`, label `Servers`.
+8. `one_disabled_user_reads_disabled_in_muted`: `1 disabled`, tone `muted`.
+9. `two_disabled_users_read_two_disabled`: `2 disabled`, tone `muted`.
+10. `one_open_invitation_reads_expires_with_its_date`: `Expires` and `<time datetime="2030-01-08T00:00:00Z">8 Jan 2030</time>`, label `Open invitation`.
+11. `two_open_invitations_read_the_next_expiry_of_the_earliest`: `Next expires` with the earlier of two.
+12. `a_revoked_or_expired_invitation_is_not_open`: a revoked and an expired invitation are not counted; the one open one reads `Expires 16 Jan 2030`.
+13. `deny_and_allow_rules_read_deny_then_allow`: `2 deny` (`bad`), one space, `1 allow` (`ok`).
+14. `only_deny_rules_read_deny_alone`: `1 deny` only, label `Rule`.
+15. `only_allow_rules_read_allow_alone`: `2 allow` only.
+16. `a_quiet_overview_has_no_count_state_and_plural_labels_at_zero`: owner only; no `span.count-state` in any of the four cells; `Servers`, `User` at one, `Open invitations`, `Rules`.
+17. `the_nouns_take_the_singular_at_one_and_the_plural_otherwise`: one of each reads the singular labels; two of each the plural ones, with their lines.
+18. `an_admin_who_is_not_the_owner_sees_the_same_lines`: an admin's four count links equal the owner's, with their lines.
+19. `a_plain_user_cannot_open_the_overview_and_sees_no_count`: a plain user gets `403` and no `data-count`.
+
+Rewritten tests (the old markup they pinned, before the round 8 `span.whole` wrapper):
+
+- `oauth::consent::tests::the_other_client_lines_keep_their_sentences`: the host of both lines now
+  sits in `span.whole` with its full stop, and the host passes through `ui::breakable`
+  (`example<wbr>.com`). The sentences, the warning notice and `data-client` are unchanged.
+- `oauth::connected::tests::a_server_path_is_code_and_all_servers_is_plain_words`: the server path
+  is `p.lede > span.whole > code`.
+- `admin::activity::tests` (`a_url_with_an_at_in_its_path_is_not_an_email`,
+  `markup_characters_are_escaped_and_the_text_is_unchanged`, `a_detail_with_no_space_is_one_word`,
+  `the_word_after_a_number_still_breaks_as_an_identifier`): a non-address word with a break point is
+  in `span.whole`; the text is unchanged.
+
+New unit tests for the `span.whole` places: `oauth::authorize::tests::the_cannot_continue_host_and_its_full_stop_sit_in_one_whole_span`,
+`oauth::connected::tests::the_server_path_sits_in_a_whole_span_as_code`,
+`accounts::account::tests::the_server_of_a_connected_app_sits_in_a_whole_span_as_code`,
+`admin::users::tests::the_server_of_a_tool_sits_in_a_whole_span_as_code`,
+`admin::rules::tests::the_applies_to_names_sit_in_whole_spans_as_code`.
+
 ## Round 5: tests added and rewritten for the design changes
 
 Each entry names the change of the round 5 list it proves, and why an existing test changed.

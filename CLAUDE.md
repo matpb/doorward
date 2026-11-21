@@ -311,6 +311,10 @@ L. Added after the owner's auth review
     typed, so only the field at fault has to be corrected. Passwords, secret values, API
     keys and the setup code are never sent back. A value longer than its field's limit comes
     back empty, and a sign-in refused for too many attempts comes back with an empty form.
+72. Each count on the overview says what needs attention behind it: how many servers answer
+    without the gateway, or are not checked, or that all are locked down; how many users
+    are disabled; when the next open invitation expires; how many rules deny and how many
+    allow. A count of one takes the singular noun.
 
 ### Proof
 
@@ -352,6 +356,7 @@ into the test harness. In addition:
 - 70: the consent tests in `tests/s52_interface.rs` (buttons, warning) and
   `tests/s33_consent.rs`, which pins the sentence for a self-registered client.
 - 71: `tests/s71_refused_forms.rs`.
+- 72: `tests/s72_overview_state.rs`.
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
   a walk-through of every page in a real browser at 390 px and desktop width in both
   themes, which also measures control heights and sideways scroll; screenshots kept under

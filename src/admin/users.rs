@@ -270,6 +270,15 @@ fn list_in(conn: &Connection) -> rusqlite::Result<Vec<Listed>> {
     rows.collect()
 }
 
+/// How many accounts are disabled: the flag the users list shows as Disabled.
+pub(super) fn disabled_count(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM users WHERE disabled <> 0",
+        [],
+        |row| row.get(0),
+    )
+}
+
 /// The account status as a pill: Active in ok, Disabled in muted.
 fn status_pill(disabled: bool) -> Markup {
     if disabled {
@@ -668,7 +677,7 @@ fn tool_row(tool: &Effective) -> Markup {
         tr data-server=(tool.server) data-tool=(tool.tool) data-verdict=(tool.verdict) data-rule=(tool.rule) {
             td.half { (verdict_pill(tool.verdict)) }
             td.lead { code { (ui::breakable(&tool.tool)) } }
-            td.half { "on " code { (tool.server) } }
+            td.half { "on " span.whole { code { (tool.server) } } }
         }
     }
 }
@@ -718,5 +727,27 @@ fn user_row(row: &Listed) -> Markup {
             td.num.half data-server-count { (ui::count_with_unit(row.servers, "server", "servers")) }
             td { (status_pill(row.user.disabled)) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_server_of_a_tool_sits_in_a_whole_span_as_code() {
+        let tool = Effective {
+            server: "github".to_owned(),
+            tool: "create_pull_request".to_owned(),
+            verdict: "allow",
+            rule: String::new(),
+        };
+        let markup = tool_row(&tool).into_string();
+        assert!(
+            markup.contains(
+                r#"<td class="half">on <span class="whole"><code>github</code></span></td>"#
+            ),
+            "the server cell must wrap its code in span.whole: {markup}"
+        );
     }
 }

@@ -216,7 +216,7 @@ fn count_in(conn: &Connection, user: Option<i64>, server: Option<i64>) -> rusqli
 }
 
 /// The UTC time of a unix timestamp as RFC 3339.
-fn rfc3339(at: i64) -> rusqlite::Result<String> {
+pub(super) fn rfc3339(at: i64) -> rusqlite::Result<String> {
     let when = OffsetDateTime::from_unix_timestamp(at).map_err(invalid_time)?;
     when.format(&Rfc3339).map_err(invalid_time)
 }
@@ -226,6 +226,16 @@ pub(super) fn plain_time(at: i64) -> rusqlite::Result<String> {
     let when = OffsetDateTime::from_unix_timestamp(at).map_err(invalid_time)?;
     let format = format_description::parse_borrowed::<2>(PLAIN_TIME).map_err(invalid_time)?;
     when.format(&format).map_err(invalid_time)
+}
+
+/// The day part of `plain_time`, split as `ui::time_cell` splits it: `20 Nov 2026`.
+pub(super) fn day_of(at: i64) -> rusqlite::Result<String> {
+    let plain = plain_time(at)?;
+    let words = plain.strip_suffix(" UTC").unwrap_or(&plain);
+    Ok(words
+        .rsplit_once(' ')
+        .map_or(words, |(day, _)| day)
+        .to_owned())
 }
 
 fn invalid_time<E>(err: E) -> rusqlite::Error
@@ -342,14 +352,17 @@ fn is_number(word: &str) -> bool {
     !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-/// One word: an address through `email`, any other word through `breakable`.
+/// One word: an address through `email`; any other word through `breakable`, in `span.whole` when
+/// it has a break point. Escaped text never holds a `<wbr>`, so the markup shows the break points.
 fn word_markup(word: &str) -> Markup {
-    html! {
-        @if is_address(word) {
-            (email(word))
-        } @else {
-            (breakable(word))
-        }
+    if is_address(word) {
+        return email(word);
+    }
+    let text = breakable(word);
+    if text.clone().into_string().contains("<wbr>") {
+        html! { span.whole { (text) } }
+    } else {
+        text
     }
 }
 
@@ -558,7 +571,7 @@ mod tests {
         let (markup, text) = shown("see https://example.com/a@b now");
         assert_eq!(
             markup,
-            "see https://<wbr>example<wbr>.com/<wbr>a<wbr>@b now"
+            r#"see <span class="whole">https://<wbr>example<wbr>.com/<wbr>a<wbr>@b</span> now"#
         );
         assert!(!markup.contains("span class=\"email\""));
         assert_eq!(text, "see https://example.com/a@b now");
@@ -579,7 +592,7 @@ mod tests {
         let (markup, text) = shown("<i>a&b</i> c@example.net");
         assert_eq!(
             markup,
-            r#"&lt;i&gt;a&amp;<wbr>b&lt;/<wbr>i&gt; <span class="email"><span>c</span><wbr><span>@example<wbr>.net</span></span>"#
+            r#"<span class="whole">&lt;i&gt;a&amp;<wbr>b&lt;/<wbr>i&gt;</span> <span class="email"><span>c</span><wbr><span>@example<wbr>.net</span></span>"#
         );
         assert_eq!(text, "<i>a&b</i> c@example.net");
     }
@@ -593,7 +606,10 @@ mod tests {
         );
         assert_eq!(text, "bob@example.com");
         let (markup, text) = shown("create_pull_request");
-        assert_eq!(markup, "create_<wbr>pull_<wbr>request");
+        assert_eq!(
+            markup,
+            r#"<span class="whole">create_<wbr>pull_<wbr>request</span>"#
+        );
         assert_eq!(text, "create_pull_request");
     }
 
@@ -662,7 +678,7 @@ mod tests {
         let (markup, text) = shown("set 3 create_pull_request");
         assert_eq!(
             markup,
-            r#"set <span class="nowrap">3 create_<wbr>pull_<wbr>request</span>"#
+            r#"set <span class="nowrap">3 <span class="whole">create_<wbr>pull_<wbr>request</span></span>"#
         );
         assert_eq!(text, "set 3 create_pull_request");
     }

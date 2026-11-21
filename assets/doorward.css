@@ -262,6 +262,13 @@ code,
   overflow-wrap: anywhere;
 }
 
+/* .whole holds an identifier inside a sentence, with the stop after it: it goes to the next
+   line in one piece and breaks inside, where it may, only when longer than a whole line. */
+.whole {
+  display: inline-block;
+  max-inline-size: 100%;
+}
+
 q {
   quotes: "\201C" "\201D";
 }
@@ -591,8 +598,10 @@ body[data-layout="card"] .lede {
   color: var(--ink-2);
 }
 
+/* A notice is as wide as a form wherever it stands, so its box ends where its text does. */
 body[data-layout="panel"] main > .notice,
 body[data-layout="page"] main > .notice {
+  max-inline-size: 640px;
   margin-block-end: var(--s6);
 }
 
@@ -1321,6 +1330,7 @@ body[data-layout="card"] [data-kind="danger"]:hover {
     grid-template-columns: 48px 80px minmax(256px, max-content) minmax(30%, 1fr) max-content;
   }
 
+
   .tools thead,
   .tools tbody,
   .tools tr,
@@ -1364,10 +1374,10 @@ body[data-layout="card"] [data-kind="danger"]:hover {
 }
 
 .activity {
-  --c-event: calc(100% - 932px);
+  --c-event: calc(100% - 948px);
   --c-user: 256px;
   --c-decision: 132px;
-  --c-duration: 80px;
+  --c-duration: 96px;
   --c-time: 160px;
 }
 
@@ -1403,6 +1413,12 @@ body[data-layout="card"] [data-kind="danger"]:hover {
   .servers .c-path { inline-size: 208px; }
   .invitations .c-when { inline-size: 20%; }
   .invitations .c-by { inline-size: 28%; }
+
+  /* 32 px between the longest subject and what it applies to, where there is the room. */
+  .rules .c-subject,
+  .rules td:nth-child(3) {
+    padding-inline-end: var(--s6);
+  }
 }
 
 /* The log as a table: each row is a grid of two lines, the label's and one under it
@@ -1480,6 +1496,12 @@ body[data-layout="card"] [data-kind="danger"]:hover {
   .activity td.decision { grid-column: 4; }
   .activity td.duration { grid-column: 5; }
   .activity td.when { grid-column: 6; }
+
+  /* 32 px between a duration, set right, and the time after it, set left. */
+  .activity th.duration,
+  .activity td.duration {
+    padding-inline-end: var(--s6);
+  }
 
   /* No server in the row: the address runs on through that empty column. */
   .activity tr:has(> td.where:empty) > td.user {
@@ -1586,35 +1608,42 @@ body[data-layout="card"] [data-kind="danger"]:hover {
 
 /* ---------- Overview counts ---------- */
 
+/* Four counts of the overview. A cell is the number and its noun on one baseline and,
+   under them, one line of state; the line's room is kept when there is nothing to say. */
 .counts {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   border-block-start: 1px solid var(--ink);
-  border-block-end: 1px solid var(--line);
 }
 
 .counts > a {
   display: grid;
-  align-content: start;
-  gap: var(--s2);
-  padding: var(--s5) var(--s5) var(--s5) 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: 36px 20px;
+  align-items: baseline;
+  /* 5 px: the noun's line ends 3 px above the numeral's, so the state line is 8 px under it. */
+  gap: 5px var(--s2);
+  padding: var(--s4) var(--s4) var(--s4) 0;
+  border-block-end: 1px solid var(--line);
   text-decoration: none;
 }
 
 .counts > a + a {
-  padding-inline-start: var(--s5);
+  padding-inline-start: var(--s4);
   border-inline-start: 1px solid var(--line);
 }
 
 .count-value {
-  /* Pulled 2 px left so the stem of the numeral meets the edge of its label. */
+  grid-area: 1 / 1;
+  /* Pulled 2 px left so the stem of the numeral meets the edge of the line under it. */
   margin-inline-start: -2px;
-  font: 700 40px/48px var(--sans);
+  font: 700 32px/36px var(--sans);
   letter-spacing: var(--tight);
   font-variant-numeric: tabular-nums;
 }
 
 .count-label {
+  grid-area: 1 / 2;
   color: var(--ink-2);
   font: 500 14px/20px var(--sans);
   text-decoration: underline;
@@ -1627,6 +1656,22 @@ body[data-layout="card"] [data-kind="danger"]:hover {
 .counts > a:hover .count-label {
   color: var(--ink);
   text-decoration-color: currentColor;
+}
+
+.count-state {
+  grid-area: 2 / 1 / 3 / -1;
+  color: var(--ink-2);
+  font: 400 13px/20px var(--sans);
+  white-space: nowrap;
+}
+
+.count-state > .state + .state {
+  margin-inline-start: var(--s3);
+}
+
+/* A date inside a sentence: the mono face's word space, 8 px, is halved. */
+.count-state > time {
+  word-spacing: calc(var(--s1) * -1);
 }
 
 /* ---------- Facts ---------- */
@@ -1913,7 +1958,8 @@ body[data-layout="card"] main > .lede + .actions {
 
 .copy {
   display: block;
-  max-inline-size: 640px;
+  inline-size: fit-content;
+  max-inline-size: 100%;
   line-height: 20px;
   padding: var(--s3) var(--s4);
   border: 1px solid var(--line-strong);
@@ -2061,6 +2107,22 @@ body[data-layout="card"] main > .lede + .actions {
     padding: var(--s7) var(--gutter) var(--s8);
   }
 
+  /* With :has() the page keeps a 32 px column for the bar instead: the title and every
+     paragraph start at 52, under the wordmark, and the bar stands under the door mark. */
+  @supports selector(:has(a)) {
+    body[data-layout="card"] main:has(> h1[data-tone="bad"]) {
+      padding-inline-start: calc(var(--gutter) + var(--s6));
+    }
+
+    h1[data-tone="bad"] {
+      padding-inline-start: 0;
+    }
+
+    h1[data-tone="bad"]::before {
+      inset-inline-start: calc(var(--s6) * -1);
+    }
+  }
+
   .part {
     grid-template-columns: minmax(0, 1fr);
     row-gap: var(--s5);
@@ -2079,18 +2141,18 @@ body[data-layout="card"] main > .lede + .actions {
     margin-inline-start: 0;
   }
 
-  /* A 20 px gutter is too narrow to hang a mark in: the mark stands on the page edge
-     and its label moves in, spaced as a status word and its mark are. */
-  .event[data-tone] {
+  /* A 20 px gutter is too narrow to hang a mark in: the log keeps a 20 px column for it.
+     Every line of every record starts on one edge and a mark stands on the page edge. */
+  .activity tr {
     padding-inline-start: 20px;
   }
 
   .event[data-tone]::before {
-    inset-inline-start: 2px;
+    inset-inline-start: -18px;
   }
 
   .event[data-tone="bad"]::before {
-    inset-inline-start: 1px;
+    inset-inline-start: -19px;
   }
 
   /* Generic lists: each row is a small block, the name first, the action last. */
@@ -2269,7 +2331,7 @@ body[data-layout="card"] main > .lede + .actions {
     --c-event: round(down, calc(164px + (100% - 936px) * 5 / 12), 1px);
     --c-user: 240px;
     --c-decision: 116px;
-    --c-time: 104px;
+    --c-time: 88px;
   }
 }
 
@@ -2283,6 +2345,21 @@ body[data-layout="card"] main > .lede + .actions {
 /* 640 to 1279 px: each row is a record in three columns: what happened; who, where
    and the decision; when and how long. */
 @media (max-width: 1279.98px) {
+  /* Under 1280 px a quarter of the room cannot hold the longest state line: two by two. */
+  .counts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .counts > a:nth-child(odd) {
+    padding-inline-start: 0;
+    border-inline-start: 0;
+  }
+
+  /* Stacked, a line without a mark keeps the mark's room: one edge for the four lines. */
+  .count-state:not(:has(> .state)) {
+    padding-inline-start: 20px;
+  }
+
   .activity,
   .activity tbody,
   .activity td {
@@ -2392,7 +2469,7 @@ body[data-layout="card"] main > .lede + .actions {
   .fields[data-cols="1-2"] {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: none;
-    row-gap: var(--s4);
+    row-gap: var(--s5);
   }
 
   .field {
@@ -2444,30 +2521,15 @@ body[data-layout="card"] main > .lede + .actions {
     flex: 1;
   }
 
+  /* One count to a row: the longest state line needs the whole width. */
   .counts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .counts > a {
-    padding: var(--s4) var(--s4) var(--s4) 0;
-  }
-
-  .counts > a:nth-child(odd) {
-    padding-inline-start: 0;
-    border-inline-start: 0;
-  }
-
+  .counts > a,
   .counts > a:nth-child(even) {
-    padding-inline-start: var(--s4);
-  }
-
-  .counts > a:nth-child(n + 3) {
-    border-block-start: 1px solid var(--line);
-  }
-
-  .count-value {
-    font-size: 32px;
-    line-height: 36px;
+    padding: var(--s3) 0;
+    border-inline-start: 0;
   }
 
   .range {

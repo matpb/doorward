@@ -376,6 +376,15 @@ pub fn open_servers(conn: &Connection) -> rusqlite::Result<Vec<OpenServer>> {
     rows.collect()
 }
 
+/// How many servers are not checked: every state but open and ok, as the servers list shows them.
+pub fn unchecked_count(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM servers WHERE lockdown NOT IN ('open', 'ok')",
+        [],
+        |row| row.get(0),
+    )
+}
+
 /// One server, or None when no row has the id.
 pub fn load(conn: &Connection, id: i64) -> rusqlite::Result<Option<Server>> {
     conn.query_row(

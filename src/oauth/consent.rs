@@ -465,14 +465,14 @@ fn client_line(client: &Shown, claim: bool) -> Markup {
             "warning",
             html! {
                 p data-client="document-loopback" {
-                    "Says it is " q.client-name { (client.name) } " from " span.client-host { (host) }
-                    ". Any program on this computer can use that description."
+                    "Says it is " q.client-name { (client.name) } " from " span.whole { span.client-host { (ui::breakable(host)) } "." }
+                    " Any program on this computer can use that description."
                 }
             },
         ),
         Some(host) => html! {
             p data-client="document" {
-                q.client-name { (client.name) } ", published by " span.client-host { (host) } "."
+                q.client-name { (client.name) } ", published by " span.whole { span.client-host { (ui::breakable(host)) } "." }
             }
         },
     }
@@ -804,11 +804,11 @@ mod tests {
         };
         assert_eq!(
             client_line(&publisher, false).into_string(),
-            r#"<p data-client="document"><q class="client-name">Claude Code</q>, published by <span class="client-host">example.com</span>.</p>"#
+            r#"<p data-client="document"><q class="client-name">Claude Code</q>, published by <span class="whole"><span class="client-host">example<wbr>.com</span>.</span></p>"#
         );
         assert_eq!(
             client_line(&publisher, true).into_string(),
-            r#"<div class="notice" data-notice="warning"><p data-client="document-loopback">Says it is <q class="client-name">Claude Code</q> from <span class="client-host">example.com</span>. Any program on this computer can use that description.</p></div>"#
+            r#"<div class="notice" data-notice="warning"><p data-client="document-loopback">Says it is <q class="client-name">Claude Code</q> from <span class="whole"><span class="client-host">example<wbr>.com</span>.</span> Any program on this computer can use that description.</p></div>"#
         );
     }
 

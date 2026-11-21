@@ -290,7 +290,7 @@ fn server_text(family: &Family) -> Markup {
         @if label == ALL_SERVERS {
             (label)
         } @else {
-            code { (label) }
+            span.whole { code { (label) } }
         }
     }
 }
@@ -333,6 +333,14 @@ mod tests {
     /// How many elements of `doc` match `css`.
     fn count(doc: &Html, css: &str) -> usize {
         doc.select(&Selector::parse(css).expect("selector")).count()
+    }
+
+    #[test]
+    fn the_server_path_sits_in_a_whole_span_as_code() {
+        assert_eq!(
+            server_text(&family()).into_string(),
+            r#"<span class="whole"><code>demo</code></span>"#
+        );
     }
 
     #[test]
@@ -389,11 +397,11 @@ mod tests {
     #[test]
     fn a_server_path_is_code_and_all_servers_is_plain_words() {
         let doc = Html::parse_fragment(&link_body("token", &family()).into_string());
-        assert_eq!(count(&doc, "p.lede > code"), 1);
+        assert_eq!(count(&doc, "p.lede > span.whole > code"), 1);
         let mut everywhere = family();
         everywhere.server_slug = None;
         let doc = Html::parse_fragment(&link_body("token", &everywhere).into_string());
-        assert_eq!(count(&doc, "p.lede > code"), 0);
+        assert_eq!(count(&doc, "p.lede > span.whole > code"), 0);
         let lede = doc
             .select(&Selector::parse("p.lede").expect("selector"))
             .next()

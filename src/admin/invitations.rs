@@ -148,6 +148,15 @@ fn open_rows_in(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Row>> {
     rows.collect()
 }
 
+/// The earliest expiry among the open invitations, the same ones `open_rows_in` lists.
+pub(super) fn earliest_open_expiry(conn: &Connection, now: i64) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT MIN(expires_at) FROM invitations WHERE expires_at > ?1",
+        params![now],
+        |row| row.get(0),
+    )
+}
+
 /// The UTC time of a unix timestamp as RFC 3339.
 fn rfc3339(at: i64) -> rusqlite::Result<String> {
     let when = OffsetDateTime::from_unix_timestamp(at).map_err(invalid_time)?;

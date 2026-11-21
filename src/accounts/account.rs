@@ -79,7 +79,7 @@ fn account_body(csrf: &str, email: &str, error: Option<&str>, clients: &[Connect
                                     @if row.server == connected::ALL_SERVERS {
                                         (row.server)
                                     } @else {
-                                        code { (row.server) }
+                                        span.whole { code { (row.server) } }
                                     }
                                 }
                                 td.act {
@@ -197,6 +197,18 @@ mod tests {
         let doc = body(&[]);
         assert_eq!(count(&doc, r#"a[data-nav="to-panel"]"#), 0);
         assert_eq!(count(&doc, "div.page-head a"), 0);
+    }
+
+    #[test]
+    fn the_server_of_a_connected_app_sits_in_a_whole_span_as_code() {
+        let clients = [Connected {
+            public_id: "pub-1".to_owned(),
+            client_name: "Claude Code".to_owned(),
+            server: "demo".to_owned(),
+        }];
+        let doc = body(&clients);
+        assert_eq!(count(&doc, "tr > td.half > span.whole > code"), 1);
+        assert_eq!(text(&doc, "tr > td.half > span.whole > code"), "demo");
     }
 
     #[test]

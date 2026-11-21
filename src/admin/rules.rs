@@ -281,6 +281,26 @@ fn record(conn: &Connection, at: i64, actor: &SessionUser, detail: &str) -> rusq
     audit::record(conn, at, &change)
 }
 
+/// How many stored rules deny and how many allow.
+pub(super) struct EffectCounts {
+    pub deny: i64,
+    pub allow: i64,
+}
+
+/// The rules by effect, in one query.
+pub(super) fn effect_counts_in(conn: &Connection) -> rusqlite::Result<EffectCounts> {
+    conn.query_row(
+        "SELECT COALESCE(SUM(effect = 'deny'), 0), COALESCE(SUM(effect = 'allow'), 0) FROM rules",
+        [],
+        |row| {
+            Ok(EffectCounts {
+                deny: row.get(0)?,
+                allow: row.get(1)?,
+            })
+        },
+    )
+}
+
 /// The stored rules, oldest first; `only` reads just the rule with that id.
 fn rules_in(conn: &Connection, only: Option<i64>) -> rusqlite::Result<Vec<Stored>> {
     let mut statement = conn.prepare(
@@ -573,9 +593,9 @@ fn subject_markup(subject: &str) -> Markup {
 fn target_markup(rule: &Stored) -> Markup {
     html! {
         @if let (Some(server), Some(tool)) = (rule.server.as_deref(), rule.tool.as_deref()) {
-            "tool " code { (ui::breakable(tool)) } " on server " code { (server) }
+            "tool " span.whole { code { (ui::breakable(tool)) } } " on server " span.whole { code { (server) } }
         } @else if let Some(server) = rule.server.as_deref() {
-            "server " code { (server) }
+            "server " span.whole { code { (server) } }
         } @else {
             "all tools"
         }
@@ -584,4 +604,37 @@ fn target_markup(rule: &Stored) -> Markup {
 
 fn yes_or_no(flag: bool) -> &'static str {
     if flag { "yes" } else { "no" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stored(server: Option<&str>, tool: Option<&str>) -> Stored {
+        Stored {
+            id: 1,
+            subject: "everyone".to_owned(),
+            effect: "allow".to_owned(),
+            server_id: server.map(|_| 1),
+            server: server.map(str::to_owned),
+            tool: tool.map(str::to_owned),
+            stale: false,
+        }
+    }
+
+    #[test]
+    fn the_applies_to_names_sit_in_whole_spans_as_code() {
+        let tool = stored(Some("github"), Some("create_pull_request_review_comment"));
+        assert_eq!(
+            target_markup(&tool).into_string(),
+            r#"tool <span class="whole"><code>create_<wbr>pull_<wbr>request_<wbr>review_<wbr>comment</code></span> on server <span class="whole"><code>github</code></span>"#
+        );
+        let server = stored(Some("demo"), None);
+        assert_eq!(
+            target_markup(&server).into_string(),
+            r#"server <span class="whole"><code>demo</code></span>"#
+        );
+        let all = stored(None, None);
+        assert_eq!(target_markup(&all).into_string(), "all tools");
+    }
 }

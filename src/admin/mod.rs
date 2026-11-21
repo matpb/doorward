@@ -21,7 +21,7 @@ use rusqlite::{Connection, params};
 
 use crate::app::AppState;
 use crate::servers::OpenServer;
-use crate::web::{MainData, Nav, Viewer, forbidden, internal_error, page_with, redirect};
+use crate::web::{MainData, Nav, Viewer, forbidden, internal_error, page_with, redirect, ui};
 
 /// The newest activity rows the overview shows.
 const LATEST_ROWS: i64 = 5;
@@ -81,13 +81,14 @@ pub fn router(state: AppState) -> Router<AppState> {
 async fn panel(viewer: Viewer, State(state): State<AppState>) -> Response {
     let now = state.clock.now().unix_timestamp();
     let counted = state.db.call(move |conn| counts_in(conn, now)).await;
+    let states = state.db.call(move |conn| states_in(conn, now)).await;
     let latest = activity::latest(&state.db, LATEST_ROWS).await;
     let open = state
         .db
         .call(|conn| crate::servers::open_servers(conn))
         .await;
-    match (counted, latest, open) {
-        (Ok(counts), Ok(latest), Ok(open)) => page_with(
+    match (counted, states, latest, open) {
+        (Ok(counts), Ok(states), Ok(latest), Ok(open)) => page_with(
             StatusCode::OK,
             "admin",
             "Overview",
@@ -100,7 +101,7 @@ async fn panel(viewer: Viewer, State(state): State<AppState>) -> Response {
                     h1 { "Overview" }
                 }
                 (open_alert(&open))
-                (counts_markup(&counts))
+                (counts_markup(&counts, &states, open.len()))
                 section.block data-latest-activity aria-labelledby="latest-title" {
                     div.block-head {
                         h2 id="latest-title" { "Latest activity" }
@@ -110,7 +111,7 @@ async fn panel(viewer: Viewer, State(state): State<AppState>) -> Response {
                 }
             },
         ),
-        (Err(err), _, _) | (_, Err(err), _) | (_, _, Err(err)) => {
+        (Err(err), _, _, _) | (_, Err(err), _, _) | (_, _, Err(err), _) | (_, _, _, Err(err)) => {
             internal_error("admin overview", &err)
         }
     }
@@ -174,24 +175,118 @@ fn counts_in(conn: &Connection, now: i64) -> rusqlite::Result<Counts> {
     )
 }
 
-/// The four counts, each a link to its page.
-fn counts_markup(counts: &Counts) -> Markup {
+/// What the state lines of the counts say, read in one query each from the same database.
+struct States {
+    unchecked_servers: i64,
+    disabled_users: i64,
+    next_expiry: Option<Expiry>,
+    rules: rules::EffectCounts,
+}
+
+/// An expiry as its state line writes it: the instant in RFC 3339 and the day in words.
+struct Expiry {
+    instant: String,
+    day: String,
+}
+
+fn states_in(conn: &Connection, now: i64) -> rusqlite::Result<States> {
+    let next = invitations::earliest_open_expiry(conn, now)?;
+    Ok(States {
+        unchecked_servers: crate::servers::unchecked_count(conn)?,
+        disabled_users: users::disabled_count(conn)?,
+        next_expiry: next.map(expiry_of).transpose()?,
+        rules: rules::effect_counts_in(conn)?,
+    })
+}
+
+fn expiry_of(at: i64) -> rusqlite::Result<Expiry> {
+    Ok(Expiry {
+        instant: activity::rfc3339(at)?,
+        day: activity::day_of(at)?,
+    })
+}
+
+/// The four counts, each a link to its page, with the line that says what needs attention.
+fn counts_markup(counts: &Counts, states: &States, open_servers: usize) -> Markup {
     html! {
         div.counts {
-            (count_link("servers", "/admin/servers", "Servers", counts.servers))
-            (count_link("users", "/admin/users", "Users", counts.users))
-            (count_link("invitations", "/admin/invitations", "Open invitations", counts.invitations))
-            (count_link("rules", "/admin/rules", "Rules", counts.rules))
+            (count_link("servers", "/admin/servers", "Server", "Servers", counts.servers,
+                servers_state(counts.servers, open_servers, states.unchecked_servers)))
+            (count_link("users", "/admin/users", "User", "Users", counts.users,
+                users_state(states.disabled_users)))
+            (count_link("invitations", "/admin/invitations", "Open invitation", "Open invitations",
+                counts.invitations, invitations_state(counts.invitations, states.next_expiry.as_ref())))
+            (count_link("rules", "/admin/rules", "Rule", "Rules", counts.rules,
+                rules_state(&states.rules)))
         }
     }
 }
 
-fn count_link(key: &str, href: &str, label: &str, value: i64) -> Markup {
+/// One count link. `one` is its noun at a count of one, `many` at every other count.
+fn count_link(
+    key: &str,
+    href: &str,
+    one: &str,
+    many: &str,
+    value: i64,
+    state: Option<Markup>,
+) -> Markup {
+    let label = if value == 1 { one } else { many };
     html! {
         a data-count=(key) href=(href) {
             span.count-value data-count-value { (value) }
             span.count-label { (label) }
+            @if let Some(state) = state {
+                span.count-state { (state) }
+            }
         }
+    }
+}
+
+/// The servers say one thing, the worst: open beats not checked beats locked down.
+fn servers_state(total: i64, open: usize, unchecked: i64) -> Option<Markup> {
+    if total == 0 {
+        None
+    } else if open == 1 {
+        Some(ui::pill("bad", "1 answers without the gateway"))
+    } else if open > 1 {
+        Some(ui::pill(
+            "bad",
+            &format!("{open} answer without the gateway"),
+        ))
+    } else if unchecked > 0 {
+        Some(ui::pill("warn", &format!("{unchecked} not checked")))
+    } else if total == 1 {
+        Some(ui::pill("ok", "Locked down"))
+    } else {
+        Some(ui::pill("ok", "All locked down"))
+    }
+}
+
+fn users_state(disabled: i64) -> Option<Markup> {
+    (disabled > 0).then(|| ui::pill("muted", &format!("{disabled} disabled")))
+}
+
+/// The expiry of the open invitation that expires first, with its date in a time element.
+fn invitations_state(open: i64, next: Option<&Expiry>) -> Option<Markup> {
+    let expiry = next?;
+    let words = match open {
+        1 => "Expires",
+        n if n >= 2 => "Next expires",
+        _ => return None,
+    };
+    Some(html! {
+        (words) " " time datetime=(expiry.instant) { (expiry.day) }
+    })
+}
+
+/// Deny first, since a deny stands unless an allow is more specific; each side only when present.
+fn rules_state(effects: &rules::EffectCounts) -> Option<Markup> {
+    let deny = (effects.deny > 0).then(|| ui::pill("bad", &format!("{} deny", effects.deny)));
+    let allow = (effects.allow > 0).then(|| ui::pill("ok", &format!("{} allow", effects.allow)));
+    match (deny, allow) {
+        (Some(deny), Some(allow)) => Some(html! { (deny) " " (allow) }),
+        (deny, allow) => deny.or(allow),
     }
 }
 
