@@ -356,7 +356,7 @@ fn local_sentence(redirect: &Redirect<'_>) -> Option<&'static str> {
 }
 
 /// The redirect host as the page names it: host or host:port, or the scheme and a colon.
-fn shown_host(redirect: &Redirect<'_>) -> String {
+pub(crate) fn shown_host(redirect: &Redirect<'_>) -> String {
     match redirect {
         Redirect::Loopback {
             host,

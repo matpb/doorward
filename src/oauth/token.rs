@@ -25,6 +25,7 @@ use crate::report;
 use crate::web::body::{ReadError, read, timed_out};
 
 use super::clients;
+use super::consent::shown_host;
 use super::families::{self, NewFamily, Pair};
 use super::uri;
 
@@ -823,7 +824,10 @@ fn server_name(conn: &Connection, server_id: i64) -> rusqlite::Result<Option<Str
 
 /// The host the sign-in was sent to: the redirect address's host, with its port when it has one.
 fn destination_of(redirect: &str) -> String {
-    truncated(templates::host_and_port(redirect), DESTINATION_LIMIT)
+    match uri::parse(redirect) {
+        Some(parsed) => truncated(&shown_host(&parsed), DESTINATION_LIMIT),
+        None => String::new(),
+    }
 }
 
 fn truncated(text: &str, limit: usize) -> String {
@@ -850,16 +854,26 @@ mod tests {
     use super::{destination_of, truncated, utc_text};
 
     #[test]
-    fn the_destination_is_the_host_and_the_port_the_code_was_issued_for() {
+    fn the_destination_is_named_as_the_consent_page_names_it() {
         assert_eq!(
             destination_of("http://127.0.0.1:53535/callback"),
             "127.0.0.1:53535"
         );
-        assert_eq!(
-            destination_of("https://claude.ai/api/mcp/auth_callback"),
-            "claude.ai"
-        );
+        assert_eq!(destination_of("http://localhost/callback"), "localhost");
         assert_eq!(destination_of("http://[::1]:8000/cb"), "[::1]:8000");
+        assert_eq!(
+            destination_of("https://app.example.com/api/mcp/auth_callback"),
+            "app.example.com"
+        );
+        assert_eq!(
+            destination_of("cursor://anysphere.cursor-mcp/oauth/callback"),
+            "cursor:"
+        );
+    }
+
+    #[test]
+    fn a_text_that_does_not_parse_gives_an_empty_destination() {
+        assert_eq!(destination_of("not a redirect address"), "");
     }
 
     #[test]

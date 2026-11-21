@@ -360,8 +360,9 @@ L. Added after the owner's auth review
     Doorward gateway at <host>.` and one sentence about what Doorward does, where the host is
     the gateway's public address. The reset mail says `If this was not you, ignore this mail.
     Your password stays the same.` The new-connection mail names what the app can use (the
-    server's name, or `every server assigned to you` for the combined endpoint), the host the
-    sign-in was sent to and the time in UTC; the name the app gave itself is not in the mail.
+    server's name, or `every server assigned to you` for the combined endpoint), where the
+    sign-in was sent, named as the consent page named it, and the time in UTC; the name the
+    app gave itself is not in the mail.
     The HTML part equals the designed mail byte for byte, a host in it breaks only before a
     dot, and the address shown as text equals the link with no character added. On the
     consent page the sentence about a local app sits inside the one warning box.

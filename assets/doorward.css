@@ -523,7 +523,7 @@ body[data-layout="card"] main > .lede + .back {
   color: var(--ink-2);
 }
 
-/* A refusal as a title: the bar of the log, hung in the margin, 12 px from the words. */
+/* A refusal as a title: the bar of the log, hung in the margin, 8 px from the words. */
 h1[data-tone="bad"] {
   position: relative;
 }
@@ -531,7 +531,7 @@ h1[data-tone="bad"] {
 h1[data-tone="bad"]::before {
   content: "";
   position: absolute;
-  inset-inline-start: -28px;
+  inset-inline-start: calc(var(--s5) * -1);
   inset-block-start: 14px;
   inline-size: 16px;
   block-size: 6px;
@@ -2013,6 +2013,12 @@ body[data-layout="card"] .facts dt {
   font-size: 13px;
 }
 
+/* A value on a card page is read, not scanned: 16 on 24, the size of the words around it. */
+body[data-layout="card"] .facts dd {
+  font-size: 16px;
+  line-height: 24px;
+}
+
 body[data-layout="card"] .facts dd + dt {
   margin-block-start: var(--s3);
 }
@@ -2052,11 +2058,6 @@ main[data-page="consent"] > p + .facts {
 }
 
 /* What Approve grants is the second thing the eye meets, after the destination. */
-main[data-page="consent"] .facts dd {
-  font-size: 16px;
-  line-height: 24px;
-}
-
 main[data-page="consent"] .facts dd.grant {
   font-weight: 650;
   font-size: 20px;

@@ -30,8 +30,7 @@ pub struct Connection<'a> {
     pub time: &'a str,
 }
 
-/// The host of an address with its port when the address writes one: the text after the scheme,
-/// up to the first slash.
+/// The host of the gateway's public address, with its port when written; redirects use `shown_host`.
 pub fn host_and_port(address: &str) -> &str {
     let rest = address.split_once("://").map_or(address, |(_, rest)| rest);
     rest.split_once('/').map_or(rest, |(host, _)| host)
@@ -74,8 +73,8 @@ pub fn reset(link: &str, host: &str) -> Parts {
             facts: &[],
             body: &[
                 asked,
-                "Set a new one with this link. It works once.",
                 RESET_NOTE,
+                "Set a new one with this link. It works once.",
             ],
             button: "Set a new password",
             link,
@@ -430,7 +429,11 @@ fn tie(text: &str) -> String {
 /// A host by the host rule: one inline block per piece, with a break between two blocks.
 /// `tail` goes inside the last block.
 fn host_html(host: &str, tail: &str) -> Markup {
-    let pieces = host_pieces(host, tail);
+    pieces_html(&host_pieces("", host, tail))
+}
+
+/// Each piece in its own inline block, with a `wbr` between two blocks.
+fn pieces_html(pieces: &[String]) -> Markup {
     html! {
         @for (index, piece) in pieces.iter().enumerate() {
             @if index > 0 {
@@ -441,9 +444,9 @@ fn host_html(host: &str, tail: &str) -> Markup {
     }
 }
 
-/// The host rule: the port comes off, then an address or a host of fewer than three labels stays whole.
-/// Otherwise each label but the last two gets a piece, and the last two labels go with the port.
-fn host_pieces(host: &str, tail: &str) -> Vec<String> {
+/// The host rule: an address or a host of fewer than three labels stays whole; else the last two labels share a piece.
+/// `lead` opens the first piece and `tail` closes the last one.
+fn host_pieces(lead: &str, host: &str, tail: &str) -> Vec<String> {
     let (name, port) = match host.rfind(':') {
         Some(at) if is_digits(&host[at + 1..]) => (&host[..at], &host[at..]),
         _ => (host, ""),
@@ -451,7 +454,7 @@ fn host_pieces(host: &str, tail: &str) -> Vec<String> {
     let labels: Vec<&str> = name.split('.').collect();
     let address = !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit() || b == b'.');
     if address || name.contains(':') || labels.len() < 3 {
-        return vec![format!("{host}{tail}")];
+        return vec![format!("{lead}{host}{tail}")];
     }
     let (head, last_two) = labels.split_at(labels.len() - 2);
     let mut pieces: Vec<String> = head
@@ -459,7 +462,7 @@ fn host_pieces(host: &str, tail: &str) -> Vec<String> {
         .enumerate()
         .map(|(index, label)| {
             if index == 0 {
-                (*label).to_owned()
+                format!("{lead}{label}")
             } else {
                 format!(".{label}")
             }
@@ -474,30 +477,29 @@ fn is_digits(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// The link as text: a break after each slash that no slash follows, and the token after the last
-/// slash in one inline block.
+/// The address as text: the scheme and host by the host rule, then the path and the token, each in
+/// its own inline block. The slash after the host closes the host's last block.
 fn address_html(link: &str) -> Markup {
-    let cut = link.rfind('/').map_or(0, |at| at + 1);
-    let (lead, token) = link.split_at(cut);
-    html! {
-        (PreEscaped(address_lead(lead)))
-        span style="display:inline-block;max-width:100%;" { (token) }
+    let (scheme, after_scheme) = link
+        .find("://")
+        .map_or(("", link), |at| link.split_at(at + 3));
+    let (host, from_slash) = after_scheme
+        .find('/')
+        .map_or((after_scheme, ""), |at| after_scheme.split_at(at));
+    let (slash, rest) = match from_slash.strip_prefix('/') {
+        Some(rest) => ("/", rest),
+        None => ("", ""),
+    };
+    let cut = rest.rfind('/').map_or(0, |at| at + 1);
+    let (path, token) = rest.split_at(cut);
+    let mut pieces = host_pieces(scheme, host, slash);
+    if !path.is_empty() {
+        pieces.push(path.to_owned());
     }
-}
-
-fn address_lead(lead: &str) -> String {
-    let mut out = String::new();
-    let mut rest = lead;
-    while let Some(at) = rest.find('/') {
-        out.push_str(&escaped(&rest[..at]));
-        out.push('/');
-        rest = &rest[at + 1..];
-        if !rest.starts_with('/') {
-            out.push_str("<wbr>");
-        }
+    if !token.is_empty() {
+        pieces.push(token.to_owned());
     }
-    out.push_str(&escaped(rest));
-    out
+    pieces_html(&pieces)
 }
 
 #[cfg(test)]
@@ -648,6 +650,14 @@ mod tests {
     }
 
     #[test]
+    fn a_private_scheme_destination_is_one_piece() {
+        assert_eq!(
+            host_html("cursor:", "").into_string(),
+            format!("{SPAN}cursor:</span>")
+        );
+    }
+
+    #[test]
     fn a_host_of_five_labels_has_four_spans_and_breaks_before_a_dot_only() {
         let html = host_html("two.three.four.example.com", "").into_string();
         assert_eq!(html.matches("<span").count(), 4);
@@ -659,11 +669,11 @@ mod tests {
     }
 
     #[test]
-    fn the_address_rule_breaks_after_each_slash_before_the_token() {
+    fn the_address_is_whole_pieces_host_path_and_token() {
         assert_eq!(
             address_html(INVITE_LINK).into_string(),
             format!(
-                "https://<wbr>doorward.example.com/<wbr>invite/<wbr>{SPAN}dw_iv_8Jq2ZrV4mXc7Tn1LkP0aYbE5sHdW9u-f3oRiN6t_xMv</span>"
+                "{SPAN}https://doorward</span><wbr>{SPAN}.example.com/</span><wbr>{SPAN}invite/</span><wbr>{SPAN}dw_iv_8Jq2ZrV4mXc7Tn1LkP0aYbE5sHdW9u-f3oRiN6t_xMv</span>"
             )
         );
     }
@@ -672,7 +682,40 @@ mod tests {
     fn the_address_rule_handles_an_address_without_a_path() {
         assert_eq!(
             address_html("https://doorward.example.com").into_string(),
-            format!("https://<wbr>{SPAN}doorward.example.com</span>")
+            format!("{SPAN}https://doorward</span><wbr>{SPAN}.example.com</span>")
+        );
+    }
+
+    #[test]
+    fn the_new_connection_path_sits_in_one_span() {
+        assert_eq!(
+            address_html(DISCONNECT_LINK).into_string(),
+            format!(
+                "{SPAN}https://doorward</span><wbr>{SPAN}.example.com/</span><wbr>{SPAN}account/disconnect/</span><wbr>{SPAN}dw_dl_4Hn8TzRq1WcYb6LkM0aPfE3sJdV7u-x2oBiC9t_gUe</span>"
+            )
+        );
+    }
+
+    #[test]
+    fn a_loopback_address_with_a_port_has_its_host_in_one_span() {
+        assert_eq!(
+            address_html("http://127.0.0.1:8717/account/disconnect/dw_dl_x").into_string(),
+            format!(
+                "{SPAN}http://127.0.0.1:8717/</span><wbr>{SPAN}account/disconnect/</span><wbr>{SPAN}dw_dl_x</span>"
+            )
+        );
+    }
+
+    #[test]
+    fn a_host_of_six_labels_has_five_spans_before_the_path() {
+        assert_eq!(
+            address_html(
+                "https://doorward.platform-engineering.internal-tools.eu-central.example.com/account/disconnect/dw_dl_x"
+            )
+            .into_string(),
+            format!(
+                "{SPAN}https://doorward</span><wbr>{SPAN}.platform-engineering</span><wbr>{SPAN}.internal-tools</span><wbr>{SPAN}.eu-central</span><wbr>{SPAN}.example.com/</span><wbr>{SPAN}account/disconnect/</span><wbr>{SPAN}dw_dl_x</span>"
+            )
         );
     }
 
