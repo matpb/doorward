@@ -140,16 +140,16 @@ const NL: PreEscaped<&str> = PreEscaped("\n");
 const MSO_OPEN: &str = r#"<!--[if mso]><table role="presentation" width="560" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->"#;
 const MSO_CLOSE: &str = "<!--[if mso]></td></tr></table><![endif]-->";
 const STYLE: &str = "
-:root { color-scheme: light dark; }
+@media screen {
+  .dw-link { color: inherit !important; }
+}
 @media (prefers-color-scheme: dark) {
   .dw-room { background-color: #181715 !important; }
   .dw-ink { color: #F0EEEB !important; }
   .dw-ink-2 { color: #BFBDBA !important; }
-  .dw-line { border-color: #F0EEEB !important; }
   .dw-box { border-color: #767471 !important; }
-  .dw-button { border-color: #F0EEEB !important; background-color: #23211F !important; }
-  .dw-deny { color: #FB817A !important; }
-  .dw-button-deny { border-color: #FB817A !important; background-color: #36201E !important; }
+  .dw-button { color: #F0EEEB !important; background-color: #23211F !important; }
+  .dw-button-deny { color: #FB817A !important; border-color: #FB817A !important; background-color: #36201E !important; }
 }
 ";
 
@@ -187,17 +187,16 @@ fn closing_line(host: &str) -> String {
 
 /// The whole HTML part: the same document for all three mails, from the title to the closing line.
 fn document(slots: &Slots<'_>) -> Markup {
-    let (edge, fill) = if slots.deny {
-        ("#B7191C", "#FDEBE9")
+    let (edge, fill, outline) = if slots.deny {
+        ("#B7191C", "#FDEBE9", " #B7191C")
     } else {
-        (INK, "#F2F0EC")
+        (INK, "#F2F0EC", "")
     };
     let button_class = if slots.deny {
         "dw-button-deny"
     } else {
         "dw-button"
     };
-    let link_class = if slots.deny { "dw-deny" } else { "dw-ink" };
     let first = if slots.facts.is_empty() { 16 } else { 24 };
     html! {
         (DOCTYPE)
@@ -240,7 +239,7 @@ fn document(slots: &Slots<'_>) -> Markup {
                                             (NL)
                                             tr {
                                                 (NL)
-                                                td class="dw-line" width="2" height="2" style="width:2px;height:2px;border-top:9px solid #181612;border-right:3px solid #181612;border-bottom:9px solid #181612;border-left:9px solid #181612;border-radius:2px;font-size:0;line-height:0;" { (PreEscaped("&nbsp;")) }
+                                                td class="dw-ink" width="2" height="2" style="width:2px;height:2px;color:#181612;border-top:9px solid;border-right:3px solid;border-bottom:9px solid;border-left:9px solid;border-radius:2px;font-size:0;line-height:0;" { (PreEscaped("&nbsp;")) }
                                                 (NL)
                                                 td class="dw-ink" style="padding:0 0 0 18px;font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;font-size:17px;line-height:20px;font-weight:700;color:#181612;" { "Doorward" }
                                                 (NL)
@@ -260,7 +259,7 @@ fn document(slots: &Slots<'_>) -> Markup {
                                             (NL)
                                             tr {
                                                 (NL)
-                                                td class="dw-line" height="0" style="height:0;border-top:2px solid #181612;font-size:0;line-height:0;" { (PreEscaped("&nbsp;")) }
+                                                td class="dw-ink" height="0" style="height:0;color:#181612;border-top:2px solid;font-size:0;line-height:0;" { (PreEscaped("&nbsp;")) }
                                                 (NL)
                                             }
                                             (NL)
@@ -310,9 +309,9 @@ fn document(slots: &Slots<'_>) -> Markup {
                                             (NL)
                                             tr {
                                                 (NL)
-                                                td class=(button_class) bgcolor=(fill) style=(format!("background-color:{fill};border:2px solid {edge};border-radius:4px;mso-padding-alt:12px 24px;")) {
+                                                td class=(button_class) bgcolor=(fill) style=(format!("background-color:{fill};color:{edge};border:2px solid{outline};border-radius:4px;mso-padding-alt:12px 24px;")) {
                                                     (NL)
-                                                    a class=(link_class) href=(slots.link) style=(format!("display:inline-block;padding:12px 24px;font-family:{SANS};font-size:16px;line-height:24px;font-weight:700;color:{edge};text-decoration:none;")) { (slots.button) }
+                                                    a class="dw-link" href=(slots.link) style=(format!("display:inline-block;padding:12px 24px;font-family:{SANS};font-size:16px;line-height:24px;font-weight:700;color:{edge};text-decoration:none;")) { (slots.button) }
                                                     (NL)
                                                 }
                                                 (NL)
@@ -338,9 +337,9 @@ fn document(slots: &Slots<'_>) -> Markup {
                                             (NL)
                                             tr {
                                                 (NL)
-                                                td class="dw-box" style=(format!("padding:12px 16px;border:1px solid #82807B;border-radius:4px;font-family:{MONO};font-size:13px;line-height:20px;word-wrap:break-word;overflow-wrap:anywhere;")) {
+                                                td class="dw-box dw-ink" style=(format!("padding:12px 16px;border:1px solid #82807B;border-radius:4px;font-family:{MONO};font-size:13px;line-height:20px;color:{INK};word-wrap:break-word;overflow-wrap:anywhere;")) {
                                                     (NL)
-                                                    a class="dw-ink" href=(slots.link) style="color:#181612;text-decoration:none;word-wrap:break-word;overflow-wrap:anywhere;" { (address_html(slots.link)) }
+                                                    a class="dw-link" href=(slots.link) style="color:#181612;text-decoration:none;word-wrap:break-word;overflow-wrap:anywhere;" { (address_html(slots.link)) }
                                                     (NL)
                                                 }
                                                 (NL)
@@ -771,5 +770,69 @@ mod tests {
             "gateway.example.com"
         );
         assert_eq!(host_and_port("http://[::1]:8717"), "[::1]:8717");
+    }
+
+    /// The HTML part of each mail, with its name for the messages.
+    fn built_html() -> [(&'static str, String); 3] {
+        [
+            ("invitation", invitation(INVITE_LINK, GATEWAY).html),
+            ("reset", reset(RESET_LINK, GATEWAY).html),
+            (
+                "new-connection",
+                new_connection(DISCONNECT_LINK, &connection(), GATEWAY).html,
+            ),
+        ]
+    }
+
+    /// The values of the `style` attributes in a part, in order.
+    fn style_values(html: &str) -> Vec<&str> {
+        html.split(" style=\"")
+            .skip(1)
+            .filter_map(|rest| rest.split_once('"').map(|(value, _)| value))
+            .collect()
+    }
+
+    /// No border declaration names the ink colour; a border with no colour takes the cell's text colour.
+    #[test]
+    fn no_border_in_a_mail_names_the_ink() {
+        for (name, html) in built_html() {
+            let mut borders = 0;
+            for style in style_values(&html) {
+                for declaration in style.split(';') {
+                    let Some((property, value)) = declaration.split_once(':') else {
+                        continue;
+                    };
+                    if property.trim().starts_with("border") {
+                        borders += 1;
+                        assert!(!value.contains("#181612"), "{name}: {declaration}");
+                    }
+                }
+            }
+            assert!(borders > 0, "{name} has no border to check");
+        }
+    }
+
+    /// Each link carries the `dw-link` class, the one the screen rule sets to inherit its colour.
+    #[test]
+    fn every_link_in_a_mail_has_the_link_class() {
+        for (name, html) in built_html() {
+            let tags: Vec<&str> = html
+                .split("<a ")
+                .skip(1)
+                .map(|rest| rest.split_once('>').map_or(rest, |(tag, _)| tag))
+                .collect();
+            assert!(!tags.is_empty(), "{name} has no link");
+            for tag in tags {
+                assert!(tag.contains(r#"class="dw-link""#), "{name}: <a {tag}>");
+            }
+        }
+    }
+
+    /// The mails set no colour scheme on the root.
+    #[test]
+    fn no_mail_sets_a_colour_scheme_on_the_root() {
+        for (name, html) in built_html() {
+            assert!(!html.contains(":root"), "{name} sets :root");
+        }
     }
 }

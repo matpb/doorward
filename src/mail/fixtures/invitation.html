@@ -7,16 +7,16 @@
 <meta name="supported-color-schemes" content="light dark">
 <title>You are invited to Doorward</title>
 <style>
-:root { color-scheme: light dark; }
+@media screen {
+  .dw-link { color: inherit !important; }
+}
 @media (prefers-color-scheme: dark) {
   .dw-room { background-color: #181715 !important; }
   .dw-ink { color: #F0EEEB !important; }
   .dw-ink-2 { color: #BFBDBA !important; }
-  .dw-line { border-color: #F0EEEB !important; }
   .dw-box { border-color: #767471 !important; }
-  .dw-button { border-color: #F0EEEB !important; background-color: #23211F !important; }
-  .dw-deny { color: #FB817A !important; }
-  .dw-button-deny { border-color: #FB817A !important; background-color: #36201E !important; }
+  .dw-button { color: #F0EEEB !important; background-color: #23211F !important; }
+  .dw-button-deny { color: #FB817A !important; border-color: #FB817A !important; background-color: #36201E !important; }
 }
 </style>
 </head>
@@ -30,7 +30,7 @@
 <td style="padding:18px 24px 0 24px;">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0">
 <tr>
-<td class="dw-line" width="2" height="2" style="width:2px;height:2px;border-top:9px solid #181612;border-right:3px solid #181612;border-bottom:9px solid #181612;border-left:9px solid #181612;border-radius:2px;font-size:0;line-height:0;">&nbsp;</td>
+<td class="dw-ink" width="2" height="2" style="width:2px;height:2px;color:#181612;border-top:9px solid;border-right:3px solid;border-bottom:9px solid;border-left:9px solid;border-radius:2px;font-size:0;line-height:0;">&nbsp;</td>
 <td class="dw-ink" style="padding:0 0 0 18px;font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;font-size:17px;line-height:20px;font-weight:700;color:#181612;">Doorward</td>
 </tr>
 </table>
@@ -40,7 +40,7 @@
 <td style="padding:16px 24px 0 24px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
 <tr>
-<td class="dw-line" height="0" style="height:0;border-top:2px solid #181612;font-size:0;line-height:0;">&nbsp;</td>
+<td class="dw-ink" height="0" style="height:0;color:#181612;border-top:2px solid;font-size:0;line-height:0;">&nbsp;</td>
 </tr>
 </table>
 </td>
@@ -57,8 +57,8 @@
 <td style="padding:24px 24px 0 24px;">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0">
 <tr>
-<td class="dw-button" bgcolor="#F2F0EC" style="background-color:#F2F0EC;border:2px solid #181612;border-radius:4px;mso-padding-alt:12px 24px;">
-<a class="dw-ink" href="https://doorward.example.com/invite/dw_iv_8Jq2ZrV4mXc7Tn1LkP0aYbE5sHdW9u-f3oRiN6t_xMv" style="display:inline-block;padding:12px 24px;font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;font-size:16px;line-height:24px;font-weight:700;color:#181612;text-decoration:none;">Set your password</a>
+<td class="dw-button" bgcolor="#F2F0EC" style="background-color:#F2F0EC;color:#181612;border:2px solid;border-radius:4px;mso-padding-alt:12px 24px;">
+<a class="dw-link" href="https://doorward.example.com/invite/dw_iv_8Jq2ZrV4mXc7Tn1LkP0aYbE5sHdW9u-f3oRiN6t_xMv" style="display:inline-block;padding:12px 24px;font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;font-size:16px;line-height:24px;font-weight:700;color:#181612;text-decoration:none;">Set your password</a>
 </td>
 </tr>
 </table>
@@ -71,8 +71,8 @@
 <td style="padding:8px 24px 0 24px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
 <tr>
-<td class="dw-box" style="padding:12px 16px;border:1px solid #82807B;border-radius:4px;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;font-size:13px;line-height:20px;word-wrap:break-word;overflow-wrap:anywhere;">
-<a class="dw-ink" href="https://doorward.example.com/invite/dw_iv_8Jq2ZrV4mXc7Tn1LkP0aYbE5sHdW9u-f3oRiN6t_xMv" style="color:#181612;text-decoration:none;word-wrap:break-word;overflow-wrap:anywhere;"><span style="display:inline-block;max-width:100%;">https://doorward</span><wbr><span style="display:inline-block;max-width:100%;">.example.com/</span><wbr><span style="display:inline-block;max-width:100%;">invite/</span><wbr><span style="display:inline-block;max-width:100%;">dw_iv_8Jq2ZrV4mXc7Tn1LkP0aYbE5sHdW9u-f3oRiN6t_xMv</span></a>
+<td class="dw-box dw-ink" style="padding:12px 16px;border:1px solid #82807B;border-radius:4px;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;font-size:13px;line-height:20px;color:#181612;word-wrap:break-word;overflow-wrap:anywhere;">
+<a class="dw-link" href="https://doorward.example.com/invite/dw_iv_8Jq2ZrV4mXc7Tn1LkP0aYbE5sHdW9u-f3oRiN6t_xMv" style="color:#181612;text-decoration:none;word-wrap:break-word;overflow-wrap:anywhere;"><span style="display:inline-block;max-width:100%;">https://doorward</span><wbr><span style="display:inline-block;max-width:100%;">.example.com/</span><wbr><span style="display:inline-block;max-width:100%;">invite/</span><wbr><span style="display:inline-block;max-width:100%;">dw_iv_8Jq2ZrV4mXc7Tn1LkP0aYbE5sHdW9u-f3oRiN6t_xMv</span></a>
 </td>
 </tr>
 </table>
