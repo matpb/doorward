@@ -84,7 +84,7 @@ message names the variable and never prints the value.
 | `DOORWARD_DATABASE` | required | Path of the SQLite database file. The containers set `/data/doorward.db`. |
 | `DOORWARD_KEY_FILE` | (none) | File that holds the encryption key. When unset, the key file is the database path with `.key` added. |
 | `DOORWARD_TRUSTED_PROXIES` | (none) | Addresses or CIDR ranges of proxies whose `X-Forwarded-For` is believed. A range that holds every address (prefix 0) refuses the start. See Client addresses. |
-| `DOORWARD_SHARED_CLIENT_ADDRESS` | `false` | Set to `true` to accept that every visitor shares one address when no trusted proxy is set. |
+| `DOORWARD_SHARED_CLIENT_ADDRESS` | `false` | Set to `true` to accept that every visitor shares one address when no trusted proxy is set. Every visitor then shares one set of address rate limits and one sign-in block, so anyone on the internet can lock out every user and client with junk requests or wrong passwords. Use it only on a private network where every visitor is trusted. |
 | `DOORWARD_ALLOWED_ORIGINS` | (none) | Comma separated origins, other than the public address, that may call the MCP paths, for a browser client served from another origin such as an extension. Each entry is `scheme://host[:port]` and is compared exactly. |
 | `DOORWARD_LIFETIMES_INVITATION_DAYS` | `7` | Days an invitation link works. |
 | `DOORWARD_LIFETIMES_RESET_MINUTES` | `60` | Minutes a password reset link works. |
@@ -284,9 +284,15 @@ entry that is not itself a trusted proxy.
 - The gateway refuses to start when `DOORWARD_PUBLIC_URL` is `https` and no trusted proxy is
   set. The message says how to fix it. `DOORWARD_SHARED_CLIENT_ADDRESS=true` accepts the
   refusal instead: the gateway then starts, logs one warning, and every visitor shares one
-  address for sign-in throttling and rate limits.
-- Rootless Docker and Docker Desktop do not pass client addresses. The gateway logs a
-  warning once. Use `DOORWARD_SHARED_CLIENT_ADDRESS=true`, or a proxy on the host.
+  address for sign-in throttling and rate limits. Then everyone shares one set of address rate
+  limits and one sign-in block, so anyone on the internet can lock out every user and client by
+  sending junk requests or wrong passwords. Use it only on a private network where every visitor
+  is trusted. For an install reachable from the internet, list the proxy in
+  `DOORWARD_TRUSTED_PROXIES` and have it send `X-Forwarded-For`, as the entries above describe.
+- Rootless Docker and Docker Desktop may not pass the real client address. The gateway logs a
+  warning once when it sees a private client address. On a public install, run a proxy on the
+  host that sends `X-Forwarded-For`, and list it in `DOORWARD_TRUSTED_PROXIES`. Use
+  `DOORWARD_SHARED_CLIENT_ADDRESS=true` only on a private network where every visitor is trusted.
 - On an IPv4-only edge network, IPv6 clients show as the bridge gateway address and share
   one bucket.
 - The shipped Compose files trust one exact address each: `10.213.87.2` for Caddy in

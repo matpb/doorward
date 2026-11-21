@@ -52,3 +52,32 @@ Anything that lets a person do what the gateway is there to prevent, for example
 - A secret header read on the network between the gateway and a server that an admin
   chose to reach over plain `http`.
 - Findings from an automated scanner with no demonstrated impact.
+
+## Known limits
+
+These are the limits known at this release.
+
+- Anyone who knows a person's email address can stop that account from signing in. Wrong
+  passwords sent from any addresses count against the account. By default, 50 of them within
+  15 minutes block the account for every address, the right password included. Existing
+  sessions and connected clients keep working. `doorward unlock` with the email address, or a
+  password reset by email, lifts the block.
+- The tables that hold sign-ins in progress and unused client registrations are bounded. When
+  one fills, its oldest entries are dropped. A flood of requests from many addresses can
+  therefore cancel sign-ins in progress and push out clients that have not finished a sign-in.
+  A client that has finished one is kept.
+- People who reach the gateway through one shared address share its rate limits and its
+  sign-in block. Anyone who sends junk requests or wrong passwords from that address can lock
+  them all out.
+- Approving a sign-in that someone else started connects your account to their app. The
+  consent page says so. The gateway sends the code only to a loopback address or to an
+  address on the allowed list.
+- The name of an app that registered itself is its own claim. Doorward does not verify it.
+  The consent page says so.
+- Sign-in uses a password only. There is no second factor.
+- The gateway does not limit open connections, and it has no header-read timeout of its own.
+  Most of its rate limits count per address, so a flood from many addresses can pass each
+  of them. Keep a proxy in front of it to limit connections and flood traffic.
+
+For limits on what the gateway enforces between users and servers, see the README section
+[What the gateway does not do](README.md#what-the-gateway-does-not-do).

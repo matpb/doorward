@@ -90,7 +90,12 @@ tunnel, or a load balancer.
 - Set `trusted_proxies` to the addresses of the proxies you run. The gateway then reads the
   visitor's address from `X-Forwarded-For`, which sign-in throttling and rate limits need.
 - With an `https` address and no trusted proxy the gateway refuses to start and says why.
-  `shared_client_address = true` accepts that every visitor shares one address instead.
+  `shared_client_address = true` accepts that every visitor shares one address instead. Then
+  everyone shares one set of address rate limits and one sign-in block, so anyone on the
+  internet can lock out every user and client by sending junk requests or wrong passwords. Use
+  it only on a private network where every visitor is trusted. For an install reachable from
+  the internet, list the proxy in `trusted_proxies` and have it send `X-Forwarded-For`, as the
+  bullet above describes.
 
 Caddy needs nothing more than the address. It gets the certificate, sends
 `X-Forwarded-For` and passes event streams through as they arrive:
@@ -234,7 +239,7 @@ Bugs and questions go to the repository's issue tracker. Security reports do not
 - [docs/DESIGN.md](docs/DESIGN.md): how the gateway is built and why.
 - [docs/INTERFACE.md](docs/INTERFACE.md): every page and endpoint.
 - [docs/TESTS.md](docs/TESTS.md): the test catalogue.
-- [SECURITY.md](SECURITY.md): how to report a vulnerability.
+- [SECURITY.md](SECURITY.md): how to report a vulnerability, and the known limits.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how a change is made and checked.
 
 ## License
