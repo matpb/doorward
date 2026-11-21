@@ -58,7 +58,7 @@ enum Stored {
 pub async fn get_invitations(viewer: Viewer, State(state): State<AppState>) -> Response {
     let now = state.clock.now().unix_timestamp();
     match load_open(&state.db, now).await {
-        Ok(rows) => invitations_page(&viewer, StatusCode::OK, &rows, None),
+        Ok(rows) => invitations_page(&viewer, StatusCode::OK, &rows, None, None),
         Err(err) => internal_error("invitations page", &err),
     }
 }
@@ -67,11 +67,11 @@ pub async fn get_invitations(viewer: Viewer, State(state): State<AppState>) -> R
 pub async fn post_invitation(State(state): State<AppState>, form: VerifiedForm) -> Response {
     let email = normalize_email(form.fields.get("email"));
     if !valid_new_email(&email) {
-        return refuse(&state, &form.viewer, EMAIL_MESSAGE).await;
+        return refuse(&state, &form, EMAIL_MESSAGE).await;
     }
     let role = form.fields.get("role").to_owned();
     if role != "admin" && role != "user" {
-        return refuse(&state, &form.viewer, ROLE_MESSAGE).await;
+        return refuse(&state, &form, ROLE_MESSAGE).await;
     }
     if role == "admin" && !form.viewer.is_owner() {
         return forbidden();
@@ -90,7 +90,7 @@ pub async fn post_invitation(State(state): State<AppState>, form: VerifiedForm) 
     };
     match state.db.call(move |conn| store_in(conn, &new)).await {
         Ok(Stored::Written) => {}
-        Ok(Stored::Taken) => return refuse(&state, &form.viewer, TAKEN_MESSAGE).await,
+        Ok(Stored::Taken) => return refuse(&state, &form, TAKEN_MESSAGE).await,
         Err(err) => return internal_error("invitation", &err),
     }
     let link = format!("{}/invite/{token}", state.config.public_url);
@@ -232,19 +232,29 @@ fn revoke_in(
     tx.commit()
 }
 
-/// The page again, with the error, for a refused form.
-async fn refuse(state: &AppState, viewer: &Viewer, message: &str) -> Response {
+/// The page again, with the error and the email and role as posted, for a refused form.
+async fn refuse(state: &AppState, form: &VerifiedForm, message: &str) -> Response {
     let now = state.clock.now().unix_timestamp();
+    let email = ui::sent_back(form.fields.get("email"), ui::EMAIL_SENT_BACK_LIMIT);
+    let role = ui::sent_back(form.fields.get("role"), ui::SENT_BACK_LIMIT);
     match load_open(&state.db, now).await {
-        Ok(rows) => invitations_page(viewer, StatusCode::BAD_REQUEST, &rows, Some(message)),
+        Ok(rows) => invitations_page(
+            &form.viewer,
+            StatusCode::BAD_REQUEST,
+            &rows,
+            Some((&email, &role)),
+            Some(message),
+        ),
         Err(err) => internal_error("invitations page", &err),
     }
 }
 
+/// The invitations page; `posted` is the email and role of a refused form, shown again.
 fn invitations_page(
     viewer: &Viewer,
     status: StatusCode,
     rows: &[Row],
+    posted: Option<(&str, &str)>,
     error: Option<&str>,
 ) -> Response {
     let data = MainData {
@@ -259,7 +269,7 @@ fn invitations_page(
         &data,
         |csrf| {
             html! {
-                (invitations_body(csrf, viewer.is_owner(), rows, error))
+                (invitations_body(csrf, viewer.is_owner(), rows, posted, error))
             }
         },
     )
@@ -274,7 +284,15 @@ fn refused_field(message: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
-fn invitations_body(csrf: &str, owner: bool, rows: &[Row], error: Option<&str>) -> Markup {
+fn invitations_body(
+    csrf: &str,
+    owner: bool,
+    rows: &[Row],
+    posted: Option<(&str, &str)>,
+    error: Option<&str>,
+) -> Markup {
+    let posted_email = posted.map(|(email, _)| email);
+    let posted_role = posted.map(|(_, role)| role);
     let failed = error.and_then(refused_field);
     let email_error = error.filter(|_| failed.is_some_and(|(id, _)| id == "invite-email"));
     let role_error = error.filter(|_| failed.is_some_and(|(id, _)| id == "invite-role"));
@@ -326,7 +344,7 @@ fn invitations_body(csrf: &str, owner: bool, rows: &[Row], error: Option<&str>) 
                             "Email",
                             false,
                             html! {
-                                input id="invite-email" name="email" type="email" required
+                                input id="invite-email" name="email" type="email" required value=[posted_email]
                                     aria-invalid=[ui::invalid(email_error)] aria-describedby=[email_described.as_deref()];
                             },
                             email_note,
@@ -337,9 +355,9 @@ fn invitations_body(csrf: &str, owner: bool, rows: &[Row], error: Option<&str>) 
                             false,
                             html! {
                                 select id="invite-role" name="role" aria-invalid=[ui::invalid(role_error)] aria-describedby=[role_described.as_deref()] {
-                                    option value="user" selected { "User" }
+                                    option value="user" selected[posted_role != Some("admin")] { "User" }
                                     @if owner {
-                                        option value="admin" { "Admin" }
+                                        option value="admin" selected[posted_role == Some("admin")] { "Admin" }
                                     }
                                 }
                             },

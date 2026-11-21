@@ -113,6 +113,24 @@ const CONTROL_SENTENCES: [(&str, &str, &str); 13] = [
 /// The plain settings as stored. Secrets are never loaded for display.
 type View = BTreeMap<String, String>;
 
+/// The plain settings a provider form posts, as (setting key, posted field name).
+const POSTED_SETTINGS: [(&str, &str); 8] = [
+    ("mail.from", "from"),
+    ("mail.smtp_host", "smtp_host"),
+    ("mail.smtp_port", "smtp_port"),
+    ("mail.smtp_username", "smtp_username"),
+    ("mail.smtp_tls", "smtp_tls"),
+    ("mail.resend_base_url", "resend_base_url"),
+    ("mail.mailgun_domain", "mailgun_domain"),
+    ("mail.mailgun_base_url", "mailgun_base_url"),
+];
+
+/// What a refused post held, shown again: the plain settings it posted and the test address it typed.
+struct Typed {
+    settings: View,
+    to: Option<String>,
+}
+
 /// What one save writes: the plain values, the sealed secret when one was posted, and the connection fields.
 pub struct Plan {
     plain: Vec<(&'static str, String)>,
@@ -155,7 +173,7 @@ fn provider_named(name: &str) -> Option<&'static str> {
 
 pub async fn get_mail(viewer: Viewer, State(state): State<AppState>) -> Response {
     match load_view(&state.db).await {
-        Ok(view) => mail_page(&viewer, StatusCode::OK, &view, None, None, None),
+        Ok(view) => mail_page(&viewer, StatusCode::OK, &view, None, None, None, None),
         Err(err) => internal_error("mail page", &err),
     }
 }
@@ -169,11 +187,16 @@ pub async fn post_mail(State(state): State<AppState>, form: VerifiedForm) -> Res
                 reason,
                 field,
             };
+            let typed = Typed {
+                settings: posted_settings(&form.fields),
+                to: None,
+            };
             return match load_view(&state.db).await {
                 Ok(view) => mail_page(
                     &form.viewer,
                     StatusCode::BAD_REQUEST,
                     &view,
+                    Some(&typed),
                     Some(refused),
                     None,
                     None,
@@ -197,16 +220,37 @@ pub async fn post_mail(State(state): State<AppState>, form: VerifiedForm) -> Res
     }
 }
 
-/// Sends the owner's test email. A bad address answers 400; a send answers 200 with its outcome.
+/// The plain settings a refused post sent, as its form shows them again.
+fn posted_settings(fields: &FormFields) -> View {
+    POSTED_SETTINGS
+        .iter()
+        .map(|(key, field)| {
+            (
+                (*key).to_owned(),
+                ui::sent_back(fields.get(field), ui::SENT_BACK_LIMIT),
+            )
+        })
+        .collect()
+}
+
+/// Sends the owner's test email. A bad address answers 400 with the address shown again; a send answers 200.
 pub async fn post_test(State(state): State<AppState>, form: VerifiedForm) -> Response {
     let to = normalize_email(form.fields.get("to"));
     if !valid_new_email(&to) {
+        let typed = Typed {
+            settings: View::new(),
+            to: Some(ui::sent_back(
+                form.fields.get("to"),
+                ui::EMAIL_SENT_BACK_LIMIT,
+            )),
+        };
         return test_answer(
             &state,
             &form.viewer,
             StatusCode::BAD_REQUEST,
             None,
             Some(TEST_TO_MESSAGE),
+            Some(&typed),
         )
         .await;
     }
@@ -217,7 +261,17 @@ pub async fn post_test(State(state): State<AppState>, form: VerifiedForm) -> Res
         html: TEST_HTML.to_owned(),
     };
     match mail::send(&state, "test", message).await {
-        Ok(()) => test_answer(&state, &form.viewer, StatusCode::OK, Some(TEST_SENT), None).await,
+        Ok(()) => {
+            test_answer(
+                &state,
+                &form.viewer,
+                StatusCode::OK,
+                Some(TEST_SENT),
+                None,
+                None,
+            )
+            .await
+        }
         Err(error) => {
             test_answer(
                 &state,
@@ -225,22 +279,24 @@ pub async fn post_test(State(state): State<AppState>, form: VerifiedForm) -> Res
                 StatusCode::OK,
                 None,
                 Some(error.0.as_str()),
+                None,
             )
             .await
         }
     }
 }
 
-/// The mail page carrying the outcome of a test send.
+/// The mail page carrying the outcome of a test send, with what a refused post held.
 async fn test_answer(
     state: &AppState,
     viewer: &Viewer,
     status: StatusCode,
     notice: Option<&str>,
     error: Option<&str>,
+    typed: Option<&Typed>,
 ) -> Response {
     match load_view(&state.db).await {
-        Ok(view) => mail_page(viewer, status, &view, None, notice, error),
+        Ok(view) => mail_page(viewer, status, &view, typed, None, notice, error),
         Err(err) => internal_error("mail page", &err),
     }
 }
@@ -465,6 +521,7 @@ fn mail_page(
     viewer: &Viewer,
     status: StatusCode,
     view: &View,
+    typed: Option<&Typed>,
     refused: Option<Refused>,
     notice: Option<&str>,
     error: Option<&str>,
@@ -475,7 +532,7 @@ fn mail_page(
     };
     form_page_with(viewer, status, "mail", "Mail settings", &data, |csrf| {
         html! {
-            (mail_forms(csrf, view, refused, notice, error))
+            (mail_forms(csrf, view, typed, refused, notice, error))
         }
     })
 }
@@ -524,6 +581,7 @@ fn field_note<'a>(
 fn mail_forms(
     csrf: &str,
     view: &View,
+    typed: Option<&Typed>,
     refused: Option<Refused>,
     notice: Option<&str>,
     error: Option<&str>,
@@ -532,6 +590,12 @@ fn mail_forms(
     let in_use = provider_named(provider);
     let open = open_provider(in_use, refused.and_then(|refusal| refusal.provider));
     let refusal_of = |name: &str| refused.filter(|refusal| refusal.provider == Some(name));
+    // The refused provider's form shows what was posted; the other two show what is stored.
+    let shown_in = |name: &str| match (typed, refusal_of(name)) {
+        (Some(typed), Some(_)) => &typed.settings,
+        _ => view,
+    };
+    let to = typed.and_then(|typed| typed.to.as_deref());
     let unplaced = refused.and_then(|refusal| refusal.provider.is_none().then_some(refusal.reason));
     let current = in_use.and_then(title_of).unwrap_or("none");
     html! {
@@ -543,9 +607,9 @@ fn mail_forms(
             (ui::refused(None, message, None))
         }
         div.providers {
-            (provider_disclosure("smtp", "Raw SMTP", in_use == Some("smtp"), open == Some("smtp"), smtp_form(csrf, view, refusal_of("smtp"))))
-            (provider_disclosure("resend", "Resend", in_use == Some("resend"), open == Some("resend"), resend_form(csrf, view, refusal_of("resend"))))
-            (provider_disclosure("mailgun", "Mailgun", in_use == Some("mailgun"), open == Some("mailgun"), mailgun_form(csrf, view, refusal_of("mailgun"))))
+            (provider_disclosure("smtp", "Raw SMTP", in_use == Some("smtp"), open == Some("smtp"), smtp_form(csrf, shown_in("smtp"), refusal_of("smtp"))))
+            (provider_disclosure("resend", "Resend", in_use == Some("resend"), open == Some("resend"), resend_form(csrf, shown_in("resend"), refusal_of("resend"))))
+            (provider_disclosure("mailgun", "Mailgun", in_use == Some("mailgun"), open == Some("mailgun"), mailgun_form(csrf, shown_in("mailgun"), refusal_of("mailgun"))))
         }
         section.part aria-labelledby="test-title" {
             div.part-head {
@@ -566,7 +630,7 @@ fn mail_forms(
                             "test-to",
                             "Send the test email to",
                             false,
-                            html! { input id="test-to" name="to" type="email" required; },
+                            html! { input id="test-to" name="to" type="email" required value=[to]; },
                             Note::None,
                         ))
                     }

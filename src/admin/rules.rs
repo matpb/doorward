@@ -60,6 +60,7 @@ impl Stored {
 }
 
 /// The posted add form as text, before it is checked.
+#[derive(Clone)]
 struct Draft {
     subject: String,
     effect: String,
@@ -82,12 +83,18 @@ enum Added {
     Refused(&'static str),
 }
 
+/// A refused add form: its refusal and the draft as the person posted it.
+struct Refusal<'a> {
+    message: &'a str,
+    draft: &'a Draft,
+}
+
 /// The page with its rules, the add form and any refusal.
 pub async fn get_rules(viewer: Viewer, State(state): State<AppState>) -> Response {
     rules_page(&state, &viewer, StatusCode::OK, None).await
 }
 
-/// Adds a rule. A refused draft answers 400 with the rules page and stores nothing.
+/// Adds a rule. A refused draft answers 400 with the rules page, the draft shown again, and stores nothing.
 pub async fn post_add(State(state): State<AppState>, form: VerifiedForm) -> Response {
     let Some(actor) = form.viewer.user.clone() else {
         return forbidden();
@@ -99,6 +106,7 @@ pub async fn post_add(State(state): State<AppState>, form: VerifiedForm) -> Resp
         server_id: form.fields.get("server_id").to_owned(),
         tool: form.fields.get("tool").to_owned(),
     };
+    let posted = draft.clone();
     let at = state.clock.now().unix_timestamp();
     let added = state
         .db
@@ -107,7 +115,11 @@ pub async fn post_add(State(state): State<AppState>, form: VerifiedForm) -> Resp
     match added {
         Ok(Added::Done) => redirect("/admin/rules"),
         Ok(Added::Refused(message)) => {
-            rules_page(&state, &form.viewer, StatusCode::BAD_REQUEST, Some(message)).await
+            let refusal = Refusal {
+                message,
+                draft: &posted,
+            };
+            rules_page(&state, &form.viewer, StatusCode::BAD_REQUEST, Some(refusal)).await
         }
         Err(err) => internal_error("rule add", &err),
     }
@@ -316,7 +328,7 @@ async fn rules_page(
     state: &AppState,
     viewer: &Viewer,
     status: StatusCode,
-    refused: Option<&str>,
+    refusal: Option<Refusal<'_>>,
 ) -> Response {
     let loaded = state
         .db
@@ -337,7 +349,7 @@ async fn rules_page(
             };
             form_page_with(viewer, status, "rules", "Rules", &data, |csrf| {
                 html! {
-                    (rules_body(csrf, &rules, &users, &server_list, &tools, refused))
+                    (rules_body(csrf, &rules, &users, &server_list, &tools, refusal.as_ref()))
                 }
             })
         }
@@ -351,8 +363,15 @@ fn rules_body(
     users: &[(i64, String)],
     servers: &[ServerRef],
     tools: &[(String, String)],
-    refused: Option<&str>,
+    refusal: Option<&Refusal<'_>>,
 ) -> Markup {
+    let refused = refusal.map(|refusal| refusal.message);
+    let draft = refusal.map(|refusal| refusal.draft);
+    let subject = draft.map_or("", |draft| draft.subject.as_str());
+    let effect = draft.map_or("", |draft| draft.effect.as_str());
+    let scope = draft.map_or("", |draft| draft.scope.as_str());
+    let server_choice = draft.map_or("", |draft| draft.server_id.as_str());
+    let tool = draft.map(|draft| ui::sent_back(&draft.tool, ui::SENT_BACK_LIMIT));
     let failed = refused.and_then(refused_field);
     let error_on = |id: &str| refused.filter(|_| failed.is_some_and(|(field, _)| field == id));
     let subject_error = error_on("rule-subject");
@@ -415,9 +434,9 @@ fn rules_body(
                             false,
                             html! {
                                 select id="rule-subject" name="subject" aria-invalid=[ui::invalid(subject_error)] aria-describedby=[subject_described.as_deref()] {
-                                    option value="everyone" { "Everyone" }
+                                    option value="everyone" selected[subject == "everyone"] { "Everyone" }
                                     @for (id, email) in users {
-                                        option value=(id) { (email) }
+                                        option value=(id) selected[subject == id.to_string()] { (email) }
                                     }
                                 }
                             },
@@ -429,8 +448,8 @@ fn rules_body(
                             false,
                             html! {
                                 select id="rule-effect" name="effect" aria-invalid=[ui::invalid(effect_error)] aria-describedby=[effect_described.as_deref()] {
-                                    option value="allow" { "Allow" }
-                                    option value="deny" { "Deny" }
+                                    option value="allow" selected[effect == "allow"] { "Allow" }
+                                    option value="deny" selected[effect == "deny"] { "Deny" }
                                 }
                             },
                             effect_note,
@@ -443,9 +462,9 @@ fn rules_body(
                             false,
                             html! {
                                 select id="rule-scope" name="scope" {
-                                    option value="all" { "All tools" }
-                                    option value="server" { "One server" }
-                                    option value="tool" { "One tool" }
+                                    option value="all" selected[scope == "all"] { "All tools" }
+                                    option value="server" selected[scope == "server"] { "One server" }
+                                    option value="tool" selected[scope == "tool"] { "One tool" }
                                 }
                             },
                             ui::Note::None,
@@ -457,7 +476,7 @@ fn rules_body(
                             html! {
                                 select id="rule-server" name="server_id" aria-invalid=[ui::invalid(server_error)] aria-describedby=[server_described.as_deref()] {
                                     @for server in servers {
-                                        option value=(server.id) { (server.name) " (" (server.slug) ")" }
+                                        option value=(server.id) selected[server_choice == server.id.to_string()] { (server.name) " (" (server.slug) ")" }
                                     }
                                 }
                             },
@@ -470,7 +489,7 @@ fn rules_body(
                             "Tool name",
                             false,
                             html! {
-                                input.mono id="rule-tool" name="tool" type="text" list="rule-tools" aria-invalid=[ui::invalid(tool_error)] aria-describedby=[tool_described.as_deref()];
+                                input.mono id="rule-tool" name="tool" type="text" list="rule-tools" value=[tool.as_deref()] aria-invalid=[ui::invalid(tool_error)] aria-describedby=[tool_described.as_deref()];
                             },
                             tool_note,
                         ))

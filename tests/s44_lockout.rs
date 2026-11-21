@@ -334,9 +334,17 @@ async fn an_unknown_account_is_throttled_like_a_real_one() {
         unknown_statuses, expected,
         "an unknown account's guesses must get the same statuses as the owner's"
     );
+    // Statement 71: a refused sign-in sends the typed address back, so each side's own is masked.
+    let without = |answers: &[(u16, String)], email: &str| -> Vec<(u16, String)> {
+        answers
+            .iter()
+            .map(|(status, body)| (*status, body.replace(email, "ADDRESS")))
+            .collect()
+    };
     assert_eq!(
-        unknown, owner,
-        "an unknown account's answers must match the owner's, apart from the csrf value"
+        without(&unknown, NOBODY),
+        without(&owner, OWNER_EMAIL),
+        "an unknown account's answers must match the owner's, apart from the csrf value and the typed address"
     );
 }
 

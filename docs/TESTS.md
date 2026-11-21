@@ -1521,7 +1521,8 @@ tests of `s06_passwords.rs` keep their meaning: there every request comes from o
    `address_failures = 1000`. Thirty browsers, each at its own address, post a wrong
    password at once: exactly ten are 401 and the rest 429; the right password is then 429.
 8. `an_unknown_account_is_throttled_like_a_real_one`: the same sequence as test 1 for an
-   email with no account gives the same statuses and the same bodies.
+   email with no account gives the same statuses and the same bodies, once the csrf value
+   and each side's own typed address (sent back since statement 71) are masked.
 9. `a_reset_lifts_every_block_of_the_account`: `account_ceiling = 8`; five wrong at A and
    three at B, so A is blocked and the ceiling is reached;
    after a reset by mail the new password answers 303 at A without waiting.
@@ -1992,6 +1993,54 @@ refuses without the gateway's secret, so its state is `ok`.
 4. `no_alert_without_an_exposed_server`: with only a healthy server (`ok`), the overview holds
    no `[data-open-servers]` and the server page holds no `[data-lockdown-alert]`. It passes
    before the change, since the negative case has no alert today either.
+
+## s71_refused_forms.rs (statement 71)
+
+Each test posts a refused form with distinctive typed values and reads the controls back.
+Each test builds its own world: `W` for the admin and sign-in pages, a plain gateway for setup.
+The owner's rule and redirect forms use `W.upstream("demo", ..)` and `W.user(bob)`.
+
+1. `a_refused_setup_sends_back_the_email`: a short password with the right setup code answers
+   `400`, and `input#email` holds the typed address. Red before the change.
+2. `a_refused_sign_in_sends_back_the_email`: a wrong password answers `401`, and
+   `input#email` holds the typed address. Red before the change.
+3. `a_refused_invitation_sends_back_the_email_and_the_role`: an address that has an account,
+   with role `admin`, answers `400`; `input#invite-email` holds the address and the option
+   `admin` of `select#invite-role` is selected. Red before the change.
+4. `a_refused_rule_sends_back_every_choice`: a tool the server does not list, for bob, answers
+   `400`; the subject, effect, scope and server selects each keep the posted option selected,
+   and `input#rule-tool` holds the tool name. Red before the change.
+5. `a_refused_redirect_sends_back_every_part`: plain `http` answers `400`; `input#redirect-scheme`,
+   `input#redirect-host` and `input#redirect-path` hold the posted scheme, host and path prefix.
+   Red before the change.
+6. `a_refused_mail_provider_sends_back_its_posted_settings`: a port that is not a number
+   answers `400`; the raw SMTP form shows the posted address, server, port and username, and
+   selects the posted TLS setting, while the Resend and Mailgun forms keep showing the stored
+   address. Red before the change.
+7. `a_refused_test_email_sends_back_the_address`: a test address without an `@` answers `400`,
+   and `input#test-to` holds it. Red before the change.
+8. `no_refusal_sends_back_a_secret`: a refusal of setup (password, setup code), sign in
+   (password), server add (secret header value), SMTP (password), Resend and Mailgun (API key),
+   the password change, the reset and the invitation acceptance. Each password-type input
+   renders with no `value` attribute, and the posted secret appears nowhere in the body. It
+   passes before the change, since no secret was ever sent back.
+9. `a_refused_sign_in_reads_the_same_for_a_known_and_an_unknown_address`: the two bodies are
+   equal once the csrf values and the posted addresses are replaced by placeholders, and each
+   `input#email` holds its own address. The equality holds before the change; the echo is red.
+10. `a_typed_value_with_markup_comes_back_escaped`: a host of `"><b>x` answers `400`, the input
+    holds those characters, the page has no `b` element, and the attribute is escaped as
+    `&quot;&gt;&lt;b&gt;x`. Red before the change.
+11. `a_control_character_is_removed_from_the_value_sent_back`: a host with a bell character and
+    a tab answers `400` and comes back as `typed.example.org`, and the bell appears nowhere in
+    the page. Red before the change.
+12. `an_overlong_value_is_not_sent_back`: a host of 501 characters renders empty while the short
+    scheme beside it comes back; an email of 262 characters renders empty. Red before the change.
+13. `a_limited_sign_in_sends_no_address_back`: the sixth wrong password from one address answers
+    `429` with `input#email` holding no value. It passes before the change, which pins the limit
+    page as it was.
+
+The helper `sent_back` in `src/web/ui.rs` has in-crate tests for its limit, its counting of
+characters and its control characters: `a_sent_back_value_*`.
 
 ## Round 5: tests added and rewritten for the design changes
 

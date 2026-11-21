@@ -88,6 +88,20 @@ pub fn note_under<'a>(error: Option<&'a str>, hint: Option<&'a str>) -> Note<'a>
     }
 }
 
+/// The longest value a refused form sends back, in characters, when its field has no limit of its own.
+pub const SENT_BACK_LIMIT: usize = 500;
+/// The longest address a refused email field sends back: the longest address that is stored.
+pub const EMAIL_SENT_BACK_LIMIT: usize = 254;
+
+/// A posted value as a refused form shows it again: "" when the posted value is longer than
+/// `limit` characters, else the value without its control characters.
+pub fn sent_back(value: &str, limit: usize) -> String {
+    if value.chars().count() > limit {
+        return String::new();
+    }
+    value.chars().filter(|c| !c.is_control()).collect()
+}
+
 /// A boxed message. kind: "ok" | "warning" | "error".
 pub fn notice(kind: &str, body: Markup) -> Markup {
     html! {
@@ -484,5 +498,25 @@ mod tests {
             .into_string(),
             r#"<div class="check"><input type="checkbox" id="user-7" name="user_id" value="7"><label for="user-7">Priya</label></div>"#
         );
+    }
+
+    #[test]
+    fn a_sent_back_value_drops_its_control_characters() {
+        assert_eq!(sent_back("a\u{7}b\tc\n", SENT_BACK_LIMIT), "abc");
+        assert_eq!(sent_back("", SENT_BACK_LIMIT), "");
+    }
+
+    #[test]
+    fn a_sent_back_value_keeps_up_to_its_limit_and_drops_a_longer_one() {
+        assert_eq!(sent_back(&"x".repeat(500), 500), "x".repeat(500));
+        assert_eq!(sent_back(&"x".repeat(501), 500), "");
+    }
+
+    #[test]
+    fn a_sent_back_value_counts_characters_and_counts_control_characters_too() {
+        assert_eq!(sent_back(&"é".repeat(3), 3), "ééé");
+        assert_eq!(sent_back(&"é".repeat(4), 3), "");
+        assert_eq!(sent_back(&format!("{}x", "\u{7}".repeat(3)), 4), "x");
+        assert_eq!(sent_back(&format!("{}x", "\u{7}".repeat(3)), 3), "");
     }
 }

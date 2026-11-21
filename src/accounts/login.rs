@@ -34,7 +34,7 @@ pub struct LoginQuery {
 pub async fn get_login(viewer: Viewer, Query(query): Query<LoginQuery>) -> Response {
     let req = query.req.unwrap_or_default();
     form_page(&viewer, StatusCode::OK, "login", "Sign in", |csrf| {
-        login_form(csrf, &req, None)
+        login_form(csrf, &req, None, None)
     })
 }
 
@@ -43,6 +43,7 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
     let email = normalize_email(form.fields.get("email"));
     let password = form.fields.get("password").to_owned();
     let req = form.fields.get("req").to_owned();
+    let typed = ui::sent_back(form.fields.get("email"), ui::EMAIL_SENT_BACK_LIMIT);
     let account = token_hash(&email);
     let Some(slot) = state.hasher.try_slot() else {
         return busy();
@@ -61,7 +62,7 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
     else {
         let wait = limit::window_seconds(state.config.limits.block_minutes);
         return limit::retry_after(
-            login_page(&form, StatusCode::TOO_MANY_REQUESTS, BLOCKED, &req),
+            login_page(&form, StatusCode::TOO_MANY_REQUESTS, BLOCKED, &req, None),
             wait,
         );
     };
@@ -69,7 +70,13 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
     let matched = state.hasher.verify(slot, password, phc).await;
     let (true, Some(user_id), Some(epoch), Some(phc)) = (matched, user_id, epoch, verified) else {
         record_failed(&state, user_id, &email).await;
-        return login_page(&form, StatusCode::UNAUTHORIZED, WRONG_CREDENTIALS, &req);
+        return login_page(
+            &form,
+            StatusCode::UNAUTHORIZED,
+            WRONG_CREDENTIALS,
+            &req,
+            Some(&typed),
+        );
     };
     let success = Success {
         account,
@@ -86,7 +93,13 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
         Ok(Some(token)) => with_cookie(redirect(&after_sign_in(&req)), &session_cookie(&token)),
         Ok(None) => {
             record_failed(&state, Some(user_id), &email).await;
-            login_page(&form, StatusCode::UNAUTHORIZED, WRONG_CREDENTIALS, &req)
+            login_page(
+                &form,
+                StatusCode::UNAUTHORIZED,
+                WRONG_CREDENTIALS,
+                &req,
+                Some(&typed),
+            )
         }
         Err(err) => internal_error("sign-in", &err),
     }
@@ -149,13 +162,20 @@ pub async fn post_logout(State(state): State<AppState>, form: VerifiedForm) -> R
     with_cookie(redirect("/login"), &clear_cookie(SESSION_COOKIE))
 }
 
-fn login_page(form: &VerifiedForm, status: StatusCode, message: &str, req: &str) -> Response {
+/// The sign-in page with a refusal; `email` is the address to show again, None for an empty field.
+fn login_page(
+    form: &VerifiedForm,
+    status: StatusCode,
+    message: &str,
+    req: &str,
+    email: Option<&str>,
+) -> Response {
     form_page(&form.viewer, status, "login", "Sign in", |csrf| {
-        login_form(csrf, req, Some(message))
+        login_form(csrf, req, email, Some(message))
     })
 }
 
-fn login_form(csrf: &str, req: &str, error: Option<&str>) -> Markup {
+fn login_form(csrf: &str, req: &str, email: Option<&str>, error: Option<&str>) -> Markup {
     html! {
         h1 { "Sign in" }
         @if let Some(message) = error {
@@ -169,7 +189,7 @@ fn login_form(csrf: &str, req: &str, error: Option<&str>) -> Markup {
                     "email",
                     "Email",
                     false,
-                    html! { input id="email" name="email" type="email" autocomplete="username" required; },
+                    html! { input id="email" name="email" type="email" autocomplete="username" required value=[email]; },
                     Note::None,
                 ))
             }
@@ -193,7 +213,7 @@ mod tests {
 
     /// The sign-in body as a fragment, with the error line when one is given.
     fn body(error: Option<&str>) -> Html {
-        Html::parse_fragment(&login_form("token", "", error).into_string())
+        Html::parse_fragment(&login_form("token", "", None, error).into_string())
     }
 
     /// How many elements of `doc` match `css`.

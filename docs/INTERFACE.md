@@ -16,6 +16,13 @@ what. `PUB` is the configured `public_url`.
   repeated or not equal to `PUB` (`Origin: null` included), or whose body is over 64 KiB or
   cannot be parsed, answers `403` with `data-page="forbidden"` and changes nothing. The token endpoint and the registration endpoint are not form pages and
   take neither.
+- A form refused for a reason about its values (statement 71) keeps its status and shows the
+  posted value again in each of its non-secret text inputs, selects and checkboxes, with
+  control characters removed. A value over the field's limit (254 characters for an email
+  field, 500 for the others) renders the input empty. Password inputs, the setup code, secret
+  header values, SMTP passwords and API keys never render a value. Sign in answers a limited
+  attempt (`429`) with an empty email. A refused mail provider shows its posted settings; the
+  other two providers show the stored ones.
 - Cookies: session `__Host-doorward_session`; pre-session CSRF `__Host-doorward_csrf`. Both
   `Secure; HttpOnly; SameSite=Lax; Path=/`, whatever the scheme of the request. A cookie that
   is cleared repeats those attributes with `Max-Age=0`. The CSRF token is bound to the

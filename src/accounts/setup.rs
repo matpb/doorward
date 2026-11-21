@@ -40,7 +40,7 @@ pub async fn get_setup(viewer: Viewer, State(state): State<AppState>) -> Respons
             StatusCode::OK,
             "setup",
             "Set up Doorward",
-            |csrf| setup_form(csrf, None),
+            |csrf| setup_form(csrf, None, None),
         ),
         Ok(false) => not_found(),
         Err(err) => internal_error("setup page", &err),
@@ -144,17 +144,20 @@ fn create_owner_in(
     Ok(Some(token))
 }
 
+/// The setup page again with the refusal. The email comes back; the password and the code never do.
 fn setup_error(form: &VerifiedForm, message: &str) -> Response {
+    let email = ui::sent_back(form.fields.get("email"), ui::EMAIL_SENT_BACK_LIMIT);
     form_page(
         &form.viewer,
         StatusCode::BAD_REQUEST,
         "setup",
         "Set up Doorward",
-        |csrf| setup_form(csrf, Some(message)),
+        |csrf| setup_form(csrf, Some(&email), Some(message)),
     )
 }
 
-fn setup_form(csrf: &str, error: Option<&str>) -> Markup {
+/// The setup form; `email` is the address to show again, when a refused post sent one.
+fn setup_form(csrf: &str, email: Option<&str>, error: Option<&str>) -> Markup {
     let password_note = Note::Hint("12 to 256 characters.");
     let password_described = password_note.describer("password");
     html! {
@@ -179,7 +182,7 @@ fn setup_form(csrf: &str, error: Option<&str>) -> Markup {
                     "email",
                     "Owner email",
                     false,
-                    html! { input id="email" name="email" type="email" autocomplete="username" required; },
+                    html! { input id="email" name="email" type="email" autocomplete="username" required value=[email]; },
                     Note::None,
                 ))
             }
@@ -213,7 +216,7 @@ mod tests {
 
     #[test]
     fn the_setup_page_has_a_lede_under_its_heading_and_one_primary_button() {
-        let doc = Html::parse_fragment(&setup_form("token", None).into_string());
+        let doc = Html::parse_fragment(&setup_form("token", None, None).into_string());
         assert_eq!(count(&doc, "h1"), 1);
         assert_eq!(
             count(&doc, "h1 + p.lede"),

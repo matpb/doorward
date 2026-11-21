@@ -307,6 +307,9 @@ L. Added after the owner's auth review
     The line about a client whose name or description cannot be confirmed is shown as a
     warning. For a self-registered client it reads: An app that calls itself “NAME” is
     asking to sign in as you. Doorward cannot check this name.
+71. A form that is refused comes back holding what the person typed, so only the field at
+    fault has to be corrected. Passwords, secret values, API keys and the setup code are
+    never sent back.
 
 ### Proof
 
@@ -347,6 +350,7 @@ into the test harness. In addition:
   screenshots kept under `proof/` (not tracked).
 - 70: the consent tests in `tests/s52_interface.rs` (buttons, warning) and
   `tests/s33_consent.rs`, which pins the sentence for a self-registered client.
+- 71: `tests/s71_refused_forms.rs`.
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
   a walk-through of every page in a real browser at 390 px and desktop width in both
   themes, which also measures control heights and sideways scroll; screenshots kept under

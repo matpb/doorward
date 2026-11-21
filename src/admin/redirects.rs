@@ -23,6 +23,13 @@ const BLOCKED_LIMIT: i64 = 50;
 const DETAIL_LIMIT: usize = 500;
 const REFUSED: &str = "The scheme, host and path prefix must form a web address: no http, a plain host name, and a path that is empty only for a private scheme.";
 
+/// The three parts of a refused add form, shown again as the person posted them.
+struct Typed {
+    scheme: String,
+    host: String,
+    path_prefix: String,
+}
+
 /// One blocked attempt as the page shows it.
 struct Blocked {
     client: String,
@@ -37,10 +44,10 @@ enum Toggled {
 
 /// The page with its entries, the add form and the blocked attempts.
 pub async fn get_redirects(viewer: Viewer, State(state): State<AppState>) -> Response {
-    redirects_page(&state, &viewer, StatusCode::OK, None).await
+    redirects_page(&state, &viewer, StatusCode::OK, None, None).await
 }
 
-/// Adds an entry, or enables the identical one that exists. A refused address answers 400.
+/// Adds an entry, or enables the identical one that exists. A refused address answers 400, with the parts shown again.
 pub async fn post_add(State(state): State<AppState>, form: VerifiedForm) -> Response {
     let Some(actor) = form.viewer.user.clone() else {
         return forbidden();
@@ -49,7 +56,19 @@ pub async fn post_add(State(state): State<AppState>, form: VerifiedForm) -> Resp
     let host = form.fields.get("host").to_owned();
     let path_prefix = form.fields.get("path_prefix").to_owned();
     if !policy::admin_entry_ok(&scheme, &host, &path_prefix) {
-        return redirects_page(&state, &form.viewer, StatusCode::BAD_REQUEST, Some(REFUSED)).await;
+        let typed = Typed {
+            scheme: ui::sent_back(&scheme, ui::SENT_BACK_LIMIT),
+            host: ui::sent_back(&host, ui::SENT_BACK_LIMIT),
+            path_prefix: ui::sent_back(&path_prefix, ui::SENT_BACK_LIMIT),
+        };
+        return redirects_page(
+            &state,
+            &form.viewer,
+            StatusCode::BAD_REQUEST,
+            Some(REFUSED),
+            Some(typed),
+        )
+        .await;
     }
     let at = state.clock.now().unix_timestamp();
     let written = state
@@ -163,11 +182,13 @@ fn blocked_rows(conn: &Connection) -> rusqlite::Result<Vec<Blocked>> {
     rows.collect()
 }
 
+/// The redirects page; `typed` is the address of a refused add form, shown again.
 async fn redirects_page(
     state: &AppState,
     viewer: &Viewer,
     status: StatusCode,
     refused: Option<&str>,
+    typed: Option<Typed>,
 ) -> Response {
     let loaded = state
         .db
@@ -181,7 +202,7 @@ async fn redirects_page(
             };
             form_page_with(viewer, status, "redirects", "Redirects", &data, |csrf| {
                 html! {
-                    (redirects_body(csrf, &entries, &blocked, refused))
+                    (redirects_body(csrf, &entries, &blocked, refused, typed.as_ref()))
                 }
             })
         }
@@ -194,7 +215,11 @@ fn redirects_body(
     entries: &[Entry],
     blocked: &[Blocked],
     refused: Option<&str>,
+    typed: Option<&Typed>,
 ) -> Markup {
+    let scheme = typed.map(|typed| typed.scheme.as_str());
+    let host = typed.map(|typed| typed.host.as_str());
+    let path = typed.map(|typed| typed.path_prefix.as_str());
     let path_note = ui::note_under(None, Some("Ending in / covers everything under it."));
     let path_described = path_note.describer("redirect-path");
     html! {
@@ -264,14 +289,14 @@ fn redirects_body(
                             "redirect-scheme",
                             "Scheme",
                             false,
-                            html! { input.mono id="redirect-scheme" name="scheme" type="text" required; },
+                            html! { input.mono id="redirect-scheme" name="scheme" type="text" required value=[scheme]; },
                             ui::Note::None,
                         ))
                         (ui::field(
                             "redirect-host",
                             "Host",
                             false,
-                            html! { input.mono id="redirect-host" name="host" type="text" required; },
+                            html! { input.mono id="redirect-host" name="host" type="text" required value=[host]; },
                             ui::Note::None,
                         ))
                     }
@@ -281,7 +306,7 @@ fn redirects_body(
                             "Path prefix",
                             false,
                             html! {
-                                input.mono id="redirect-path" name="path_prefix" type="text" aria-describedby=[path_described.as_deref()];
+                                input.mono id="redirect-path" name="path_prefix" type="text" value=[path] aria-describedby=[path_described.as_deref()];
                             },
                             path_note,
                         ))
