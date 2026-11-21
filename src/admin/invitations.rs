@@ -14,8 +14,8 @@ use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::crypto::{random_token, token_hash};
 use crate::db::{Db, DbError};
-use crate::mail;
 use crate::mail::templates;
+use crate::mail::{self, NOT_SET_UP};
 use crate::web::{
     MainData, SessionUser, VerifiedForm, Viewer, forbidden, form_page_with, internal_error,
     page_with, redirect, ui,
@@ -27,8 +27,6 @@ use super::panel_nav;
 const EMAIL_MESSAGE: &str = "Enter a valid email address.";
 const ROLE_MESSAGE: &str = "Choose the role user or admin.";
 const TAKEN_MESSAGE: &str = "An account already has that email address.";
-/// The error mail::send gives when no provider is set up.
-const MAIL_NOT_SET_UP: &str = "Mail is not set up.";
 
 /// One open invitation as the page shows it.
 struct Row {
@@ -390,7 +388,7 @@ fn mail_warning(error: &str, owner: bool) -> Markup {
     html! {
         p {
             (error)
-            @if owner && error == MAIL_NOT_SET_UP {
+            @if owner && error == NOT_SET_UP {
                 " "
                 a href="/admin/mail" data-link="mail" { "Set up mail" }
             }
@@ -428,4 +426,29 @@ fn invitation_created(viewer: &Viewer, error: &str, link: &str) -> Response {
             }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_warning_other_than_not_set_up_has_no_mail_link() {
+        assert_eq!(
+            mail_warning("any other error", true).into_string(),
+            "<p>any other error</p>"
+        );
+    }
+
+    #[test]
+    fn the_owner_gets_the_mail_link_only_for_not_set_up() {
+        assert_eq!(
+            mail_warning(NOT_SET_UP, true).into_string(),
+            r#"<p>Mail is not set up. <a href="/admin/mail" data-link="mail">Set up mail</a></p>"#
+        );
+        assert_eq!(
+            mail_warning(NOT_SET_UP, false).into_string(),
+            "<p>Mail is not set up.</p>"
+        );
+    }
 }

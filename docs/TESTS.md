@@ -1030,10 +1030,11 @@ stateless `tools/call` body for that tool, sent with `raw` and explicit headers.
     page, the Servers link on a server page, the link of the section otherwise.
 14. `an_admin_sees_no_mail_link`: a non-owner admin's `/admin/users` has the eight links
     without Mail.
-15. `a_plain_user_and_public_pages_get_no_navigation`: a plain user's 403 under
+15. `a_plain_users_account_page_holds_one_link_and_public_pages_hold_none`: a plain user's 403 under
     `/admin/users` carries no `data-nav`; `/login`, `/forgot` and an invitation page carry no
     `data-nav`. The plain user's `/account` holds one `header nav[data-nav="account"]` with one
-    link (round 5, statement 62: the account's own link is its one navigation). The name is kept.
+    link (round 5, statement 62: the account's own link is its one navigation). It was named
+    `a_plain_user_and_public_pages_get_no_navigation`.
 16. `the_account_page_links_to_the_panel_for_admins_only`: the owner and an admin see
     `a[data-nav="to-panel"]` reading `Admin panel` with href `/admin`; a plain user does
     not.
@@ -1746,9 +1747,15 @@ activity of allowed, denied and failed tool calls.
 10. `a_refused_provider_form_is_open_with_its_reason`: with smtp in use, a resend form and then a
     mailgun form, each with a control character in its from address, are refused with 400; on
     each page the only open `details` is the refused provider's, and that disclosure holds
-    a paragraph of a `div.notice[data-notice="error"]` reading "A field contains a control character.".
+    a paragraph of a `div.notice[data-notice="error"]` reading "The from address contains a control character.".
     It is red before the change, since smtp stayed open beside the refused resend form.
-11. `consent_has_one_primary_button`: on the local-client and the web-client consent pages,
+    `a_refused_base_address_is_the_one_marked_field_of_its_form`: a resend post with a control
+    character in the base address marks only `#resend-base` with `aria-invalid`, names its
+    `-error` element, which reads "The base address contains a control character.", and the
+    notice repeats that sentence.
+11. `consent_has_one_primary_button` (statement 57, replaced by 70: the buttons and the warning;
+    the sentence for a self-registered client is pinned by `tests/s33_consent.rs`
+    `a_registered_client_is_shown_as_a_claim`): on the local-client and the web-client consent pages,
     one primary button reads Approve, Deny is secondary, the sentence "Approve only if you
     started this sign-in yourself." is present; on the local-client page `p.local-app` sits
     in `[data-notice="warning"]`. It is red before the change.
@@ -1995,7 +2002,7 @@ New tests:
 1. `admin::activity::tests` (unit, change 1): `an_address_in_a_detail_is_an_email_span`,
    `a_url_with_an_at_in_its_path_is_not_an_email`, `two_addresses_are_two_email_spans_with_a_space_between`,
    `markup_characters_are_escaped_and_the_text_is_unchanged`, `a_detail_with_no_space_is_one_word`
-   and `a_word_is_an_address_only_with_text_on_both_sides_of_one_at`. Each asserts the exact
+   `markup_inside_an_address_shaped_word_is_escaped` and `a_word_is_an_address_only_with_text_on_both_sides_of_one_at`. Each asserts the exact
    HTML and that the text read back equals the stored detail.
 2. `admin::tests::an_address_in_an_activity_detail_is_an_email_span` (change 1): an address
    inside a detail on `/admin/activity` is a `span.email` inside `span.detail`.
@@ -2017,11 +2024,29 @@ New tests:
    `set to 0 users`, `set to 1 user`, `set to 3 users`, and for a user `set to 0 servers`,
    `set to 1 server`, `set to 2 servers`.
 
+Further new tests:
+
+- `admin::tests::each_refused_mail_field_is_the_one_marked_and_named`: for each provider and
+  each field a refusal can name (the control character of each, the port, the TLS setting),
+  the one marked input is that field, its `-error` element holds the sentence and the notice
+  holds the same sentence. `admin::tests::a_refusal_about_another_providers_field_marks_nothing`:
+  a control character in another provider's field keeps the general sentence and marks nothing.
+- `web::page::tests::the_not_found_page_links_to_the_start_page_after_its_lede` and
+  `the_bare_not_found_has_an_empty_body`; `accounts::reset::tests::the_check_email_page_links_back_to_sign_in_after_its_sentence`;
+  `oauth::connected::tests::the_disconnected_page_links_to_the_account_after_its_sentence`;
+  `oauth::consent::tests::the_no_access_page_links_to_the_account_after_its_sentence`: one
+  `main p.back a` with its exact text and href on each message page.
+- `admin::invitations::tests` (`mail_warning`): a warning other than "not set up" has no mail
+  link; the owner gets the link only for "not set up".
+- `tests/s62_shell.rs` `the_account_page_holds_its_own_navigation`: bob's account page holds
+  exactly one `nav` element in total.
+
 Rewritten tests (the old markup or sentence they pinned):
 
-- `tests/s26_panel.rs` `a_plain_user_and_public_pages_get_no_navigation`: the plain user's
+- `tests/s26_panel.rs` `a_plain_users_account_page_holds_one_link_and_public_pages_hold_none`
+  (renamed from `a_plain_user_and_public_pages_get_no_navigation`): the plain user's
   account page now holds its one header navigation (change 2); the other pages keep "no
-  navigation". The name is kept.
+  navigation".
 - `tests/s62_shell.rs` `the_account_page_holds_its_own_navigation`: bob's account page holds
   one `header > nav[data-nav="account"]` with no popover and no id, one link, one mark, and no
   Menu button (change 2). The admin case is unchanged. `the_current_section_is_marked_once`

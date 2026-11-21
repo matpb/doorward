@@ -286,6 +286,7 @@ pub fn not_found() -> Response {
         html! {
             h1 { "Page not found" }
             p.lede { "This address does not lead anywhere in Doorward." }
+            p.back { a href="/" { "Go to the start page" } }
         },
     )
 }
@@ -544,6 +545,25 @@ mod tests {
             header("page", Nav::Account { admin: false }).into_string(),
             r#"<header class="site" data-brand><div class="site-bar"><a class="brand" href="/account"><svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M6.5 2h11A1.5 1.5 0 0 1 19 3.5v17a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20.5v-17A1.5 1.5 0 0 1 6.5 2Zm8.25 9.25a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"></svg><span>Doorward</span></a></div><nav data-nav="account" aria-label="Account"><ul><li><a href="/account" aria-current="page"><span class="nav-mark" aria-hidden="true"></span>Your account</a></li></ul></nav></header>"#
         );
+    }
+
+    #[tokio::test]
+    async fn the_not_found_page_links_to_the_start_page_after_its_lede() {
+        let doc = Html::parse_document(&text_of(not_found()).await);
+        let links: Vec<_> = doc
+            .select(&Selector::parse("main p.back a").expect("selector"))
+            .collect();
+        assert_eq!(links.len(), 1, "the not-found page must hold one back link");
+        assert_eq!(links[0].value().attr("href"), Some("/"));
+        assert_eq!(links[0].text().collect::<String>(), "Go to the start page");
+    }
+
+    #[tokio::test]
+    async fn the_bare_not_found_has_an_empty_body() {
+        let bytes = axum::body::to_bytes(not_found_bare().into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert!(bytes.is_empty(), "the bare 404 must carry no body");
     }
 
     #[tokio::test]

@@ -567,6 +567,20 @@ mod tests {
     }
 
     #[test]
+    fn markup_inside_an_address_shaped_word_is_escaped() {
+        let (markup, text) = shown("onerror=1>@<b>");
+        assert_eq!(
+            markup,
+            r#"<span class="email"><span>onerror=<wbr>1&gt;</span><wbr><span>@&lt;b&gt;</span></span>"#
+        );
+        assert!(
+            !markup.contains("<b>"),
+            "no raw tag may reach the page: {markup}"
+        );
+        assert_eq!(text, "onerror=1>@<b>");
+    }
+
+    #[test]
     fn a_word_is_an_address_only_with_text_on_both_sides_of_one_at() {
         for word in ["@example.com", "bob@", "a@b@example.com", "a/b@example.com"] {
             let (markup, text) = shown(word);

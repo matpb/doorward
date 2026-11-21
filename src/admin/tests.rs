@@ -425,7 +425,7 @@ async fn mail_settings_are_checked_and_sealed() {
     assert_eq!(control.status, 400, "a control character must be refused");
     assert_eq!(
         control.error().as_deref(),
-        Some("A field contains a control character.")
+        Some("The from address contains a control character.")
     );
 
     let bad_tls = owner
@@ -519,6 +519,236 @@ async fn mail_settings_are_checked_and_sealed() {
         stored_text(dir.path(), "mail.smtp_host").as_deref(),
         Some("other.example.com"),
         "another provider's stored values stay"
+    );
+}
+
+/// A valid post of one provider with `field` set to `value`.
+fn mail_post<'a>(provider: &str, field: &str, value: &'a str) -> Vec<(&'a str, &'a str)> {
+    let mut fields = match provider {
+        "smtp" => vec![
+            ("provider", "smtp"),
+            ("from", "gateway@example.com"),
+            ("smtp_host", "smtp.example.com"),
+            ("smtp_port", "587"),
+            ("smtp_username", "mailer"),
+            ("smtp_password", SECRET),
+            ("smtp_tls", "starttls"),
+        ],
+        "resend" => vec![
+            ("provider", "resend"),
+            ("from", "gateway@example.com"),
+            ("resend_api_key", "re_key"),
+            ("resend_base_url", "https://api.example.com"),
+        ],
+        _ => vec![
+            ("provider", "mailgun"),
+            ("from", "gateway@example.com"),
+            ("mailgun_api_key", "key-example"),
+            ("mailgun_domain", "example.com"),
+            ("mailgun_base_url", "https://api.example.com"),
+        ],
+    };
+    for pair in fields.iter_mut().filter(|pair| pair.0 == field) {
+        pair.1 = value;
+    }
+    fields
+}
+
+/// The elements of `doc` matching `css`.
+fn matching<'a>(doc: &'a Html, css: &str) -> Vec<scraper::ElementRef<'a>> {
+    doc.select(&Selector::parse(css).expect("selector"))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_refused_mail_field_is_the_one_marked_and_named() {
+    // provider, posted field, posted value, id of its control, the sentence it must show.
+    let cases = [
+        (
+            "smtp",
+            "from",
+            "gateway\u{7}@example.com",
+            "smtp-from",
+            "The from address contains a control character.",
+        ),
+        (
+            "smtp",
+            "smtp_host",
+            "smtp\u{7}.example.com",
+            "smtp-host",
+            "The server contains a control character.",
+        ),
+        (
+            "smtp",
+            "smtp_port",
+            "58\u{7}7",
+            "smtp-port",
+            "The port contains a control character.",
+        ),
+        (
+            "smtp",
+            "smtp_port",
+            "0",
+            "smtp-port",
+            "The SMTP port must be a number from 1 to 65535.",
+        ),
+        (
+            "smtp",
+            "smtp_username",
+            "mai\u{7}ler",
+            "smtp-username",
+            "The username contains a control character.",
+        ),
+        (
+            "smtp",
+            "smtp_password",
+            "pass\u{7}word",
+            "smtp-password",
+            "The password contains a control character.",
+        ),
+        (
+            "smtp",
+            "smtp_tls",
+            "plain",
+            "smtp-tls",
+            "Choose a TLS setting: off, starttls or implicit.",
+        ),
+        (
+            "resend",
+            "from",
+            "gateway\u{7}@example.com",
+            "resend-from",
+            "The from address contains a control character.",
+        ),
+        (
+            "resend",
+            "resend_api_key",
+            "re\u{7}key",
+            "resend-key",
+            "The API key contains a control character.",
+        ),
+        (
+            "resend",
+            "resend_base_url",
+            "https://api\u{7}.example.com",
+            "resend-base",
+            "The base address contains a control character.",
+        ),
+        (
+            "mailgun",
+            "from",
+            "gateway\u{7}@example.com",
+            "mailgun-from",
+            "The from address contains a control character.",
+        ),
+        (
+            "mailgun",
+            "mailgun_api_key",
+            "key\u{7}example",
+            "mailgun-key",
+            "The API key contains a control character.",
+        ),
+        (
+            "mailgun",
+            "mailgun_domain",
+            "example\u{7}.com",
+            "mailgun-domain",
+            "The domain contains a control character.",
+        ),
+        (
+            "mailgun",
+            "mailgun_base_url",
+            "https://api\u{7}.example.com",
+            "mailgun-base",
+            "The base address contains a control character.",
+        ),
+    ];
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    for (provider, field, value, marked_id, sentence) in cases {
+        let what = format!("{provider} with {field} refused");
+        let answer = owner
+            .submit(
+                "/admin/mail",
+                "/admin/mail",
+                &mail_post(provider, field, value),
+            )
+            .await;
+        assert_eq!(answer.status, 400, "{what} must answer 400");
+        let doc = Html::parse_document(&answer.body);
+        let open = matching(&doc, "details[open]");
+        assert_eq!(open.len(), 1, "{what}: only the refused disclosure is open");
+        assert_eq!(
+            open[0].value().attr("data-provider"),
+            Some(provider),
+            "{what}: the open disclosure must be the refused provider"
+        );
+        let marked = matching(&doc, r#"[aria-invalid="true"]"#);
+        assert_eq!(marked.len(), 1, "{what}: exactly one field is marked");
+        assert_eq!(
+            marked[0].value().attr("id"),
+            Some(marked_id),
+            "{what}: the marked field must be the one refused"
+        );
+        let described = marked[0]
+            .value()
+            .attr("aria-describedby")
+            .expect("the marked field names its error");
+        let error_id = format!("{marked_id}-error");
+        assert!(
+            described.split_whitespace().any(|id| id == error_id),
+            "{what}: aria-describedby must name {error_id}, got {described}"
+        );
+        let error = matching(&doc, &format!(r#"[id="{error_id}"]"#));
+        assert_eq!(error.len(), 1, "{what}: the named error must exist once");
+        assert_eq!(
+            error[0].text().collect::<String>(),
+            sentence,
+            "{what}: the error under the field"
+        );
+        let notice = matching(
+            &doc,
+            &format!(r#"details[data-provider="{provider}"] div.notice[data-notice="error"] p"#),
+        );
+        assert_eq!(notice.len(), 1, "{what}: one notice above the form");
+        assert_eq!(
+            notice[0].text().collect::<String>(),
+            sentence,
+            "{what}: the notice holds the sentence"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_about_another_providers_field_marks_nothing() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let mut fields = mail_post("resend", "from", "gateway@example.com");
+    fields.push(("smtp_host", "smtp\u{7}.example.com"));
+    let answer = owner.submit("/admin/mail", "/admin/mail", &fields).await;
+    assert_eq!(
+        answer.status, 400,
+        "the stray control character must be refused"
+    );
+    let doc = Html::parse_document(&answer.body);
+    assert_eq!(
+        matching(&doc, r#"[aria-invalid="true"]"#).len(),
+        0,
+        "no field of the resend form is about the server field"
+    );
+    let notice = matching(
+        &doc,
+        r#"details[data-provider="resend"] div.notice[data-notice="error"] p"#,
+    );
+    assert_eq!(
+        notice.len(),
+        1,
+        "the refusal keeps its notice above the form"
+    );
+    assert_eq!(
+        notice[0].text().collect::<String>(),
+        "A field contains a control character.",
+        "a field outside the form keeps the general sentence"
     );
 }
 

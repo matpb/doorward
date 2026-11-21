@@ -34,12 +34,81 @@ const PLAIN_KEYS: [&str; 9] = [
 const CONTROL_MESSAGE: &str = "A field contains a control character.";
 const PROVIDER_MESSAGE: &str = "Choose a provider: smtp, resend or mailgun.";
 const PORT_MESSAGE: &str = "The SMTP port must be a number from 1 to 65535.";
-const TLS_MESSAGE: &str = "Choose a TLS mode: off, starttls or implicit.";
+const TLS_MESSAGE: &str = "Choose a TLS setting: off, starttls or implicit.";
 const TEST_TO_MESSAGE: &str = "Enter a valid email address.";
 const TEST_SENT: &str = "Test email sent.";
 const TEST_SUBJECT: &str = "Doorward test email";
 const TEST_TEXT: &str = "This is a test email from Doorward.";
 const TEST_HTML: &str = "<p>This is a test email from Doorward.</p>";
+
+/// The sentence of a control character in a field of a provider's form: provider, posted name, sentence.
+const CONTROL_SENTENCES: [(&str, &str, &str); 13] = [
+    (
+        "smtp",
+        "from",
+        "The from address contains a control character.",
+    ),
+    (
+        "smtp",
+        "smtp_host",
+        "The server contains a control character.",
+    ),
+    (
+        "smtp",
+        "smtp_port",
+        "The port contains a control character.",
+    ),
+    (
+        "smtp",
+        "smtp_username",
+        "The username contains a control character.",
+    ),
+    (
+        "smtp",
+        "smtp_password",
+        "The password contains a control character.",
+    ),
+    (
+        "smtp",
+        "smtp_tls",
+        "The TLS setting contains a control character.",
+    ),
+    (
+        "resend",
+        "from",
+        "The from address contains a control character.",
+    ),
+    (
+        "resend",
+        "resend_api_key",
+        "The API key contains a control character.",
+    ),
+    (
+        "resend",
+        "resend_base_url",
+        "The base address contains a control character.",
+    ),
+    (
+        "mailgun",
+        "from",
+        "The from address contains a control character.",
+    ),
+    (
+        "mailgun",
+        "mailgun_api_key",
+        "The API key contains a control character.",
+    ),
+    (
+        "mailgun",
+        "mailgun_domain",
+        "The domain contains a control character.",
+    ),
+    (
+        "mailgun",
+        "mailgun_base_url",
+        "The base address contains a control character.",
+    ),
+];
 
 /// The plain settings as stored. Secrets are never loaded for display.
 type View = BTreeMap<String, String>;
@@ -58,18 +127,22 @@ pub(super) const RESEND_SECRET_HINT: &str =
     "Leave empty to keep the stored one. If you change the base address, enter it again.";
 pub(super) const MAILGUN_SECRET_HINT: &str = "Leave empty to keep the stored one. If you change the domain or the base address, enter it again.";
 
-/// A refused post answers 400; a failed seal answers 500.
+/// A refused post answers 400; a failed seal answers 500. A refusal names the posted field it is about.
 pub(super) enum PlanError {
-    Invalid(&'static str),
+    Invalid {
+        reason: &'static str,
+        field: Option<&'static str>,
+    },
     Seal(CryptoError),
 }
 
 /// A save the page refuses: the provider whose form was posted when its name is one of the three,
-/// and the reason. Without a provider the reason sits at the top of the page.
+/// the reason, and the posted field it is about. Without a provider the reason sits at the top of the page.
 #[derive(Clone, Copy)]
 struct Refused {
     provider: Option<&'static str>,
     reason: &'static str,
+    field: Option<&'static str>,
 }
 
 /// The providers, in the order of their disclosures.
@@ -90,10 +163,11 @@ pub async fn get_mail(viewer: Viewer, State(state): State<AppState>) -> Response
 pub async fn post_mail(State(state): State<AppState>, form: VerifiedForm) -> Response {
     let plan = match plan_from(&form.fields, &state.keys) {
         Ok(plan) => plan,
-        Err(PlanError::Invalid(reason)) => {
+        Err(PlanError::Invalid { reason, field }) => {
             let refused = Refused {
                 provider: provider_named(form.fields.get("provider")),
                 reason,
+                field,
             };
             return match load_view(&state.db).await {
                 Ok(view) => mail_page(
@@ -186,19 +260,41 @@ async fn load_view(db: &Db) -> Result<View, DbError> {
 
 /// Validates the post and builds the plan for the posted provider only. Seals the secret here.
 fn plan_from(fields: &FormFields, keys: &Keys) -> Result<Plan, PlanError> {
-    if fields
+    let provider = fields.get("provider");
+    if let Some((name, _)) = fields
         .pairs()
-        .any(|(name, value)| has_control(name) || has_control(value))
+        .find(|(name, value)| has_control(name) || has_control(value))
     {
-        return Err(PlanError::Invalid(CONTROL_MESSAGE));
+        return Err(control_refusal(provider, name));
     }
     let posted = |name: &str| fields.get(name).to_owned();
     let from = posted("from");
-    match fields.get("provider") {
+    match provider {
         "smtp" => smtp_plan(posted, keys, from),
         "resend" => resend_plan(posted, keys, from),
         "mailgun" => mailgun_plan(posted, keys, from),
-        _ => Err(PlanError::Invalid(PROVIDER_MESSAGE)),
+        _ => Err(PlanError::Invalid {
+            reason: PROVIDER_MESSAGE,
+            field: None,
+        }),
+    }
+}
+
+/// The refusal of a control character in the posted field `name`: it names the field when the
+/// posted provider's form holds that field, else it keeps the general sentence.
+fn control_refusal(provider: &str, name: &str) -> PlanError {
+    match CONTROL_SENTENCES
+        .iter()
+        .find(|(known, field, _)| *known == provider && *field == name)
+    {
+        Some((_, field, reason)) => PlanError::Invalid {
+            reason,
+            field: Some(*field),
+        },
+        None => PlanError::Invalid {
+            reason: CONTROL_MESSAGE,
+            field: None,
+        },
     }
 }
 
@@ -222,7 +318,10 @@ pub(super) fn smtp_plan(
     let port = port_text(&posted("smtp_port"))?;
     let tls = posted("smtp_tls");
     if !matches!(tls.as_str(), "off" | "starttls" | "implicit") {
-        return Err(PlanError::Invalid(TLS_MESSAGE));
+        return Err(PlanError::Invalid {
+            reason: TLS_MESSAGE,
+            field: Some("smtp_tls"),
+        });
     }
     let host = posted("smtp_host");
     let username = posted("smtp_username");
@@ -293,12 +392,16 @@ pub(super) fn mailgun_plan(
 
 /// Digits only, 1 to 65535, stored in canonical form.
 fn port_text(text: &str) -> Result<String, PlanError> {
+    let refused = PlanError::Invalid {
+        reason: PORT_MESSAGE,
+        field: Some("smtp_port"),
+    };
     if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(PlanError::Invalid(PORT_MESSAGE));
+        return Err(refused);
     }
     match text.parse::<u16>() {
         Ok(port) if port >= 1 => Ok(port.to_string()),
-        _ => Err(PlanError::Invalid(PORT_MESSAGE)),
+        _ => Err(refused),
     }
 }
 
@@ -381,6 +484,42 @@ fn shown<'a>(view: &'a View, key: &str) -> &'a str {
     view.get(key).map_or("", String::as_str)
 }
 
+/// The sentence of a refusal about `field` of this form, or None when the refusal is about another field.
+fn error_on(refusal: Option<Refused>, field: &str) -> Option<&'static str> {
+    refusal.and_then(|refusal| (refusal.field == Some(field)).then_some(refusal.reason))
+}
+
+/// The ids a control names in aria-describedby: its refusal, then its hint, each when there is one.
+fn described_by(id: &str, error: Option<&str>, hint: Option<&str>) -> Option<String> {
+    let mut ids = Vec::new();
+    if error.is_some() {
+        ids.push(format!("{id}-error"));
+    }
+    if hint.is_some() {
+        ids.push(format!("{id}-hint"));
+    }
+    (!ids.is_empty()).then(|| ids.join(" "))
+}
+
+/// The note under a field: its refusal and its hint, both under their own ids when both are there.
+fn field_note<'a>(
+    id: &str,
+    error: Option<&'a str>,
+    hint: Option<&'a str>,
+    described: Option<&'a str>,
+) -> Note<'a> {
+    match (error, hint, described) {
+        (Some(text), Some(hint), Some(ids)) => Note::Below(
+            ids,
+            html! {
+                (ui::field_error(&format!("{id}-error"), text))
+                (ui::hint(&format!("{id}-hint"), hint))
+            },
+        ),
+        _ => ui::note_under(error, hint),
+    }
+}
+
 /// The stack of the page: the provider in use, one disclosure per provider, and the test email.
 fn mail_forms(
     csrf: &str,
@@ -392,9 +531,7 @@ fn mail_forms(
     let provider = shown(view, "mail.provider");
     let in_use = provider_named(provider);
     let open = open_provider(in_use, refused.and_then(|refusal| refusal.provider));
-    let refusal_of = |name: &str| {
-        refused.and_then(|refusal| (refusal.provider == Some(name)).then_some(refusal.reason))
-    };
+    let refusal_of = |name: &str| refused.filter(|refusal| refusal.provider == Some(name));
     let unplaced = refused.and_then(|refusal| refusal.provider.is_none().then_some(refusal.reason));
     let current = in_use.and_then(title_of).unwrap_or("none");
     html! {
@@ -485,26 +622,39 @@ fn provider_disclosure(
 }
 
 /// The notice of a refused save sits first in its form, when that form was posted.
-fn smtp_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
+fn smtp_form(csrf: &str, view: &View, refusal: Option<Refused>) -> Markup {
     let tls = shown(view, "mail.smtp_tls");
-    let password_note = Note::Hint(SMTP_SECRET_HINT);
-    let password_described = password_note.describer("smtp-password");
-    let tls_note = Note::Hint("Off sends the password and the mail unencrypted.");
-    let tls_described = tls_note.describer("smtp-tls");
+    let from_error = error_on(refusal, "from");
+    let from_described = described_by("smtp-from", from_error, None);
+    let host_error = error_on(refusal, "smtp_host");
+    let host_described = described_by("smtp-host", host_error, None);
+    let port_error = error_on(refusal, "smtp_port");
+    let port_described = described_by("smtp-port", port_error, None);
+    let username_error = error_on(refusal, "smtp_username");
+    let username_described = described_by("smtp-username", username_error, None);
+    let password_error = error_on(refusal, "smtp_password");
+    let password_hint = Some(SMTP_SECRET_HINT);
+    let password_described = described_by("smtp-password", password_error, password_hint);
+    let tls_error = error_on(refusal, "smtp_tls");
+    let tls_hint = Some("Off sends the password and the mail unencrypted.");
+    let tls_described = described_by("smtp-tls", tls_error, tls_hint);
     html! {
         form.flow method="post" action="/admin/mail" {
             input type="hidden" name="csrf" value=(csrf);
             input type="hidden" name="provider" value="smtp";
-            @if let Some(message) = refusal {
-                (ui::refused(None, message, None))
+            @if let Some(refusal) = refusal {
+                (ui::refused(None, refusal.reason, None))
             }
             div.fields {
                 (ui::field(
                     "smtp-from",
                     "From address",
                     false,
-                    html! { input id="smtp-from" name="from" type="text" value=(shown(view, "mail.from")); },
-                    Note::None,
+                    html! {
+                        input id="smtp-from" name="from" type="text" value=(shown(view, "mail.from"))
+                            aria-invalid=[ui::invalid(from_error)] aria-describedby=[from_described.as_deref()];
+                    },
+                    field_note("smtp-from", from_error, None, from_described.as_deref()),
                 ))
             }
             div.fields data-cols="2-1" {
@@ -512,15 +662,21 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
                     "smtp-host",
                     "Server",
                     false,
-                    html! { input class="mono" id="smtp-host" name="smtp_host" type="text" value=(shown(view, "mail.smtp_host")); },
-                    Note::None,
+                    html! {
+                        input class="mono" id="smtp-host" name="smtp_host" type="text" value=(shown(view, "mail.smtp_host"))
+                            aria-invalid=[ui::invalid(host_error)] aria-describedby=[host_described.as_deref()];
+                    },
+                    field_note("smtp-host", host_error, None, host_described.as_deref()),
                 ))
                 (ui::field(
                     "smtp-port",
                     "Port",
                     false,
-                    html! { input class="mono" id="smtp-port" name="smtp_port" type="text" inputmode="numeric" value=(shown(view, "mail.smtp_port")); },
-                    Note::None,
+                    html! {
+                        input class="mono" id="smtp-port" name="smtp_port" type="text" inputmode="numeric" value=(shown(view, "mail.smtp_port"))
+                            aria-invalid=[ui::invalid(port_error)] aria-describedby=[port_described.as_deref()];
+                    },
+                    field_note("smtp-port", port_error, None, port_described.as_deref()),
                 ))
             }
             div.fields data-cols="2" {
@@ -528,8 +684,11 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
                     "smtp-username",
                     "Username",
                     false,
-                    html! { input id="smtp-username" name="smtp_username" type="text" value=(shown(view, "mail.smtp_username")); },
-                    Note::None,
+                    html! {
+                        input id="smtp-username" name="smtp_username" type="text" value=(shown(view, "mail.smtp_username"))
+                            aria-invalid=[ui::invalid(username_error)] aria-describedby=[username_described.as_deref()];
+                    },
+                    field_note("smtp-username", username_error, None, username_described.as_deref()),
                 ))
                 (ui::field(
                     "smtp-password",
@@ -537,9 +696,9 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
                     false,
                     html! {
                         input id="smtp-password" name="smtp_password" type="password" autocomplete="new-password"
-                            aria-describedby=[password_described.as_deref()];
+                            aria-invalid=[ui::invalid(password_error)] aria-describedby=[password_described.as_deref()];
                     },
-                    password_note,
+                    field_note("smtp-password", password_error, password_hint, password_described.as_deref()),
                 ))
             }
             div.fields data-cols="2" {
@@ -548,13 +707,13 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
                     "TLS",
                     false,
                     html! {
-                        select id="smtp-tls" name="smtp_tls" aria-describedby=[tls_described.as_deref()] {
+                        select id="smtp-tls" name="smtp_tls" aria-invalid=[ui::invalid(tls_error)] aria-describedby=[tls_described.as_deref()] {
                             option value="off" selected[tls == "off"] { "Off" }
                             option value="starttls" selected[tls == "starttls"] { "STARTTLS" }
                             option value="implicit" selected[tls == "implicit"] { "Implicit TLS" }
                         }
                     },
-                    tls_note,
+                    field_note("smtp-tls", tls_error, tls_hint, tls_described.as_deref()),
                 ))
             }
             div.form-actions {
@@ -564,25 +723,32 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
     }
 }
 
-fn resend_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
-    let key_note = Note::Hint(RESEND_SECRET_HINT);
-    let key_described = key_note.describer("resend-key");
-    let base_note = Note::Hint("Empty means the provider's own address.");
-    let base_described = base_note.describer("resend-base");
+fn resend_form(csrf: &str, view: &View, refusal: Option<Refused>) -> Markup {
+    let from_error = error_on(refusal, "from");
+    let from_described = described_by("resend-from", from_error, None);
+    let key_error = error_on(refusal, "resend_api_key");
+    let key_hint = Some(RESEND_SECRET_HINT);
+    let key_described = described_by("resend-key", key_error, key_hint);
+    let base_error = error_on(refusal, "resend_base_url");
+    let base_hint = Some("Empty means the provider's own address.");
+    let base_described = described_by("resend-base", base_error, base_hint);
     html! {
         form.flow method="post" action="/admin/mail" {
             input type="hidden" name="csrf" value=(csrf);
             input type="hidden" name="provider" value="resend";
-            @if let Some(message) = refusal {
-                (ui::refused(None, message, None))
+            @if let Some(refusal) = refusal {
+                (ui::refused(None, refusal.reason, None))
             }
             div.fields {
                 (ui::field(
                     "resend-from",
                     "From address",
                     false,
-                    html! { input id="resend-from" name="from" type="text" value=(shown(view, "mail.from")); },
-                    Note::None,
+                    html! {
+                        input id="resend-from" name="from" type="text" value=(shown(view, "mail.from"))
+                            aria-invalid=[ui::invalid(from_error)] aria-describedby=[from_described.as_deref()];
+                    },
+                    field_note("resend-from", from_error, None, from_described.as_deref()),
                 ))
             }
             div.fields {
@@ -592,9 +758,9 @@ fn resend_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
                     false,
                     html! {
                         input id="resend-key" name="resend_api_key" type="password" autocomplete="new-password"
-                            aria-describedby=[key_described.as_deref()];
+                            aria-invalid=[ui::invalid(key_error)] aria-describedby=[key_described.as_deref()];
                     },
-                    key_note,
+                    field_note("resend-key", key_error, key_hint, key_described.as_deref()),
                 ))
             }
             div.fields {
@@ -604,9 +770,10 @@ fn resend_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
                     true,
                     html! {
                         input class="mono" id="resend-base" name="resend_base_url" type="text"
-                            value=(shown(view, "mail.resend_base_url")) aria-describedby=[base_described.as_deref()];
+                            value=(shown(view, "mail.resend_base_url"))
+                            aria-invalid=[ui::invalid(base_error)] aria-describedby=[base_described.as_deref()];
                     },
-                    base_note,
+                    field_note("resend-base", base_error, base_hint, base_described.as_deref()),
                 ))
             }
             div.form-actions {
@@ -616,25 +783,34 @@ fn resend_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
     }
 }
 
-fn mailgun_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
-    let key_note = Note::Hint(MAILGUN_SECRET_HINT);
-    let key_described = key_note.describer("mailgun-key");
-    let base_note = Note::Hint("Empty means the provider's own address.");
-    let base_described = base_note.describer("mailgun-base");
+fn mailgun_form(csrf: &str, view: &View, refusal: Option<Refused>) -> Markup {
+    let from_error = error_on(refusal, "from");
+    let from_described = described_by("mailgun-from", from_error, None);
+    let key_error = error_on(refusal, "mailgun_api_key");
+    let key_hint = Some(MAILGUN_SECRET_HINT);
+    let key_described = described_by("mailgun-key", key_error, key_hint);
+    let domain_error = error_on(refusal, "mailgun_domain");
+    let domain_described = described_by("mailgun-domain", domain_error, None);
+    let base_error = error_on(refusal, "mailgun_base_url");
+    let base_hint = Some("Empty means the provider's own address.");
+    let base_described = described_by("mailgun-base", base_error, base_hint);
     html! {
         form.flow method="post" action="/admin/mail" {
             input type="hidden" name="csrf" value=(csrf);
             input type="hidden" name="provider" value="mailgun";
-            @if let Some(message) = refusal {
-                (ui::refused(None, message, None))
+            @if let Some(refusal) = refusal {
+                (ui::refused(None, refusal.reason, None))
             }
             div.fields {
                 (ui::field(
                     "mailgun-from",
                     "From address",
                     false,
-                    html! { input id="mailgun-from" name="from" type="text" value=(shown(view, "mail.from")); },
-                    Note::None,
+                    html! {
+                        input id="mailgun-from" name="from" type="text" value=(shown(view, "mail.from"))
+                            aria-invalid=[ui::invalid(from_error)] aria-describedby=[from_described.as_deref()];
+                    },
+                    field_note("mailgun-from", from_error, None, from_described.as_deref()),
                 ))
             }
             div.fields data-cols="2" {
@@ -644,16 +820,19 @@ fn mailgun_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
                     false,
                     html! {
                         input id="mailgun-key" name="mailgun_api_key" type="password" autocomplete="new-password"
-                            aria-describedby=[key_described.as_deref()];
+                            aria-invalid=[ui::invalid(key_error)] aria-describedby=[key_described.as_deref()];
                     },
-                    key_note,
+                    field_note("mailgun-key", key_error, key_hint, key_described.as_deref()),
                 ))
                 (ui::field(
                     "mailgun-domain",
                     "Domain",
                     false,
-                    html! { input class="mono" id="mailgun-domain" name="mailgun_domain" type="text" value=(shown(view, "mail.mailgun_domain")); },
-                    Note::None,
+                    html! {
+                        input class="mono" id="mailgun-domain" name="mailgun_domain" type="text" value=(shown(view, "mail.mailgun_domain"))
+                            aria-invalid=[ui::invalid(domain_error)] aria-describedby=[domain_described.as_deref()];
+                    },
+                    field_note("mailgun-domain", domain_error, None, domain_described.as_deref()),
                 ))
             }
             div.fields {
@@ -663,9 +842,10 @@ fn mailgun_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
                     true,
                     html! {
                         input class="mono" id="mailgun-base" name="mailgun_base_url" type="text"
-                            value=(shown(view, "mail.mailgun_base_url")) aria-describedby=[base_described.as_deref()];
+                            value=(shown(view, "mail.mailgun_base_url"))
+                            aria-invalid=[ui::invalid(base_error)] aria-describedby=[base_described.as_deref()];
                     },
-                    base_note,
+                    field_note("mailgun-base", base_error, base_hint, base_described.as_deref()),
                 ))
             }
             div.form-actions {

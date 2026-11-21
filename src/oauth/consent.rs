@@ -500,6 +500,7 @@ fn no_access() -> Response {
         html! {
             h1 { "You do not have access to this server" }
             p.lede { "Ask an administrator to give you access, then start the sign-in again." }
+            p.back { a href="/account" { "Your account" } }
         },
     )
 }
@@ -844,6 +845,20 @@ mod tests {
             "Approve only if you started this sign-in yourself."
         );
         assert_eq!(count(&doc, ".notice[data-consent-notice]"), 0);
+    }
+
+    #[tokio::test]
+    async fn the_no_access_page_links_to_the_account_after_its_sentence() {
+        let bytes = to_bytes(no_access().into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let doc = Html::parse_document(std::str::from_utf8(&bytes).expect("utf-8"));
+        let links: Vec<_> = doc
+            .select(&Selector::parse("main p.back a").expect("selector"))
+            .collect();
+        assert_eq!(links.len(), 1, "the no-access page must hold one back link");
+        assert_eq!(links[0].value().attr("href"), Some("/account"));
+        assert_eq!(links[0].text().collect::<String>(), "Your account");
     }
 
     #[tokio::test]

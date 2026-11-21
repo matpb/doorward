@@ -891,7 +891,7 @@ async fn a_refused_provider_form_is_open_with_its_reason() {
         refused
             .text(r#"details[data-provider="resend"] div.notice[data-notice="error"] p"#)
             .as_deref(),
-        Some("A field contains a control character."),
+        Some("The from address contains a control character."),
         "the refused resend form must hold its reason in an error notice"
     );
     let refused = admin::mail_mailgun(
@@ -915,8 +915,74 @@ async fn a_refused_provider_form_is_open_with_its_reason() {
         refused
             .text(r#"details[data-provider="mailgun"] div.notice[data-notice="error"] p"#)
             .as_deref(),
-        Some("A field contains a control character."),
+        Some("The from address contains a control character."),
         "the refused mailgun form must hold its reason in an error notice"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_base_address_is_the_one_marked_field_of_its_form() {
+    const SENTENCE: &str = "The base address contains a control character.";
+    let w = World::start().await;
+    let refused = admin::mail_resend(
+        &w.owner,
+        "gateway@example.com",
+        "key-example",
+        "https://api\u{7}.example.com",
+    )
+    .await;
+    assert_eq!(
+        refused.status, 400,
+        "a base address with a control character must be refused with 400"
+    );
+    let doc = Html::parse_document(&refused.body);
+    let resend = all(doc.root_element(), r#"details[data-provider="resend"]"#);
+    assert_eq!(
+        resend.len(),
+        1,
+        "the resend disclosure must be on the page once"
+    );
+    let marked = all(resend[0], r#"input[aria-invalid="true"]"#);
+    assert_eq!(
+        marked.len(),
+        1,
+        "exactly one input of the refused resend form must be marked"
+    );
+    assert_eq!(
+        marked[0].attr("id"),
+        Some("resend-base"),
+        "the marked input must be the base address"
+    );
+    let described = marked[0]
+        .attr("aria-describedby")
+        .expect("the marked input must name its error");
+    assert!(
+        described
+            .split_whitespace()
+            .any(|id| id == "resend-base-error"),
+        "the marked input must name its error, got {described}"
+    );
+    let error = all(doc.root_element(), r#"[id="resend-base-error"]"#);
+    assert_eq!(
+        error.len(),
+        1,
+        "the element the input names must exist once"
+    );
+    assert_eq!(
+        text_of(error[0]),
+        SENTENCE,
+        "the error under the base address must be the sentence"
+    );
+    let notice = all(resend[0], r#"div.notice[data-notice="error"] p"#);
+    assert_eq!(
+        notice.len(),
+        1,
+        "the refused resend form must hold one notice"
+    );
+    assert_eq!(
+        text_of(notice[0]),
+        SENTENCE,
+        "the notice must hold the same sentence"
     );
 }
 

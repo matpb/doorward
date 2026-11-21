@@ -306,6 +306,7 @@ fn disconnected_page(family: &Family) -> Response {
                 (family.client_name) " on " (server_text(family))
                 " can no longer use your account."
             }
+            p.back { a href="/account" { "Your account" } }
         },
     )
 }
@@ -340,6 +341,24 @@ mod tests {
         assert_eq!(count(&doc, "h1 + p.lede"), 1);
         assert_eq!(count(&doc, r#"form > button[data-kind="danger"]"#), 1);
         assert_eq!(count(&doc, "button[data-kind=secondary]"), 0);
+    }
+
+    #[tokio::test]
+    async fn the_disconnected_page_links_to_the_account_after_its_sentence() {
+        let bytes = to_bytes(disconnected_page(&family()).into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let doc = Html::parse_document(std::str::from_utf8(&bytes).expect("utf-8"));
+        let links: Vec<_> = doc
+            .select(&Selector::parse("main p.back a").expect("selector"))
+            .collect();
+        assert_eq!(
+            links.len(),
+            1,
+            "the disconnected page must hold one back link"
+        );
+        assert_eq!(links[0].value().attr("href"), Some("/account"));
+        assert_eq!(links[0].text().collect::<String>(), "Your account");
     }
 
     #[tokio::test]

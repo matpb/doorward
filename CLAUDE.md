@@ -258,7 +258,7 @@ L. Added after the owner's auth review
     in use is open and marked as in use, and the others are closed. With no provider in use
     the page says so and all three are closed. A provider whose form was just refused is
     open, with the reason.
-57. The consent page has Approve as its one primary button and Deny as a secondary button,
+57. (replaced by 70) The consent page has Approve as its one primary button and Deny as a secondary button,
     and the sentence about a client whose description cannot be confirmed is shown as a
     warning. Its wording is unchanged.
 58. (replaced by 63) Text in the stylesheet's two themes has a contrast of at least 4.5 to 1 against the
@@ -303,6 +303,10 @@ L. Added after the owner's auth review
 69. Colour appears only where the gateway allowed, denied or removed something, or cannot
     verify something. Everything else is ink and paper, the primary button included, and
     every colour in the stylesheet comes from its table of named values.
+70. The consent page has Approve as its one primary button and Deny as a secondary button.
+    The line about a client whose name or description cannot be confirmed is shown as a
+    warning. For a self-registered client it reads: An app that calls itself “NAME” is
+    asking to sign in as you. Doorward cannot check this name.
 
 ### Proof
 
@@ -341,6 +345,8 @@ into the test harness. In addition:
   desktop width in both themes, which measures the tops and bottoms of fields on a row,
   control heights, contrast and sideways scroll, and captures a page change mid-way;
   screenshots kept under `proof/` (not tracked).
+- 70: the consent tests in `tests/s52_interface.rs` (buttons, warning) and
+  `tests/s33_consent.rs`, which pins the sentence for a self-registered client.
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
   a walk-through of every page in a real browser at 390 px and desktop width in both
   themes, which also measures control heights and sideways scroll; screenshots kept under

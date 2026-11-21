@@ -258,6 +258,7 @@ fn forgot_sent() -> Response {
         html! {
             h1 { "Check your email" }
             p.lede { "If an account exists for that address, a link to reset its password is on its way." }
+            p.back { a href="/login" { "Back to sign in" } }
         },
     )
 }
@@ -399,6 +400,24 @@ mod tests {
             markup.contains(r#"<div class="notice" data-notice="error" role="alert"><p><strong>The password was not changed.</strong></p></div>"#),
             "the refused reset notice must be exactly its lead-in markup: {markup}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_check_email_page_links_back_to_sign_in_after_its_sentence() {
+        let bytes = to_bytes(forgot_sent().into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let doc = Html::parse_document(std::str::from_utf8(&bytes).expect("utf-8"));
+        let links: Vec<_> = doc
+            .select(&Selector::parse("main p.back a").expect("selector"))
+            .collect();
+        assert_eq!(
+            links.len(),
+            1,
+            "the check-email page must hold one back link"
+        );
+        assert_eq!(links[0].value().attr("href"), Some("/login"));
+        assert_eq!(links[0].text().collect::<String>(), "Back to sign in");
     }
 
     #[tokio::test]

@@ -550,6 +550,11 @@ async fn the_account_page_holds_its_own_navigation() {
         "a plain user's navigation must hold exactly one link"
     );
     assert_eq!(
+        page.count("nav"),
+        1,
+        "a plain user's account page must hold exactly one nav element in total"
+    );
+    assert_eq!(
         page.count(&format!(
             r#"{own} li > a[href="/account"][aria-current="page"]"#
         )),

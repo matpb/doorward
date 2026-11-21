@@ -474,7 +474,7 @@ async fn an_admin_sees_no_mail_link() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_plain_user_and_public_pages_get_no_navigation() {
+async fn a_plain_users_account_page_holds_one_link_and_public_pages_hold_none() {
     let w = World::start().await;
     let bob = w.user(BOB).await;
     let page = bob.get("/admin/users").await;

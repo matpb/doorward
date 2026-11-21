@@ -19,7 +19,7 @@ use crate::report;
 
 const SEND_LIMIT: Duration = Duration::from_secs(8);
 const TEXT_LIMIT: usize = 300;
-const NOT_SET_UP: &str = "Mail is not set up.";
+pub(crate) const NOT_SET_UP: &str = "Mail is not set up.";
 const SETTINGS_UNREADABLE: &str = "The mail settings cannot be read.";
 const SECRET_UNREADABLE: &str = "The stored mail secret cannot be opened.";
 const PORT_INVALID: &str = "The stored SMTP port is not valid.";
