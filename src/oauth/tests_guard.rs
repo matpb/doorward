@@ -838,7 +838,15 @@ async fn paths_that_are_not_slugs_are_plain_404s() {
                 .request(reqwest::Method::GET, path, headers, None)
                 .await;
             assert_eq!(reply.status, 404, "{path} must be a plain 404");
-            assert_eq!(reply.body, "", "{path} has an empty 404");
+            // One segment is the server route (empty 404); deeper paths match no route.
+            if path.matches('/').count() == 1 {
+                assert_eq!(reply.body, "", "{path} has an empty 404");
+            } else {
+                assert!(
+                    reply.body.contains(r#"<main data-page="not-found">"#),
+                    "{path} answers the not-found page"
+                );
+            }
             assert_eq!(
                 reply.header("www-authenticate"),
                 None,
@@ -1158,7 +1166,10 @@ async fn another_users_client_is_a_plain_404_and_is_not_revoked() {
         reply.status, 404,
         "another user's client must be a plain 404"
     );
-    assert_eq!(reply.body, "", "the 404 has an empty body");
+    assert!(
+        reply.body.contains(r#"<main data-page="not-found">"#),
+        "the 404 answers the not-found page"
+    );
     assert!(!revoked(&gw, issued.family), "the family must stay live");
     assert_eq!(activity_count(&gw, "client_disconnected"), 0);
     let live = gw

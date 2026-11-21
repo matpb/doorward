@@ -17,7 +17,8 @@ use crate::db::{Db, DbError};
 use crate::mail;
 use crate::mail::templates;
 use crate::web::{
-    SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, page, redirect,
+    MainData, SessionUser, VerifiedForm, Viewer, forbidden, form_page_with, internal_error,
+    page_with, redirect,
 };
 
 use super::panel_nav;
@@ -242,13 +243,22 @@ fn invitations_page(
     rows: &[Row],
     error: Option<&str>,
 ) -> Response {
-    let nav = panel_nav(viewer, "/admin/invitations");
-    form_page(viewer, status, "invitations", "Invitations", |csrf| {
-        html! {
-            (nav)
-            (invitations_body(csrf, viewer.is_owner(), rows, error))
-        }
-    })
+    let data = MainData {
+        nav: panel_nav(viewer, "/admin/invitations"),
+        ..MainData::default()
+    };
+    form_page_with(
+        viewer,
+        status,
+        "invitations",
+        "Invitations",
+        &data,
+        |csrf| {
+            html! {
+                (invitations_body(csrf, viewer.is_owner(), rows, error))
+            }
+        },
+    )
 }
 
 fn invitations_body(csrf: &str, owner: bool, rows: &[Row], error: Option<&str>) -> Markup {
@@ -316,12 +326,16 @@ fn invitations_body(csrf: &str, owner: bool, rows: &[Row], error: Option<&str>) 
 
 /// The answer when the mail did not leave: the error, and the link once for copying by hand.
 fn invitation_created(viewer: &Viewer, error: &str, link: &str) -> Response {
-    page(
+    let data = MainData {
+        nav: panel_nav(viewer, "/admin/invitations"),
+        ..MainData::default()
+    };
+    page_with(
         StatusCode::OK,
         "invitation-created",
         "Invitation created",
+        &data,
         html! {
-            (panel_nav(viewer, "/admin/invitations"))
             div.stack {
                 h1 { "The invitation is stored but the email was not sent" }
                 p.error { (error) }

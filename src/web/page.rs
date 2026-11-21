@@ -3,12 +3,25 @@ use axum::response::{Html, IntoResponse, Response};
 use maud::{DOCTYPE, Markup, html};
 
 use super::cookies::{csrf_cookie, with_cookie};
+use super::headers::stylesheet_href;
 use super::viewer::Viewer;
 use crate::report;
+
+/// Which navigation the header carries.
+#[derive(Clone, Copy, Default)]
+pub enum Nav<'a> {
+    #[default]
+    None,
+    /// The admin panel's list; `current` is the path of the section shown, `owner` adds Mail.
+    Panel { current: &'a str, owner: bool },
+    /// The account page's list; `admin` adds the link to the panel.
+    Account { admin: bool },
+}
 
 /// Extra data attributes of the main element. A None leaves the attribute out.
 #[derive(Default)]
 pub struct MainData<'a> {
+    pub nav: Nav<'a>,
     pub lockdown: Option<&'a str>,
     pub redirect_host: Option<&'a str>,
     pub client_name: Option<&'a str>,
@@ -28,14 +41,24 @@ pub fn layout_of(kind: &str) -> &'static str {
     }
 }
 
+/// The panel links: label, path, the class of the item, and whether only the owner sees it.
+const PANEL_LINKS: [(&str, &str, &str, bool); 9] = [
+    ("Overview", "/admin", "", false),
+    ("Users", "/admin/users", "nav-break", false),
+    ("Invitations", "/admin/invitations", "", false),
+    ("Servers", "/admin/servers", "nav-break", false),
+    ("Rules", "/admin/rules", "", false),
+    ("Redirects", "/admin/redirects", "", false),
+    ("Activity", "/admin/activity", "nav-break", false),
+    ("Mail", "/admin/mail", "", true),
+    ("Your account", "/account", "nav-end", false),
+];
+
 /// The brand of the header: a link to the panel or the account page, a plain span on the card.
 fn brand(layout: &str) -> Markup {
     let content = html! {
-        svg class="brand-mark" width="22" height="22" viewBox="0 0 24 24" fill="none"
-            stroke="currentColor" stroke-width="2" stroke-linecap="round"
-            stroke-linejoin="round" aria-hidden="true" {
-            rect x="5" y="3" width="14" height="18" rx="2";
-            circle cx="15" cy="12.5" r="1.2" fill="currentColor" stroke="none";
+        svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" {
+            path fill-rule="evenodd" d="M6.5 2h11A1.5 1.5 0 0 1 19 3.5v17a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20.5v-17A1.5 1.5 0 0 1 6.5 2Zm8.25 9.25a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z";
         }
         span { "Doorward" }
     };
@@ -43,6 +66,83 @@ fn brand(layout: &str) -> Markup {
         "panel" => html! { a class="brand" href="/admin" { (content) } },
         "page" => html! { a class="brand" href="/account" { (content) } },
         _ => html! { span class="brand" { (content) } },
+    }
+}
+
+/// The panel's list; the link to `current` is the one marked as the current page.
+fn panel_nav(current: &str, owner: bool) -> Markup {
+    html! {
+        nav id="panel-nav" data-nav="panel" aria-label="Admin" popover {
+            ul {
+                @for (label, href, class, owner_only) in PANEL_LINKS {
+                    @if !owner_only || owner {
+                        li class=[(!class.is_empty()).then_some(class)] {
+                            a href=(href) aria-current=[(href == current).then_some("page")] {
+                                @if href == current {
+                                    span class="nav-mark" aria-hidden="true" {}
+                                }
+                                (label)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The account page's list: the account page itself, and the link to the panel for admins.
+fn account_nav() -> Markup {
+    html! {
+        nav id="account-nav" data-nav="account" aria-label="Account" popover {
+            ul {
+                li {
+                    a href="/account" aria-current="page" {
+                        span class="nav-mark" aria-hidden="true" {}
+                        "Your account"
+                    }
+                }
+                li class="nav-end" {
+                    a href="/admin" data-nav="to-panel" { "Admin panel" }
+                }
+            }
+        }
+    }
+}
+
+/// The button that opens the navigation named `target`; its label follows the open state.
+fn menu_button(target: &str) -> Markup {
+    html! {
+        button class="menu-button" type="button" data-kind="secondary" popovertarget=(target) {
+            span class="when-closed" { "Menu" }
+            span class="when-open" { "Close" }
+        }
+    }
+}
+
+/// The site header: the brand and the menu button in the site bar, then the navigation or,
+/// on the card, its note.
+fn header(layout: &str, nav: Nav<'_>) -> Markup {
+    let (menu, list) = match nav {
+        Nav::None | Nav::Account { admin: false } => (None, None),
+        Nav::Panel { current, owner } => (Some("panel-nav"), Some(panel_nav(current, owner))),
+        Nav::Account { admin: true } => (Some("account-nav"), Some(account_nav())),
+    };
+    html! {
+        header.site data-brand {
+            div.site-bar {
+                (brand(layout))
+                @if let Some(target) = menu {
+                    (menu_button(target))
+                }
+            }
+            @if let Some(list) = list {
+                (list)
+            }
+            @if layout == "card" {
+                p.site-note { "Doorward decides who reaches which MCP server and which tool, and keeps a record of every call." }
+            }
+        }
     }
 }
 
@@ -67,14 +167,12 @@ pub fn page_with(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) }
-                link rel="stylesheet" href="/assets/doorward.css";
+                link rel="preload" as="font" type="font/woff2" href="/assets/fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2" crossorigin;
+                link rel="preload" as="font" type="font/woff2" href="/assets/fonts/atkinson-hyperlegible-mono-latin-wght-normal.woff2" crossorigin;
+                link rel="stylesheet" href=(stylesheet_href());
             }
             body data-layout=(layout) {
-                header.site data-brand {
-                    div.site-bar {
-                        (brand(layout))
-                    }
-                }
+                (header(layout, data.nav))
                 main data-page=(kind)
                     data-lockdown=[data.lockdown]
                     data-redirect-host=[data.redirect_host]
@@ -156,9 +254,22 @@ pub fn not_found_link() -> Response {
     )
 }
 
-/// The plain 404 answer.
-pub fn not_found() -> Response {
+/// The bare 404 that programs get: no page, no body.
+pub fn not_found_bare() -> Response {
     StatusCode::NOT_FOUND.into_response()
+}
+
+/// The page for an address that leads nowhere.
+pub fn not_found() -> Response {
+    page(
+        StatusCode::NOT_FOUND,
+        "not-found",
+        "Page not found",
+        html! {
+            h1 { "Page not found" }
+            p { "This address does not lead anywhere in Doorward." }
+        },
+    )
 }
 
 /// The 500 page; the failure is written to standard error first.
@@ -296,6 +407,45 @@ mod tests {
                 .expect("a brand");
             assert_eq!(brand.text().collect::<String>(), "Doorward");
         }
+    }
+
+    #[tokio::test]
+    async fn the_head_preloads_both_fonts_before_the_stylesheet() {
+        let doc =
+            Html::parse_document(&text_of(page(StatusCode::OK, "login", "T", html! {})).await);
+        let links: Vec<(String, String, String, bool)> = doc
+            .select(&Selector::parse("head > link").expect("selector"))
+            .map(|link| {
+                let attr = |name: &str| link.value().attr(name).unwrap_or_default().to_owned();
+                (
+                    attr("rel"),
+                    attr("as"),
+                    attr("href"),
+                    link.value().attr("crossorigin").is_some(),
+                )
+            })
+            .collect();
+        let font = |file: &str| {
+            (
+                "preload".to_owned(),
+                "font".to_owned(),
+                format!("/assets/fonts/{file}"),
+                true,
+            )
+        };
+        assert_eq!(
+            links,
+            vec![
+                font("atkinson-hyperlegible-next-latin-wght-normal.woff2"),
+                font("atkinson-hyperlegible-mono-latin-wght-normal.woff2"),
+                (
+                    "stylesheet".to_owned(),
+                    String::new(),
+                    stylesheet_href().to_owned(),
+                    false,
+                ),
+            ]
+        );
     }
 
     #[tokio::test]

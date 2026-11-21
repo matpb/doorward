@@ -442,10 +442,11 @@ async fn the_current_section_is_marked_once() {
     for shot in covered(&s).await {
         let doc = Html::parse_document(&shot.page.body);
         let marks = all(doc.root_element(), "span.nav-mark");
-        if shot.current.is_empty() {
+        let navigated = !all(doc.root_element(), "body > header.site[data-brand] nav").is_empty();
+        if shot.current.is_empty() || !navigated {
             assert!(
                 marks.is_empty(),
-                "{} has no current section and must hold no span.nav-mark",
+                "{} has no navigation in its header and must hold no span.nav-mark",
                 shot.name
             );
             continue;

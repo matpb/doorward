@@ -17,7 +17,7 @@ use crate::proxy::catalog::{self, RefreshError};
 use crate::proxy::upstream::{self, TargetError};
 use crate::servers::{self, Draft, Refusal, Scope, SecretChange, Server, Settings, UserChoice};
 use crate::web::{
-    FormFields, MainData, SessionUser, VerifiedForm, Viewer, forbidden, form_page, form_page_with,
+    FormFields, MainData, SessionUser, VerifiedForm, Viewer, forbidden, form_page_with,
     internal_error, not_found, redirect, ui,
 };
 
@@ -420,10 +420,12 @@ async fn servers_page(
 ) -> Response {
     match state.db.call(|conn| list_in(conn)).await {
         Ok(rows) => {
-            let nav = panel_nav(viewer, "/admin/servers");
-            form_page(viewer, status, "servers", "Servers", |csrf| {
+            let data = MainData {
+                nav: panel_nav(viewer, "/admin/servers"),
+                ..MainData::default()
+            };
+            form_page_with(viewer, status, "servers", "Servers", &data, |csrf| {
                 html! {
-                    (nav)
                     (servers_body(csrf, &rows, draft, refusal))
                 }
             })
@@ -453,13 +455,12 @@ async fn server_page(
     {
         Ok((users, tools)) => {
             let data = MainData {
+                nav: panel_nav(viewer, "/admin/servers"),
                 lockdown: Some(&server.lockdown),
                 ..MainData::default()
             };
-            let nav = panel_nav(viewer, "/admin/servers");
             form_page_with(viewer, status, "server", "Server", &data, |csrf| {
                 html! {
-                    (nav)
                     (server_body(csrf, server, draft, &users, &tools, refusal))
                 }
             })

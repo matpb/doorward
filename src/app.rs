@@ -168,7 +168,7 @@ fn routes(state: AppState) -> Router {
             get(oauth::connected::get_disconnect_link).post(oauth::connected::post_disconnect_link),
         )
         .nest("/admin", admin::router(state.clone()))
-        .fallback(|| async { StatusCode::NOT_FOUND })
+        .fallback(|| async { web::not_found() })
         .layer(middleware::from_fn_with_state(
             state.clone(),
             web::limit::pages_by_address,
@@ -180,6 +180,7 @@ fn routes(state: AppState) -> Router {
     let api = Router::new()
         .route("/healthz", get(healthz))
         .route("/assets/doorward.css", get(web::stylesheet))
+        .route("/assets/fonts/{name}", get(web::font))
         .route(
             "/.well-known/oauth-authorization-server",
             get(oauth::metadata::authorization_server),

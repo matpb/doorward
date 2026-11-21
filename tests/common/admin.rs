@@ -284,7 +284,7 @@ pub async fn activity_with_details(
     } else {
         format!("/admin/activity?{query}")
     };
-    let selector = Selector::parse("li[data-kind]").expect("static selector");
+    let selector = Selector::parse("li[data-kind], tr[data-kind]").expect("static selector");
     let detail = Selector::parse("p.detail").expect("static selector");
     let older = Selector::parse(r#"a[data-page-link="older"]"#).expect("static selector");
     let mut rows = Vec::new();

@@ -13,7 +13,8 @@ use crate::crypto::{CryptoError, Keys};
 use crate::db::{self, Db, DbError};
 use crate::mail::{self, Message};
 use crate::web::{
-    FormFields, SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, redirect,
+    FormFields, MainData, SessionUser, VerifiedForm, Viewer, forbidden, form_page_with,
+    internal_error, redirect,
 };
 
 use super::panel_nav;
@@ -342,10 +343,12 @@ fn mail_page(
     notice: Option<&str>,
     error: Option<&str>,
 ) -> Response {
-    let nav = panel_nav(viewer, "/admin/mail");
-    form_page(viewer, status, "mail", "Mail settings", |csrf| {
+    let data = MainData {
+        nav: panel_nav(viewer, "/admin/mail"),
+        ..MainData::default()
+    };
+    form_page_with(viewer, status, "mail", "Mail settings", &data, |csrf| {
         html! {
-            (nav)
             (mail_forms(csrf, view, refused, notice, error))
         }
     })

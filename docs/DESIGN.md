@@ -125,7 +125,7 @@ Browser pages:
   rotated at login. Every POST checks a CSRF token (pre-session token on login, setup,
   invite and reset forms) and the `Origin` header.
 - Headers on every page: `Content-Security-Policy: default-src 'none'; style-src 'self';
-  img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
+  img-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
   `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`,
   `Referrer-Policy: same-origin`. The consent page alone adds the redirect origin of the
   current request to `form-action`.

@@ -73,6 +73,26 @@ The other tests of this file check other settings and are not listed here.
 4. `oauth::consent::tests::a_confirmed_publisher_is_a_plain_line`: the document line of a
    client published by an https host is `p[data-client="document"]`, and no element with
    `data-notice` holds it. It is red before the change.
+5. `web::headers::tests`, statements 62 to 64: the page policy is the exact string with
+   `font-src 'self'`; `stylesheet_href()` is `/assets/doorward.css?v=` and the first 8 bytes
+   of the stylesheet's SHA-256 in hex; the stylesheet asked for by that version is cached
+   for a year, and any other query revalidates; each of the four fonts is `font/woff2`
+   cached for a year; any other font name is a bare 404. `web::page::tests::the_head_preloads_both_fonts_before_the_stylesheet`
+   (statement 64): the head holds the two font preloads, then the stylesheet link.
+6. `web::ui::tests::breakable_*`, statement 62 (identifiers): `breakable` breaks after
+   `_`, `/`, `?`, `&`, `=`, before `@` and before a `.` that a letter or digit follows; it
+   never breaks after the last character; it escapes `&`, `<`, `>` and `"` first.
+7. Rewritten for the new shell (statement 62): `admin::tests::html_pages_carry_the_browser_headers`
+   (the exact policy string now carries `font-src 'self'`);
+   `admin::tests::panel_and_mail_refuse_anonymous_and_plain_users` and
+   `admin::tests::unknown_server_and_user_ids_answer_404` (an unknown address answers 404
+   with the `not-found` page, not a bare 404); `oauth::tests_consent::the_policy_text_is_fixed_and_takes_one_form_target`
+   (the policy string with `font-src 'self'`); `oauth::tests_guard::another_users_client_is_a_plain_404_and_is_not_revoked`
+   (a browser-facing 404: the body is the `not-found` page, the status is still 404);
+   `paths_that_are_not_slugs_are_plain_404s` keeps its empty-body assertion, since its
+   404s are machine-facing and come from `not_found_bare()`;
+   `accounts::account::tests::the_panel_link_is_in_the_header_not_the_body` (replaces
+   `the_admin_link_is_left_out_for_a_plain_user`, which asserted the link in the body).
 
 ## s01_install.rs (statement 1)
 
@@ -83,6 +103,8 @@ The other tests of this file check other settings and are not listed here.
    `{"status":"ok"}` on `/healthz`; with the table `settings` renamed away it answers `503`
    with `{"status":"unavailable"}` and one line starts `doorward: health check failed: `;
    with the name restored it answers `200` again.
+3. `s01_unknown_path_is_404`: `GET /no/such/page` is 404 and its body is the `not-found`
+   page (`main[data-page="not-found"]`), statement 62. It was a bare 404 before the change.
 
 ## s02_first_owner.rs (statement 2)
 
@@ -899,9 +921,9 @@ stateless `tools/call` body for that tool, sent with `raw` and explicit headers.
 13. `every_panel_page_carries_the_navigation`: as the owner, each of `/admin`,
     `/admin/users`, one user page, `/admin/invitations`, `/admin/servers`, one server
     page, `/admin/rules`, `/admin/redirects`, `/admin/activity`, `/admin/mail` has one
-    `nav[data-nav="panel"]` first in `main`, its nine links in order, and one link with
-    `aria-current="page"`: the Users link on a user page, the Servers link on a server
-    page, the link of the section otherwise.
+    `nav[data-nav="panel"]` in the header and not in `main`, its nine links in order, the
+    first reading Overview, and one link with `aria-current="page"`: the Users link on a user
+    page, the Servers link on a server page, the link of the section otherwise.
 14. `an_admin_sees_no_mail_link`: a non-owner admin's `/admin/users` has the eight links
     without Mail.
 15. `a_plain_user_and_public_pages_get_no_navigation`: a plain user's 403 under
@@ -913,10 +935,8 @@ stateless `tools/call` body for that tool, sent with `raw` and explicit headers.
 17. `a_refused_form_keeps_the_navigation`: the owner's `/admin/servers` form with the slug
     `Not A Slug!` answers 400 with an error and still carries the navigation, with the
     Servers link current.
-18. `the_stylesheet_wraps_the_nav_row_and_long_text`: the served stylesheet has a rule for
-    `nav[data-nav="panel"] ul` with `display: flex`, `flex-wrap: wrap`, a `gap` and
-    `list-style: none`, and rules for `li`, `p`, `td` and `th` with
-    `overflow-wrap: anywhere`.
+18. `the_stylesheet_wraps_the_nav_row_and_long_text`: removed: replaced by s62_shell,
+    statement 62 (the navigation is a rail or a Menu sheet, not a wrapping row).
 
 ## s29_state_survives.rs (statement 29)
 
@@ -1621,18 +1641,12 @@ activity of allowed, denied and failed tool calls.
     one primary button reads Approve, Deny is secondary, the sentence "Approve only if you
     started this sign-in yourself." is present; on the local-client page `p.local-app` sits
     in `[data-notice="warning"]`. It is red before the change.
-12. `the_stylesheet_meets_contrast_and_size`: the stylesheet defines the fourteen theme
-    properties as six-digit hex values in `:root` and in the dark media block; the 13 text
-    pairs reach 4.5 to 1 in both themes; `--field-line` reaches 3 to 1 against `--bg` in both
-    themes, and the borders of `input`, `select` and `textarea` take it; `min-height: 2.75rem`
-    applies to `button`, `summary`, `nav[data-nav="panel"] a`, to inputs (not checkboxes) and
-    to `select`. It is red before the change.
+12. `the_stylesheet_meets_contrast_and_size`: removed: replaced by s62_shell, statement 63
+    (contrast of the new named colours, and the 36 and 44 px controls).
 13. `pages_carry_no_inline_style`: no covered page holds ` style=` or `<style`. It passes
     before the change, since no page carries one today; it guards the restyle.
-14. `the_current_tab_is_marked_by_the_stylesheet`: the stylesheet holds a rule with the
-    selector `nav[data-nav="panel"] a[aria-current="page"]` that declares
-    `border-bottom-color: var(--accent)`, `color: var(--ink)` and `font-weight: 600`, so the
-    current tab outranks `nav[data-nav="panel"] a`. It is red before the change.
+14. `the_current_tab_is_marked_by_the_stylesheet`: removed: replaced by s62_shell,
+    statement 62 (the current section is marked with one `span.nav-mark`).
 15. `a_registered_client_line_is_a_warning`: a registered client redirecting to
     `https://app.example.com/oauth/cb`, an address the allow list holds, has its
     `p[data-client="registered"]` directly inside `[data-notice="warning"]`. It is red before
@@ -1651,12 +1665,12 @@ activity of allowed, denied and failed tool calls.
 21. `every_src_and_href_is_a_same_site_path`: every `src` and `href` on every covered page
     starts with `/` and not `//`, so no page names an address outside the gateway. It passes
     before the change, since no page does; it guards statement 58.
-22. `the_stylesheet_loads_no_url_and_no_import`: the stylesheet, without its comments, holds
-    no `url(` and no `@import`. It passes before the change; it guards statement 58.
-23. `every_tone_has_a_marker_rule_with_content`: the stylesheet declares `content` in a rule
-    with the selector `.pill[data-tone="<tone>"]::before` for each of ok, bad, warn and muted,
-    the marker of statement 54. It passes before the change, since each marker is declared
-    today.
+22. `the_stylesheet_loads_no_url_and_no_import`: removed: replaced by s62_shell,
+    statement 64 (the stylesheet names its four fonts by `url()`, and the gateway serves them).
+23. `every_tone_has_a_marker_rule_with_content`: the stylesheet holds a rule whose selector
+    list contains `.state[data-tone="<tone>"]::before` for each of ok, bad, warn and muted,
+    the marker of statement 54. Rewritten for the `span.state` of the new markup, from
+    `.pill[data-tone="<tone>"]::before`.
 24. `every_post_form_carries_the_csrf_field`: on every covered page, each
     `form[method="post"]` holds an `input[name="csrf"]`. It passes before the change, since
     every form carries one today; it guards the anti-forgery rule of statement 33.
@@ -1719,8 +1733,8 @@ The conversion is guarded by `the_oklch_conversion_matches_known_colours`.
    Servers and Activity and `nav-end` on Your account, and the admin's list has no Mail. It is
    red before the change.
 4. `the_current_section_is_marked_once`: each covered page holds exactly one `span.nav-mark`
-   (aria-hidden), inside the link to its section, which is the only link with `aria-current`;
-   pages with no section hold none. It is red before the change.
+   (aria-hidden), inside the link to its section, which is the only link with `aria-current`.
+   A page whose header holds no `nav` (a plain user's account page) holds no `span.nav-mark`.
 5. `the_account_page_holds_its_own_navigation`: the owner's and an admin's account pages hold
    `nav#account-nav[data-nav="account"][aria-label="Account"]` in the header, with `Your account`
    as the current link and `li.nav-end > a[href="/admin"][data-nav="to-panel"]`;

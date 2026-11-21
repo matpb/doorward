@@ -5,7 +5,7 @@ use maud::{Markup, html};
 
 use crate::app::AppState;
 use crate::oauth::connected::{self, Connected};
-use crate::web::{Viewer, form_page, internal_error, redirect};
+use crate::web::{MainData, Nav, Viewer, form_page_with, internal_error, redirect};
 
 pub async fn get_account(State(state): State<AppState>, viewer: Viewer) -> Response {
     let Some(user) = viewer.user.as_ref() else {
@@ -29,25 +29,22 @@ pub fn account_page(
     let Some(user) = viewer.user.as_ref() else {
         return redirect("/login");
     };
-    form_page(viewer, status, "account", "Your account", |csrf| {
-        account_body(csrf, &user.email, viewer.is_admin(), error, clients)
+    let data = MainData {
+        nav: Nav::Account {
+            admin: viewer.is_admin(),
+        },
+        ..MainData::default()
+    };
+    form_page_with(viewer, status, "account", "Your account", &data, |csrf| {
+        account_body(csrf, &user.email, error, clients)
     })
 }
 
-fn account_body(
-    csrf: &str,
-    email: &str,
-    admin: bool,
-    error: Option<&str>,
-    clients: &[Connected],
-) -> Markup {
+fn account_body(csrf: &str, email: &str, error: Option<&str>, clients: &[Connected]) -> Markup {
     html! {
         div.stack {
             div.page-head {
                 h1 { "Your account" }
-                @if admin {
-                    a href="/admin" data-nav="to-panel" { "Admin panel" }
-                }
             }
             p.lede { "Signed in as " (email) }
             section.card {
@@ -107,9 +104,9 @@ mod tests {
 
     use super::*;
 
-    /// The account body as a fragment, for an owner or a plain user with `clients`.
-    fn body(admin: bool, clients: &[Connected]) -> Html {
-        let markup = account_body("token", "bob@example.com", admin, None, clients);
+    /// The account body as a fragment, with `clients` connected.
+    fn body(clients: &[Connected]) -> Html {
+        let markup = account_body("token", "bob@example.com", None, clients);
         Html::parse_fragment(&markup.into_string())
     }
 
@@ -135,13 +132,9 @@ mod tests {
 
     #[test]
     fn the_page_is_a_stack_of_a_head_a_lede_and_two_cards() {
-        let doc = body(true, &[]);
+        let doc = body(&[]);
         assert_eq!(count(&doc, "div.stack > div.page-head > h1"), 1);
         assert_eq!(text(&doc, "div.page-head > h1"), "Your account");
-        assert_eq!(
-            text(&doc, "div.page-head > a[data-nav=\"to-panel\"]"),
-            "Admin panel"
-        );
         assert_eq!(text(&doc, "p.lede"), "Signed in as bob@example.com");
         assert_eq!(count(&doc, "div.stack > section.card"), 2);
         assert_eq!(
@@ -151,10 +144,10 @@ mod tests {
     }
 
     #[test]
-    fn the_admin_link_is_left_out_for_a_plain_user() {
-        let doc = body(false, &[]);
+    fn the_panel_link_is_in_the_header_not_the_body() {
+        let doc = body(&[]);
+        assert_eq!(count(&doc, r#"a[data-nav="to-panel"]"#), 0);
         assert_eq!(count(&doc, "div.page-head a"), 0);
-        assert_eq!(count(&doc, "div.page-head > h1"), 1);
     }
 
     #[test]
@@ -164,7 +157,7 @@ mod tests {
             client_name: "Claude Code".to_owned(),
             server: "demo".to_owned(),
         }];
-        let doc = body(false, &clients);
+        let doc = body(&clients);
         assert_eq!(
             count(
                 &doc,
@@ -192,7 +185,7 @@ mod tests {
 
     #[test]
     fn the_password_fields_sit_in_a_fields_grid_inside_a_card() {
-        let doc = body(false, &[]);
+        let doc = body(&[]);
         assert_eq!(
             count(&doc, "section.card div.fields > div > input[type=password]"),
             2

@@ -16,10 +16,10 @@ pub use cookies::{
     with_cookie,
 };
 pub use form::{FormFields, VerifiedForm};
-pub use headers::{content_security_policy, security_headers, stylesheet};
+pub use headers::{content_security_policy, font, security_headers, stylesheet, stylesheet_href};
 pub use page::{
-    MainData, busy, forbidden, form_page, form_page_with, internal_error, not_found,
-    not_found_link, page, page_with, redirect,
+    MainData, Nav, busy, forbidden, form_page, form_page_with, internal_error, not_found,
+    not_found_bare, not_found_link, page, page_with, redirect,
 };
 pub use viewer::{Role, SessionUser, Viewer};
 

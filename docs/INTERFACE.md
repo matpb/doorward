@@ -221,7 +221,7 @@ Anonymous: `303 /login`. Signed in without the owner or admin role: `403`
 `/admin/mail/test`) are for the owner alone and answer an admin `403` as well: whoever
 controls outgoing mail can read every password reset link.
 
-Every full page of the panel (status 200, and the 400 pages that re-render a form) starts `main` with `nav[data-nav="panel"]`, labelled `aria-label="Admin"`: the links Admin, Users, Invitations, Servers, Rules, Redirects, Activity, Mail (owner only) and Your account, the section shown marked `aria-current="page"`. `/account` links to `/admin` with `a[data-nav="to-panel"]` for an owner or admin.
+Every full page of the panel (status 200, and the 400 pages that re-render a form) carries its navigation in the page header, not in `main`: `nav#panel-nav[data-nav="panel"][aria-label="Admin"][popover]` after `div.site-bar`, with a `button.menu-button[popovertarget="panel-nav"]` in the site bar. The links are Overview, Users, Invitations, Servers, Rules, Redirects, Activity, Mail (owner only) and Your account, in that order; the section shown is marked `aria-current="page"` with a `span.nav-mark`. `/account` carries `nav#account-nav[data-nav="account"]` in its header, with Your account marked and, for an owner or admin, `li.nav-end > a[href="/admin"][data-nav="to-panel"]` reading Admin panel. A plain user's account page has no navigation and no Menu button.
 
 | Route | Fields | Outcome |
 |---|---|---|

@@ -1457,8 +1457,8 @@ async fn a_fetch_that_answers_at_once_is_used() {
 
 #[test]
 fn the_policy_text_is_fixed_and_takes_one_form_target() {
-    let standard = "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; \
-                    frame-ancestors 'none'; base-uri 'none'";
+    let standard = "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; \
+                    form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
     assert_eq!(content_security_policy(None), standard);
     assert_eq!(
         content_security_policy(Some("https://a.example.com")),

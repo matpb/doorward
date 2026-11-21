@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::app::AppState;
 use crate::servers::valid_slug;
-use crate::web::not_found;
+use crate::web::not_found_bare;
 
 /// The slug the combined endpoint is published under.
 const COMBINED_SLUG: &str = "mcp";
@@ -23,7 +23,7 @@ pub async fn protected_resource(
     Path(slug): Path<String>,
 ) -> Response {
     if slug != COMBINED_SLUG && !valid_slug(&slug) {
-        return not_found();
+        return not_found_bare();
     }
     Json(resource_document(&state.config.public_url, &slug)).into_response()
 }

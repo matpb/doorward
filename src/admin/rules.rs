@@ -11,7 +11,8 @@ use crate::audit::{self, Event};
 use crate::proxy::catalog;
 use crate::servers::{self, ServerRef};
 use crate::web::{
-    SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, redirect, ui,
+    MainData, SessionUser, VerifiedForm, Viewer, forbidden, form_page_with, internal_error,
+    redirect, ui,
 };
 
 use super::panel_nav;
@@ -330,10 +331,12 @@ async fn rules_page(
         .await;
     match loaded {
         Ok((rules, users, server_list, tools)) => {
-            let nav = panel_nav(viewer, "/admin/rules");
-            form_page(viewer, status, "rules", "Rules", |csrf| {
+            let data = MainData {
+                nav: panel_nav(viewer, "/admin/rules"),
+                ..MainData::default()
+            };
+            form_page_with(viewer, status, "rules", "Rules", &data, |csrf| {
                 html! {
-                    (nav)
                     (rules_body(csrf, &rules, &users, &server_list, &tools, refused))
                 }
             })

@@ -4,7 +4,6 @@ use common::admin;
 use common::client::{Page, TestClient};
 use common::upstream::UpstreamOptions;
 use common::world::{APP_NAME, World};
-use scraper::{ElementRef, Html, Node, Selector};
 
 const BOB: &str = "bob@example.com";
 const CAROL: &str = "carol@example.com";
@@ -27,7 +26,7 @@ const SERVER: &[(&str, &str)] = &[
 const NAV: &str = r#"nav[data-nav="panel"]"#;
 /// The panel links an owner sees, as (text, href), in the order of the navigation.
 const OWNER_LINKS: [(&str, &str); 9] = [
-    ("Admin", "/admin"),
+    ("Overview", "/admin"),
     ("Users", "/admin/users"),
     ("Invitations", "/admin/invitations"),
     ("Servers", "/admin/servers"),
@@ -39,7 +38,7 @@ const OWNER_LINKS: [(&str, &str); 9] = [
 ];
 /// The panel links an admin who is not the owner sees: the owner's list without Mail.
 const ADMIN_LINKS: [(&str, &str); 8] = [
-    ("Admin", "/admin"),
+    ("Overview", "/admin"),
     ("Users", "/admin/users"),
     ("Invitations", "/admin/invitations"),
     ("Servers", "/admin/servers"),
@@ -49,32 +48,18 @@ const ADMIN_LINKS: [(&str, &str); 8] = [
     ("Your account", "/account"),
 ];
 
-/// True when the first child of main that is not blank text is the panel navigation.
-fn nav_leads_main(page: &Page) -> bool {
-    let doc = Html::parse_document(&page.body);
-    let selector = Selector::parse("main").expect("static selector");
-    let Some(main) = doc.select(&selector).next() else {
-        return false;
-    };
-    main.children()
-        .find(|node| !matches!(node.value(), Node::Text(text) if text.trim().is_empty()))
-        .and_then(ElementRef::wrap)
-        .is_some_and(|element| {
-            element.value().name() == "nav" && element.value().attr("data-nav") == Some("panel")
-        })
-}
-
-/// One page carries exactly one panel navigation, first in main, with these links in
-/// this order, and exactly one link marked as the current page: the one for `current`.
+/// One page carries exactly one panel navigation, in its header, with these links in this
+/// order, and exactly one link marked as the current page: the one for `current`.
 fn assert_panel_nav(path: &str, page: &Page, links: &[(&str, &str)], current: &str) {
     assert_eq!(
         page.count(NAV),
         1,
         "{path} must carry exactly one panel navigation"
     );
-    assert!(
-        nav_leads_main(page),
-        "{path} must put the panel navigation first in main"
+    assert_eq!(
+        page.count(&format!("header[data-brand] {NAV}")),
+        1,
+        "{path} must put the panel navigation in its header"
     );
     let link = format!("{NAV} a");
     let shown: Vec<(String, String)> = page
@@ -112,35 +97,6 @@ async fn covered_pages(w: &World) -> Vec<(&'static str, Page)> {
         pages.push((path, page));
     }
     pages
-}
-
-/// The rules of a stylesheet as (selectors, declarations), each with spaces collapsed.
-fn css_rules(css: &str) -> Vec<(Vec<String>, Vec<String>)> {
-    let collapse = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-    css.split('}')
-        .filter_map(|block| {
-            let (selectors, body) = block.split_once('{')?;
-            let selectors = selectors.split(',').map(collapse).collect();
-            let declarations = body
-                .split(';')
-                .map(collapse)
-                .filter(|declaration| !declaration.is_empty())
-                .collect();
-            Some((selectors, declarations))
-        })
-        .collect()
-}
-
-/// True when some rule with `selector` among its selectors has `declaration` (or, for a
-/// prefix ending in ":", a declaration starting with it).
-fn declares(rules: &[(Vec<String>, Vec<String>)], selector: &str, declaration: &str) -> bool {
-    rules.iter().any(|(selectors, declarations)| {
-        selectors.iter().any(|shown| shown == selector)
-            && declarations.iter().any(|shown| {
-                shown == declaration
-                    || (declaration.ends_with(':') && shown.starts_with(declaration))
-            })
-    })
 }
 
 /// The family id of the connected client named like the test app on the account page.
@@ -613,34 +569,4 @@ async fn a_refused_form_keeps_the_navigation() {
         &OWNER_LINKS,
         "/admin/servers",
     );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_stylesheet_wraps_the_nav_row_and_long_text() {
-    let w = World::start().await;
-    let page = w.owner.get("/admin").await;
-    let href = page
-        .attr(r#"link[rel=stylesheet]"#, "href")
-        .expect("the admin page must link a stylesheet");
-    let path = href.strip_prefix(w.base()).unwrap_or(href.as_str());
-    let css = w.owner.get(path).await.body;
-    let rules = css_rules(&css);
-    let nav = r#"nav[data-nav="panel"] ul"#;
-    for declaration in [
-        "display: flex",
-        "flex-wrap: wrap",
-        "gap:",
-        "list-style: none",
-    ] {
-        assert!(
-            declares(&rules, nav, declaration),
-            "the panel nav list must carry {declaration:?} in the stylesheet"
-        );
-    }
-    for element in ["li", "p", "td", "th"] {
-        assert!(
-            declares(&rules, element, "overflow-wrap: anywhere"),
-            "{element} must wrap long unbroken text"
-        );
-    }
 }

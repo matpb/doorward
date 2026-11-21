@@ -286,14 +286,11 @@ async fn panel_and_mail_refuse_anonymous_and_plain_users() {
         );
     }
     let missing = anon.get("/admin/nothing-here").await;
+    assert_eq!(missing.status, 404, "an unknown admin path must answer 404");
     assert_eq!(
-        missing.status, 404,
-        "an unknown admin path must be a plain 404"
-    );
-    assert_eq!(
-        missing.kind(),
-        None,
-        "an unknown admin path has no page kind"
+        missing.kind().as_deref(),
+        Some("not-found"),
+        "an unknown admin path answers the not-found page"
     );
 
     let mut plain = sign_in(&base, PLAIN).await;
@@ -329,7 +326,7 @@ async fn html_pages_carry_the_browser_headers() {
     let expected = [
         (
             "content-security-policy",
-            "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+            "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
         ),
         ("x-frame-options", "DENY"),
         ("x-content-type-options", "nosniff"),
@@ -2249,7 +2246,11 @@ async fn unknown_server_and_user_ids_answer_404() {
     let (_base, mut owner) = owner_gateway(dir.path()).await;
     let plain = owner.get("/admin/servers/999").await;
     assert_eq!(plain.status, 404);
-    assert_eq!(plain.kind(), None, "an unknown server is a plain 404");
+    assert_eq!(
+        plain.kind().as_deref(),
+        Some("not-found"),
+        "an unknown server answers the not-found page"
+    );
     assert_eq!(owner.get("/admin/servers/abc").await.status, 404);
     let update = owner
         .submit(

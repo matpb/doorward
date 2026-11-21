@@ -16,7 +16,7 @@ use crate::rate::{Class, Key, Open};
 use crate::report;
 use crate::servers::valid_slug;
 use crate::web::limit::{hold, now_nanos, peer_of};
-use crate::web::{client_address, not_found};
+use crate::web::{client_address, not_found_bare};
 
 const ACCESS_PREFIX: &str = "dw_at_";
 const TOKEN_BODY_LEN: usize = 43;
@@ -222,10 +222,10 @@ pub async fn server_path(
     request: Request,
 ) -> Response {
     let Some(Path(slug)) = slug else {
-        return not_found();
+        return not_found_bare();
     };
     if !valid_slug(&slug) {
-        return not_found();
+        return not_found_bare();
     }
     let peer = peer_of(request.extensions());
     match check(&state, peer, request.headers(), Target::Server(&slug)).await {

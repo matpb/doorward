@@ -396,7 +396,7 @@ class ActivityRows(html.parser.HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
-        if tag == "li" and "data-kind" in values:
+        if tag in ("li", "tr") and "data-kind" in values:
             self.current = {
                 "time": values.get("data-time") or "",
                 "kind": values.get("data-kind") or "",
@@ -414,7 +414,7 @@ class ActivityRows(html.parser.HTMLParser):
     def handle_endtag(self, tag):
         if tag == "p":
             self.in_detail = False
-        elif tag == "li":
+        elif tag in ("li", "tr"):
             self.current = None
 
     def handle_data(self, data):

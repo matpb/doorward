@@ -41,7 +41,11 @@ async fn s01_unknown_path_is_404() {
         .await
         .expect("request");
     assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
-    assert_eq!(response.text().await.expect("body"), "");
+    let body = response.text().await.expect("body");
+    assert!(
+        body.contains(r#"<main data-page="not-found">"#),
+        "an unknown path answers the not-found page"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

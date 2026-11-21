@@ -14,7 +14,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::app::AppState;
 use crate::db::{Db, DbError};
-use crate::web::{Viewer, internal_error, page};
+use crate::web::{MainData, Viewer, internal_error, page_with};
 
 use super::panel_nav;
 
@@ -407,12 +407,16 @@ fn activity_page(
     let offset = offset_of(number);
     let end = offset.saturating_add(i64::try_from(rows.len()).unwrap_or(i64::MAX));
     let older = end < listing.total;
-    page(
+    let data = MainData {
+        nav: panel_nav(viewer, "/admin/activity"),
+        ..MainData::default()
+    };
+    page_with(
         StatusCode::OK,
         "activity",
         "Activity",
+        &data,
         html! {
-            (panel_nav(viewer, "/admin/activity"))
             div.stack {
                 h1 { "Activity" }
                 (filter_form(user, server, &listing.users, &listing.servers))

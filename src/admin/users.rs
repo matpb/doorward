@@ -15,8 +15,8 @@ use crate::policy;
 use crate::proxy::catalog;
 use crate::servers::{self, Scope, ServerChoice};
 use crate::web::{
-    Role, SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, not_found, page,
-    redirect, ui,
+    MainData, Role, SessionUser, VerifiedForm, Viewer, forbidden, form_page_with, internal_error,
+    not_found, page_with, redirect, ui,
 };
 
 use super::panel_nav;
@@ -461,10 +461,12 @@ async fn user_page(
         .await;
     match loaded {
         Ok((choices, tools)) => {
-            let nav = panel_nav(viewer, "/admin/users");
-            form_page(viewer, status, "user", "User", |csrf| {
+            let data = MainData {
+                nav: panel_nav(viewer, "/admin/users"),
+                ..MainData::default()
+            };
+            form_page_with(viewer, status, "user", "User", &data, |csrf| {
                 html! {
-                    (nav)
                     (user_body(csrf, viewer, &user, &choices, &tools, error))
                 }
             })
@@ -601,12 +603,16 @@ fn user_body(
 }
 
 fn users_page(viewer: &Viewer, rows: &[Listed]) -> Response {
-    page(
+    let data = MainData {
+        nav: panel_nav(viewer, "/admin/users"),
+        ..MainData::default()
+    };
+    page_with(
         StatusCode::OK,
         "users",
         "Users",
+        &data,
         html! {
-            (panel_nav(viewer, "/admin/users"))
             div.stack {
                 h1 { "Users" }
                 section.card {

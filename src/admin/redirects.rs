@@ -11,8 +11,8 @@ use crate::audit::{self, Event};
 use crate::oauth::policy::{self, Entry};
 use crate::oauth::uri::{self, Redirect};
 use crate::web::{
-    SessionUser, VerifiedForm, Viewer, forbidden, form_page, internal_error, not_found, redirect,
-    ui,
+    MainData, SessionUser, VerifiedForm, Viewer, forbidden, form_page_with, internal_error,
+    not_found, redirect, ui,
 };
 
 use super::panel_nav;
@@ -175,10 +175,12 @@ async fn redirects_page(
         .await;
     match loaded {
         Ok((entries, blocked)) => {
-            let nav = panel_nav(viewer, "/admin/redirects");
-            form_page(viewer, status, "redirects", "Redirects", |csrf| {
+            let data = MainData {
+                nav: panel_nav(viewer, "/admin/redirects"),
+                ..MainData::default()
+            };
+            form_page_with(viewer, status, "redirects", "Redirects", &data, |csrf| {
                 html! {
-                    (nav)
                     (redirects_body(csrf, &entries, &blocked, refused))
                 }
             })

@@ -20,7 +20,7 @@ use maud::{Markup, html};
 use rusqlite::{Connection, params};
 
 use crate::app::AppState;
-use crate::web::{Viewer, forbidden, internal_error, page, redirect};
+use crate::web::{MainData, Nav, Viewer, forbidden, internal_error, page_with, redirect};
 
 /// The newest activity rows the overview shows.
 const LATEST_ROWS: i64 = 5;
@@ -82,14 +82,17 @@ async fn panel(viewer: Viewer, State(state): State<AppState>) -> Response {
     let counted = state.db.call(move |conn| counts_in(conn, now)).await;
     let latest = activity::latest(&state.db, LATEST_ROWS).await;
     match (counted, latest) {
-        (Ok(counts), Ok(latest)) => page(
+        (Ok(counts), Ok(latest)) => page_with(
             StatusCode::OK,
             "admin",
-            "Admin",
+            "Overview",
+            &MainData {
+                nav: panel_nav(&viewer, "/admin"),
+                ..MainData::default()
+            },
             html! {
-                (panel_nav(&viewer, "/admin"))
                 div.stack {
-                    h1 { "Admin" }
+                    h1 { "Overview" }
                     (counts_markup(&counts))
                     section.card data-latest-activity {
                         h2 { "Latest activity" }
@@ -149,34 +152,11 @@ fn count_link(key: &str, href: &str, label: &str, value: i64) -> Markup {
     }
 }
 
-/// The links of the panel navigation: label, path, and whether only the owner sees it.
-const PANEL_LINKS: [(&str, &str, bool); 9] = [
-    ("Admin", "/admin", false),
-    ("Users", "/admin/users", false),
-    ("Invitations", "/admin/invitations", false),
-    ("Servers", "/admin/servers", false),
-    ("Rules", "/admin/rules", false),
-    ("Redirects", "/admin/redirects", false),
-    ("Activity", "/admin/activity", false),
-    ("Mail", "/admin/mail", true),
-    ("Your account", "/account", false),
-];
-
-/// The navigation of every page of the panel, first in main. `current` is the path of the
-/// section shown; its link is marked as the current page.
-fn panel_nav(viewer: &Viewer, current: &str) -> Markup {
-    html! {
-        nav data-nav="panel" aria-label="Admin" {
-            ul {
-                @for (label, href, owner_only) in PANEL_LINKS {
-                    @if !owner_only || viewer.is_owner() {
-                        li {
-                            a href=(href) aria-current=[(href == current).then_some("page")] { (label) }
-                        }
-                    }
-                }
-            }
-        }
+/// The header navigation of a panel page; `current` is the path of the section shown.
+pub(super) fn panel_nav(viewer: &Viewer, current: &'static str) -> Nav<'static> {
+    Nav::Panel {
+        current,
+        owner: viewer.is_owner(),
     }
 }
 
