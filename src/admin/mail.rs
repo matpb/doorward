@@ -52,6 +52,10 @@ pub struct Plan {
     connection: Vec<(&'static str, String)>,
 }
 
+/// The stored secret is dropped when a connection setting changes and none is posted.
+const SECRET_HINT: &str =
+    "Leave empty to keep the stored one. If you change the connection settings, enter it again.";
+
 /// A refused post answers 400; a failed seal answers 500.
 enum PlanError {
     Invalid(&'static str),
@@ -458,7 +462,7 @@ fn provider_disclosure(
 /// The notice of a refused save sits first in its form, when that form was posted.
 fn smtp_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
     let tls = shown(view, "mail.smtp_tls");
-    let password_note = Note::Hint("Empty keeps the stored one.");
+    let password_note = Note::Hint(SECRET_HINT);
     let password_described = password_note.describer("smtp-password");
     let tls_note = Note::Hint("Off sends the password and the mail unencrypted.");
     let tls_described = tls_note.describer("smtp-tls");
@@ -536,7 +540,7 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
 }
 
 fn resend_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
-    let key_note = Note::Hint("Empty keeps the stored one.");
+    let key_note = Note::Hint(SECRET_HINT);
     let key_described = key_note.describer("resend-key");
     let base_note = Note::Hint("Empty means the provider's own address.");
     let base_described = base_note.describer("resend-base");
@@ -588,7 +592,7 @@ fn resend_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
 }
 
 fn mailgun_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
-    let key_note = Note::Hint("Empty keeps the stored one.");
+    let key_note = Note::Hint(SECRET_HINT);
     let key_described = key_note.describer("mailgun-key");
     let base_note = Note::Hint("Empty means the provider's own address.");
     let base_described = base_note.describer("mailgun-base");

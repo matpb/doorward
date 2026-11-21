@@ -834,7 +834,7 @@ fn server_body(
             }
             div.part-body.flow {
                 @if let Some(message) = &server.catalog_error {
-                    p.notice data-notice="error" { (message) }
+                    (ui::notice("error", html! { p { (message) } }))
                 }
                 @if tools.is_empty() {
                     p.muted { "No tools yet. Refresh the list to fetch them from the upstream." }
