@@ -772,6 +772,133 @@ async fn the_201st_live_request_evicts_the_oldest() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_shown_request_outlives_the_never_shown_ones_when_the_table_is_full() {
+    let gw = start_with(fixed(Ok(document(None))), |config| {
+        config.limits.oauth_burst = 1000;
+        config.limits.auth_requests_max = 3;
+    })
+    .await;
+    let bob = signed_in(&gw, "bob@example.com");
+    let combined = format!("{}/mcp", gw.base);
+    let shown = bob.request_of(DOC_ID, REDIRECT, &combined).await;
+    let page = bob.get(&format!("/oauth/consent?req={shown}")).await;
+    assert_eq!(page.status, 200, "the owner sees the consent page");
+    let browser = anonymous(&gw);
+    let mut first_unshown = None;
+    for index in 0..3 {
+        let req = browser.request_of(DOC_ID, REDIRECT, &combined).await;
+        if index == 0 {
+            first_unshown = Some(req);
+        }
+    }
+    let first_unshown = first_unshown.expect("the first anonymous request");
+    assert_eq!(
+        count(
+            &gw.db,
+            &format!(
+                "SELECT COUNT(*) FROM auth_requests WHERE id_hash = '{}'",
+                token_hash(&first_unshown)
+            )
+        ),
+        0,
+        "the oldest request that was never shown is evicted"
+    );
+    assert_eq!(
+        count(
+            &gw.db,
+            &format!(
+                "SELECT COUNT(*) FROM auth_requests WHERE id_hash = '{}'",
+                token_hash(&shown)
+            )
+        ),
+        1,
+        "the request whose page was shown is kept"
+    );
+    let csrf = bob.csrf().await;
+    let approved = bob
+        .post(
+            "/oauth/consent",
+            &[
+                ("csrf", csrf.as_str()),
+                ("req", shown.as_str()),
+                ("decision", "approve"),
+            ],
+        )
+        .await;
+    assert!(
+        approved.query("code").is_some(),
+        "the shown request is still approvable"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shown_request_outlives_the_never_shown_ones_of_its_address() {
+    let gw = start_with(fixed(Ok(document(None))), |config| {
+        config.limits.oauth_burst = 1000;
+    })
+    .await;
+    let bob = signed_in(&gw, "bob@example.com");
+    let combined = format!("{}/mcp", gw.base);
+    let shown = bob.request_of(DOC_ID, REDIRECT, &combined).await;
+    let page = bob.get(&format!("/oauth/consent?req={shown}")).await;
+    assert_eq!(page.status, 200, "the owner sees the consent page");
+    let browser = anonymous(&gw);
+    let mut first_unshown = None;
+    for index in 0..200 {
+        let req = browser.request_of(DOC_ID, REDIRECT, &combined).await;
+        if index == 0 {
+            first_unshown = Some(req);
+        }
+    }
+    let first_unshown = first_unshown.expect("the first anonymous request");
+    assert_eq!(
+        count(
+            &gw.db,
+            &format!(
+                "SELECT COUNT(*) FROM auth_requests WHERE id_hash = '{}'",
+                token_hash(&first_unshown)
+            )
+        ),
+        0,
+        "the oldest request of the address that was never shown is evicted"
+    );
+    assert_eq!(
+        count(
+            &gw.db,
+            &format!(
+                "SELECT COUNT(*) FROM auth_requests WHERE id_hash = '{}'",
+                token_hash(&shown)
+            )
+        ),
+        1,
+        "the request whose page was shown is kept"
+    );
+    assert_eq!(
+        count(
+            &gw.db,
+            "SELECT COUNT(*) FROM auth_requests WHERE address = '127.0.0.1'"
+        ),
+        200,
+        "one address holds at most 200 live requests"
+    );
+    let csrf = bob.csrf().await;
+    let approved = bob
+        .post(
+            "/oauth/consent",
+            &[
+                ("csrf", csrf.as_str()),
+                ("req", shown.as_str()),
+                ("decision", "approve"),
+            ],
+        )
+        .await;
+    assert!(
+        approved.query("code").is_some(),
+        "the shown request is still approvable"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_second_identical_blocked_redirect_writes_no_second_row() {
     let gw = start(fixed(Ok(document(None)))).await;
     let browser = anonymous(&gw);

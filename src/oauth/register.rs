@@ -194,7 +194,12 @@ fn plain_name(text: &str) -> Result<String, Refusal> {
 
 /// False for control characters and for the invisible and direction characters.
 pub(crate) fn is_plain_text(text: &str) -> bool {
-    text.chars().all(|c| !c.is_control() && !is_invisible(c))
+    text.chars().all(is_plain_char)
+}
+
+/// False for a control character and for an invisible or direction character.
+pub(crate) fn is_plain_char(c: char) -> bool {
+    !c.is_control() && !is_invisible(c)
 }
 
 /// The soft hyphen, the invisible joiners and fillers, the direction marks and the line separators.

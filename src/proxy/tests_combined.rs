@@ -384,8 +384,10 @@ async fn names_that_are_not_plain_are_absent_and_not_logged() {
         );
     }
     assert!(
-        notes.iter().any(|line| line.contains("left 4")),
-        "the log must count the four left out tools, got {notes:?}"
+        notes
+            .iter()
+            .any(|line| line == "tools/list: logged left 2 tool(s) out"),
+        "the list counts the two names the catalog kept and it leaves out, got {notes:?}"
     );
 }
 

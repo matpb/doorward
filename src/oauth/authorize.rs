@@ -402,7 +402,7 @@ struct NewRequest {
 }
 
 /// Stores a request in one immediate transaction; expired rows go, a full address drops its oldest,
-/// and the oldest rows go when the table would exceed `max`.
+/// and the oldest rows go when the table would exceed `max`, rows never shown first.
 fn store_in(
     conn: &mut Connection,
     new: &NewRequest,
@@ -418,7 +418,8 @@ fn store_in(
     evict_oldest(&tx, &new.address)?;
     tx.execute(
         "DELETE FROM auth_requests WHERE rowid IN (SELECT rowid FROM auth_requests \
-         ORDER BY created_at, rowid LIMIT MAX((SELECT COUNT(*) FROM auth_requests) - ?1 + 1, 0))",
+         ORDER BY (shown_at IS NOT NULL), created_at, rowid \
+         LIMIT MAX((SELECT COUNT(*) FROM auth_requests) - ?1 + 1, 0))",
         params![max],
     )?;
     tx.execute(
@@ -441,7 +442,7 @@ fn store_in(
     tx.commit()
 }
 
-/// When an address already holds 200 live requests, its oldest one is deleted.
+/// When an address already holds 200 live requests, its oldest never-shown request is deleted.
 fn evict_oldest(tx: &Transaction<'_>, address: &str) -> rusqlite::Result<()> {
     let live: i64 = tx.query_row(
         "SELECT COUNT(*) FROM auth_requests WHERE address = ?1",
@@ -451,7 +452,7 @@ fn evict_oldest(tx: &Transaction<'_>, address: &str) -> rusqlite::Result<()> {
     if live >= LIVE_PER_ADDRESS {
         tx.execute(
             "DELETE FROM auth_requests WHERE rowid = (SELECT rowid FROM auth_requests \
-             WHERE address = ?1 ORDER BY created_at, rowid LIMIT 1)",
+             WHERE address = ?1 ORDER BY (shown_at IS NOT NULL), created_at, rowid LIMIT 1)",
             params![address],
         )?;
     }

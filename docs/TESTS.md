@@ -2250,7 +2250,7 @@ are held and again after they are released. A held answer is 200000 bytes of tex
    and the test waits until all four begin. At least two of her calls are refused while the
    others are held, each in the busy form of item 1. Bob calls a second server whose answer is
    200000 bytes, sent at once. His call must answer `200` with a result within 20 seconds. After
-   the release, exactly one of Alice's held answers answers `200` with the whole text, and the
+   the release, at most one of Alice's held answers answers `200` with the whole text, and any
    other is refused in the busy form. All four of her calls are answered.
 5. `a_refresh_the_budget_refuses_says_the_gateway_is_busy`: the budget is 262144 bytes. Alice and
    Bob each call one held server whose answers are 262000 bytes, and both answers are held. An

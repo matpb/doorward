@@ -347,6 +347,15 @@ L. Added after the owner's auth review
     password or an admin disabling the account starts the count again. Every answer of the
     token, registration, discovery, health and MCP routes carries
     `X-Content-Type-Options: nosniff`. An upstream secret is never printed by a debug format.
+78. What a signed-in user or a server can make the gateway store is bounded. A tool name in
+    an activity row is cut to 128 characters, and each control, invisible or
+    direction-changing character in it is stored as U+FFFD. One user's refused tool calls
+    write at most 100 rows in any hour, over all servers and both endpoints; the hundredth
+    row says that later ones are not recorded, and the answers to the client do not change.
+    A server's tool list keeps at most 1000 tools and no tool whose name holds such a
+    character; the refresh still succeeds and logs how many tools were left out. When the
+    table of sign-ins in progress is full, or one address holds 200 of them, a request whose
+    consent page has never been shown is dropped before one that has.
 
 ### Proof
 
@@ -402,6 +411,9 @@ into the test harness. In addition:
 - 77: `tests/s77_account_abuse.rs`, which moves the test clock and restarts the gateway to
   run the housekeeping sweep; the sweep's unit tests in `src/accounts/housekeeping.rs`; and
   the debug format tests in `src/servers.rs`.
+- 78: `tests/s78_bounded_writes.rs` on both endpoints and with a fake upstream that lists
+  1200 tools, the unit tests in `src/audit.rs` and `src/proxy/catalog.rs`, and the two
+  eviction tests in `src/oauth/tests_consent.rs`.
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
   a walk-through of every page in a real browser at 390 px and desktop width in both
   themes, which also measures control heights and sideways scroll; screenshots kept under

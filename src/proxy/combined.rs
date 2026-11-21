@@ -642,7 +642,7 @@ async fn deny_call(
         detail: detail.to_owned(),
         duration_ms: Some(i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX)),
     };
-    if let Err(err) = audit::record_now(state, event).await {
+    if let Err(err) = audit::record_refused_now(state, event).await {
         report::failure("activity row", &err);
     }
     answer::unknown_tool(id, name)

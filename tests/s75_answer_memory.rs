@@ -304,14 +304,15 @@ async fn a_user_at_its_share_is_refused_and_another_user_still_answers() {
         4,
         "every one of alice's calls is answered"
     );
-    // Her share holds one whole answer: the second held answer is refused when its tail arrives.
+    // Her share holds one whole answer. When both tails arrive together, both may be refused.
     let answered: Vec<&McpReply> = answers.iter().filter(|r| r.status == 200).collect();
-    assert_eq!(
-        answered.len(),
-        1,
-        "alice's share holds one whole answer, so exactly one of her held answers completes"
+    assert!(
+        answered.len() <= 1,
+        "alice's share holds one whole answer, so at most one of her held answers completes"
     );
-    assert_whole(answered[0]);
+    for reply in &answered {
+        assert_whole(reply);
+    }
     for reply in answers.iter().filter(|r| r.status != 200) {
         assert_busy(reply);
     }

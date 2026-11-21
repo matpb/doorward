@@ -288,6 +288,13 @@ also carries `data-time` (RFC 3339) and, for tool calls, `data-duration-ms`. The
 call's row is one of the phrases listed under `/mcp`. The `user`
 and `server` filters take ids. Newest rows come first.
 
+A row's `tool` is stored cut to 128 characters, and each character of it that is not plain text
+(a control, invisible or direction character) is stored as U+FFFD. A user has at most 100 `deny`
+`tool_call` rows in any 3600 seconds, over all servers and both `/{slug}` and `/mcp`: the 100th row
+of that hour ends with the detail ` Further refused calls by this user are not recorded for up to an
+hour.`, and later refused calls write no row. The answer to the client does not change. `allow`
+rows are never limited.
+
 Activity kinds: `tool_call`, `login`, `login_failed`, `invitation`, `reset`, `admin_change`,
 `client_connected`, `client_disconnected`, `redirect_blocked`, `mail_failed`,
 `tool_appeared`, `owner_created` (setup made the owner), `unlock` (`doorward unlock`, detail
@@ -490,6 +497,12 @@ Relayed `tools/list` results keep the upstream's fields, minus denied tools and 
 without a text name, on every page, and under the
 stateless rules always carry `"cacheScope": "private"`, because the list is per user.
 
+The stored tool catalog of a server keeps the first 1000 tools of the upstream's list, in its order.
+A tool whose name is not plain text (a control, invisible or direction character) is not kept, nor
+is one past the 1000; a refresh that leaves any out writes one stderr line,
+`doorward: tools/list of {slug}: {n} tools left out (names not plain text, or more than 1000 tools)`,
+and succeeds. Empty, repeated and longer-than-128-byte names are dropped without that line.
+
 Session rules: an `Mcp-Session-Id` from a relayed `initialize` response is recorded for
 (user, token family, server). GET with a recorded session is relayed when the upstream
 answers `200` with an event stream; an upstream `405` is relayed as `405` with no body;
@@ -678,7 +691,9 @@ password change waits `block_minutes * 60`, a registration past `dcr_per_hour` w
 The limiter keeps at most `rate_table_keys` keys, IPv6 at most half of them; past that,
 new keys of a class share one bucket and no live key is dropped. Counts live in memory and
 start empty after a restart. `auth_requests` keeps at most `auth_requests_max` rows: a new
-request past that removes the oldest.
+request past that removes the oldest request whose consent page was never shown, and the oldest
+shown one only when every row was shown. An address's 200 live requests are evicted in the same
+order.
 
 ## Test harness (`tests/common`)
 

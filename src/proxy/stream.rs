@@ -337,7 +337,12 @@ pub(super) async fn record(ctx: &Owned, tool: &str, decision: &str, outcome: &st
         detail: detail.to_owned(),
         duration_ms: Some(elapsed),
     };
-    if let Err(err) = audit::record_now(&ctx.state, event).await {
+    let written = if decision == "deny" {
+        audit::record_refused_now(&ctx.state, event).await
+    } else {
+        audit::record_now(&ctx.state, event).await
+    };
+    if let Err(err) = written {
         report::failure("activity row", &err);
     }
 }

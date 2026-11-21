@@ -19,10 +19,12 @@ use super::upstream::{
 use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::mcp::json::parse_strict;
+use crate::oauth::register::is_plain_text;
 use crate::report;
 
 const MAX_PAGES: usize = 20;
 const NAME_LIMIT: usize = 128;
+const TOOL_LIMIT_PER_SERVER: usize = 1000;
 const APPEARED_LIMIT: usize = 50;
 pub(super) const STATELESS: &str = "2026-07-28";
 pub(super) const SESSION: &str = "2025-11-25";
@@ -546,20 +548,40 @@ pub fn definitions(conn: &Connection, server_id: i64) -> rusqlite::Result<Vec<(S
     rows.collect()
 }
 
-/// The tools the catalog keeps, as name and definition text: named, at most 128 bytes, first of each name.
-fn kept_tools(tools: &[Value]) -> Vec<(&str, String)> {
+/// The tools the catalog keeps, as name and definition text: named, at most 128 bytes, plain text,
+/// first of each name, the first 1000. Also returns how many were left out by text or limit.
+fn kept_tools(tools: &[Value]) -> (Vec<(&str, String)>, usize) {
     let mut seen: HashSet<&str> = HashSet::new();
     let mut kept = Vec::new();
+    let mut left_out = 0;
     for tool in tools {
         let Some(name) = tool.get("name").and_then(Value::as_str) else {
             continue;
         };
-        if name.is_empty() || name.len() > NAME_LIMIT || !seen.insert(name) {
+        if name.is_empty() || name.len() > NAME_LIMIT {
+            continue;
+        }
+        if !is_plain_text(name) {
+            left_out += 1;
+            continue;
+        }
+        if !seen.insert(name) {
+            continue;
+        }
+        if kept.len() == TOOL_LIMIT_PER_SERVER {
+            left_out += 1;
             continue;
         }
         kept.push((name, tool.to_string()));
     }
-    kept
+    (kept, left_out)
+}
+
+/// The stderr line of a refresh that left tools out.
+fn left_out_line(slug: &str, left_out: usize) -> String {
+    format!(
+        "doorward: tools/list of {slug}: {left_out} tools left out (names not plain text, or more than {TOOL_LIMIT_PER_SERVER} tools)"
+    )
 }
 
 /// Replaces the server's tools in one IMMEDIATE transaction and returns the names that were new.
@@ -576,7 +598,10 @@ pub fn replace(
         params![server_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
-    let kept = kept_tools(tools);
+    let (kept, left_out) = kept_tools(tools);
+    if left_out > 0 {
+        eprintln!("{}", left_out_line(&slug, left_out));
+    }
     let stored = definitions(&tx, server_id)?;
     let unchanged = clean
         && had_success
@@ -624,4 +649,62 @@ pub fn replace(
     }
     tx.commit()?;
     Ok(added)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tool(name: &str) -> Value {
+        json!({"name": name, "description": "fake tool"})
+    }
+
+    fn names_kept(tools: &[Value]) -> Vec<String> {
+        kept_tools(tools)
+            .0
+            .iter()
+            .map(|(name, _)| (*name).to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn the_tools_left_out_are_counted_for_the_text_and_the_limit() {
+        let mut tools = vec![tool("evil\u{202E}"), tool("ok")];
+        tools.extend((0..1001).map(|n| tool(&format!("t{n}"))));
+        assert_eq!(kept_tools(&tools).1, 3);
+        assert_eq!(kept_tools(&[tool("ok")]).1, 0);
+    }
+
+    #[test]
+    fn the_left_out_line_names_the_server_and_the_count() {
+        assert_eq!(
+            left_out_line("demo", 3),
+            "doorward: tools/list of demo: 3 tools left out (names not plain text, or more than 1000 tools)"
+        );
+    }
+
+    #[test]
+    fn a_name_with_a_direction_character_is_not_kept() {
+        let tools = [tool("ok"), tool("evil\u{202E}name"), tool("fine")];
+        assert_eq!(names_kept(&tools), ["ok", "fine"]);
+    }
+
+    #[test]
+    fn a_name_with_a_control_character_is_not_kept() {
+        let tools = [tool("bell\u{7}"), tool("fine")];
+        assert_eq!(names_kept(&tools), ["fine"]);
+    }
+
+    #[test]
+    fn the_first_thousand_kept_tools_are_kept_in_order() {
+        let tools: Vec<Value> = (0..1500).map(|n| tool(&format!("t{n}"))).collect();
+        let expected: Vec<String> = (0..1000).map(|n| format!("t{n}")).collect();
+        assert_eq!(names_kept(&tools), expected);
+    }
+
+    #[test]
+    fn an_ordinary_list_keeps_every_tool_and_the_first_of_each_name() {
+        let tools = [tool("echo"), tool("search"), tool("echo"), tool("")];
+        assert_eq!(names_kept(&tools), ["echo", "search"]);
+    }
 }
