@@ -13,6 +13,10 @@ use scraper::{Html, Selector};
 const BOB: &str = "bob@example.com";
 const DAVE: &str = "dave@example.com";
 const UNKNOWN_EMAIL: &str = "nobody.here@example.com";
+/// Stored addresses as a person might type them: spaced, in other capitals.
+const OWNER_TYPED: &str = " Owner@example.com ";
+const UNKNOWN_TYPED: &str = " Nobody.Here@example.com ";
+const DAVE_TYPED: &str = " Dave@example.com ";
 const TYPED_EMAIL: &str = "typed.person@example.org";
 const TYPED_HOST: &str = "typed.example.org";
 
@@ -443,39 +447,49 @@ async fn no_refusal_sends_back_a_secret() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refused_sign_in_reads_the_same_for_a_known_and_an_unknown_address() {
     let w = World::start().await;
-    let known = w.client().login(OWNER_EMAIL, "zq-same-7").await;
-    let unknown = w.client().login(UNKNOWN_EMAIL, "zq-same-7").await;
-    assert_eq!(known.status, 401, "the known account's refusal must be 401");
-    assert_eq!(
-        unknown.status, 401,
-        "the unknown account's refusal must be 401"
-    );
-    let known_csrf = known.csrf().expect("the sign-in page carries a csrf value");
-    let unknown_csrf = unknown
-        .csrf()
-        .expect("the sign-in page carries a csrf value");
-    let known_masked = known
-        .body
-        .replace(&known_csrf, "CSRF")
-        .replace(OWNER_EMAIL, "ADDRESS");
-    let unknown_masked = unknown
-        .body
-        .replace(&unknown_csrf, "CSRF")
-        .replace(UNKNOWN_EMAIL, "ADDRESS");
-    assert_eq!(
-        unknown_masked, known_masked,
-        "a refused sign-in must read the same for an unknown address as for a known one"
-    );
-    assert_eq!(
-        value(&known, "input#email").as_deref(),
-        Some(OWNER_EMAIL),
-        "the known address must come back"
-    );
-    assert_eq!(
-        value(&unknown, "input#email").as_deref(),
-        Some(UNKNOWN_EMAIL),
-        "the unknown address must come back"
-    );
+    let _dave = w.user(DAVE).await;
+    let dave_id = w.user_id(DAVE).await;
+    let disabled = admin::user_action(&w.owner, &dave_id, "disable").await;
+    assert_eq!(disabled.status, 303, "disabling dave must answer 303");
+    for (typed, stored) in [
+        (OWNER_TYPED, OWNER_EMAIL),
+        (UNKNOWN_TYPED, UNKNOWN_EMAIL),
+        (DAVE_TYPED, DAVE),
+    ] {
+        assert_eq!(
+            typed.trim().to_lowercase(),
+            stored,
+            "the typed spelling must be another spelling of the stored one"
+        );
+    }
+    // The known, the unknown and the disabled account, each with a wrong password; the disabled one also with the right one.
+    let answers = [
+        (OWNER_TYPED, "zq-same-7"),
+        (UNKNOWN_TYPED, "zq-same-7"),
+        (DAVE_TYPED, "zq-same-7"),
+        (DAVE_TYPED, PASSWORD),
+    ];
+    let mut masked = Vec::new();
+    for (typed, password) in answers {
+        let page = w.client().login(typed, password).await;
+        assert_eq!(
+            page.status, 401,
+            "a refused sign-in must answer 401 for {typed:?}"
+        );
+        assert_eq!(
+            value(&page, "input#email").as_deref(),
+            Some(typed),
+            "the address must come back as typed"
+        );
+        let csrf = page.csrf().expect("the sign-in page carries a csrf value");
+        masked.push(page.body.replace(&csrf, "CSRF").replace(typed, "ADDRESS"));
+    }
+    for (index, answer) in masked.iter().enumerate().skip(1) {
+        assert_eq!(
+            answer, &masked[0],
+            "answer {index} must read the same as the first, apart from the typed address"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -554,6 +568,266 @@ async fn an_overlong_value_is_not_sent_back() {
     assert!(
         !page.body.contains(&long_email),
         "the overlong address must not appear in the page"
+    );
+}
+
+/// The text of the first element matching `css`, after parsing the page.
+fn text_of(page: &Page, css: &str) -> String {
+    let doc = Html::parse_document(&page.body);
+    let found = elements(&doc, css);
+    assert_eq!(found.len(), 1, "{css} must match one element");
+    found[0].text().collect::<String>()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_server_form_sends_back_cleaned_values() {
+    let w = World::start().await;
+    let long_url = format!("https://example.com/{}", "a".repeat(481));
+    assert_eq!(long_url.chars().count(), 501);
+    let page = w
+        .owner
+        .submit(
+            "/admin/servers",
+            "/admin/servers",
+            &[
+                ("name", "Ty\u{7}ped"),
+                ("slug", "Bad Slug!"),
+                ("upstream_url", long_url.as_str()),
+            ],
+        )
+        .await;
+    assert_eq!(page.status, 400, "a bad path must be refused with 400");
+    assert!(
+        !page.body.contains('\u{7}'),
+        "the control character must not appear in the page"
+    );
+    assert_eq!(
+        value(&page, "input#server-name").as_deref(),
+        Some("Typed"),
+        "the name must come back without its control character"
+    );
+    assert_eq!(
+        value(&page, "input#server-url").unwrap_or_default(),
+        "",
+        "an address over 500 characters must render empty"
+    );
+
+    let (_upstream, demo) = w.upstream("demo", UpstreamOptions::default()).await;
+    let path = format!("/admin/servers/{demo}");
+    let page = w
+        .owner
+        .submit(
+            &path,
+            &path,
+            &[
+                ("name", "Ty\u{7}ped"),
+                ("slug", "Bad Slug!"),
+                ("upstream_url", long_url.as_str()),
+            ],
+        )
+        .await;
+    assert_eq!(
+        page.status, 400,
+        "a bad path on the edit form must be refused with 400"
+    );
+    assert!(
+        !page.body.contains('\u{7}'),
+        "the control character must not appear on the edit page"
+    );
+    assert_eq!(
+        value(&page, "input#server-url").unwrap_or_default(),
+        "",
+        "an address over 500 characters must render empty on the edit page"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_mail_secret_is_asked_for_again() {
+    const ASK_AGAIN: &str = "Enter it again: a secret is never sent back.";
+    const SMTP_HINT: &str = "Leave empty to keep the stored one. If you change the server, the port, the username or the TLS setting, enter it again.";
+    let w = World::start().await;
+
+    let page = w
+        .owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail",
+            &[
+                ("provider", "smtp"),
+                ("from", FROM),
+                ("smtp_host", TYPED_HOST),
+                ("smtp_port", "not-a-port"),
+                ("smtp_username", "typed-user"),
+                ("smtp_password", "zq-smtp-7"),
+                ("smtp_tls", "off"),
+            ],
+        )
+        .await;
+    assert_eq!(page.status, 400, "the smtp refusal must answer 400");
+    assert_eq!(text_of(&page, "p#smtp-password-hint"), ASK_AGAIN);
+    assert!(
+        value(&page, "input#smtp-password").is_none(),
+        "the secret must not come back"
+    );
+    assert!(
+        !page.body.contains("zq-smtp-7"),
+        "the secret must appear nowhere"
+    );
+
+    let page = w
+        .owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail",
+            &[
+                ("provider", "smtp"),
+                ("from", FROM),
+                ("smtp_host", TYPED_HOST),
+                ("smtp_port", "not-a-port"),
+                ("smtp_username", "typed-user"),
+                ("smtp_password", ""),
+                ("smtp_tls", "off"),
+            ],
+        )
+        .await;
+    assert_eq!(page.status, 400, "the smtp refusal must answer 400");
+    assert_eq!(text_of(&page, "p#smtp-password-hint"), SMTP_HINT);
+
+    let page = w
+        .owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail",
+            &[
+                ("provider", "resend"),
+                ("from", "gateway\u{7}@example.com"),
+                ("resend_api_key", "zq-resend-7"),
+                ("resend_base_url", ""),
+            ],
+        )
+        .await;
+    assert_eq!(page.status, 400, "the resend refusal must answer 400");
+    assert_eq!(text_of(&page, "p#resend-key-hint"), ASK_AGAIN);
+    assert!(
+        !page.body.contains("zq-resend-7"),
+        "the API key must appear nowhere"
+    );
+
+    let page = w
+        .owner
+        .submit(
+            "/admin/mail",
+            "/admin/mail",
+            &[
+                ("provider", "mailgun"),
+                ("from", "gateway\u{7}@example.com"),
+                ("mailgun_api_key", "zq-mailgun-7"),
+                ("mailgun_domain", "example.com"),
+                ("mailgun_base_url", ""),
+            ],
+        )
+        .await;
+    assert_eq!(page.status, 400, "the mailgun refusal must answer 400");
+    assert_eq!(text_of(&page, "p#mailgun-key-hint"), ASK_AGAIN);
+    assert!(
+        !page.body.contains("zq-mailgun-7"),
+        "the API key must appear nowhere"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_server_form_asks_for_the_secret_again() {
+    const ASK_AGAIN: &str = "Enter it again: a secret is never sent back.";
+    let w = World::start().await;
+
+    let page = w
+        .owner
+        .submit(
+            "/admin/servers",
+            "/admin/servers",
+            &[
+                ("name", "Typed"),
+                ("slug", "Bad Slug!"),
+                ("upstream_url", "http://127.0.0.1:9/"),
+                ("secret_header_name", "x-typed-header"),
+                ("secret_header_value", "zq-server-7"),
+            ],
+        )
+        .await;
+    assert_eq!(page.status, 400, "a bad path must be refused with 400");
+    assert_eq!(text_of(&page, "#secret-value-hint"), ASK_AGAIN);
+    assert!(
+        !page.body.contains("zq-server-7"),
+        "the secret must appear nowhere"
+    );
+
+    let page = w
+        .owner
+        .submit(
+            "/admin/servers",
+            "/admin/servers",
+            &[
+                ("name", "Typed"),
+                ("slug", "Bad Slug!"),
+                ("upstream_url", "http://127.0.0.1:9/"),
+                ("secret_header_name", "x-typed-header"),
+                ("secret_header_value", ""),
+            ],
+        )
+        .await;
+    assert_eq!(page.status, 400, "a bad path must be refused with 400");
+    assert_eq!(
+        text_of(&page, "#secret-value-hint"),
+        "Kept encrypted and never shown again."
+    );
+
+    let (_upstream, demo) = w.upstream("demo", UpstreamOptions::default()).await;
+    let path = format!("/admin/servers/{demo}");
+    let page = w
+        .owner
+        .submit(
+            &path,
+            &path,
+            &[
+                ("name", "Demo"),
+                ("slug", "Bad Slug!"),
+                ("upstream_url", "http://127.0.0.1:9/"),
+                ("secret_header_name", "x-typed-header"),
+                ("secret_header_value", "zq-server-8"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        page.status, 400,
+        "a bad path on the edit form must be refused with 400"
+    );
+    assert_eq!(text_of(&page, "#secret-value-hint"), ASK_AGAIN);
+    assert!(
+        !page.body.contains("zq-server-8"),
+        "the secret must appear nowhere on the edit page"
+    );
+
+    let page = w
+        .owner
+        .submit(
+            &path,
+            &path,
+            &[
+                ("name", "Demo"),
+                ("slug", "Bad Slug!"),
+                ("upstream_url", "http://127.0.0.1:9/"),
+                ("secret_header_name", "x-typed-header"),
+                ("secret_header_value", ""),
+            ],
+        )
+        .await;
+    assert_eq!(
+        page.status, 400,
+        "a bad path on the edit form must be refused with 400"
+    );
+    assert_eq!(
+        text_of(&page, "#secret-value-hint"),
+        "Stored, never shown again. Leave empty to keep it. If you change the upstream address, enter it again."
     );
 }
 

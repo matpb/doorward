@@ -50,7 +50,15 @@ enum Assigned {
 }
 
 pub async fn get_servers(viewer: Viewer, State(state): State<AppState>) -> Response {
-    servers_page(&state, &viewer, StatusCode::OK, &Draft::default(), None).await
+    servers_page(
+        &state,
+        &viewer,
+        StatusCode::OK,
+        &Draft::default(),
+        None,
+        false,
+    )
+    .await
 }
 
 pub async fn post_server(State(state): State<AppState>, form: VerifiedForm) -> Response {
@@ -62,8 +70,9 @@ pub async fn post_server(State(state): State<AppState>, form: VerifiedForm) -> R
                 &state,
                 &form.viewer,
                 StatusCode::BAD_REQUEST,
-                &draft,
+                &sent_back_draft(&draft),
                 Some(refusal),
+                secret_sent(&draft),
             )
             .await;
         }
@@ -84,8 +93,9 @@ pub async fn post_server(State(state): State<AppState>, form: VerifiedForm) -> R
                 &state,
                 &form.viewer,
                 StatusCode::BAD_REQUEST,
-                &draft,
+                &sent_back_draft(&draft),
                 Some(Refusal::Taken),
+                secret_sent(&draft),
             )
             .await
         }
@@ -105,7 +115,16 @@ pub async fn get_server(
     match load(&state, id).await {
         Ok(Some(server)) => {
             let draft = draft_of(&server);
-            server_page(&state, &viewer, StatusCode::OK, &server, &draft, None).await
+            server_page(
+                &state,
+                &viewer,
+                StatusCode::OK,
+                &server,
+                &draft,
+                None,
+                false,
+            )
+            .await
         }
         Ok(None) => not_found(),
         Err(err) => internal_error("server page", &err),
@@ -135,8 +154,9 @@ pub async fn post_update(
                 &form.viewer,
                 StatusCode::BAD_REQUEST,
                 &stored,
-                &draft,
+                &sent_back_draft(&draft),
                 Some(refusal),
+                secret_sent(&draft),
             )
             .await;
         }
@@ -158,8 +178,9 @@ pub async fn post_update(
                 &form.viewer,
                 StatusCode::BAD_REQUEST,
                 &stored,
-                &draft,
+                &sent_back_draft(&draft),
                 Some(Refusal::Taken),
+                secret_sent(&draft),
             )
             .await
         }
@@ -234,6 +255,24 @@ fn draft_from(fields: &FormFields) -> Draft {
         pass_resources: fields.get("pass_resources") == "on",
         pass_prompts: fields.get("pass_prompts") == "on",
     }
+}
+
+/// The draft as a refused form shows it again: plain values through `sent_back`, the secret value dropped.
+fn sent_back_draft(draft: &Draft) -> Draft {
+    Draft {
+        name: ui::sent_back(&draft.name, ui::SENT_BACK_LIMIT),
+        slug: ui::sent_back(&draft.slug, ui::SENT_BACK_LIMIT),
+        upstream_url: ui::sent_back(&draft.upstream_url, ui::SENT_BACK_LIMIT),
+        secret_header_name: ui::sent_back(&draft.secret_header_name, ui::SENT_BACK_LIMIT),
+        secret_header_value: String::new(),
+        pass_resources: draft.pass_resources,
+        pass_prompts: draft.pass_prompts,
+    }
+}
+
+/// Whether a posted draft carried a secret header value, which a refused form must ask for again.
+fn secret_sent(draft: &Draft) -> bool {
+    !draft.secret_header_value.is_empty()
 }
 
 /// The draft of a stored server. The secret value is never part of a draft.
@@ -403,6 +442,7 @@ async fn assignment_refused(state: &AppState, viewer: &Viewer, id: i64) -> Respo
                 &server,
                 &draft,
                 Some(Refusal::UnknownUser),
+                false,
             )
             .await
         }
@@ -411,13 +451,14 @@ async fn assignment_refused(state: &AppState, viewer: &Viewer, id: i64) -> Respo
     }
 }
 
-/// The list page, with the create form filled from `draft`.
+/// The list page, with the create form filled from `draft`. `secret_sent` asks for the secret again.
 async fn servers_page(
     state: &AppState,
     viewer: &Viewer,
     status: StatusCode,
     draft: &Draft,
     refusal: Option<Refusal>,
+    secret_sent: bool,
 ) -> Response {
     match state.db.call(|conn| list_in(conn)).await {
         Ok(rows) => {
@@ -427,7 +468,7 @@ async fn servers_page(
             };
             form_page_with(viewer, status, "servers", "Servers", &data, |csrf| {
                 html! {
-                    (servers_body(csrf, &rows, draft, refusal))
+                    (servers_body(csrf, &rows, draft, refusal, secret_sent))
                 }
             })
         }
@@ -435,7 +476,7 @@ async fn servers_page(
     }
 }
 
-/// One server's page: its settings, its users and its delete form.
+/// One server's page: its settings, its users and its delete form. `secret_sent` asks for the secret again.
 async fn server_page(
     state: &AppState,
     viewer: &Viewer,
@@ -443,6 +484,7 @@ async fn server_page(
     server: &Server,
     draft: &Draft,
     refusal: Option<Refusal>,
+    secret_sent: bool,
 ) -> Response {
     let id = server.id;
     match state
@@ -462,7 +504,7 @@ async fn server_page(
             };
             form_page_with(viewer, status, "server", "Server", &data, |csrf| {
                 html! {
-                    (server_body(csrf, server, draft, &users, &tools, refusal))
+                    (server_body(csrf, server, draft, &users, &tools, refusal, secret_sent))
                 }
             })
         }
@@ -678,7 +720,13 @@ fn refused_field(refusal: Refusal) -> Option<(&'static str, &'static str)> {
     }
 }
 
-fn servers_body(csrf: &str, rows: &[ServerRow], draft: &Draft, refusal: Option<Refusal>) -> Markup {
+fn servers_body(
+    csrf: &str,
+    rows: &[ServerRow],
+    draft: &Draft,
+    refusal: Option<Refusal>,
+    secret_sent: bool,
+) -> Markup {
     html! {
         div.page-head {
             h1 { "Servers" }
@@ -722,7 +770,7 @@ fn servers_body(csrf: &str, rows: &[ServerRow], draft: &Draft, refusal: Option<R
             div.part-body {
                 form.flow method="post" action="/admin/servers" {
                     input type="hidden" name="csrf" value=(csrf);
-                    (settings_fields(draft, refusal, false))
+                    (settings_fields(draft, refusal, false, secret_sent))
                     div.form-actions {
                         button type="submit" data-kind="primary" { "Add server" }
                     }
@@ -754,6 +802,7 @@ fn server_body(
     users: &[UserChoice],
     tools: &[String],
     refusal: Option<Refusal>,
+    secret_sent: bool,
 ) -> Markup {
     let path = format!("/admin/servers/{}", server.id);
     let note = lockdown_note(&server.lockdown);
@@ -790,7 +839,7 @@ fn server_body(
             div.part-body {
                 form.flow method="post" action=(path) {
                     input type="hidden" name="csrf" value=(csrf);
-                    (settings_fields(draft, refusal, server.has_secret))
+                    (settings_fields(draft, refusal, server.has_secret, secret_sent))
                     div.form-actions {
                         button type="submit" data-kind="primary" { "Save server" }
                     }
@@ -893,8 +942,13 @@ fn user_check(user: &UserChoice) -> Markup {
 }
 
 /// The settings inputs of the create and the edit form; `stored` lets the edit form remove a secret.
-/// A refusal shows under the field it is about, and the secret value is never filled in.
-fn settings_fields(draft: &Draft, refusal: Option<Refusal>, stored: bool) -> Markup {
+/// `secret_sent` replaces the secret's hint with the request to enter it again.
+fn settings_fields(
+    draft: &Draft,
+    refusal: Option<Refusal>,
+    stored: bool,
+    secret_sent: bool,
+) -> Markup {
     let refused = refusal.and_then(refused_field).map(|(id, _)| id);
     let message = refusal.map(|refusal| refusal.to_string());
     let error_on = |id: &str| message.as_deref().filter(|_| refused == Some(id));
@@ -924,7 +978,20 @@ fn settings_fields(draft: &Draft, refusal: Option<Refusal>, stored: bool) -> Mar
             "Remove the stored secret",
             None,
         );
+        let stored_hint = if secret_sent {
+            ui::RE_ENTER_HINT
+        } else {
+            "Stored, never shown again. Leave empty to keep it. If you change the upstream address, enter it again."
+        };
         match value_error {
+            Some(text) if secret_sent => ui::Note::Below(
+                "secret-value-error secret-value-hint",
+                html! {
+                    (ui::field_error("secret-value-error", text))
+                    (ui::hint("secret-value-hint", stored_hint))
+                    (remove)
+                },
+            ),
             Some(text) => ui::Note::Below(
                 "secret-value-error",
                 html! { (ui::field_error("secret-value-error", text)) (remove) },
@@ -932,10 +999,21 @@ fn settings_fields(draft: &Draft, refusal: Option<Refusal>, stored: bool) -> Mar
             None => ui::Note::Below(
                 "secret-value-hint",
                 html! {
-                    (ui::hint("secret-value-hint", "Stored, never shown again. Leave empty to keep it. If you change the upstream address, enter it again."))
+                    (ui::hint("secret-value-hint", stored_hint))
                     (remove)
                 },
             ),
+        }
+    } else if secret_sent {
+        match value_error {
+            Some(text) => ui::Note::Below(
+                "secret-value-error secret-value-hint",
+                html! {
+                    (ui::field_error("secret-value-error", text))
+                    (ui::hint("secret-value-hint", ui::RE_ENTER_HINT))
+                },
+            ),
+            None => ui::Note::Hint(ui::RE_ENTER_HINT),
         }
     } else {
         ui::note_under(value_error, Some("Kept encrypted and never shown again."))

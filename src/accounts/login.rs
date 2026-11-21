@@ -175,7 +175,9 @@ fn login_page(
     })
 }
 
+/// The sign-in form. The `req` it carries is sent back only when it is a request id; sign-in ignores any other.
 fn login_form(csrf: &str, req: &str, email: Option<&str>, error: Option<&str>) -> Markup {
+    let req = if is_request_id(req) { req } else { "" };
     html! {
         h1 { "Sign in" }
         @if let Some(message) = error {
@@ -266,5 +268,25 @@ mod tests {
             .map(|element| element.text().collect())
             .collect();
         assert_eq!(errors, vec!["Wrong email or password.".to_owned()]);
+    }
+
+    /// The value the sign-in form's hidden `req` field carries when the form is made for `req`.
+    fn req_value(req: &str) -> String {
+        let doc = Html::parse_fragment(&login_form("token", req, None, None).into_string());
+        let field = Selector::parse(r#"input[name="req"]"#).expect("selector");
+        doc.select(&field)
+            .next()
+            .and_then(|element| element.value().attr("value"))
+            .unwrap_or("")
+            .to_owned()
+    }
+
+    #[test]
+    fn a_req_that_is_a_request_id_is_sent_back_and_any_other_is_not() {
+        let valid = format!("dw_rq_{}", "A".repeat(43));
+        assert_eq!(req_value(&valid), valid);
+        assert_eq!(req_value(&format!("dw_rq_{}", "A".repeat(42))), "");
+        assert_eq!(req_value("not-a-request-id"), "");
+        assert_eq!(req_value("\"><b>x"), "");
     }
 }

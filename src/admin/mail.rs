@@ -125,10 +125,15 @@ const POSTED_SETTINGS: [(&str, &str); 8] = [
     ("mail.mailgun_base_url", "mailgun_base_url"),
 ];
 
-/// What a refused post held, shown again: the plain settings it posted and the test address it typed.
+/// The secret fields of the provider forms, by posted name.
+const SECRET_FIELDS: [&str; 3] = ["smtp_password", "resend_api_key", "mailgun_api_key"];
+
+/// What a refused post held, shown again: the plain settings it posted, the test address it typed,
+/// and the secret fields it filled in, which are asked for again.
 struct Typed {
     settings: View,
     to: Option<String>,
+    secrets: Vec<&'static str>,
 }
 
 /// What one save writes: the plain values, the sealed secret when one was posted, and the connection fields.
@@ -190,6 +195,10 @@ pub async fn post_mail(State(state): State<AppState>, form: VerifiedForm) -> Res
             let typed = Typed {
                 settings: posted_settings(&form.fields),
                 to: None,
+                secrets: SECRET_FIELDS
+                    .into_iter()
+                    .filter(|field| !form.fields.get(field).is_empty())
+                    .collect(),
             };
             return match load_view(&state.db).await {
                 Ok(view) => mail_page(
@@ -243,6 +252,7 @@ pub async fn post_test(State(state): State<AppState>, form: VerifiedForm) -> Res
                 form.fields.get("to"),
                 ui::EMAIL_SENT_BACK_LIMIT,
             )),
+            secrets: Vec::new(),
         };
         return test_answer(
             &state,
@@ -596,6 +606,10 @@ fn mail_forms(
         _ => view,
     };
     let to = typed.and_then(|typed| typed.to.as_deref());
+    // A refused provider whose post carried its secret asks for the secret again.
+    let entered_again = |name: &str, field: &str| {
+        refusal_of(name).is_some() && typed.is_some_and(|typed| typed.secrets.contains(&field))
+    };
     let unplaced = refused.and_then(|refusal| refusal.provider.is_none().then_some(refusal.reason));
     let current = in_use.and_then(title_of).unwrap_or("none");
     html! {
@@ -607,9 +621,9 @@ fn mail_forms(
             (ui::refused(None, message, None))
         }
         div.providers {
-            (provider_disclosure("smtp", "Raw SMTP", in_use == Some("smtp"), open == Some("smtp"), smtp_form(csrf, shown_in("smtp"), refusal_of("smtp"))))
-            (provider_disclosure("resend", "Resend", in_use == Some("resend"), open == Some("resend"), resend_form(csrf, shown_in("resend"), refusal_of("resend"))))
-            (provider_disclosure("mailgun", "Mailgun", in_use == Some("mailgun"), open == Some("mailgun"), mailgun_form(csrf, shown_in("mailgun"), refusal_of("mailgun"))))
+            (provider_disclosure("smtp", "Raw SMTP", in_use == Some("smtp"), open == Some("smtp"), smtp_form(csrf, shown_in("smtp"), refusal_of("smtp"), entered_again("smtp", "smtp_password"))))
+            (provider_disclosure("resend", "Resend", in_use == Some("resend"), open == Some("resend"), resend_form(csrf, shown_in("resend"), refusal_of("resend"), entered_again("resend", "resend_api_key"))))
+            (provider_disclosure("mailgun", "Mailgun", in_use == Some("mailgun"), open == Some("mailgun"), mailgun_form(csrf, shown_in("mailgun"), refusal_of("mailgun"), entered_again("mailgun", "mailgun_api_key"))))
         }
         section.part aria-labelledby="test-title" {
             div.part-head {
@@ -686,7 +700,7 @@ fn provider_disclosure(
 }
 
 /// The notice of a refused save sits first in its form, when that form was posted.
-fn smtp_form(csrf: &str, view: &View, refusal: Option<Refused>) -> Markup {
+fn smtp_form(csrf: &str, view: &View, refusal: Option<Refused>, entered_again: bool) -> Markup {
     let tls = shown(view, "mail.smtp_tls");
     let from_error = error_on(refusal, "from");
     let from_described = described_by("smtp-from", from_error, None);
@@ -697,7 +711,11 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<Refused>) -> Markup {
     let username_error = error_on(refusal, "smtp_username");
     let username_described = described_by("smtp-username", username_error, None);
     let password_error = error_on(refusal, "smtp_password");
-    let password_hint = Some(SMTP_SECRET_HINT);
+    let password_hint = Some(if entered_again {
+        ui::RE_ENTER_HINT
+    } else {
+        SMTP_SECRET_HINT
+    });
     let password_described = described_by("smtp-password", password_error, password_hint);
     let tls_error = error_on(refusal, "smtp_tls");
     let tls_hint = Some("Off sends the password and the mail unencrypted.");
@@ -787,11 +805,15 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<Refused>) -> Markup {
     }
 }
 
-fn resend_form(csrf: &str, view: &View, refusal: Option<Refused>) -> Markup {
+fn resend_form(csrf: &str, view: &View, refusal: Option<Refused>, entered_again: bool) -> Markup {
     let from_error = error_on(refusal, "from");
     let from_described = described_by("resend-from", from_error, None);
     let key_error = error_on(refusal, "resend_api_key");
-    let key_hint = Some(RESEND_SECRET_HINT);
+    let key_hint = Some(if entered_again {
+        ui::RE_ENTER_HINT
+    } else {
+        RESEND_SECRET_HINT
+    });
     let key_described = described_by("resend-key", key_error, key_hint);
     let base_error = error_on(refusal, "resend_base_url");
     let base_hint = Some("Empty means the provider's own address.");
@@ -847,11 +869,15 @@ fn resend_form(csrf: &str, view: &View, refusal: Option<Refused>) -> Markup {
     }
 }
 
-fn mailgun_form(csrf: &str, view: &View, refusal: Option<Refused>) -> Markup {
+fn mailgun_form(csrf: &str, view: &View, refusal: Option<Refused>, entered_again: bool) -> Markup {
     let from_error = error_on(refusal, "from");
     let from_described = described_by("mailgun-from", from_error, None);
     let key_error = error_on(refusal, "mailgun_api_key");
-    let key_hint = Some(MAILGUN_SECRET_HINT);
+    let key_hint = Some(if entered_again {
+        ui::RE_ENTER_HINT
+    } else {
+        MAILGUN_SECRET_HINT
+    });
     let key_described = described_by("mailgun-key", key_error, key_hint);
     let domain_error = error_on(refusal, "mailgun_domain");
     let domain_described = described_by("mailgun-domain", domain_error, None);

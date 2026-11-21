@@ -1522,7 +1522,10 @@ tests of `s06_passwords.rs` keep their meaning: there every request comes from o
    password at once: exactly ten are 401 and the rest 429; the right password is then 429.
 8. `an_unknown_account_is_throttled_like_a_real_one`: the same sequence as test 1 for an
    email with no account gives the same statuses and the same bodies, once the csrf value
-   and each side's own typed address (sent back since statement 71) are masked.
+   and each side's own typed address (sent back since statement 71) are masked. The owner
+   and the unknown address are typed in another spelling than stored (` Owner@example.com `,
+   ` Nobody@example.com `, with spaces and capitals in the local part). Each 401 body holds its typed address
+   exactly once, each 429 body none, and the rest of the body does not hold the stored spelling.
 9. `a_reset_lifts_every_block_of_the_account`: `account_ceiling = 8`; five wrong at A and
    three at B, so A is blocked and the ceiling is reached;
    after a reset by mail the new password answers 303 at A without waiting.
@@ -2024,9 +2027,11 @@ The owner's rule and redirect forms use `W.upstream("demo", ..)` and `W.user(bob
    the password change, the reset and the invitation acceptance. Each password-type input
    renders with no `value` attribute, and the posted secret appears nowhere in the body. It
    passes before the change, since no secret was ever sent back.
-9. `a_refused_sign_in_reads_the_same_for_a_known_and_an_unknown_address`: the two bodies are
-   equal once the csrf values and the posted addresses are replaced by placeholders, and each
-   `input#email` holds its own address. The equality holds before the change; the echo is red.
+9. `a_refused_sign_in_reads_the_same_for_a_known_and_an_unknown_address`: the owner, an unknown
+   address and a disabled account (dave), typed with spaces and capitals, each refused with a
+   wrong password, and dave also with the right one: four `401` bodies that are equal once the
+   csrf value and each typed address are replaced by placeholders, each `input#email` holding
+   its own typed address. The equality holds before the change; the echo is red.
 10. `a_typed_value_with_markup_comes_back_escaped`: a host of `"><b>x` answers `400`, the input
     holds those characters, the page has no `b` element, and the attribute is escaped as
     `&quot;&gt;&lt;b&gt;x`. Red before the change.
@@ -2038,9 +2043,21 @@ The owner's rule and redirect forms use `W.upstream("demo", ..)` and `W.user(bob
 13. `a_limited_sign_in_sends_no_address_back`: the sixth wrong password from one address answers
     `429` with `input#email` holding no value. It passes before the change, which pins the limit
     page as it was.
+14. `a_refused_server_form_sends_back_cleaned_values`: a name with a bell character and a
+    501-character upstream address, on add and on edit, answer `400`; the page has no bell,
+    `input#server-name` holds `Typed`, and `input#server-url` is empty. Red before the change.
+15. `a_refused_mail_secret_is_asked_for_again`: for SMTP, Resend and Mailgun, a refused post that
+    carried the secret shows `Enter it again: a secret is never sent back.` as the hint under
+    the secret field, and the secret appears nowhere; a refused SMTP post without a secret shows
+    the usual hint. Red before the change.
+16. `a_refused_server_form_asks_for_the_secret_again`: on add and on edit, a refused post that
+    carried a secret header value shows the same sentence under the value; without one, the
+    usual hint (`Kept encrypted and never shown again.` on add, the stored-secret hint on edit).
+    Red before the change.
 
 The helper `sent_back` in `src/web/ui.rs` has in-crate tests for its limit, its counting of
-characters and its control characters: `a_sent_back_value_*`.
+characters and its control characters: `a_sent_back_value_*`. The sign-in form's hidden `req`
+has an in-crate test in `src/accounts/login.rs`, `a_req_that_is_a_request_id_is_sent_back_and_any_other_is_not`.
 
 ## Round 5: tests added and rewritten for the design changes
 

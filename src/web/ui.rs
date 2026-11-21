@@ -102,6 +102,9 @@ pub fn sent_back(value: &str, limit: usize) -> String {
     value.chars().filter(|c| !c.is_control()).collect()
 }
 
+/// The hint under a secret field when a refused post carried a secret, which is never sent back.
+pub const RE_ENTER_HINT: &str = "Enter it again: a secret is never sent back.";
+
 /// A boxed message. kind: "ok" | "warning" | "error".
 pub fn notice(kind: &str, body: Markup) -> Markup {
     html! {

@@ -14,6 +14,9 @@ use rusqlite::Connection;
 
 const BOB: &str = "bob@example.com";
 const NOBODY: &str = "nobody@example.com";
+/// The owner's and nobody's addresses as a person might type them: spaced, in other capitals.
+const OWNER_TYPED: &str = " Owner@example.com ";
+const NOBODY_TYPED: &str = " Nobody@example.com ";
 const WRONG: &str = "definitely wrong";
 const NEW_PASSWORD: &str = "a brand new passphrase";
 const A: &str = "192.0.2.10";
@@ -321,8 +324,10 @@ async fn guess_sequence(w: &World, email: &str, first: &str, second: &str) -> Ve
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unknown_account_is_throttled_like_a_real_one() {
     let w = world(|_| {}).await;
-    let owner = guess_sequence(&w, OWNER_EMAIL, A, B).await;
-    let unknown = guess_sequence(&w, NOBODY, C, D).await;
+    assert_eq!(OWNER_TYPED.trim().to_lowercase(), OWNER_EMAIL);
+    assert_eq!(NOBODY_TYPED.trim().to_lowercase(), NOBODY);
+    let owner = guess_sequence(&w, OWNER_TYPED, A, B).await;
+    let unknown = guess_sequence(&w, NOBODY_TYPED, C, D).await;
     let expected = vec![401, 401, 401, 401, 401, 429, 401];
     let owner_statuses: Vec<u16> = owner.iter().map(|(status, _)| *status).collect();
     let unknown_statuses: Vec<u16> = unknown.iter().map(|(status, _)| *status).collect();
@@ -334,16 +339,28 @@ async fn an_unknown_account_is_throttled_like_a_real_one() {
         unknown_statuses, expected,
         "an unknown account's guesses must get the same statuses as the owner's"
     );
-    // Statement 71: a refused sign-in sends the typed address back, so each side's own is masked.
-    let without = |answers: &[(u16, String)], email: &str| -> Vec<(u16, String)> {
+    // Statement 71: a 401 sends the typed address back once, a 429 never; it is masked after that check.
+    let without = |answers: &[(u16, String)], typed: &str| -> Vec<(u16, String)> {
         answers
             .iter()
-            .map(|(status, body)| (*status, body.replace(email, "ADDRESS")))
+            .map(|(status, body)| {
+                assert_eq!(
+                    body.matches(typed).count(),
+                    usize::from(*status == 401),
+                    "the typed address is sent back once on a 401 and never on a 429"
+                );
+                let rest = body.replace(typed, "ADDRESS");
+                assert!(
+                    !rest.to_lowercase().contains(&typed.trim().to_lowercase()),
+                    "the address may appear only as it was typed"
+                );
+                (*status, rest)
+            })
             .collect()
     };
     assert_eq!(
-        without(&unknown, NOBODY),
-        without(&owner, OWNER_EMAIL),
+        without(&unknown, NOBODY_TYPED),
+        without(&owner, OWNER_TYPED),
         "an unknown account's answers must match the owner's, apart from the csrf value and the typed address"
     );
 }

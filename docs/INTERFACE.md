@@ -16,13 +16,19 @@ what. `PUB` is the configured `public_url`.
   repeated or not equal to `PUB` (`Origin: null` included), or whose body is over 64 KiB or
   cannot be parsed, answers `403` with `data-page="forbidden"` and changes nothing. The token endpoint and the registration endpoint are not form pages and
   take neither.
-- A form refused for a reason about its values (statement 71) keeps its status and shows the
-  posted value again in each of its non-secret text inputs, selects and checkboxes, with
-  control characters removed. A value over the field's limit (254 characters for an email
-  field, 500 for the others) renders the input empty. Password inputs, the setup code, secret
-  header values, SMTP passwords and API keys never render a value. Sign in answers a limited
-  attempt (`429`) with an empty email. A refused mail provider shows its posted settings; the
-  other two providers show the stored ones.
+- A form refused for a reason about its values (statement 71) keeps its status and comes back
+  holding what was typed: each non-secret text input, select and checkbox shows the posted
+  value, with control characters removed. A value over the field's limit (254 characters for
+  an email field, 500 for the others) renders the input empty. The exceptions: the user page's
+  role select and its server checkboxes, and the server page's user checkboxes, come back as
+  stored; the server form's "Remove the stored secret" box is never ticked. Password inputs,
+  the setup code, secret header values, SMTP passwords and API keys never render a value. When
+  a refused post carried a secret (SMTP password, Resend or Mailgun API key, server secret
+  header value), that secret's input is described by `aria-describedby` and its hint reads
+  `Enter it again: a secret is never sent back.` in place of its usual hint. The server add and
+  edit forms send back their plain values as described above. Sign in sends back its hidden
+  `req` only when it is a request id, and a limited attempt (`429`) answers with an empty email.
+  A refused mail provider shows its posted settings; the other two providers show the stored ones.
 - Cookies: session `__Host-doorward_session`; pre-session CSRF `__Host-doorward_csrf`. Both
   `Secure; HttpOnly; SameSite=Lax; Path=/`, whatever the scheme of the request. A cookie that
   is cleared repeats those attributes with `Max-Age=0`. The CSRF token is bound to the

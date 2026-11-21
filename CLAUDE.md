@@ -307,9 +307,10 @@ L. Added after the owner's auth review
     The line about a client whose name or description cannot be confirmed is shown as a
     warning. For a self-registered client it reads: An app that calls itself “NAME” is
     asking to sign in as you. Doorward cannot check this name.
-71. A form that is refused comes back holding what the person typed, so only the field at
-    fault has to be corrected. Passwords, secret values, API keys and the setup code are
-    never sent back.
+71. A form that is refused for a reason about its values comes back holding what the person
+    typed, so only the field at fault has to be corrected. Passwords, secret values, API
+    keys and the setup code are never sent back. A value longer than its field's limit comes
+    back empty, and a sign-in refused for too many attempts comes back with an empty form.
 
 ### Proof
 
