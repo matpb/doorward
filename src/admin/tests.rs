@@ -4309,16 +4309,21 @@ fn every_activity_kind_has_a_plain_label_and_a_tone_where_it_needs_one() {
         ("client_disconnected", "", "", "Client disconnected", None),
         ("admin_change", "", "", "Admin change", None),
         ("invitation", "", "", "Invitation", None),
-        ("mail_failed", "", "", "Mail not sent", Some("warn")),
+        ("mail_failed", "", "", "Mail not sent", Some("bad")),
         ("owner_created", "", "", "Owner created", None),
         ("reset", "", "", "Password reset", None),
         ("password_change", "", "", "Password changed", None),
-        ("redirect_blocked", "", "", "Redirect blocked", Some("warn")),
+        ("redirect_blocked", "", "", "Redirect blocked", Some("bad")),
         ("tool_appeared", "", "", "New tool listed", None),
         ("unlock", "", "", "Gateway unlocked", None),
         ("made_up_kind", "", "", "Made up kind", None),
     ];
     for (kind, decision, outcome, label, tone) in cases {
+        assert_ne!(
+            label_of(kind, decision, outcome).1,
+            Some("warn"),
+            "the label of {kind} must not be amber: amber is for what cannot be verified or is not set up"
+        );
         assert_eq!(
             label_of(kind, decision, outcome),
             (label.to_owned(), tone),
@@ -4394,7 +4399,7 @@ async fn each_row_reads_in_plain_words_beside_its_time_element() {
             "2027-01-15T08:00:02Z",
             "15 Jan 2027 08:00:02 UTC",
             "Mail not sent",
-            Some("warn"),
+            Some("bad"),
         ),
         (
             "2027-01-15T08:00:01Z",

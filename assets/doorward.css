@@ -451,8 +451,9 @@ body[data-layout="card"] .site::after {
   transition: background-color var(--t-fast), color var(--t-fast);
 }
 
+/* The link of the page that is open already says so with its mark: no fill under it. */
 @media (hover: hover) {
-  .site nav a:hover {
+  .site nav a:not([aria-current="page"]):hover {
     background: var(--door-hover);
     color: var(--on-door);
   }
@@ -1314,6 +1315,13 @@ body[data-layout="card"] [data-kind="danger"] {
   text-decoration-color: transparent;
 }
 
+/* Where nothing can hover, the name shows it is a link the way every link does. */
+@media (hover: none) {
+  .list a.name {
+    text-decoration-color: var(--line-strong);
+  }
+}
+
 @media (hover: hover) {
   .list a.name:hover {
     text-decoration-color: currentColor;
@@ -1451,9 +1459,10 @@ body[data-layout="card"] [data-kind="danger"] {
   inset-block-start: 8px;
 }
 
+/* The detail is what tells two rows with one label apart: it is text, not a caption. */
 .detail {
   display: block;
-  color: var(--ink-2);
+  color: var(--ink);
   font-size: 13px;
 }
 
@@ -2115,21 +2124,36 @@ body[data-layout="card"] main > .lede + .actions {
       border-block-start: 1px solid var(--door-line);
       box-shadow: var(--shadow-float);
       overflow-y: auto;
-      opacity: 0;
-      transform: translateY(-8px);
-      transition: opacity var(--t-mid) var(--ease-out), transform var(--t-mid) var(--ease-out), overlay var(--t-mid) allow-discrete, display var(--t-mid) allow-discrete;
+      /* The sheet is the door: solid from its first frame, unrolled from under the bar by
+         a clip and never faded. Open, the clip ends below the box, where the shadow is. */
+      clip-path: inset(0 0 100% 0);
+      transition: clip-path var(--t-mid) var(--ease-out), overlay var(--t-mid) allow-discrete, display var(--t-mid) allow-discrete;
     }
 
     .site nav[popover]:popover-open {
       display: flex;
-      opacity: 1;
-      transform: none;
+      clip-path: inset(0 0 calc(var(--s7) * -1) 0);
     }
 
     @starting-style {
       .site nav[popover]:popover-open {
+        clip-path: inset(0 0 100% 0);
+      }
+    }
+
+    /* Only what is written on the door fades. */
+    .site nav[popover] > ul {
+      opacity: 0;
+      transition: opacity var(--t-mid) var(--ease-out);
+    }
+
+    .site nav[popover]:popover-open > ul {
+      opacity: 1;
+    }
+
+    @starting-style {
+      .site nav[popover]:popover-open > ul {
         opacity: 0;
-        transform: translateY(-8px);
       }
     }
 
@@ -2284,6 +2308,7 @@ body[data-layout="card"] main > .lede + .actions {
     display: block;
     margin-block: -10px;
     padding-block: 10px;
+    text-decoration-color: var(--line-strong);
   }
 
   .list:not(.activity) td.half {
@@ -2428,6 +2453,16 @@ body[data-layout="card"] main > .lede + .actions {
 
   .rules.list td.half + td.half::before {
     content: none;
+  }
+
+  /* Under a verdict every other line of the rule starts where the verdict's word does;
+     the note keeps its own mark in the mark column. */
+  .rules.list td:not(.half):not(.act) {
+    padding-inline-start: 20px;
+  }
+
+  .rules.list .sub.state {
+    margin-inline-start: -20px;
   }
 
   .unit {
