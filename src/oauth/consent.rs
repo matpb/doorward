@@ -457,7 +457,7 @@ fn client_line(client: &Shown, claim: bool) -> Markup {
             "warning",
             html! {
                 p data-client="registered" {
-                    "An app that calls itself " q.client-name { (client.name) } ". Doorward cannot check this name."
+                    "An app that calls itself " q.client-name { (client.name) } " is asking to sign in as you. Doorward cannot check this name."
                 }
             },
         ),
@@ -779,6 +779,36 @@ mod tests {
             "example.com"
         );
         assert_eq!(count(&doc, "p.local-app"), 0);
+    }
+
+    #[test]
+    fn a_registered_client_line_is_its_sentence_in_a_warning() {
+        let shown = Shown {
+            name: "Claude Code".to_owned(),
+            verified: false,
+            client_host: None,
+        };
+        assert_eq!(
+            client_line(&shown, false).into_string(),
+            r#"<div class="notice" data-notice="warning"><p data-client="registered">An app that calls itself <q class="client-name">Claude Code</q> is asking to sign in as you. Doorward cannot check this name.</p></div>"#
+        );
+    }
+
+    #[test]
+    fn the_other_client_lines_keep_their_sentences() {
+        let publisher = Shown {
+            name: "Claude Code".to_owned(),
+            verified: true,
+            client_host: Some("example.com".to_owned()),
+        };
+        assert_eq!(
+            client_line(&publisher, false).into_string(),
+            r#"<p data-client="document"><q class="client-name">Claude Code</q>, published by <span class="client-host">example.com</span>.</p>"#
+        );
+        assert_eq!(
+            client_line(&publisher, true).into_string(),
+            r#"<div class="notice" data-notice="warning"><p data-client="document-loopback">Says it is <q class="client-name">Claude Code</q> from <span class="client-host">example.com</span>. Any program on this computer can use that description.</p></div>"#
+        );
     }
 
     #[test]

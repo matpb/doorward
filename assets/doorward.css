@@ -473,6 +473,17 @@ body[data-layout="card"] main > form {
   margin-block-start: var(--s6);
 }
 
+/* A quiet way back under a card page's form ("Back to sign in"). */
+.back {
+  font: 400 13px/20px var(--sans);
+}
+
+.back > a {
+  display: inline-block;
+  padding-block: 2px;
+  color: var(--ink-2);
+}
+
 /* The sentence belongs to the two buttons, not to the warning above it. */
 body[data-layout="card"] main > [data-consent-notice] {
   margin-block-start: var(--s6);
@@ -556,7 +567,12 @@ body[data-layout="card"] main > [data-consent-notice] {
 body[data-layout="panel"] main > .notice,
 body[data-layout="page"] main > .notice {
   margin-block-end: var(--s6);
-  max-inline-size: 920px;
+}
+
+/* A page notice runs the room's width like a table; its text keeps a reading measure. */
+body[data-layout="panel"] main > .notice > p,
+body[data-layout="page"] main > .notice > p {
+  max-inline-size: 864px;
 }
 
 /* A part: title and one sentence on the left, the thing itself on the right. */
@@ -1231,19 +1247,59 @@ body[data-layout="card"] [data-kind="danger"]:hover {
 .blocked .c-client { inline-size: 30%; }
 .blocked .c-act { inline-size: 216px; }
 
-.clients { max-inline-size: 920px; }
 .clients .c-server { inline-size: 40%; }
 .clients .c-act { inline-size: 128px; }
 
+.tools { max-inline-size: 640px; }
 .tools .c-effect { inline-size: 104px; }
 .tools .c-server { inline-size: 32%; }
 
-.activity { --c-user: 248px; }
-.activity .c-user { inline-size: var(--c-user); }
-.activity .c-where { inline-size: 264px; }
-.activity .c-decision { inline-size: 132px; }
-.activity .c-duration { inline-size: 80px; }
-.activity .c-time { inline-size: 160px; }
+/* The tool column is as wide as its longest name, so the server sits beside it. */
+@media (min-width: 900px) {
+  .tools {
+    display: grid;
+    grid-template-columns: 104px fit-content(55%) minmax(0, 1fr);
+  }
+
+  .tools thead,
+  .tools tbody,
+  .tools tr {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+  }
+
+  .tools tr {
+    align-items: baseline;
+    border-block-end: 1px solid var(--line);
+  }
+
+  .tools thead tr {
+    border-block-end-color: var(--ink);
+  }
+
+  .tools th,
+  .tools td,
+  .tools .c-effect,
+  .tools .c-server {
+    display: block;
+    inline-size: auto;
+    border: 0;
+  }
+
+  .tools td.lead {
+    padding-inline-end: var(--s5);
+  }
+}
+
+.activity {
+  --c-event: minmax(0, 1fr);
+  --c-user: 248px;
+  --c-where: 312px;
+  --c-decision: 132px;
+  --c-duration: 80px;
+  --c-time: 160px;
+}
 
 /* Activity: the label leads, and a mark hangs in the margin only when a row needs one. */
 .event {
@@ -1272,21 +1328,95 @@ body[data-layout="card"] [data-kind="danger"]:hover {
   white-space: nowrap;
 }
 
-/* In the table, a detail may run on into the User column when that cell is empty
-   (a blocked address, a failed mail): it stops 16 px short of the next column. */
+/* The log as a table: each row is a grid, so the detail can have a line of its own
+   under the label, from the Event column to the Time column. */
 @media (min-width: 1280px) {
-  .activity tr:has(> td.user:empty) .detail {
-    margin-inline-end: calc(var(--c-user) * -1);
+  .activity,
+  .activity thead,
+  .activity tbody,
+  .activity th,
+  .activity td {
+    display: block;
   }
+
+  .activity tr {
+    display: grid;
+    grid-template-columns: var(--c-event) var(--c-user) var(--c-where) var(--c-decision) var(--c-duration) var(--c-time);
+    align-items: baseline;
+    border-block-end: 1px solid var(--line);
+  }
+
+  .activity thead tr {
+    border-block-end-color: var(--ink);
+  }
+
+  .activity th,
+  .activity td {
+    border: 0;
+  }
+
+  .activity td {
+    grid-row: 1;
+  }
+
+  /* The label's cell spans to the Time column and lends its tracks to label and detail. */
+  .activity td.what {
+    grid-area: 1 / 1 / 3 / 6;
+    display: grid;
+    grid-template-columns: subgrid;
+    grid-template-rows: subgrid;
+    padding-block-end: 0;
+  }
+
+  .activity td.what > .event {
+    grid-area: 1 / 1;
+    padding-inline-end: var(--s4);
+  }
+
+  .activity td.what > .event:only-child,
+  .activity td.what > .detail {
+    padding-block-end: var(--s3);
+  }
+
+  .activity td.what > .detail {
+    grid-area: 2 / 1 / 3 / -1;
+  }
+
+  /* On that long line an address moves to the next line whole before it breaks. */
+  .activity .detail .email {
+    display: inline-block;
+    max-inline-size: 100%;
+    vertical-align: top;
+  }
+
+  /* With a detail under it, the first line gives up its bottom padding to the second. */
+  .activity tr:has(.detail) > td:not(.what) {
+    padding-block-end: 0;
+  }
+
+  .activity td.user { grid-column: 2; }
+  .activity td.where { grid-column: 3; }
+  .activity td.decision { grid-column: 4; }
+  .activity td.duration { grid-column: 5; }
+  .activity td.when { grid-column: 6; }
+}
+
+/* Server and tool on one line, "demo / slow"; a long tool name wraps after an underscore. */
+.activity td.where {
+  font: 400 13px/20px var(--mono);
 }
 
 .activity .where code {
-  display: block;
-  line-height: 20px;
+  line-height: 1;
 }
 
 .activity .where code + code {
   color: var(--ink-2);
+}
+
+.activity .where code + code::before {
+  content: " / ";
+  color: var(--ink-3);
 }
 
 .activity td.user {
@@ -1487,8 +1617,18 @@ details[open] > summary .chevron {
   padding-block: var(--s2) var(--s6);
 }
 
-/* Confirming something that cannot be undone. */
+/* Confirming something that cannot be undone. The closed summary already says so:
+   an outlined control and, beside it (under it when there is no room), the words. */
 .confirm > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2) var(--s3);
+  inline-size: fit-content;
+  border-radius: var(--r2);
+}
+
+.confirm-open {
   display: inline-flex;
   align-items: center;
   gap: var(--s2);
@@ -1500,9 +1640,39 @@ details[open] > summary .chevron {
   transition: background-color var(--t-fast), border-color var(--t-fast);
 }
 
-.confirm > summary:hover {
+.confirm > summary:hover > .confirm-open {
   border-color: var(--ink);
   background: var(--sunken);
+}
+
+.confirm-note {
+  color: var(--ink-2);
+  font: 400 13px/20px var(--sans);
+}
+
+/* Open, the body says it in full. */
+.confirm[open] .confirm-note {
+  display: none;
+}
+
+/* The ring goes round the control, not round the control and its note. */
+.confirm > summary:focus-visible {
+  outline: 0;
+}
+
+.confirm > summary:focus-visible > .confirm-open {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* A summary without the two spans is the control itself, as before round 5. */
+.confirm > summary:not(:has(> .confirm-open)) {
+  display: inline-flex;
+  gap: var(--s2);
+  min-block-size: var(--control);
+  padding-inline: var(--s4);
+  border: 1px solid var(--line-strong);
+  font: 600 var(--control-text) / 20px var(--sans);
 }
 
 .confirm-body {
@@ -1662,6 +1832,11 @@ body[data-layout="card"] main > .lede + .actions {
   /* Without popover support the navigation stays a plain list under the bar. */
   .site nav {
     padding: 0 var(--s2) var(--s3);
+  }
+
+  /* A one-link navigation (a plain user's account) has no menu: the bar is the brand alone. */
+  .site nav:not([popover]) {
+    display: none;
   }
 
   .site nav a {
@@ -1874,6 +2049,42 @@ body[data-layout="card"] main > .lede + .actions {
     padding-inline-start: 0;
   }
 
+  /* A tool verdict is one sentence, "Deny echo on demo", that wraps as text does;
+     a second line starts under the verdict word, and "on server" never splits. */
+  .tools.list tr {
+    display: block;
+    padding-block: var(--s3) 11px;
+    padding-inline-start: 20px;
+    text-indent: -20px;
+    word-spacing: var(--s1);
+  }
+
+  .tools.list td,
+  .tools.list td.half + td.half {
+    display: inline;
+    margin: 0;
+    padding: 0;
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  .tools.list .state {
+    text-indent: 0;
+  }
+
+  /* One space after each cell, whether or not the markup has white space between cells. */
+  .tools.list td::after {
+    content: " ";
+  }
+
+  .tools.list td.half + td.half::before {
+    content: none;
+  }
+
+  .tools.list td:last-child {
+    white-space: nowrap;
+  }
+
   /* An address needs the whole width, so in the two address lists the action is the
      record's last line, starting on the left edge. */
   .redirects.list td:first-child,
@@ -1918,10 +2129,20 @@ body[data-layout="card"] main > .lede + .actions {
 
 /* 1280 to 1439 px: the same table with narrower columns. */
 @media (max-width: 1439.98px) {
-  .activity { --c-user: 240px; }
-  .activity .c-where { inline-size: 208px; }
-  .activity .c-decision { inline-size: 128px; }
-  .activity .c-time { inline-size: 104px; }
+  .activity {
+    --c-event: minmax(164px, 1fr);
+    --c-user: 240px;
+    --c-where: minmax(232px, 1.4fr);
+    --c-decision: 128px;
+    --c-time: 104px;
+  }
+}
+
+/* There the time is two lines; its cell spans both rows, so the detail stays under the label. */
+@media (min-width: 1280px) and (max-width: 1439.98px) {
+  .activity td.when {
+    grid-row: 1 / 3;
+  }
 }
 
 /* 640 to 1279 px: each row is a record in three columns: what happened; who, where
@@ -1977,17 +2198,6 @@ body[data-layout="card"] main > .lede + .actions {
   .activity td.where {
     grid-column: 2;
     grid-row: 2;
-    font: 400 13px/20px var(--mono);
-  }
-
-  .activity .where code {
-    display: inline;
-    line-height: 1;
-  }
-
-  .activity .where code + code::before {
-    content: " / ";
-    color: var(--ink-3);
   }
 
   .activity td.decision {
@@ -2018,12 +2228,6 @@ body[data-layout="card"] main > .lede + .actions {
     line-height: 32px;
   }
 
-  /* A title that is an address, not a name: smaller, so it breaks once at most. */
-  .title-id {
-    font-size: 20px;
-    line-height: 28px;
-    letter-spacing: 0;
-  }
 
   .page-head {
     grid-template-columns: minmax(0, 1fr);

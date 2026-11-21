@@ -420,8 +420,9 @@ fn assign_servers_in(
     for (user_id, server_id) in servers::set_assignments(&tx, Scope::User(id), &ids)? {
         families::revoke_pair(&tx, user_id, server_id, now)?;
     }
+    let noun = if ids.len() == 1 { "server" } else { "servers" };
     let detail = format!(
-        "assignments of {} set to {} servers",
+        "assignments of {} set to {} {noun}",
         target.email,
         ids.len()
     );
@@ -624,7 +625,11 @@ fn user_body(
                 }
                 div.part-body {
                     details.confirm data-confirm {
-                        summary { "Delete this account " span.chevron aria-hidden="true" {} }
+                        summary {
+                            span.confirm-open { "Delete this account " span.chevron aria-hidden="true" {} }
+                            " "
+                            span.confirm-note { "This cannot be undone." }
+                        }
                         div.confirm-body {
                             p { "This cannot be undone." }
                             form method="post" action=(format!("{path}/delete")) {

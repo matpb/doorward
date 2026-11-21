@@ -110,6 +110,22 @@ fn account_nav() -> Markup {
     }
 }
 
+/// The navigation of a plain user's account page: its one link, with no menu to open it.
+fn plain_account_nav() -> Markup {
+    html! {
+        nav data-nav="account" aria-label="Account" {
+            ul {
+                li {
+                    a href="/account" aria-current="page" {
+                        span class="nav-mark" aria-hidden="true" {}
+                        "Your account"
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The button that opens the navigation named `target`; its label follows the open state.
 fn menu_button(target: &str) -> Markup {
     html! {
@@ -124,7 +140,8 @@ fn menu_button(target: &str) -> Markup {
 /// on the card, its note.
 fn header(layout: &str, nav: Nav<'_>) -> Markup {
     let (menu, list) = match nav {
-        Nav::None | Nav::Account { admin: false } => (None, None),
+        Nav::None => (None, None),
+        Nav::Account { admin: false } => (None, Some(plain_account_nav())),
         Nav::Panel { current, owner } => (Some("panel-nav"), Some(panel_nav(current, owner))),
         Nav::Account { admin: true } => (Some("account-nav"), Some(account_nav())),
     };
@@ -230,14 +247,15 @@ pub fn redirect(to: &str) -> Response {
     }
 }
 
+/// The refusal: a viewer who lacks the role, or a form that was refused.
 pub fn forbidden() -> Response {
     page(
         StatusCode::FORBIDDEN,
         "forbidden",
-        "Forbidden",
+        "Request refused",
         html! {
-            h1 { "Forbidden" }
-            p.lede { "This request was refused." }
+            h1 { "Request refused" }
+            p.lede { "Doorward did not carry out this request. If you were sending a form, go back, reload the page and send it again. If you followed a link, your account may not open it." }
         },
     )
 }
@@ -500,9 +518,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_refusal_page_is_a_403_with_its_title_heading_and_lede() {
+        let response = forbidden();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let doc = Html::parse_document(&text_of(response).await);
+        let title = doc
+            .select(&Selector::parse("title").expect("selector"))
+            .next()
+            .expect("a title")
+            .text()
+            .collect::<String>();
+        assert_eq!(title, "Request refused");
+        assert!(
+            doc.root_element().html().contains(
+                r#"<h1>Request refused</h1><p class="lede">Doorward did not carry out this request. If you were sending a form, go back, reload the page and send it again. If you followed a link, your account may not open it.</p>"#
+            ),
+            "the refusal page must hold its heading and its lede"
+        );
+        assert_eq!(count(&doc, r#"main[data-page="forbidden"]"#), 1);
+    }
+
+    #[test]
+    fn a_plain_users_account_nav_is_one_link_with_no_popover_and_no_menu() {
+        assert_eq!(
+            header("page", Nav::Account { admin: false }).into_string(),
+            r#"<header class="site" data-brand><div class="site-bar"><a class="brand" href="/account"><svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M6.5 2h11A1.5 1.5 0 0 1 19 3.5v17a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20.5v-17A1.5 1.5 0 0 1 6.5 2Zm8.25 9.25a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"></svg><span>Doorward</span></a></div><nav data-nav="account" aria-label="Account"><ul><li><a href="/account" aria-current="page"><span class="nav-mark" aria-hidden="true"></span>Your account</a></li></ul></nav></header>"#
+        );
+    }
+
+    #[tokio::test]
     async fn each_message_page_is_a_heading_and_one_lede() {
         let cases = [
-            (forbidden(), "Forbidden", "This request was refused."),
+            (
+                forbidden(),
+                "Request refused",
+                "Doorward did not carry out this request. If you were sending a form, go back, reload the page and send it again. If you followed a link, your account may not open it.",
+            ),
             (
                 not_found_link(),
                 "This link is not valid",

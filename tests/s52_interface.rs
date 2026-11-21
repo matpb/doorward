@@ -429,10 +429,12 @@ fn assert_two_step_delete(page: &Page, what: &str) -> String {
         0,
         "{what} must keep its delete disclosure closed"
     );
-    let disclosure = page.text("details[data-confirm]").unwrap_or_default();
+    let summary = page
+        .text("details[data-confirm] > summary")
+        .unwrap_or_default();
     assert!(
-        disclosure.contains("cannot be undone"),
-        "the delete disclosure on {what} must say it cannot be undone, got {disclosure:?}"
+        summary.contains("cannot be undone"),
+        "the summary of the delete disclosure on {what} must say it cannot be undone, got {summary:?}"
     );
     assert_eq!(
         page.count(r#"details[data-confirm] form[action$="/delete"] input[name="csrf"]"#),

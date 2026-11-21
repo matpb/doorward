@@ -882,7 +882,7 @@ async fn a_registered_client_is_shown_as_a_claim() {
     assert_eq!(
         consent.text(r#"p[data-client="registered"]"#).as_deref(),
         Some(
-            "An app that calls itself Claude Code published by claude.ai. Doorward cannot check this name."
+            "An app that calls itself Claude Code published by claude.ai is asking to sign in as you. Doorward cannot check this name."
         ),
         "the registered line must say the name is a claim the gateway cannot check"
     );

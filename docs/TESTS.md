@@ -1031,8 +1031,9 @@ stateless `tools/call` body for that tool, sent with `raw` and explicit headers.
 14. `an_admin_sees_no_mail_link`: a non-owner admin's `/admin/users` has the eight links
     without Mail.
 15. `a_plain_user_and_public_pages_get_no_navigation`: a plain user's 403 under
-    `/admin/users`, the plain user's `/account`, and `/login`, `/forgot` and an invitation
-    page carry no `data-nav`.
+    `/admin/users` carries no `data-nav`; `/login`, `/forgot` and an invitation page carry no
+    `data-nav`. The plain user's `/account` holds one `header nav[data-nav="account"]` with one
+    link (round 5, statement 62: the account's own link is its one navigation). The name is kept.
 16. `the_account_page_links_to_the_panel_for_admins_only`: the owner and an admin see
     `a[data-nav="to-panel"]` reading `Admin panel` with href `/admin`; a plain user does
     not.
@@ -1185,8 +1186,9 @@ bob is assigned to demo and signed in. `A` is `W.app()`.
     the same two attempts for the document client are error pages with no consent address.
 22. `a_registered_client_is_shown_as_a_claim`: a client registered as `Claude Code published
     by claude.ai` with `APP_REDIRECT` has one `p[data-client="registered"]` reading `An app
-    that calls itself Claude Code published by claude.ai. Doorward cannot check this name.`;
-    its `q.client-name` is the name; the page has no `(unverified)`.
+    that calls itself Claude Code published by claude.ai is asking to sign in as you. Doorward
+    cannot check this name.` (round 5 added "is asking to sign in as you"); its
+    `q.client-name` is the name; the page has no `(unverified)`.
 23. `a_document_client_with_a_web_redirect_names_its_publisher`: `APP_ID` with the redirect
     `https://claude.ai/api/mcp/auth_callback` has one `p[data-client="document"]` reading
     `Example Client, published by client.example.com.`, the name in `q.client-name` and the
@@ -1714,7 +1716,8 @@ activity of allowed, denied and failed tool calls.
    `Disconnect` are danger; `Disable`, `Enable`, `Deny`, `Filter`, `Refresh tools`,
    `Check lock-down`, `Send test email` and `Sign out` are secondary. It is red before the change.
 4. `deleting_a_server_or_an_account_takes_two_steps`: the server and user pages each hold
-   one closed `details[data-confirm]` whose text says "cannot be undone" and holds the
+   one closed `details[data-confirm]` whose `summary` itself says "cannot be undone" (round 5
+   moved the words into the summary as `span.confirm-note`; the body keeps its own sentence) and holds the
    `/delete` form with csrf, and no other `/delete` form. Posting that form without csrf is
    403 forbidden and deletes nothing; with csrf it is 303 and the row is gone. It is red
    before the change.
@@ -1846,11 +1849,15 @@ The conversion is guarded by `the_oklch_conversion_matches_known_colours`.
    red before the change.
 4. `the_current_section_is_marked_once`: each covered page holds exactly one `span.nav-mark`
    (aria-hidden), inside the link to its section, which is the only link with `aria-current`.
-   A page whose header holds no `nav` (a plain user's account page) holds no `span.nav-mark`.
+   A page whose header holds no `nav` holds no `span.nav-mark`. A plain user's account page
+   holds its one navigation and its one mark (round 5), so it is covered like the others.
 5. `the_account_page_holds_its_own_navigation`: the owner's and an admin's account pages hold
    `nav#account-nav[data-nav="account"][aria-label="Account"]` in the header, with `Your account`
-   as the current link and `li.nav-end > a[href="/admin"][data-nav="to-panel"]`;
-   bob's account page holds no `nav` and no `button.menu-button`. It is red before the change.
+   as the current link and `li.nav-end > a[href="/admin"][data-nav="to-panel"]`. Bob's account
+   page (round 5, statement 62) holds one `header > nav[data-nav="account"][aria-label="Account"]`
+   with no `popover` and no `id`, exactly one link to `/account` with `aria-current="page"`
+   reading `Your account`, the one `span.nav-mark`, and no `button.menu-button`. It was red
+   before the round 5 change, which put the link in the header.
 6. `a_card_page_holds_the_note_and_no_navigation`: each card page and the unknown address hold
    one non-empty `p.site-note` in the header, and no nav and no Menu button. It is red before
    the change.
@@ -1978,3 +1985,51 @@ refuses without the gateway's secret, so its state is `ok`.
 4. `no_alert_without_an_exposed_server`: with only a healthy server (`ok`), the overview holds
    no `[data-open-servers]` and the server page holds no `[data-lockdown-alert]`. It passes
    before the change, since the negative case has no alert today either.
+
+## Round 5: tests added and rewritten for the design changes
+
+Each entry names the change of the round 5 list it proves, and why an existing test changed.
+
+New tests:
+
+1. `admin::activity::tests` (unit, change 1): `an_address_in_a_detail_is_an_email_span`,
+   `a_url_with_an_at_in_its_path_is_not_an_email`, `two_addresses_are_two_email_spans_with_a_space_between`,
+   `markup_characters_are_escaped_and_the_text_is_unchanged`, `a_detail_with_no_space_is_one_word`
+   and `a_word_is_an_address_only_with_text_on_both_sides_of_one_at`. Each asserts the exact
+   HTML and that the text read back equals the stored detail.
+2. `admin::tests::an_address_in_an_activity_detail_is_an_email_span` (change 1): an address
+   inside a detail on `/admin/activity` is a `span.email` inside `span.detail`.
+3. `web::page::tests::a_plain_users_account_nav_is_one_link_with_no_popover_and_no_menu`
+   (change 2): the exact header of a plain user's account page.
+4. `admin::tests::an_invitation_role_cell_holds_the_role_after_a_unit_span` (change 4): the
+   role cell is `as user` and `as admin`, with `span.unit` holding `as `.
+5. `admin::tests::a_stored_invitation_without_mail_links_the_owner_to_the_mail_page` and
+   `admin::tests::a_stored_invitation_without_mail_gives_an_admin_no_mail_link` (change 5):
+   the owner sees `a[data-link="mail"]`; a non-owner admin sees the sentence alone.
+6. `accounts::reset::tests::the_forgot_page_links_back_to_sign_in_after_its_form` (change 6):
+   `p.back` with the link to `/login` follows the form.
+7. `oauth::consent::tests::a_registered_client_line_is_its_sentence_in_a_warning` and
+   `oauth::consent::tests::the_other_client_lines_keep_their_sentences` (change 7): the exact
+   registered sentence, and the document and loopback sentences unchanged.
+8. `web::page::tests::the_refusal_page_is_a_403_with_its_title_heading_and_lede` (change 8):
+   status 403, title, heading, lede and `main[data-page="forbidden"]`.
+9. `admin::tests::assignment_logs_say_one_or_many_in_the_same_words` (change 9): the log reads
+   `set to 0 users`, `set to 1 user`, `set to 3 users`, and for a user `set to 0 servers`,
+   `set to 1 server`, `set to 2 servers`.
+
+Rewritten tests (the old markup or sentence they pinned):
+
+- `tests/s26_panel.rs` `a_plain_user_and_public_pages_get_no_navigation`: the plain user's
+  account page now holds its one header navigation (change 2); the other pages keep "no
+  navigation". The name is kept.
+- `tests/s62_shell.rs` `the_account_page_holds_its_own_navigation`: bob's account page holds
+  one `header > nav[data-nav="account"]` with no popover and no id, one link, one mark, and no
+  Menu button (change 2). The admin case is unchanged. `the_current_section_is_marked_once`
+  already passes for bob's page (it is one of the covered pages) and is unchanged.
+- `tests/s52_interface.rs` `deleting_a_server_or_an_account_takes_two_steps` (its helper
+  `assert_two_step_delete`): the `summary` itself must say "cannot be undone" (change 3). The
+  test read the whole disclosure before, where the body's own sentence also matched.
+- `tests/s33_consent.rs` `a_registered_client_is_shown_as_a_claim`: the registered sentence now
+  reads "is asking to sign in as you" (change 7).
+- `web::page::tests::each_message_page_is_a_heading_and_one_lede`: the refusal row carries the
+  round 5 title and lede (change 8).

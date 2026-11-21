@@ -533,10 +533,38 @@ async fn the_account_page_holds_its_own_navigation() {
     }
     let page = s.bob.get("/account").await;
     assert_eq!(page.status, 200, "the account page must answer 200 for bob");
+    let own = format!(r#"{HEADER} > nav[data-nav="account"][aria-label="Account"]"#);
     assert_eq!(
-        page.count("nav"),
+        page.count(&own),
+        1,
+        "a plain user's account page must hold one navigation in the header"
+    );
+    assert_eq!(
+        page.count(&format!("{own}[popover], {own}[id]")),
         0,
-        "a plain user's account page must hold no navigation"
+        "a plain user's navigation must have no popover attribute and no id"
+    );
+    assert_eq!(
+        page.count(&format!("{own} a")),
+        1,
+        "a plain user's navigation must hold exactly one link"
+    );
+    assert_eq!(
+        page.count(&format!(
+            r#"{own} li > a[href="/account"][aria-current="page"]"#
+        )),
+        1,
+        "the one link of a plain user's navigation must go to /account and be the current page"
+    );
+    assert_eq!(
+        page.text(&format!("{own} a")).as_deref(),
+        Some("Your account"),
+        "the one link of a plain user's navigation must read Your account"
+    );
+    assert_eq!(
+        page.count(&format!("{own} a > span.nav-mark")),
+        1,
+        "the link of a plain user's navigation must hold the one span.nav-mark"
     );
     assert_eq!(
         page.count("button.menu-button"),

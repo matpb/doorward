@@ -495,9 +495,14 @@ async fn a_plain_user_and_public_pages_get_no_navigation() {
         "/account must answer 200 to a plain user"
     );
     assert_eq!(
-        account.count("[data-nav]"),
+        account.count(r#"header nav[data-nav="account"]"#),
+        1,
+        "a plain user's account page must carry its one account navigation in the header"
+    );
+    assert_eq!(
+        account.count(r#"[data-nav="panel"]"#),
         0,
-        "a plain user's account page must carry no navigation"
+        "a plain user's account page must carry no panel navigation"
     );
     let anonymous = w.client();
     let invite = w.invite_link("dan@example.com", "user").await;

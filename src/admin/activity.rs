@@ -305,6 +305,33 @@ fn unknown_label(kind: &str) -> String {
     }
 }
 
+/// The stored detail as markup: each word that is an address through `email`, every other word
+/// through `breakable`, joined by single spaces. Its text is the detail itself.
+fn detail_markup(detail: &str) -> Markup {
+    html! {
+        @for (index, word) in detail.split(' ').enumerate() {
+            @if index > 0 {
+                " "
+            }
+            @if is_address(word) {
+                (email(word))
+            } @else {
+                (breakable(word))
+            }
+        }
+    }
+}
+
+/// A word with exactly one `@`, text on both sides of it, and no `/` or whitespace.
+fn is_address(word: &str) -> bool {
+    let Some((local, domain)) = word.split_once('@') else {
+        return false;
+    };
+    [local, domain].into_iter().all(|part| {
+        !part.is_empty() && !part.contains(['@', '/']) && !part.chars().any(char::is_whitespace)
+    })
+}
+
 /// One row of the activity table: its label and detail, user, server and tool, decision,
 /// duration and time. An empty user, server, tool or duration leaves its cell empty.
 fn table_row(row: &Row) -> Markup {
@@ -324,7 +351,7 @@ fn table_row(row: &Row) -> Markup {
             td.what {
                 span.event data-label data-tone=[tone] { (label) }
                 @if !row.detail.is_empty() {
-                    span.detail { (breakable(&row.detail)) }
+                    span.detail { (detail_markup(&row.detail)) }
                 }
             }
             td.user {
@@ -467,4 +494,87 @@ fn activity_page(
             (pager(query, number, listing.total, older))
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use scraper::Html;
+
+    use super::*;
+
+    /// The markup of a detail, and the text a reader sees in it.
+    fn shown(detail: &str) -> (String, String) {
+        let markup = detail_markup(detail).into_string();
+        let text = Html::parse_fragment(&markup)
+            .root_element()
+            .text()
+            .collect::<String>();
+        (markup, text)
+    }
+
+    #[test]
+    fn an_address_in_a_detail_is_an_email_span() {
+        let (markup, text) = shown("invited bob@example.com as user");
+        assert_eq!(
+            markup,
+            r#"invited <span class="email"><span>bob</span><wbr><span>@example<wbr>.com</span></span> as user"#
+        );
+        assert_eq!(text, "invited bob@example.com as user");
+    }
+
+    #[test]
+    fn a_url_with_an_at_in_its_path_is_not_an_email() {
+        let (markup, text) = shown("see https://example.com/a@b now");
+        assert_eq!(
+            markup,
+            "see https://<wbr>example<wbr>.com/<wbr>a<wbr>@b now"
+        );
+        assert!(!markup.contains("span class=\"email\""));
+        assert_eq!(text, "see https://example.com/a@b now");
+    }
+
+    #[test]
+    fn two_addresses_are_two_email_spans_with_a_space_between() {
+        let (markup, text) = shown("a@example.com b@example.org");
+        assert_eq!(
+            markup,
+            r#"<span class="email"><span>a</span><wbr><span>@example<wbr>.com</span></span> <span class="email"><span>b</span><wbr><span>@example<wbr>.org</span></span>"#
+        );
+        assert_eq!(text, "a@example.com b@example.org");
+    }
+
+    #[test]
+    fn markup_characters_are_escaped_and_the_text_is_unchanged() {
+        let (markup, text) = shown("<i>a&b</i> c@example.net");
+        assert_eq!(
+            markup,
+            r#"&lt;i&gt;a&amp;<wbr>b&lt;/<wbr>i&gt; <span class="email"><span>c</span><wbr><span>@example<wbr>.net</span></span>"#
+        );
+        assert_eq!(text, "<i>a&b</i> c@example.net");
+    }
+
+    #[test]
+    fn a_detail_with_no_space_is_one_word() {
+        let (markup, text) = shown("bob@example.com");
+        assert_eq!(
+            markup,
+            r#"<span class="email"><span>bob</span><wbr><span>@example<wbr>.com</span></span>"#
+        );
+        assert_eq!(text, "bob@example.com");
+        let (markup, text) = shown("create_pull_request");
+        assert_eq!(markup, "create_<wbr>pull_<wbr>request");
+        assert_eq!(text, "create_pull_request");
+    }
+
+    #[test]
+    fn a_word_is_an_address_only_with_text_on_both_sides_of_one_at() {
+        for word in ["@example.com", "bob@", "a@b@example.com", "a/b@example.com"] {
+            let (markup, text) = shown(word);
+            assert!(
+                !markup.contains("span class=\"email\""),
+                "{word} must not be an address, got {markup}"
+            );
+            assert_eq!(text, word);
+        }
+    }
 }

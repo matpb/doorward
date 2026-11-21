@@ -911,6 +911,31 @@ async fn a_detail_with_markup_is_escaped_on_the_page() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_address_in_an_activity_detail_is_an_email_span() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _) = start(dir.path()).await;
+    add_user(dir.path(), OWNER, "owner").await;
+    let event = Event {
+        kind: "login",
+        detail: "invited bob@example.com as user",
+        ..Default::default()
+    };
+    audit::record(&open_db(dir.path()), AT, &event).expect("record");
+    let mut owner = sign_in(&base, OWNER).await;
+    let page = owner.get("/admin/activity").await;
+    assert_eq!(
+        text_of(&page.body, "span.detail").as_deref(),
+        Some("invited bob@example.com as user"),
+        "the detail must read as stored"
+    );
+    assert_eq!(
+        text_of(&page.body, "span.detail span.email").as_deref(),
+        Some("bob@example.com"),
+        "the address inside the detail must be a span.email"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_activity_page_is_for_the_owner_and_admins_only() {
     let dir = tempfile::tempdir().expect("dir");
     let (base, _) = start(dir.path()).await;
@@ -2683,6 +2708,70 @@ async fn assignments_from_both_pages_refuse_unknown_ids_and_replace_the_set() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn assignment_logs_say_one_or_many_in_the_same_words() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), PLAIN, "user").await;
+    add_user(dir.path(), BOB, "user").await;
+    add_user(dir.path(), "carol@example.com", "user").await;
+    add(&mut owner, "demo", SERVER_URL, None).await;
+    add(&mut owner, "other", SERVER_URL, None).await;
+    let demo = server_id_of(dir.path(), "demo");
+    let other = server_id_of(dir.path(), "other");
+    let plain = user_id_of(dir.path(), PLAIN);
+    let bob = user_id_of(dir.path(), BOB);
+    let carol = user_id_of(dir.path(), "carol@example.com");
+    let (plain, bob, carol) = (plain.to_string(), bob.to_string(), carol.to_string());
+    let (demo, other) = (demo.to_string(), other.to_string());
+    let server_path = format!("/admin/servers/{demo}/users");
+    let server_page = format!("/admin/servers/{demo}");
+    owner.submit(&server_page, &server_path, &[]).await;
+    owner
+        .submit(&server_page, &server_path, &[("user_id", plain.as_str())])
+        .await;
+    owner
+        .submit(
+            &server_page,
+            &server_path,
+            &[
+                ("user_id", plain.as_str()),
+                ("user_id", bob.as_str()),
+                ("user_id", carol.as_str()),
+            ],
+        )
+        .await;
+    let user_path = format!("/admin/users/{plain}/servers");
+    let user_page = format!("/admin/users/{plain}");
+    owner.submit(&user_page, &user_path, &[]).await;
+    owner
+        .submit(&user_page, &user_path, &[("server_id", demo.as_str())])
+        .await;
+    owner
+        .submit(
+            &user_page,
+            &user_path,
+            &[("server_id", demo.as_str()), ("server_id", other.as_str())],
+        )
+        .await;
+    let details: Vec<String> = rows_of(dir.path(), "admin_change")
+        .into_iter()
+        .map(|row| row.2)
+        .filter(|detail| detail.starts_with("assignments of "))
+        .collect();
+    assert_eq!(
+        details,
+        vec![
+            "assignments of demo set to 0 users",
+            "assignments of demo set to 1 user",
+            "assignments of demo set to 3 users",
+            "assignments of plain@example.com set to 0 servers",
+            "assignments of plain@example.com set to 1 server",
+            "assignments of plain@example.com set to 2 servers",
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn set_assignments_replaces_the_set_and_returns_the_removed_pairs_for_both_scopes() {
     let dir = tempfile::tempdir().expect("dir");
     let (_base, _owner) = owner_gateway(dir.path()).await;
@@ -3748,6 +3837,93 @@ async fn the_invitation_link_after_a_failed_send_sits_in_a_copy_code() {
         .await;
     assert_eq!(page.kind().as_deref(), Some("invitation-created"));
     assert_eq!(elements(&page.body, "code.copy[data-invite-link]").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_invitation_without_mail_links_the_owner_to_the_mail_page() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner
+        .submit(
+            "/admin/invitations",
+            "/admin/invitations",
+            &[("email", BOB), ("role", "user")],
+        )
+        .await;
+    assert_eq!(page.kind().as_deref(), Some("invitation-created"));
+    assert!(
+        page.body.contains(
+            r#"<div class="notice" data-notice="warning"><p>Mail is not set up. <a href="/admin/mail" data-link="mail">Set up mail</a></p></div>"#
+        ),
+        "the owner must see the mail link in the warning, got {}",
+        page.body
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_invitation_without_mail_gives_an_admin_no_mail_link() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, _owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), ADMIN, "admin").await;
+    let mut admin = sign_in(&base, ADMIN).await;
+    let page = admin
+        .submit(
+            "/admin/invitations",
+            "/admin/invitations",
+            &[("email", BOB), ("role", "user")],
+        )
+        .await;
+    assert_eq!(page.kind().as_deref(), Some("invitation-created"));
+    assert!(
+        page.body.contains(
+            r#"<div class="notice" data-notice="warning"><p>Mail is not set up.</p></div>"#
+        ),
+        "an admin who is not the owner must see the sentence alone, got {}",
+        page.body
+    );
+    assert_eq!(
+        elements(&page.body, r#"[data-link="mail"]"#).len(),
+        0,
+        "an admin who is not the owner must not see the mail link"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_invitation_role_cell_holds_the_role_after_a_unit_span() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    owner
+        .submit(
+            "/admin/invitations",
+            "/admin/invitations",
+            &[("email", BOB), ("role", "user")],
+        )
+        .await;
+    owner
+        .submit(
+            "/admin/invitations",
+            "/admin/invitations",
+            &[("email", "carol@example.com"), ("role", "admin")],
+        )
+        .await;
+    let page = owner.get("/admin/invitations").await;
+    assert!(
+        page.body
+            .contains(r#"<td class="half"><span class="unit">as </span>user</td>"#),
+        "the role cell of bob must hold the unit span, got {}",
+        page.body
+    );
+    assert!(
+        page.body
+            .contains(r#"<td class="half"><span class="unit">as </span>admin</td>"#),
+        "the role cell of carol must hold the unit span, got {}",
+        page.body
+    );
+    assert_eq!(
+        text_of(&page.body, r#"tr[data-email="bob@example.com"] > td.half"#).as_deref(),
+        Some("as user"),
+        "the role cell of bob must read as user"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

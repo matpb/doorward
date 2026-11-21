@@ -27,6 +27,8 @@ use super::panel_nav;
 const EMAIL_MESSAGE: &str = "Enter a valid email address.";
 const ROLE_MESSAGE: &str = "Choose the role user or admin.";
 const TAKEN_MESSAGE: &str = "An account already has that email address.";
+/// The error mail::send gives when no provider is set up.
+const MAIL_NOT_SET_UP: &str = "Mail is not set up.";
 
 /// One open invitation as the page shows it.
 struct Row {
@@ -360,7 +362,7 @@ fn invitation_row(csrf: &str, row: &Row) -> Markup {
     html! {
         tr data-invitation-id=(row.id) data-email=(row.email) {
             td.lead.strong { (ui::email(&row.email)) }
-            td.half { "as " (row.role) }
+            td.half { span.unit { "as " } (row.role) }
             td.half { (ui::time_cell(&row.expires, &row.expires_plain, true)) }
             td {
                 span data-invited-by {
@@ -382,8 +384,23 @@ fn invitation_row(csrf: &str, row: &Row) -> Markup {
     }
 }
 
+/// The warning of a stored invitation whose mail did not leave. The owner, who alone opens the mail
+/// page, is linked to it when no mail is set up.
+fn mail_warning(error: &str, owner: bool) -> Markup {
+    html! {
+        p {
+            (error)
+            @if owner && error == MAIL_NOT_SET_UP {
+                " "
+                a href="/admin/mail" data-link="mail" { "Set up mail" }
+            }
+        }
+    }
+}
+
 /// The answer when the mail did not leave: the error, and the link once for copying by hand.
 fn invitation_created(viewer: &Viewer, error: &str, link: &str) -> Response {
+    let owner = viewer.is_owner();
     let data = MainData {
         nav: panel_nav(viewer, "/admin/invitations"),
         ..MainData::default()
@@ -398,7 +415,7 @@ fn invitation_created(viewer: &Viewer, error: &str, link: &str) -> Response {
                 p.crumb { a href="/admin/invitations" { "Invitations" } }
                 h1 { "The invitation is stored but the email was not sent" }
             }
-            (ui::notice("warning", html! { p { (error) } }))
+            (ui::notice("warning", mail_warning(error, owner)))
             section.part aria-labelledby="link-title" {
                 div.part-head {
                     h2 id="link-title" { "Send it by hand" }

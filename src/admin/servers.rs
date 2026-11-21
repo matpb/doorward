@@ -363,7 +363,8 @@ fn assign_users_in(
     for (user_id, server_id) in servers::set_assignments(&tx, Scope::Server(id), &ids)? {
         families::revoke_pair(&tx, user_id, server_id, at)?;
     }
-    let detail = format!("assignments of {} set to {} users", server.slug, ids.len());
+    let noun = if ids.len() == 1 { "user" } else { "users" };
+    let detail = format!("assignments of {} set to {} {noun}", server.slug, ids.len());
     record(&tx, at, actor, Some(id), &server.slug, &detail)?;
     tx.commit()?;
     Ok(Assigned::Saved)
@@ -860,7 +861,11 @@ fn server_body(
             }
             div.part-body {
                 details.confirm data-confirm {
-                    summary { "Delete this server " span.chevron aria-hidden="true" {} }
+                    summary {
+                        span.confirm-open { "Delete this server " span.chevron aria-hidden="true" {} }
+                        " "
+                        span.confirm-note { "This cannot be undone." }
+                    }
                     div.confirm-body {
                         p { "This cannot be undone. People who use " (server.name) " through Doorward lose it at once." }
                         form method="post" action=(format!("{path}/delete")) {

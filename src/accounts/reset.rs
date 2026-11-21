@@ -279,6 +279,7 @@ fn forgot_body(csrf: &str) -> Markup {
             }
             button type="submit" data-kind="primary" { "Send reset link" }
         }
+        p.back { a href="/login" { "Back to sign in" } }
     }
 }
 
@@ -338,6 +339,17 @@ mod tests {
                 "div.field > label[for=email] + input#email[name=email]"
             ),
             1
+        );
+    }
+
+    #[test]
+    fn the_forgot_page_links_back_to_sign_in_after_its_form() {
+        assert_eq!(
+            forgot_body("token")
+                .into_string()
+                .rsplit_once("</form>")
+                .map(|(_, tail)| tail),
+            Some(r#"<p class="back"><a href="/login">Back to sign in</a></p>"#)
         );
     }
 
