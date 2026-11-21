@@ -117,10 +117,12 @@ fn refused_key(object: &Map<String, Value>) -> bool {
             .any(unsafe_names)
 }
 
-/// True when a name has a non-ASCII character, or differs from a decision key only in ASCII case.
+/// True when a name has a non-ASCII or control character, or differs from a decision key only in
+/// ASCII case.
 fn unsafe_names(object: &Map<String, Value>) -> bool {
     object.keys().any(|name| {
         !name.is_ascii()
+            || name.bytes().any(|byte| byte < 0x20 || byte == 0x7F)
             || DECISION_KEYS
                 .iter()
                 .any(|key| name.as_str() != *key && name.eq_ignore_ascii_case(key))

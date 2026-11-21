@@ -62,13 +62,18 @@ These are the limits known at this release.
   15 minutes block the account for every address, the right password included. Existing
   sessions and connected clients keep working. `doorward unlock` with the email address, or a
   password reset by email, lifts the block.
+- Anyone who knows an account's address can ask for five reset mails and so stop further reset
+  mails for that account for up to a day. Each reset mail replaces the link sent before it, so
+  only the newest link keeps working until it expires.
 - The tables that hold sign-ins in progress and unused client registrations are bounded. When
   one fills, its oldest entries are dropped. A flood of requests from many addresses can
   therefore cancel sign-ins in progress and push out clients that have not finished a sign-in.
   A client that has finished one is kept.
 - People who reach the gateway through one shared address share its rate limits and its
-  sign-in block. Anyone who sends junk requests or wrong passwords from that address can lock
-  them all out.
+  sign-in block. A client service that reaches the gateway from addresses it shares between its
+  users shares them among those users, so junk requests sent through that service count against
+  everyone who uses it. Anyone who sends junk requests or wrong passwords from that address can
+  lock them all out.
 - Approving a sign-in that someone else started connects your account to their app. The
   consent page says so. The gateway sends the code only to a loopback address or to an
   address on the allowed list.

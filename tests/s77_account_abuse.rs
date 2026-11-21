@@ -17,6 +17,7 @@ const UNKNOWN: &str = "nobody-here@example.com";
 const BOB: &str = "bob@example.com";
 const RESET_SUBJECT: &str = "Reset your Doorward password";
 const MADE_UP: usize = 25;
+const NEW_PASSWORD: &str = "a brand new passphrase";
 
 /// Raises the sign-in burst, which would answer 429 before the 21st attempt from one address.
 fn raise_sign_in_burst(config: &mut Config) {
@@ -31,6 +32,21 @@ async fn failed_sign_ins(w: &World) -> Vec<String> {
         .filter(|row| row.kind == "login_failed")
         .map(|row| row.user)
         .collect()
+}
+
+/// The detail of each login_failed row that names no account, oldest first.
+fn unknown_details(w: &World) -> Vec<String> {
+    let conn = Connection::open(w.gw.db_path()).expect("the gateway database opens");
+    let mut statement = conn
+        .prepare(
+            "SELECT detail FROM activity WHERE kind = 'login_failed' AND user_id IS NULL ORDER BY id",
+        )
+        .expect("the query prepares");
+    statement
+        .query_map([], |row| row.get(0))
+        .expect("the query runs")
+        .collect::<Result<Vec<String>, _>>()
+        .expect("every row reads")
 }
 
 /// The body of a refused sign-in with its anti-forgery value and its echoed address blanked.
@@ -56,6 +72,23 @@ async fn unknown_address_rows_stop_at_twenty_an_hour() {
     assert!(
         rows.iter().all(|user| user.is_empty()),
         "the unknown-address rows name no account, rows were {rows:?}"
+    );
+    let details = unknown_details(&w);
+    assert_eq!(
+        details.len(),
+        20,
+        "the unknown-address rows after the 20th are not written"
+    );
+    assert!(
+        details[..19]
+            .iter()
+            .all(|detail| detail.as_str() == "unknown address"),
+        "the first nineteen rows carry no notice, details were {details:?}"
+    );
+    assert_eq!(
+        details[19],
+        "unknown address Further failed sign-ins for unknown addresses are not recorded for up to an hour.",
+        "the twentieth row says that later failures are not recorded"
     );
 
     let refused = w.client().login(OWNER_EMAIL, GUESS).await;
@@ -210,6 +243,91 @@ async fn six_reset_requests_in_a_day_send_five_mails_and_a_day_later_one_more() 
         reset_mails(&w),
         6,
         "a request 24 hours after the first mail must send one more"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_reset_window_opens_at_the_first_mail() {
+    let w = World::start().await;
+    w.user(BOB).await;
+    let anonymous = w.client();
+    let first_mail_at = w.gw.clock.now();
+    // Offsets in seconds from the first mail. The sixth request below comes within 5 minutes of
+    // the fifth mail, so the gap rule refuses it.
+    let first_window = [(0, 1), (85_200, 2), (85_501, 3), (85_802, 4), (86_103, 5)];
+    for (offset, count) in first_window {
+        w.gw.clock
+            .set(first_mail_at + time::Duration::seconds(offset));
+        request_reset(&anonymous).await;
+        wait_for_reset_mails(&w, count).await;
+    }
+    w.gw.clock
+        .set(first_mail_at + time::Duration::seconds(86_399));
+    request_reset(&anonymous).await;
+    // A refused request sends nothing; one second is long enough for a mail task to finish.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        reset_mails(&w),
+        5,
+        "the sixth request inside the first window must send no mail"
+    );
+
+    let second_window = [
+        (86_404, 6),
+        (86_705, 7),
+        (87_006, 8),
+        (87_307, 9),
+        (87_608, 10),
+    ];
+    for (offset, count) in second_window {
+        w.gw.clock
+            .set(first_mail_at + time::Duration::seconds(offset));
+        let answer = request_reset(&anonymous).await;
+        assert_eq!(answer.status, 200, "a reset request must be answered 200");
+        wait_for_reset_mails(&w, count).await;
+    }
+    assert_eq!(
+        reset_mails(&w),
+        10,
+        "nine mails came in the last 40 minutes and ten in all"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn completing_a_reset_starts_the_count_again() {
+    let w = World::start().await;
+    w.user(BOB).await;
+    let anonymous = w.client();
+    for round in 1..=5 {
+        if round > 1 {
+            w.gw.clock.advance(time::Duration::seconds(301));
+        }
+        request_reset(&anonymous).await;
+        wait_for_reset_mails(&w, round).await;
+    }
+    w.gw.clock.advance(time::Duration::seconds(301));
+    request_reset(&anonymous).await;
+    // A refused request sends nothing; one second is long enough for a mail task to finish.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        reset_mails(&w),
+        5,
+        "the sixth request within a day must send no mail"
+    );
+
+    let done = anonymous
+        .reset_password(&last_reset_link(&w), NEW_PASSWORD)
+        .await;
+    assert_eq!(done.status, 303, "completing the reset must redirect");
+
+    w.gw.clock.advance(time::Duration::seconds(301));
+    let answer = request_reset(&anonymous).await;
+    assert_eq!(answer.status, 200, "a reset request must be answered 200");
+    wait_for_reset_mails(&w, 6).await;
+    assert_eq!(
+        reset_mails(&w),
+        6,
+        "a request after a completed reset must send a mail"
     );
 }
 

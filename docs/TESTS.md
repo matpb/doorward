@@ -2221,6 +2221,17 @@ checks each refusal. An ordinary call and a call with odd argument names follow.
 4. `combined_stateless_refuses_each_trick_body`: the same on `/mcp` under the stateless rules,
    with the names `demo__echo` and `demo__search`. Bodies A and B are sent. The odd-argument
    call is compared as in item 3.
+5. `a_control_character_in_a_name_is_refused_on_both_session_routes`: on `/demo` and on `/mcp`
+   under the session rules, a body whose `params` holds `name` as the allowed tool and `name` with
+   a U+0000 after it as the denied one. Each answers `400` with JSON-RPC `-32600` and message
+   `Invalid request`, reaches no upstream and adds no activity row. Then the allowed call answers
+   `200` on each route.
+6. `a_non_ascii_name_under_meta_is_refused_on_the_per_server_route`: on `/demo` under the session
+   rules, a `params._meta` that holds a name with a non-ASCII character. The same refusal, no
+   upstream call and no activity row.
+7. `a_case_variant_decision_key_under_ref_is_refused_on_the_per_server_route`: on `/demo`, a
+   `completion/complete` whose `params.ref` holds `Type` for `type`. The same refusal, no upstream
+   call and no activity row.
 
 ## s75_answer_memory.rs (statement 75)
 
@@ -2309,7 +2320,9 @@ per-address limit of sign-in does not answer first. Tests that need a later time
 clock. One test restarts the gateway to run the housekeeping sweep.
 
 1. `unknown_address_rows_stop_at_twenty_an_hour`: 25 sign-ins for 25 made-up addresses each
-   answer `401`. Then exactly 20 `login_failed` rows exist, and none names an account. A wrong
+   answer `401`. Then exactly 20 `login_failed` rows exist, and none names an account. The first
+   nineteen details are `unknown address`, and the twentieth ends with the sentence `Further failed
+   sign-ins for unknown addresses are not recorded for up to an hour.`. A wrong
    password for the owner answers `401` and adds one row, so there are 21 rows, and exactly one
    names the owner. The clock moves 3601 seconds. A new unknown address answers `401`, and the
    count is 22.
@@ -2335,6 +2348,15 @@ clock. One test restarts the gateway to run the housekeeping sweep.
    protected resource metadata for `demo`, `POST /oauth/token` with an empty form,
    `POST /oauth/register` with `{}`, `GET /healthz`, and `POST /mcp` without a token. Each answer
    has exactly one `X-Content-Type-Options` header, with the value `nosniff`.
+7. `the_reset_window_opens_at_the_first_mail`: the clock is set from the first mail. The second to
+   fifth requests, at 23 hours 40 minutes, 23 hours 45 minutes 1 second, 23 hours 50 minutes 2
+   seconds and 23 hours 55 minutes 3 seconds, each send a mail, so five mails exist. A sixth request
+   at 23 hours 59 minutes 59 seconds sends nothing, since it comes within 5 minutes of the fifth. The
+   requests at 24 hours 0 minutes 4 seconds and every 301 seconds after send mails six to ten, so ten
+   mails arrive, nine of them in the last 40 minutes. The test passes on the window as it is coded.
+8. `completing_a_reset_starts_the_count_again`: five reset requests 301 seconds apart send five
+   mails, and a sixth sends nothing. The newest link completes the reset and answers `303`. A
+   request 301 seconds later sends a sixth mail. The test passes on the window as it is coded.
 
 ## s78_bounded_writes.rs (statement 78)
 

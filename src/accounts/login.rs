@@ -29,6 +29,9 @@ const UNKNOWN_ADDRESS: &str = "unknown address";
 const HOUR_SECONDS: i64 = 3600;
 /// Unknown-address rows the instance writes per hour; further failures write no row.
 pub const UNKNOWN_ROWS_PER_HOUR: i64 = 20;
+/// Appended to the unknown-address row that reaches UNKNOWN_ROWS_PER_HOUR.
+const UNKNOWN_NOTICE: &str =
+    " Further failed sign-ins for unknown addresses are not recorded for up to an hour.";
 
 #[derive(Deserialize)]
 pub struct LoginQuery {
@@ -169,9 +172,14 @@ fn record_unknown_in(conn: &Connection, now: i64) -> rusqlite::Result<()> {
     if recent >= UNKNOWN_ROWS_PER_HOUR {
         return Ok(());
     }
+    let detail = if recent + 1 == UNKNOWN_ROWS_PER_HOUR {
+        format!("{UNKNOWN_ADDRESS}{UNKNOWN_NOTICE}")
+    } else {
+        UNKNOWN_ADDRESS.to_owned()
+    };
     let event = Event {
         kind: "login_failed",
-        detail: UNKNOWN_ADDRESS,
+        detail: &detail,
         ..Default::default()
     };
     audit::record(conn, now, &event)

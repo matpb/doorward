@@ -825,13 +825,19 @@ fn server_name(conn: &Connection, server_id: i64) -> rusqlite::Result<Option<Str
 /// The host the sign-in was sent to: the redirect address's host, with its port when it has one.
 fn destination_of(redirect: &str) -> String {
     match uri::parse(redirect) {
-        Some(parsed) => truncated(&shown_host(&parsed), DESTINATION_LIMIT),
+        Some(parsed) => tail(&shown_host(&parsed), DESTINATION_LIMIT),
         None => String::new(),
     }
 }
 
 fn truncated(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
+}
+
+/// The last `limit` characters of `text`.
+fn tail(text: &str, limit: usize) -> String {
+    let skip = text.chars().count().saturating_sub(limit);
+    text.chars().skip(skip).collect()
 }
 
 /// The time in UTC as the mail writes it: `21 November 2026, 14:05 UTC`.
@@ -851,7 +857,7 @@ fn utc_text(at: OffsetDateTime) -> String {
 mod tests {
     use time::OffsetDateTime;
 
-    use super::{destination_of, truncated, utc_text};
+    use super::{destination_of, tail, truncated, utc_text};
 
     #[test]
     fn the_destination_is_named_as_the_consent_page_names_it() {
@@ -879,9 +885,53 @@ mod tests {
     #[test]
     fn a_destination_and_a_server_name_are_cut_to_their_limits() {
         let long = format!("https://{}.example.com/cb", "a".repeat(90));
-        assert_eq!(destination_of(&long), "a".repeat(80));
+        assert_eq!(
+            destination_of(&long),
+            format!("{}.example.com", "a".repeat(68))
+        );
         assert_eq!(truncated(&"b".repeat(70), 60), "b".repeat(60));
         assert_eq!(truncated("short", 60), "short");
+    }
+
+    #[test]
+    fn a_destination_of_100_characters_keeps_its_last_80() {
+        let host = format!("{}.example.com", "b".repeat(88));
+        assert_eq!(host.chars().count(), 100);
+        assert_eq!(
+            destination_of(&format!("https://{host}/cb")),
+            format!("{}.example.com", "b".repeat(68))
+        );
+        assert_eq!(tail("ééé", 2), "éé");
+        assert_eq!(tail("short", 60), "short");
+    }
+
+    #[test]
+    fn a_destination_of_80_or_fewer_characters_is_unchanged() {
+        let exact = format!("{}.example.com", "c".repeat(68));
+        assert_eq!(exact.chars().count(), 80);
+        assert_eq!(destination_of(&format!("https://{exact}/cb")), exact);
+        assert_eq!(
+            destination_of("https://app.example.com/cb"),
+            "app.example.com"
+        );
+    }
+
+    #[test]
+    fn a_destination_always_ends_with_the_last_label_of_its_host() {
+        // uri::parse refuses hosts over 253 characters, so 241 + 12 is the longest host tested.
+        for length in [1, 79, 80, 81, 100, 241] {
+            let host = format!("{}.example.com", "d".repeat(length));
+            let shown = destination_of(&format!("https://{host}/cb"));
+            // Brute force: the last 80 characters, taken by reversing twice.
+            let reversed: String = host.chars().rev().take(80).collect();
+            let expected: String = reversed.chars().rev().collect();
+            assert_eq!(shown, expected, "host of {length} d characters");
+            let label = host.rsplit('.').next().expect("a host has a last label");
+            assert!(
+                shown.ends_with(label),
+                "the destination must end with the last label {label}, got {shown}"
+            );
+        }
     }
 
     #[test]

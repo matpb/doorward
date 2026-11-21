@@ -684,6 +684,36 @@ fn classify_refuses_member_names_the_upstream_may_read_differently() {
             Err(Refusal::InvalidRequest),
         ),
         (
+            "a control character in a name in params",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","name\u0000":"denied"}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a control character in a name in _meta",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"progressToken\u0000":1}}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a DEL character in a name in params",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","name\u007f":1}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a control character in a name in params.ref",
+            r#"{"jsonrpc":"2.0","id":1,"method":"completion/complete","params":{"ref":{"type\u0000":"ref/prompt"}}}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
+            "a control character in a top-level member name",
+            r#"{"jsonrpc":"2.0","id":1,"method":"ping","method\u0000":"ping"}"#.into(),
+            None,
+            Err(Refusal::InvalidRequest),
+        ),
+        (
             "body A with a stateless _meta",
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","Name":"search","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#.into(),
             Some(STATELESS_HEADER),

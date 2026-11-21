@@ -303,3 +303,114 @@ async fn combined_stateless_refuses_each_trick_body() {
     assert_ordinary_call(&upstream, &route).await;
     forwards_odd_arguments(&upstream, &route).await;
 }
+
+/// Refuses `body` as the file's other bodies: 400 with `-32600`, no upstream call, no activity row.
+async fn refuse_one_body(
+    w: &World,
+    upstream: &FakeUpstream,
+    route: &Route<'_>,
+    case: &str,
+    body: &str,
+) {
+    let before = admin::activity(&w.owner, None, None).await;
+    upstream.clear();
+    let reply = post(route, "A", body).await;
+    assert_refused(&reply, case);
+    assert!(
+        upstream.requests().is_empty(),
+        "{case}: the upstream must not see the body"
+    );
+    let after = admin::activity(&w.owner, None, None).await;
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "{case}: the activity log must gain no row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_control_character_in_a_name_is_refused_on_both_session_routes() {
+    let w = World::start().await;
+    let (bob, upstream) = deny_search(&w).await;
+    let demo_tokens = w.token(&bob, "demo").await;
+    let demo = w.session_mcp("demo", &demo_tokens);
+    let demo_session = initialized_session(&demo).await;
+    let mcp_tokens = w.token(&bob, "mcp").await;
+    let mcp = w.session_mcp("mcp", &mcp_tokens);
+    let mcp_session = initialized_session(&mcp).await;
+    let routes = [
+        Route {
+            name: "per-server session",
+            client: &demo,
+            stateless: false,
+            session: demo_session,
+            echo: "echo",
+            search: "search",
+            verbatim: true,
+        },
+        Route {
+            name: "combined session",
+            client: &mcp,
+            stateless: false,
+            session: mcp_session,
+            echo: "demo__echo",
+            search: "demo__search",
+            verbatim: false,
+        },
+    ];
+    for route in &routes {
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"{}","name\u0000":"{}","arguments":{{}}}}}}"#,
+            route.echo, route.search
+        );
+        refuse_one_body(&w, &upstream, route, route.name, &body).await;
+        assert_ordinary_call(&upstream, route).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_non_ascii_name_under_meta_is_refused_on_the_per_server_route() {
+    let w = World::start().await;
+    let (bob, upstream) = deny_search(&w).await;
+    let tokens = w.token(&bob, "demo").await;
+    let client = w.session_mcp("demo", &tokens);
+    let session = initialized_session(&client).await;
+    let route = Route {
+        name: "per-server session",
+        client: &client,
+        stateless: false,
+        session,
+        echo: "echo",
+        search: "search",
+        verbatim: true,
+    };
+    let body = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"progressToken":1,"ü":2}}}"#;
+    refuse_one_body(&w, &upstream, &route, "non-ASCII name under _meta", body).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_case_variant_decision_key_under_ref_is_refused_on_the_per_server_route() {
+    let w = World::start().await;
+    let (bob, upstream) = deny_search(&w).await;
+    let tokens = w.token(&bob, "demo").await;
+    let client = w.session_mcp("demo", &tokens);
+    let session = initialized_session(&client).await;
+    let route = Route {
+        name: "per-server session",
+        client: &client,
+        stateless: false,
+        session,
+        echo: "echo",
+        search: "search",
+        verbatim: true,
+    };
+    let body = r#"{"jsonrpc":"2.0","id":3,"method":"completion/complete","params":{"ref":{"Type":"ref/prompt","name":"x"},"argument":{"name":"a","value":"b"}}}"#;
+    refuse_one_body(
+        &w,
+        &upstream,
+        &route,
+        "case variant of type under ref",
+        body,
+    )
+    .await;
+}

@@ -323,10 +323,10 @@ L. Added after the owner's auth review
 74. A message that a server could read differently than the gateway judged it is refused with
     `400` and JSON-RPC `-32600`, and never reaches the upstream: one with a top-level member
     other than `jsonrpc`, `id`, `method`, `params`, `result` and `error`; or one where
-    `params`, `params._meta` or `params.ref` holds a member name with a non-ASCII character,
-    or a name that differs only in letter case from one the gateway reads there, such as
-    `Name` for `name`. Member names inside `params.arguments` belong to the tool and are not
-    checked.
+    `params`, `params._meta` or `params.ref` holds a member name with a non-ASCII character
+    or a control character (U+0000 to U+001F, U+007F), or a name that differs only in letter
+    case from one the gateway reads there, such as `Name` for `name`. Member names inside
+    `params.arguments` belong to the tool and are not checked.
 75. The bytes of server answers that the gateway holds in memory at one time are bounded by
     `limits.answer_memory_bytes` (32 MiB by default) over all requests, and one user's
     requests together hold at most a quarter of it, or one largest answer
@@ -341,10 +341,13 @@ L. Added after the owner's auth review
     activity row is written. A `HEAD` on `/oauth/authorize` is rate limited as a `GET` is.
 77. What a caller without an account can make the gateway write or send is bounded. Failed
     sign-ins for addresses that match no account write at most 20 activity rows in any hour
-    over the whole instance; a failed sign-in for an existing account always writes its row.
-    An account receives at most five reset mails in any 24 hours, and a request beyond that
-    answers as every other one does and sends nothing; completing a reset, changing the
-    password or an admin disabling the account starts the count again. Every answer of the
+    over the whole instance, and the twentieth says that later ones are not recorded; a
+    failed sign-in for an existing account always writes its row. An account receives at
+    most five reset mails in each window of 24 hours. A window opens with the first mail
+    after the last window ended, so two windows can meet and nine mails can arrive within an
+    hour. A request beyond the five answers as every other one does and sends nothing;
+    completing a reset, changing the password or an admin disabling the account starts the
+    count again. Every answer of the
     token, registration, discovery, health and MCP routes carries
     `X-Content-Type-Options: nosniff`. An upstream secret is never printed by a debug format.
 78. What a signed-in user or a server can make the gateway store is bounded. A tool name in
@@ -362,7 +365,8 @@ L. Added after the owner's auth review
     Your password stays the same.` The new-connection mail names what the app can use (the
     server's name, or `every server assigned to you` for the combined endpoint), where the
     sign-in was sent, named as the consent page named it, and the time in UTC; the name the
-    app gave itself is not in the mail.
+    app gave itself is not in the mail. A destination longer than 80 characters keeps its
+    last 80.
     The HTML part equals the designed mail byte for byte, a host in it breaks only before a
     dot, and the address shown as text equals the link with no character added. The mark,
     the rule under the header and the neutral button outline are borders with no colour of
