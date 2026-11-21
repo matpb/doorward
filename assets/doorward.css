@@ -1168,6 +1168,7 @@ body[data-layout="card"] [data-kind="danger"]:hover {
 
 .activity .duration {
   padding-inline-end: var(--s4);
+  white-space: nowrap;
 }
 
 .list .act {

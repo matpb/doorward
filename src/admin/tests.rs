@@ -58,7 +58,7 @@ impl Answer {
     }
 
     fn error(&self) -> Option<String> {
-        text_of(&self.body, ".error")
+        text_of(&self.body, r#".error, [data-notice="error"]"#)
     }
 }
 
@@ -2864,7 +2864,7 @@ async fn the_shipped_addresses_are_listed_enabled() {
     let dir = tempfile::tempdir().expect("dir");
     let (_base, mut owner) = owner_gateway(dir.path()).await;
     let page = owner.get("/admin/redirects").await;
-    let rows = elements(&page.body, "li[data-redirect-id]");
+    let rows = elements(&page.body, "tr[data-redirect-id]");
     assert_eq!(rows.len(), 5, "the five shipped addresses are listed");
     for (host, listed) in [
         ("claude.ai", 1),
@@ -2872,14 +2872,14 @@ async fn the_shipped_addresses_are_listed_enabled() {
         ("www.cursor.com", 1),
         ("anysphere.cursor-mcp", 1),
     ] {
-        let row = elements(&page.body, &format!(r#"li[data-host="{host}"]"#));
+        let row = elements(&page.body, &format!(r#"tr[data-host="{host}"]"#));
         assert_eq!(row.len(), listed, "{host} is listed {listed} time(s)");
         for entry in &row {
             assert_eq!(entry["data-source"], "shipped");
             assert_eq!(entry["data-enabled"], "yes");
         }
     }
-    let cursor = elements(&page.body, r#"li[data-scheme="cursor"]"#);
+    let cursor = elements(&page.body, r#"tr[data-scheme="cursor"]"#);
     assert_eq!(cursor[0]["data-source"], "shipped");
 }
 
@@ -2898,7 +2898,7 @@ async fn an_admin_address_is_added_disabled_enabled_again_and_recorded() {
     assert_eq!(added.status, 303, "adding an address answers 303");
     assert_eq!(added.location(), Some("/admin/redirects"));
     let page = owner.get("/admin/redirects").await;
-    let row = elements(&page.body, r#"li[data-host="app.example.com"]"#);
+    let row = elements(&page.body, r#"tr[data-host="app.example.com"]"#);
     assert_eq!(row.len(), 1, "the added address is listed once");
     assert_eq!(row[0]["data-source"], "added");
     assert_eq!(row[0]["data-enabled"], "yes");
@@ -2914,7 +2914,7 @@ async fn an_admin_address_is_added_disabled_enabled_again_and_recorded() {
         .await;
     assert_eq!(disabled.status, 303, "disabling answers 303");
     let page = owner.get("/admin/redirects").await;
-    let row = elements(&page.body, r#"li[data-host="app.example.com"]"#);
+    let row = elements(&page.body, r#"tr[data-host="app.example.com"]"#);
     assert_eq!(row[0]["data-enabled"], "no", "the flag is off");
 
     let again = owner
@@ -2922,7 +2922,7 @@ async fn an_admin_address_is_added_disabled_enabled_again_and_recorded() {
         .await;
     assert_eq!(again.status, 303);
     let page = owner.get("/admin/redirects").await;
-    let row = elements(&page.body, r#"li[data-host="app.example.com"]"#);
+    let row = elements(&page.body, r#"tr[data-host="app.example.com"]"#);
     assert_eq!(
         row.len(),
         1,
@@ -2975,7 +2975,7 @@ async fn a_refused_address_answers_400_and_stores_nothing() {
     }
     let page = owner.get("/admin/redirects").await;
     assert_eq!(
-        elements(&page.body, "li[data-redirect-id]").len(),
+        elements(&page.body, "tr[data-redirect-id]").len(),
         5,
         "no refused address is stored"
     );
@@ -2985,7 +2985,7 @@ async fn a_refused_address_answers_400_and_stores_nothing() {
 /// For each blocked attempt, newest first: whether its row offers a one-click allow form.
 fn one_click_offers(body: &str) -> Vec<bool> {
     let doc = Html::parse_document(body);
-    let rows = Selector::parse("li[data-blocked]").expect("selector");
+    let rows = Selector::parse("tr[data-blocked]").expect("selector");
     let field = Selector::parse(r#"input[name="path_prefix"]"#).expect("selector");
     doc.select(&rows)
         .map(|row| row.select(&field).next().is_some())
@@ -3014,16 +3014,16 @@ async fn a_blocked_attempt_offers_one_click_allow_only_when_it_may() {
     }
     let page = owner.get("/admin/redirects").await;
     assert_eq!(
-        elements(&page.body, "li[data-blocked]").len(),
+        elements(&page.body, "tr[data-blocked]").len(),
         4,
         "every blocked attempt is listed"
     );
     assert!(
-        elements(&page.body, "li[data-blocked][data-host]").is_empty(),
+        elements(&page.body, "tr[data-blocked][data-host]").is_empty(),
         "a blocked row never carries data-host"
     );
     assert!(
-        elements(&page.body, "li[data-blocked][data-redirect-id]").is_empty(),
+        elements(&page.body, "tr[data-blocked][data-redirect-id]").is_empty(),
         "a blocked row never carries data-redirect-id"
     );
     assert_eq!(
@@ -3046,14 +3046,14 @@ async fn a_blocked_client_name_is_shown_as_a_claim_and_escaped() {
     audit::record(&open_db(dir.path()), AT, &event).expect("record");
     let page = owner.get("/admin/redirects").await;
     assert_eq!(
-        text_of(&page.body, "li[data-blocked] p q").as_deref(),
+        text_of(&page.body, "tr[data-blocked] q").as_deref(),
         Some("<b>Claude</b>"),
         "the client name is text inside the q element"
     );
     assert_eq!(
-        text_of(&page.body, "li[data-blocked] p").as_deref(),
-        Some("Asked by a client that calls itself <b>Claude</b>"),
-        "the first line says the name is a claim"
+        text_of(&page.body, "tr[data-blocked] td:nth-child(2)").as_deref(),
+        Some("asked by a client that calls itself <b>Claude</b>"),
+        "the client cell says the name is a claim"
     );
     assert!(
         !page.body.contains("<b>Claude</b>"),
@@ -3110,16 +3110,16 @@ async fn a_rule_is_listed_with_its_subject_effect_scope_and_target() {
 
     let page = owner.get("/admin/rules").await;
     assert_eq!(page.kind().as_deref(), Some("rules"));
-    let rows = elements(&page.body, "li[data-rule-id]");
+    let rows = elements(&page.body, "tr[data-rule-id]");
     assert_eq!(rows.len(), 2, "both rules are listed");
-    let tool = elements(&page.body, r#"li[data-scope="tool"]"#);
+    let tool = elements(&page.body, r#"tr[data-scope="tool"]"#);
     assert_eq!(tool.len(), 1);
     assert_eq!(tool[0]["data-subject"], BOB);
     assert_eq!(tool[0]["data-effect"], "deny");
     assert_eq!(tool[0]["data-server"], "demo");
     assert_eq!(tool[0]["data-tool"], "alpha");
     assert_eq!(tool[0]["data-stale"], "no");
-    let all = elements(&page.body, r#"li[data-scope="all"]"#);
+    let all = elements(&page.body, r#"tr[data-scope="all"]"#);
     assert_eq!(all.len(), 1);
     assert_eq!(all[0]["data-subject"], "everyone");
     assert_eq!(all[0]["data-effect"], "allow");
@@ -3161,9 +3161,9 @@ async fn a_tool_rule_for_a_tool_that_left_the_list_is_flagged_stale() {
     seed_catalog(dir.path(), server, &["beta"]);
 
     let page = owner.get("/admin/rules").await;
-    let stale = elements(&page.body, r#"li[data-scope="tool"]"#);
+    let stale = elements(&page.body, r#"tr[data-scope="tool"]"#);
     assert_eq!(stale[0]["data-stale"], "yes", "the tool left the list");
-    let whole = elements(&page.body, r#"li[data-scope="server"]"#);
+    let whole = elements(&page.body, r#"tr[data-scope="server"]"#);
     assert_eq!(
         whole[0]["data-stale"], "no",
         "a server rule never goes stale"
@@ -3275,10 +3275,10 @@ async fn every_refused_rule_answers_400_with_its_message_and_stores_nothing() {
             Some("rules"),
             "the refusal is the rules page"
         );
-        assert_eq!(
-            page.error().as_deref(),
-            Some(message),
-            "{fields:?} shows its message"
+        let notice = page.error().unwrap_or_default();
+        assert!(
+            notice.starts_with("The rule was not added. ") && notice.contains(message),
+            "{fields:?} shows its message in the refusal notice, got {notice:?}"
         );
     }
     let duplicate = add_rule(
@@ -3297,7 +3297,7 @@ async fn every_refused_rule_answers_400_with_its_message_and_stores_nothing() {
         "the other effect for the same target is a duplicate"
     );
     assert_eq!(
-        elements(&owner.get("/admin/rules").await.body, "li[data-rule-id]").len(),
+        elements(&owner.get("/admin/rules").await.body, "tr[data-rule-id]").len(),
         1,
         "no refused rule is stored"
     );
@@ -3317,7 +3317,7 @@ async fn every_refused_rule_answers_400_with_its_message_and_stores_nothing() {
         "the same target for another subject is a new rule"
     );
     assert_eq!(
-        elements(&owner.get("/admin/rules").await.body, "li[data-rule-id]").len(),
+        elements(&owner.get("/admin/rules").await.body, "tr[data-rule-id]").len(),
         2,
         "the other subject's rule is stored"
     );
@@ -3363,10 +3363,10 @@ async fn a_rule_ignores_the_fields_its_scope_does_not_use() {
     .await;
     assert_eq!(whole.status, 303, "a server rule ignores its tool");
     let page = owner.get("/admin/rules").await;
-    let all = elements(&page.body, r#"li[data-scope="all"]"#);
+    let all = elements(&page.body, r#"tr[data-scope="all"]"#);
     assert_eq!(all[0]["data-server"], "");
     assert_eq!(all[0]["data-tool"], "");
-    let whole = elements(&page.body, r#"li[data-scope="server"]"#);
+    let whole = elements(&page.body, r#"tr[data-scope="server"]"#);
     assert_eq!(whole[0]["data-server"], "demo");
     assert_eq!(whole[0]["data-tool"], "");
 }
@@ -3386,7 +3386,7 @@ async fn a_rule_is_deleted_and_recorded_and_an_unknown_id_changes_nothing() {
     .await;
     assert_eq!(added.status, 303);
     let page = owner.get("/admin/rules").await;
-    let id = elements(&page.body, "li[data-rule-id]")[0]["data-rule-id"].clone();
+    let id = elements(&page.body, "tr[data-rule-id]")[0]["data-rule-id"].clone();
     let changes = rows_of(dir.path(), "admin_change");
     assert_eq!(changes.len(), 1, "the add is recorded once");
     assert_eq!(changes[0].1, OWNER);
@@ -3398,7 +3398,7 @@ async fn a_rule_is_deleted_and_recorded_and_an_unknown_id_changes_nothing() {
     assert_eq!(deleted.status, 303, "the delete answers 303");
     assert_eq!(deleted.location(), Some("/admin/rules"));
     assert!(
-        elements(&owner.get("/admin/rules").await.body, "li[data-rule-id]").is_empty(),
+        elements(&owner.get("/admin/rules").await.body, "tr[data-rule-id]").is_empty(),
         "the rule is gone"
     );
     let changes = rows_of(dir.path(), "admin_change");
@@ -3457,26 +3457,26 @@ async fn the_user_page_names_the_deciding_rule_for_each_tool() {
     )
     .await;
     assert_eq!(allow_alpha.status, 303);
-    let rule_ids: Vec<String> = elements(&owner.get("/admin/rules").await.body, "li[data-rule-id]")
+    let rule_ids: Vec<String> = elements(&owner.get("/admin/rules").await.body, "tr[data-rule-id]")
         .iter()
         .map(|row| row["data-rule-id"].clone())
         .collect();
 
     let page = owner.get(&format!("/admin/users/{bob}")).await;
-    let tools = elements(&page.body, "li[data-tool]");
+    let tools = elements(&page.body, "tr[data-tool]");
     assert_eq!(
         tools.len(),
         2,
         "one element per tool of the assigned server"
     );
-    let alpha = elements(&page.body, r#"li[data-tool="alpha"]"#);
+    let alpha = elements(&page.body, r#"tr[data-tool="alpha"]"#);
     assert_eq!(alpha[0]["data-server"], "demo");
     assert_eq!(alpha[0]["data-verdict"], "allow");
     assert_eq!(
         alpha[0]["data-rule"], rule_ids[1],
         "the user's allow decides alpha"
     );
-    let beta = elements(&page.body, r#"li[data-tool="beta"]"#);
+    let beta = elements(&page.body, r#"tr[data-tool="beta"]"#);
     assert_eq!(beta[0]["data-verdict"], "deny");
     assert_eq!(
         beta[0]["data-rule"], rule_ids[0],
@@ -3524,7 +3524,7 @@ async fn the_user_page_lists_no_tool_of_a_server_the_user_is_not_assigned_to() {
     assert_eq!(allow.status, 303, "the everyone allow on demo is saved");
 
     let page = owner.get(&format!("/admin/users/{bob}")).await;
-    let tools = elements(&page.body, "li[data-tool]");
+    let tools = elements(&page.body, "tr[data-tool]");
     assert_eq!(
         tools.len(),
         1,
@@ -3533,7 +3533,7 @@ async fn the_user_page_lists_no_tool_of_a_server_the_user_is_not_assigned_to() {
     assert_eq!(tools[0]["data-server"], "other");
     assert_eq!(tools[0]["data-tool"], "gamma");
     assert!(
-        elements(&page.body, r#"li[data-server="demo"]"#).is_empty(),
+        elements(&page.body, r#"tr[data-server="demo"]"#).is_empty(),
         "no tool of the unassigned server is listed, even under an allow"
     );
 }
@@ -3645,8 +3645,8 @@ async fn the_user_list_counts_assigned_servers_and_shows_active_or_disabled() {
         .await;
 
     let body = owner.get("/admin/users").await.body;
-    let bob_row = format!(r#"li[data-email="{BOB}"]"#);
-    let carol_row = format!(r#"li[data-email="{CAROL}"]"#);
+    let bob_row = format!(r#"tr[data-email="{BOB}"]"#);
+    let carol_row = format!(r#"tr[data-email="{CAROL}"]"#);
     assert_eq!(
         text_under(&body, &bob_row, "[data-server-count]"),
         "1 server"
@@ -3682,10 +3682,10 @@ async fn a_rule_row_holds_one_pill_and_names_its_target_in_words() {
     .await;
     assert_eq!(added.status, 303, "the everyone deny rule must be saved");
     let body = owner.get("/admin/rules").await.body;
-    let row = "li[data-rule-id]";
+    let row = "tr[data-rule-id]";
     assert_eq!(elements(&body, row).len(), 1);
-    assert_eq!(text_under(&body, row, ".row-title"), "Everyone");
-    assert_eq!(text_under(&body, row, "p.row-meta"), "Applies to all tools");
+    assert_eq!(text_under(&body, row, "td.lead"), "Everyone");
+    assert_eq!(text_under(&body, row, "td:nth-child(4)"), "all tools");
     assert_eq!(text_under(&body, row, "[data-pill]"), "Deny");
     assert_eq!(
         attr_of(&body, &format!("{row} [data-pill]"), "data-tone").as_deref(),
@@ -3699,10 +3699,10 @@ async fn an_allowed_address_shows_enabled_or_disabled_and_its_toggle_is_secondar
     let dir = tempfile::tempdir().expect("dir");
     let (_base, mut owner) = owner_gateway(dir.path()).await;
     let body = owner.get("/admin/redirects").await.body;
-    let first = elements(&body, "li[data-redirect-id]");
+    let first = elements(&body, "tr[data-redirect-id]");
     assert!(!first.is_empty(), "the shipped addresses must be listed");
     let id = first[0]["data-redirect-id"].clone();
-    let row = format!(r#"li[data-redirect-id="{id}"]"#);
+    let row = format!(r#"tr[data-redirect-id="{id}"]"#);
     assert_eq!(text_under(&body, &row, "[data-pill]"), "Enabled");
     assert_eq!(
         attr_of(&body, &format!("{row} [data-pill]"), "data-tone").as_deref(),
@@ -3828,8 +3828,8 @@ async fn a_tool_row_of_the_user_page_holds_one_allow_or_deny_pill_by_its_verdict
     assert_eq!(denied.status, 303, "the deny rule must be saved");
 
     let body = owner.get(&format!("/admin/users/{bob}")).await.body;
-    let alpha = r#"li[data-tool="alpha"]"#;
-    let beta = r#"li[data-tool="beta"]"#;
+    let alpha = r#"tr[data-tool="alpha"]"#;
+    let beta = r#"tr[data-tool="beta"]"#;
     assert_eq!(text_under(&body, alpha, "[data-pill]"), "Deny");
     assert_eq!(
         attr_of(&body, &format!("{alpha} [data-pill]"), "data-tone").as_deref(),
@@ -3840,7 +3840,7 @@ async fn a_tool_row_of_the_user_page_holds_one_allow_or_deny_pill_by_its_verdict
         attr_of(&body, &format!("{beta} [data-pill]"), "data-tone").as_deref(),
         Some("ok")
     );
-    assert_eq!(elements(&body, "li[data-tool] [data-pill]").len(), 2);
+    assert_eq!(elements(&body, "tr[data-tool] [data-pill]").len(), 2);
 }
 
 #[test]
@@ -4363,5 +4363,165 @@ async fn a_refused_server_page_says_the_server_was_not_saved() {
         Some(
             "The server was not saved. Another server already uses that path. Go to the path field"
         )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_invitation_says_so_and_marks_its_email_field() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner
+        .submit(
+            "/admin/invitations",
+            "/admin/invitations",
+            &[("email", "not-an-address"), ("role", "user")],
+        )
+        .await;
+    assert_eq!(page.status, 400, "a bad address must refuse the invitation");
+    assert_eq!(
+        page.error().as_deref(),
+        Some("The invitation was not sent. Enter a valid email address. Go to the email field"),
+        "the refusal notice names the invitation and links to the email field"
+    );
+    assert_eq!(
+        attr_of(&page.body, "input#invite-email", "aria-invalid").as_deref(),
+        Some("true")
+    );
+    assert_eq!(
+        attr_of(&page.body, "input#invite-email", "aria-describedby").as_deref(),
+        Some("invite-email-error")
+    );
+    assert_eq!(
+        text_of(&page.body, "p#invite-email-error").as_deref(),
+        Some("Enter a valid email address.")
+    );
+    assert!(
+        rows_of(dir.path(), "invitation").is_empty(),
+        "a refused invitation stores nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_rule_says_so_and_marks_the_field_it_is_about() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let page = add_rule(
+        &mut owner,
+        &[
+            ("subject", "everyone"),
+            ("effect", "maybe"),
+            ("scope", "all"),
+        ],
+    )
+    .await;
+    assert_eq!(page.status, 400, "a bad effect must refuse the rule");
+    assert_eq!(
+        page.error().as_deref(),
+        Some("The rule was not added. Choose the effect allow or deny. Go to the effect field"),
+    );
+    assert_eq!(
+        attr_of(&page.body, "select#rule-effect", "aria-invalid").as_deref(),
+        Some("true")
+    );
+    assert_eq!(
+        text_of(&page.body, "p#rule-effect-error").as_deref(),
+        Some("Choose the effect allow or deny.")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_address_says_so_and_names_no_field() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner
+        .submit(
+            "/admin/redirects",
+            "/admin/redirects",
+            &[
+                ("scheme", "http"),
+                ("host", "app.example.com"),
+                ("path_prefix", "/x"),
+            ],
+        )
+        .await;
+    assert_eq!(page.status, 400, "a plain http address must be refused");
+    let notice = page.error().unwrap_or_default();
+    assert!(
+        notice.starts_with(
+            "The address was not added. The scheme, host and path prefix must form a web address:"
+        ),
+        "the refusal notice names the address, got {notice:?}"
+    );
+    assert_eq!(
+        elements(&page.body, r#"[data-notice="error"] a"#).len(),
+        0,
+        "a refusal about no one field has no link"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_role_on_the_user_page_marks_the_role_field() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), BOB, "user").await;
+    let bob = user_id_of(dir.path(), BOB);
+    let path = format!("/admin/users/{bob}");
+    let page = owner
+        .submit(&path, &format!("{path}/role"), &[("role", "root")])
+        .await;
+    assert_eq!(
+        page.status, 400,
+        "a role that is not admin or user is refused"
+    );
+    assert_eq!(
+        page.error().as_deref(),
+        Some("Choose the role admin or user. Go to the role field"),
+    );
+    assert_eq!(
+        attr_of(&page.body, "select#user-role", "aria-invalid").as_deref(),
+        Some("true")
+    );
+    assert_eq!(
+        text_of(&page.body, "p#user-role-error").as_deref(),
+        Some("Choose the role admin or user.")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blocked_attempt_that_cannot_be_allowed_gives_its_reason() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let conn = open_db(dir.path());
+    for (client, detail) in [
+        ("Plain client", "http://intranet.example.com/cb"),
+        ("Subtree client", "https://app.example.com/oauth/"),
+    ] {
+        let event = Event {
+            kind: "redirect_blocked",
+            client,
+            detail,
+            ..Default::default()
+        };
+        audit::record(&conn, AT, &event).expect("record");
+    }
+    let page = owner.get("/admin/redirects").await;
+    let doc = Html::parse_document(&page.body);
+    let rows = Selector::parse("tr[data-blocked]").expect("selector");
+    let reason = Selector::parse("td.reason").expect("selector");
+    let reasons: Vec<Option<String>> = doc
+        .select(&rows)
+        .map(|row| {
+            row.select(&reason)
+                .next()
+                .map(|cell| cell.text().collect::<String>())
+        })
+        .collect();
+    assert_eq!(
+        reasons,
+        vec![
+            Some("Add it by hand below.".to_owned()),
+            Some("Plain http cannot be allowed.".to_owned()),
+        ],
+        "newest first: the subtree needs adding by hand, plain http cannot be allowed"
     );
 }

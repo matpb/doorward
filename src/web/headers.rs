@@ -216,21 +216,32 @@ mod tests {
 
     #[tokio::test]
     async fn each_font_is_served_as_woff2_for_a_year() {
-        let name = "atkinson-hyperlegible-mono-latin-wght-normal.woff2";
-        let response = font(Path(name.to_owned())).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            header_of(&response, "content-type").as_deref(),
-            Some("font/woff2")
-        );
-        assert_eq!(
-            header_of(&response, "cache-control").as_deref(),
-            Some("public, max-age=31536000, immutable")
-        );
-        assert_eq!(
-            body_of(response).await,
-            include_bytes!("../../assets/fonts/atkinson-hyperlegible-mono-latin-wght-normal.woff2")
-        );
+        for name in [
+            "atkinson-hyperlegible-mono-latin-ext-wght-normal.woff2",
+            "atkinson-hyperlegible-mono-latin-wght-normal.woff2",
+            "atkinson-hyperlegible-next-latin-ext-wght-normal.woff2",
+            "atkinson-hyperlegible-next-latin-wght-normal.woff2",
+        ] {
+            let response = font(Path(name.to_owned())).await;
+            assert_eq!(response.status(), StatusCode::OK, "{name}");
+            assert_eq!(
+                header_of(&response, "content-type").as_deref(),
+                Some("font/woff2"),
+                "{name}"
+            );
+            assert_eq!(
+                header_of(&response, "x-content-type-options").as_deref(),
+                Some("nosniff"),
+                "{name}"
+            );
+            assert_eq!(
+                header_of(&response, "cache-control").as_deref(),
+                Some("public, max-age=31536000, immutable"),
+                "{name}"
+            );
+            let body = body_of(response).await;
+            assert!(body.starts_with(b"wOF2"), "{name} must be a woff2 file");
+        }
     }
 
     #[tokio::test]

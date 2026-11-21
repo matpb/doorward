@@ -20,7 +20,6 @@ use crate::web::{
 };
 
 use super::panel_nav;
-use super::servers::counted;
 
 const OWNER: &str = "owner";
 const OWNER_MESSAGE: &str = "The owner account cannot be changed this way.";
@@ -511,25 +510,61 @@ fn user_body(
     let may_set_role = viewer.is_owner() && !owner_target;
     let may_act = !owner_target && (viewer.is_owner() || user.role == "user");
     let path = format!("/admin/users/{}", user.id);
+    let role_field = error.filter(|message| *message == ROLE_MESSAGE);
+    let role_note = ui::note_under(role_field, None);
+    let role_described = role_note.describer("user-role");
+    let assigned = choices.iter().filter(|choice| choice.assigned).count();
+    // The filled button is the submit of the first form: the role form when there is one.
+    let servers_kind = if may_set_role { "secondary" } else { "primary" };
     html! {
-        div.stack {
-            div.page-head {
-                h1 { (user.email) }
-                a href=(format!("/admin/activity?user={}", user.id)) data-link="activity" { "Activity" }
+        div.page-head {
+            p.crumb { a href="/admin/users" { "Users" } }
+            h1.title-id { (ui::email(&user.email)) }
+            p.meta {
+                span { "Role " (user.role) }
+                (status_pill(user.disabled))
             }
-            input type="hidden" name="csrf" value=(csrf);
-            @if let Some(message) = error {
-                p.error { (message) }
+            div.head-actions {
+                a.button data-kind="secondary" href=(format!("/admin/activity?user={}", user.id)) data-link="activity" { "Activity" }
             }
-            section.card {
+        }
+        @if let Some(message) = error {
+            (ui::refused(None, message, role_field.map(|_| ("user-role", "role"))))
+        }
+        section.part aria-labelledby="role-title" {
+            div.part-head {
+                h2 id="role-title" { "Role and status" }
+                p { "An admin can change servers, rules and people. A disabled account cannot sign in." }
+            }
+            div.part-body.flow {
+                @if may_set_role {
+                    form.flow method="post" action=(format!("{path}/role")) {
+                        input type="hidden" name="csrf" value=(csrf);
+                        div.fields data-cols="2" {
+                            (ui::field(
+                                "user-role",
+                                "Role",
+                                false,
+                                html! {
+                                    select id="user-role" name="role" aria-invalid=[ui::invalid(role_field)] aria-describedby=[role_described.as_deref()] {
+                                        option value="admin" selected[user.role == "admin"] { "Admin" }
+                                        option value="user" selected[user.role == "user"] { "User" }
+                                    }
+                                },
+                                role_note,
+                            ))
+                        }
+                        div.form-actions {
+                            button type="submit" data-kind="primary" { "Save role" }
+                        }
+                    }
+                }
                 dl.facts {
-                    dt { "Role" }
-                    dd { (user.role) }
                     dt { "Status" }
                     dd { (status_pill(user.disabled)) }
                 }
                 @if may_act {
-                    form method="post" action=(format!("{path}/{}", if user.disabled { "enable" } else { "disable" })) {
+                    form.form-actions method="post" action=(format!("{path}/{}", if user.disabled { "enable" } else { "disable" })) {
                         input type="hidden" name="csrf" value=(csrf);
                         @if user.disabled {
                             button type="submit" data-kind="secondary" { "Enable account" }
@@ -539,57 +574,59 @@ fn user_body(
                     }
                 }
             }
-            @if may_set_role {
-                section.card {
-                    form method="post" action=(format!("{path}/role")) {
-                        input type="hidden" name="csrf" value=(csrf);
-                        div.fields {
-                            div {
-                                label for="user-role" { "Role" }
-                                select id="user-role" name="role" {
-                                    option value="admin" selected[user.role == "admin"] { "Admin" }
-                                    option value="user" selected[user.role == "user"] { "User" }
-                                }
-                            }
-                        }
-                        button type="submit" data-kind="primary" { "Save role" }
-                    }
-                }
+        }
+        section.part aria-labelledby="user-servers-title" {
+            div.part-head {
+                h2 id="user-servers-title" { "Servers " span.count { (assigned) " of " (choices.len()) } }
+                p { "The servers this person may reach." }
             }
-            section.card {
-                h2 { "Servers" }
-                form method="post" action=(format!("{path}/servers")) {
+            div.part-body {
+                form.flow method="post" action=(format!("{path}/servers")) {
                     input type="hidden" name="csrf" value=(csrf);
-                    @for choice in choices {
-                        label.check {
-                            input type="checkbox" name="server_id" value=(choice.id) checked[choice.assigned];
-                            " " (choice.name) " (" (choice.slug) ")"
+                    div.checks {
+                        @for choice in choices {
+                            (server_check(choice))
                         }
                     }
-                    button type="submit" data-kind="primary" { "Save servers" }
-                }
-            }
-            section.card {
-                h2 { "Tools" }
-                ul.tools.rows {
-                    @for tool in tools {
-                        li data-server=(tool.server) data-tool=(tool.tool) data-verdict=(tool.verdict)
-                            data-rule=(tool.rule) {
-                            div.row-main {
-                                code { (tool.tool) }
-                                p.row-meta { "on " code { (tool.server) } }
-                            }
-                            div.row-actions { (verdict_pill(tool.verdict)) }
-                        }
+                    div.form-actions {
+                        button type="submit" data-kind=(servers_kind) { "Save servers" }
                     }
                 }
             }
-            @if may_act {
-                section.card.danger-zone {
-                    h2 { "Delete" }
-                    details data-confirm {
-                        summary { "Delete this account (cannot be undone)" }
+        }
+        section.part aria-labelledby="user-tools-title" {
+            div.part-head {
+                h2 id="user-tools-title" { "Tools" }
+                p { "What the rules decide for this person, tool by tool." }
+            }
+            div.part-body {
+                table.list.tools {
+                    thead {
+                        tr {
+                            th scope="col" class="c-effect" { "Verdict" }
+                            th scope="col" { "Tool" }
+                            th scope="col" class="c-server" { "Server" }
+                        }
+                    }
+                    tbody {
+                        @for tool in tools {
+                            (tool_row(tool))
+                        }
+                    }
+                }
+            }
+        }
+        @if may_act {
+            section.part aria-labelledby="user-delete-title" {
+                div.part-head {
+                    h2 id="user-delete-title" { "Delete" }
+                    p { "Removes the account from the gateway." }
+                }
+                div.part-body {
+                    details.confirm data-confirm {
+                        summary { "Delete this account " span.chevron aria-hidden="true" {} }
                         div.confirm-body {
+                            p { "This cannot be undone." }
                             form method="post" action=(format!("{path}/delete")) {
                                 input type="hidden" name="csrf" value=(csrf);
                                 button type="submit" data-kind="danger" { "Delete account" }
@@ -602,37 +639,79 @@ fn user_body(
     }
 }
 
+/// One server as a checkbox: its name, then its path in code; checked when the user may reach it.
+fn server_check(choice: &ServerChoice) -> Markup {
+    let value = choice.id.to_string();
+    let label = html! {
+        span.check-name { (choice.name) }
+        " "
+        code { (choice.slug) }
+    };
+    ui::check(
+        &format!("server-{}", choice.id),
+        "server_id",
+        Some(&value),
+        choice.assigned,
+        label,
+        None,
+    )
+}
+
+/// One tool of the user's servers: its verdict, the tool name and the server it is on.
+fn tool_row(tool: &Effective) -> Markup {
+    html! {
+        tr data-server=(tool.server) data-tool=(tool.tool) data-verdict=(tool.verdict) data-rule=(tool.rule) {
+            td.half { (verdict_pill(tool.verdict)) }
+            td.lead { code { (ui::breakable(&tool.tool)) } }
+            td.half { "on " code { (tool.server) } }
+        }
+    }
+}
+
 fn users_page(viewer: &Viewer, rows: &[Listed]) -> Response {
     let data = MainData {
         nav: panel_nav(viewer, "/admin/users"),
         ..MainData::default()
     };
-    page_with(
-        StatusCode::OK,
-        "users",
-        "Users",
-        &data,
-        html! {
-            div.stack {
-                h1 { "Users" }
-                section.card {
-                    ul.users.rows {
-                        @for row in rows {
-                            li data-user-id=(row.user.id) data-email=(row.user.email) {
-                                div.row-main {
-                                    a.row-title href=(format!("/admin/users/{}", row.user.id)) { (row.user.email) }
-                                    p.row-meta {
-                                        (row.user.role)
-                                        " · "
-                                        span data-server-count { (counted(row.servers, "server", "servers")) }
-                                    }
-                                }
-                                div.row-actions { (status_pill(row.user.disabled)) }
-                            }
-                        }
-                    }
+    page_with(StatusCode::OK, "users", "Users", &data, users_body(rows))
+}
+
+fn users_body(rows: &[Listed]) -> Markup {
+    html! {
+        div.page-head {
+            h1 { "Users" }
+            div.head-actions {
+                a.button data-kind="secondary" href="/admin/invitations#add" { "Invite someone" }
+            }
+        }
+        table.list.users {
+            thead {
+                tr {
+                    th scope="col" { "Email" }
+                    th scope="col" class="c-role" { "Role" }
+                    th scope="col" class="c-num num" { "Servers" }
+                    th scope="col" class="c-state" { "Status" }
                 }
             }
-        },
-    )
+            tbody {
+                @for row in rows {
+                    (user_row(row))
+                }
+            }
+        }
+    }
+}
+
+/// One user of the list: the address, the role, the number of servers and the status.
+fn user_row(row: &Listed) -> Markup {
+    html! {
+        tr data-user-id=(row.user.id) data-email=(row.user.email) {
+            td.lead {
+                a.name href=(format!("/admin/users/{}", row.user.id)) { (ui::email(&row.user.email)) }
+            }
+            td.half { (row.user.role) }
+            td.num.half data-server-count { (ui::count_with_unit(row.servers, "server", "servers")) }
+            td { (status_pill(row.user.disabled)) }
+        }
+    }
 }

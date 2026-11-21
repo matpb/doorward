@@ -353,87 +353,177 @@ fn rules_body(
     tools: &[(String, String)],
     refused: Option<&str>,
 ) -> Markup {
+    let failed = refused.and_then(refused_field);
+    let error_on = |id: &str| refused.filter(|_| failed.is_some_and(|(field, _)| field == id));
+    let subject_error = error_on("rule-subject");
+    let subject_note = ui::note_under(subject_error, None);
+    let subject_described = subject_note.describer("rule-subject");
+    let effect_error = error_on("rule-effect");
+    let effect_note = ui::note_under(effect_error, None);
+    let effect_described = effect_note.describer("rule-effect");
+    let server_error = error_on("rule-server");
+    let server_note = ui::note_under(
+        server_error,
+        Some("Used when the scope is one server or one tool."),
+    );
+    let server_described = server_note.describer("rule-server");
+    let tool_error = error_on("rule-tool");
+    let tool_note = ui::note_under(
+        tool_error,
+        Some("Used when the scope is one tool. It must be in the server's tool list."),
+    );
+    let tool_described = tool_note.describer("rule-tool");
     html! {
-        div.stack {
+        div.page-head {
             h1 { "Rules" }
             p.lede { "A deny stands unless an allow is at least as specific in scope and subject, and more specific in one." }
-            @if let Some(message) = refused {
-                p.error { (message) }
+            div.head-actions {
+                a.button data-kind="secondary" href="#add" { "Add a rule" }
             }
-            div.split {
-                section.card.main {
-                    h2 { "Stored rules" }
-                    ul.rules.rows {
-                        @for rule in rules {
-                            li data-rule-id=(rule.id) data-subject=(rule.subject) data-effect=(rule.effect)
-                                data-scope=(rule.scope()) data-server=(rule.server.as_deref().unwrap_or(""))
-                                data-tool=(rule.tool.as_deref().unwrap_or(""))
-                                data-stale=(yes_or_no(rule.stale)) {
-                                div.row-main {
-                                    span.row-title { (subject_text(&rule.subject)) }
-                                    p.row-meta { "Applies to " (target_markup(rule)) }
-                                    @if rule.stale {
-                                        p.row-meta { "The tool is not in the server's tool list." }
+        }
+        @if let Some(message) = refused {
+            (ui::refused(Some("The rule was not added."), message, failed))
+        }
+        table.list.rules {
+            thead {
+                tr {
+                    th scope="col" class="c-rule" { "Rule" }
+                    th scope="col" class="c-effect" { "Effect" }
+                    th scope="col" class="c-subject" { "Subject" }
+                    th scope="col" { "Applies to" }
+                    th scope="col" class="c-act" aria-label="Actions" {}
+                }
+            }
+            tbody {
+                @for rule in rules {
+                    (rule_row(csrf, rule))
+                }
+            }
+        }
+        section.part id="add" aria-labelledby="add-title" {
+            div.part-head {
+                h2 id="add-title" { "Add a rule" }
+                p { "Who the rule is about, what it covers, and whether it lets the call through." }
+            }
+            div.part-body {
+                form.flow method="post" action="/admin/rules" {
+                    input type="hidden" name="csrf" value=(csrf);
+                    div.fields data-cols="2" {
+                        (ui::field(
+                            "rule-subject",
+                            "Subject",
+                            false,
+                            html! {
+                                select id="rule-subject" name="subject" aria-invalid=[ui::invalid(subject_error)] aria-describedby=[subject_described.as_deref()] {
+                                    option value="everyone" { "Everyone" }
+                                    @for (id, email) in users {
+                                        option value=(id) { (email) }
                                     }
                                 }
-                                div.row-actions {
-                                    (effect_pill(&rule.effect))
-                                    form method="post" action=(format!("/admin/rules/{}/delete", rule.id)) {
-                                        input type="hidden" name="csrf" value=(csrf);
-                                        button type="submit" data-kind="danger" { "Delete rule" }
+                            },
+                            subject_note,
+                        ))
+                        (ui::field(
+                            "rule-effect",
+                            "Effect",
+                            false,
+                            html! {
+                                select id="rule-effect" name="effect" aria-invalid=[ui::invalid(effect_error)] aria-describedby=[effect_described.as_deref()] {
+                                    option value="allow" { "Allow" }
+                                    option value="deny" { "Deny" }
+                                }
+                            },
+                            effect_note,
+                        ))
+                    }
+                    div.fields data-cols="2" {
+                        (ui::field(
+                            "rule-scope",
+                            "Scope",
+                            false,
+                            html! {
+                                select id="rule-scope" name="scope" {
+                                    option value="all" { "All tools" }
+                                    option value="server" { "One server" }
+                                    option value="tool" { "One tool" }
+                                }
+                            },
+                            ui::Note::None,
+                        ))
+                        (ui::field(
+                            "rule-server",
+                            "Server",
+                            false,
+                            html! {
+                                select id="rule-server" name="server_id" aria-invalid=[ui::invalid(server_error)] aria-describedby=[server_described.as_deref()] {
+                                    @for server in servers {
+                                        option value=(server.id) { (server.name) " (" (server.slug) ")" }
                                     }
                                 }
-                            }
+                            },
+                            server_note,
+                        ))
+                    }
+                    div.fields {
+                        (ui::field(
+                            "rule-tool",
+                            "Tool name",
+                            false,
+                            html! {
+                                input.mono id="rule-tool" name="tool" type="text" list="rule-tools" aria-invalid=[ui::invalid(tool_error)] aria-describedby=[tool_described.as_deref()];
+                            },
+                            tool_note,
+                        ))
+                    }
+                    datalist id="rule-tools" {
+                        @for (slug, tool) in tools {
+                            option value=(tool) label=(slug);
                         }
+                    }
+                    div.form-actions {
+                        button type="submit" data-kind="primary" { "Add rule" }
                     }
                 }
-                form.card.side method="post" action="/admin/rules" {
-                    h2 { "Add a rule" }
+            }
+        }
+    }
+}
+
+/// The field a refusal of the rule form is about, with the word the notice uses for it. A refusal
+/// about the scope or about a duplicate rule is about no one field.
+fn refused_field(message: &str) -> Option<(&'static str, &'static str)> {
+    match message {
+        EFFECT => Some(("rule-effect", "effect")),
+        SUBJECT => Some(("rule-subject", "subject")),
+        SERVER => Some(("rule-server", "server")),
+        TOOL | UNLISTED => Some(("rule-tool", "tool name")),
+        _ => None,
+    }
+}
+
+/// One stored rule: its id, its effect, its subject, what it applies to, and its delete button.
+fn rule_row(csrf: &str, rule: &Stored) -> Markup {
+    html! {
+        tr data-rule-id=(rule.id) data-subject=(rule.subject) data-effect=(rule.effect)
+            data-scope=(rule.scope()) data-server=(rule.server.as_deref().unwrap_or(""))
+            data-tool=(rule.tool.as_deref().unwrap_or(""))
+            data-stale=(yes_or_no(rule.stale)) {
+            td.half data-rule-number {
+                span.unit { "Rule " }
+                code { (rule.id) }
+            }
+            td.half { (effect_pill(&rule.effect)) }
+            td.lead { (subject_markup(&rule.subject)) }
+            td {
+                (target_markup(rule))
+                @if rule.stale {
+                    span.sub.state data-tone="warn" { "The tool is not in the server's tool list." }
+                }
+            }
+            td.act {
+                form method="post" action=(format!("/admin/rules/{}/delete", rule.id)) {
                     input type="hidden" name="csrf" value=(csrf);
-                    div.fields {
-                        div {
-                            label for="rule-subject" { "Subject" }
-                            select id="rule-subject" name="subject" {
-                                option value="everyone" { "Everyone" }
-                                @for (id, email) in users {
-                                    option value=(id) { (email) }
-                                }
-                            }
-                        }
-                        div {
-                            label for="rule-effect" { "Effect" }
-                            select id="rule-effect" name="effect" {
-                                option value="allow" { "Allow" }
-                                option value="deny" { "Deny" }
-                            }
-                        }
-                        div {
-                            label for="rule-scope" { "Scope" }
-                            select id="rule-scope" name="scope" {
-                                option value="all" { "All tools" }
-                                option value="server" { "One server" }
-                                option value="tool" { "One tool" }
-                            }
-                        }
-                        div {
-                            label for="rule-server" { "Server (for scope server or tool)" }
-                            select id="rule-server" name="server_id" {
-                                @for server in servers {
-                                    option value=(server.id) { (server.name) " (" (server.slug) ")" }
-                                }
-                            }
-                        }
-                        div {
-                            label for="rule-tool" { "Tool name (for scope one tool)" }
-                            input id="rule-tool" name="tool" type="text" list="rule-tools";
-                            datalist id="rule-tools" {
-                                @for (slug, tool) in tools {
-                                    option value=(tool) label=(slug);
-                                }
-                            }
-                        }
-                    }
-                    button type="submit" data-kind="primary" { "Add rule" }
+                    button.row-action type="submit" data-kind="danger" { "Delete rule" }
                 }
             }
         }
@@ -449,12 +539,14 @@ fn effect_pill(effect: &str) -> Markup {
     }
 }
 
-/// The subject as the page reads it: "everyone" is shown with a capital.
-fn subject_text(subject: &str) -> &str {
-    if subject == "everyone" {
-        "Everyone"
-    } else {
-        subject
+/// The subject of a rule: "Everyone" in words, or the user's address.
+fn subject_markup(subject: &str) -> Markup {
+    html! {
+        @if subject == "everyone" {
+            "Everyone"
+        } @else {
+            (ui::email(subject))
+        }
     }
 }
 
@@ -462,7 +554,7 @@ fn subject_text(subject: &str) -> &str {
 fn target_markup(rule: &Stored) -> Markup {
     html! {
         @if let (Some(server), Some(tool)) = (rule.server.as_deref(), rule.tool.as_deref()) {
-            "tool " code { (tool) } " on server " code { (server) }
+            "tool " code { (ui::breakable(tool)) } " on server " code { (server) }
         } @else if let Some(server) = rule.server.as_deref() {
             "server " code { (server) }
         } @else {

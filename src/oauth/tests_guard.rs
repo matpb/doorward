@@ -813,7 +813,7 @@ async fn a_token_in_the_query_or_a_cookie_is_never_read() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn paths_that_are_not_slugs_are_plain_404s() {
+async fn paths_that_are_not_slugs_are_404s_without_a_challenge() {
     let gw = Gateway::start().await;
     let demo = add_server(&gw, "demo");
     let user = user_with(&gw, BOB, &[demo]);

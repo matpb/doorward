@@ -18,9 +18,10 @@ use crate::mail;
 use crate::mail::templates;
 use crate::web::{
     MainData, SessionUser, VerifiedForm, Viewer, forbidden, form_page_with, internal_error,
-    page_with, redirect,
+    page_with, redirect, ui,
 };
 
+use super::activity::plain_time;
 use super::panel_nav;
 
 const EMAIL_MESSAGE: &str = "Enter a valid email address.";
@@ -33,6 +34,8 @@ struct Row {
     email: String,
     role: String,
     expires: String,
+    /// The same instant as the activity page writes it, `D Mon YYYY HH:MM:SS UTC`.
+    expires_plain: String,
     /// The email of the admin who made it; None when that account no longer exists.
     inviter: Option<String>,
 }
@@ -138,6 +141,7 @@ fn open_rows_in(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Row>> {
             email: row.get(1)?,
             role: row.get(2)?,
             expires: rfc3339(expires_at)?,
+            expires_plain: plain_time(expires_at)?,
             inviter: row.get(4)?,
         })
     })?;
@@ -261,63 +265,117 @@ fn invitations_page(
     )
 }
 
+/// The field a refusal of the invitation form is about, with the word the notice uses for it.
+fn refused_field(message: &str) -> Option<(&'static str, &'static str)> {
+    match message {
+        EMAIL_MESSAGE | TAKEN_MESSAGE => Some(("invite-email", "email")),
+        ROLE_MESSAGE => Some(("invite-role", "role")),
+        _ => None,
+    }
+}
+
 fn invitations_body(csrf: &str, owner: bool, rows: &[Row], error: Option<&str>) -> Markup {
+    let failed = error.and_then(refused_field);
+    let email_error = error.filter(|_| failed.is_some_and(|(id, _)| id == "invite-email"));
+    let role_error = error.filter(|_| failed.is_some_and(|(id, _)| id == "invite-role"));
+    let email_note = ui::note_under(email_error, None);
+    let email_described = email_note.describer("invite-email");
+    let role_note = ui::note_under(role_error, None);
+    let role_described = role_note.describer("invite-role");
     html! {
-        div.stack {
+        div.page-head {
             h1 { "Invitations" }
-            @if let Some(message) = error {
-                p.error { (message) }
+            div.head-actions {
+                a.button data-kind="secondary" href="#add" { "Invite someone" }
             }
-            div.split {
-                section.card.main {
-                    @if rows.is_empty() {
-                        p { "No open invitations." }
-                    }
-                    ul.invitations.rows {
-                        @for row in rows {
-                            li data-invitation-id=(row.id) data-email=(row.email) {
-                                div.row-main {
-                                    span.row-title { (row.email) }
-                                    p.row-meta {
-                                        "as " (row.role) " · Expires " (row.expires)
-                                    }
-                                    p.row-meta {
-                                        @if let Some(inviter) = &row.inviter {
-                                            span data-invited-by { "invited by " (inviter) }
-                                        } @else {
-                                            span data-invited-by { "invited by a removed account" }
-                                        }
-                                    }
-                                }
-                                div.row-actions {
-                                    form method="post" action=(format!("/admin/invitations/{}/revoke", row.id)) {
-                                        input type="hidden" name="csrf" value=(csrf);
-                                        button type="submit" data-kind="danger" { "Revoke" }
-                                    }
-                                }
-                            }
-                        }
+        }
+        @if let Some(message) = error {
+            (ui::refused(Some("The invitation was not sent."), message, failed))
+        }
+        @if rows.is_empty() {
+            p.muted { "No open invitations." }
+        } @else {
+            table.list.invitations {
+                thead {
+                    tr {
+                        th scope="col" { "Email" }
+                        th scope="col" class="c-role" { "Role" }
+                        th scope="col" class="c-when" { "Expires (UTC)" }
+                        th scope="col" class="c-by" { "Invited by" }
+                        th scope="col" class="c-act" aria-label="Actions" {}
                     }
                 }
-                form.card.side method="post" action="/admin/invitations" {
-                    h2 { "Invite someone" }
-                    input type="hidden" name="csrf" value=(csrf);
-                    div.fields {
-                        div {
-                            label for="invite-email" { "Email" }
-                            input id="invite-email" name="email" type="email" required;
-                        }
-                        div {
-                            label for="invite-role" { "Role" }
-                            select id="invite-role" name="role" {
-                                option value="user" selected { "User" }
-                                @if owner {
-                                    option value="admin" { "Admin" }
-                                }
-                            }
-                        }
+                tbody {
+                    @for row in rows {
+                        (invitation_row(csrf, row))
                     }
-                    button type="submit" data-kind="primary" { "Send invitation" }
+                }
+            }
+        }
+        section.part id="add" aria-labelledby="add-title" {
+            div.part-head {
+                h2 id="add-title" { "Invite someone" }
+                p { "They get a link by email and choose their own password." }
+            }
+            div.part-body {
+                form.flow method="post" action="/admin/invitations" {
+                    input type="hidden" name="csrf" value=(csrf);
+                    div.fields data-cols="2-1" {
+                        (ui::field(
+                            "invite-email",
+                            "Email",
+                            false,
+                            html! {
+                                input id="invite-email" name="email" type="email" required
+                                    aria-invalid=[ui::invalid(email_error)] aria-describedby=[email_described.as_deref()];
+                            },
+                            email_note,
+                        ))
+                        (ui::field(
+                            "invite-role",
+                            "Role",
+                            false,
+                            html! {
+                                select id="invite-role" name="role" aria-invalid=[ui::invalid(role_error)] aria-describedby=[role_described.as_deref()] {
+                                    option value="user" selected { "User" }
+                                    @if owner {
+                                        option value="admin" { "Admin" }
+                                    }
+                                }
+                            },
+                            role_note,
+                        ))
+                    }
+                    div.form-actions {
+                        button type="submit" data-kind="primary" { "Send invitation" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One open invitation: its address, role, expiry, inviter, and the revoke button.
+fn invitation_row(csrf: &str, row: &Row) -> Markup {
+    html! {
+        tr data-invitation-id=(row.id) data-email=(row.email) {
+            td.lead.strong { (ui::email(&row.email)) }
+            td.half { "as " (row.role) }
+            td.half { (ui::time_cell(&row.expires, &row.expires_plain, true)) }
+            td {
+                span data-invited-by {
+                    span.unit { "invited by " }
+                    @if let Some(inviter) = &row.inviter {
+                        (ui::email(inviter))
+                    } @else {
+                        "a removed account"
+                    }
+                }
+            }
+            td.act {
+                form method="post" action=(format!("/admin/invitations/{}/revoke", row.id)) {
+                    input type="hidden" name="csrf" value=(csrf);
+                    button.row-action type="submit" data-kind="danger" { "Revoke" }
                 }
             }
         }
@@ -336,12 +394,20 @@ fn invitation_created(viewer: &Viewer, error: &str, link: &str) -> Response {
         "Invitation created",
         &data,
         html! {
-            div.stack {
+            div.page-head {
+                p.crumb { a href="/admin/invitations" { "Invitations" } }
                 h1 { "The invitation is stored but the email was not sent" }
-                p.error { (error) }
-                p { "Copy this link and send it by hand:" }
-                p { code.copy data-invite-link=(link) { (link) } }
-                p { a href="/admin/invitations" { "Back to invitations" } }
+            }
+            (ui::notice("warning", html! { p { (error) } }))
+            section.part aria-labelledby="link-title" {
+                div.part-head {
+                    h2 id="link-title" { "Send it by hand" }
+                    p { "Copy this link and send it to the person you invited." }
+                }
+                div.part-body.flow {
+                    code.copy data-invite-link=(link) { (ui::breakable(link)) }
+                    p { a.button data-kind="secondary" href="/admin/invitations" { "Back to invitations" } }
+                }
             }
         },
     )

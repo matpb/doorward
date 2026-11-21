@@ -21,7 +21,7 @@ async fn failed_invitation(w: &World) -> (Page, String) {
         Some("invitation-created"),
         "a failed invitation mail must show the invitation-created page"
     );
-    let error = page.error().unwrap_or_default();
+    let error = page.notice().unwrap_or_default();
     assert!(!error.is_empty(), "the failure page must show the error");
     let prefix = format!("{}/invite/", w.base());
     let link = page
@@ -91,7 +91,7 @@ async fn unreachable_mail_server_does_not_hang_the_panel() {
         "an unreachable mail server must show the invitation-created page"
     );
     assert!(
-        !page.error().unwrap_or_default().is_empty(),
+        !page.notice().unwrap_or_default().is_empty(),
         "the failure page must show the error"
     );
     let health =

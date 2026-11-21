@@ -368,7 +368,7 @@ async fn the_lists_show_counts_and_states() {
         "the users page must answer 200 to the owner"
     );
     let doc = Html::parse_document(&users.body);
-    let rows = all(doc.root_element(), "li[data-user-id]");
+    let rows = all(doc.root_element(), "tr[data-user-id]");
     assert_eq!(
         rows.len(),
         3,

@@ -525,7 +525,7 @@ async fn a_status_is_a_word_with_a_marker() {
 
     let rules = s.w.owner.get("/admin/rules").await;
     let doc = Html::parse_document(&rules.body);
-    let rows = all(doc.root_element(), "li[data-rule-id]");
+    let rows = all(doc.root_element(), "tr[data-rule-id]");
     assert_eq!(
         rows.len(),
         2,
@@ -548,7 +548,7 @@ async fn a_status_is_a_word_with_a_marker() {
 
     let users = s.w.owner.get("/admin/users").await;
     let doc = Html::parse_document(&users.body);
-    let rows = all(doc.root_element(), "li[data-user-id]");
+    let rows = all(doc.root_element(), "tr[data-user-id]");
     assert_eq!(
         rows.len(),
         3,
@@ -572,7 +572,7 @@ async fn a_status_is_a_word_with_a_marker() {
 
     let detail = s.w.owner.get(&format!("/admin/users/{}", s.bob_id)).await;
     let doc = Html::parse_document(&detail.body);
-    let rows = all(doc.root_element(), "li[data-tool]");
+    let rows = all(doc.root_element(), "tr[data-tool]");
     assert_eq!(
         rows.len(),
         6,
@@ -596,7 +596,7 @@ async fn a_status_is_a_word_with_a_marker() {
 
     let redirects = s.w.owner.get("/admin/redirects").await;
     let doc = Html::parse_document(&redirects.body);
-    let rows = all(doc.root_element(), "li[data-redirect-id]");
+    let rows = all(doc.root_element(), "tr[data-redirect-id]");
     assert!(
         !rows.is_empty(),
         "the redirects page must list allowed addresses"
@@ -1025,21 +1025,30 @@ fn strip_comments(css: &str) -> String {
     out
 }
 
-/// One declaration, with the selector of the rule that holds it.
+/// One declaration, with the selector of the rule that holds it, its name and its value.
 struct Declaration {
     selector: String,
+    name: String,
+    value: String,
 }
 
 /// The declaration of `text` inside the innermost open block, when it has a name and a colon.
 fn declaration_of(text: &str, stack: &[String]) -> Option<Declaration> {
     let selector = stack.last()?;
-    let (name, _) = text.split_once(':')?;
+    let (name, value) = text.split_once(':')?;
     if name.trim().is_empty() {
         return None;
     }
     Some(Declaration {
         selector: selector.clone(),
+        name: name.trim().to_owned(),
+        value: value.trim().to_owned(),
     })
+}
+
+/// The selectors of a selector list, each trimmed.
+fn selector_names(selector: &str) -> Vec<&str> {
+    selector.split(',').map(str::trim).collect()
 }
 
 /// Every declaration of a stylesheet, nested blocks included.
@@ -1170,14 +1179,24 @@ async fn every_src_and_href_is_a_same_site_path() {
 async fn every_tone_has_a_marker_rule_with_content() {
     let w = World::start().await;
     let decls = declarations(&stylesheet(&w).await);
+    let shared = decls.iter().any(|decl| {
+        decl.name == "content"
+            && decl.value == "\"\""
+            && selector_names(&decl.selector).contains(&".state::before")
+    });
+    assert!(
+        shared,
+        "the stylesheet must give .state::before the content \"\", the mark of every .state[data-tone]"
+    );
     for tone in TONES {
         let selector = format!(r#".state[data-tone="{tone}"]::before"#);
+        let shaped = decls.iter().any(|decl| {
+            decl.name == "inline-size"
+                && selector_names(&decl.selector).contains(&selector.as_str())
+        });
         assert!(
-            decls.iter().any(|decl| decl
-                .selector
-                .split(',')
-                .any(|shown| shown.trim() == selector)),
-            "the stylesheet must hold a rule with the selector {selector}"
+            shaped,
+            "the stylesheet must give {selector} its shape with an inline-size"
         );
     }
 }

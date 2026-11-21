@@ -301,10 +301,12 @@ pub fn busy() -> Response {
 #[cfg(test)]
 mod tests {
     use axum::body::to_bytes;
+    use axum::extract::Path;
     use maud::html;
     use scraper::{Html, Selector};
 
     use super::*;
+    use crate::web::headers::font;
 
     /// The attributes of the first main element of a response.
     async fn main_attributes(response: Response) -> Vec<(String, String)> {
@@ -446,6 +448,29 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn every_preloaded_font_is_answered_by_the_font_handler() {
+        let doc =
+            Html::parse_document(&text_of(page(StatusCode::OK, "login", "T", html! {})).await);
+        let hrefs: Vec<String> = doc
+            .select(&Selector::parse(r#"link[rel="preload"]"#).expect("selector"))
+            .map(|link| link.value().attr("href").unwrap_or_default().to_owned())
+            .collect();
+        assert_eq!(hrefs.len(), 2, "the page must preload both fonts");
+        for href in hrefs {
+            let name = href
+                .strip_prefix("/assets/fonts/")
+                .unwrap_or_else(|| panic!("{href} must be a font under /assets/fonts/"))
+                .to_owned();
+            let response = font(Path(name)).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "the font handler must answer 200 for {href}"
+            );
+        }
     }
 
     #[tokio::test]

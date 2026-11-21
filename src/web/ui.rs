@@ -1,6 +1,6 @@
 //! Small markup helpers shared by the pages: status pills, notices and identifiers.
 
-use maud::{Markup, PreEscaped, Render, html};
+use maud::{Markup, Render, html};
 
 /// A status word with a marker. tone: "ok" | "bad" | "warn" | "muted".
 pub fn pill(tone: &str, text: &str) -> Markup {
@@ -10,28 +10,73 @@ pub fn pill(tone: &str, text: &str) -> Markup {
 }
 
 /// Text with a `<wbr>` where a long identifier may break: after `_ / ? & =`, before `@`
-/// and before a `.` that a letter or digit follows.
+/// and before a `.` that a letter or digit follows. Maud escapes every piece of the text.
 pub fn breakable(text: &str) -> Markup {
     let chars: Vec<char> = text.chars().collect();
-    let mut out = String::with_capacity(text.len());
+    // breaks[k] is true when a `<wbr>` sits before chars[k].
+    let mut breaks = vec![false; chars.len() + 1];
     for (index, &ch) in chars.iter().enumerate() {
         let next = chars.get(index + 1).copied();
         if ch == '@' || (ch == '.' && next.is_some_and(|c| c.is_ascii_alphanumeric())) {
-            out.push_str("<wbr>");
-        }
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(ch),
+            breaks[index] = true;
         }
         let breaks_after = matches!(ch, '_' | '?' | '=' | '&') || (ch == '/' && next != Some('/'));
         if breaks_after && next.is_some() {
-            out.push_str("<wbr>");
+            breaks[index + 1] = true;
         }
     }
-    PreEscaped(out)
+    // Each piece is the text up to the next break, with whether a `<wbr>` precedes it.
+    let mut pieces: Vec<(bool, String)> = Vec::new();
+    for (index, &ch) in chars.iter().enumerate() {
+        if breaks[index] || pieces.is_empty() {
+            pieces.push((breaks[index], String::new()));
+        }
+        if let Some((_, piece)) = pieces.last_mut() {
+            piece.push(ch);
+        }
+    }
+    html! {
+        @for (wrap, piece) in &pieces {
+            @if *wrap {
+                wbr;
+            }
+            (piece)
+        }
+    }
+}
+
+/// The notice above a refused form: its lead-in when it has one, the refusal, and a link to the
+/// field it is about, given as (id, label), when it is about one field.
+pub fn refused(lead: Option<&str>, message: &str, field: Option<(&str, &str)>) -> Markup {
+    html! {
+        div.notice data-notice="error" role="alert" {
+            p {
+                @if let Some(lead) = lead {
+                    strong { (lead) }
+                    " "
+                }
+                (message)
+                @if let Some((id, label)) = field {
+                    " "
+                    a href=(format!("#{id}")) { "Go to the " (label) " field" }
+                }
+            }
+        }
+    }
+}
+
+/// The aria-invalid of a control: "true" when a refusal is about it.
+pub fn invalid(error: Option<&str>) -> Option<&'static str> {
+    error.map(|_| "true")
+}
+
+/// The note under a field: the refusal about it when there is one, else its hint, if it has one.
+pub fn note_under<'a>(error: Option<&'a str>, hint: Option<&'a str>) -> Note<'a> {
+    match (error, hint) {
+        (Some(text), _) => Note::Error(text),
+        (None, Some(text)) => Note::Hint(text),
+        (None, None) => Note::None,
+    }
 }
 
 /// A boxed message. kind: "ok" | "warning" | "error".
@@ -41,7 +86,8 @@ pub fn notice(kind: &str, body: Markup) -> Markup {
     }
 }
 
-/// An email address split at its last `@`: the local part, a break, then the `@` and the domain.
+/// An email address in the sans face: its local part and its `@domain` are each a span, with a
+/// `<wbr>` between them, split at the last `@`.
 pub fn email(address: &str) -> Markup {
     html! {
         span.email {
@@ -221,6 +267,35 @@ mod tests {
     }
 
     #[test]
+    fn breakable_escapes_quotes_and_markup_in_every_piece() {
+        assert_eq!(
+            breakable("\"<a>\"_\"<\"").into_string(),
+            "&quot;&lt;a&gt;&quot;_<wbr>&quot;&lt;&quot;"
+        );
+    }
+
+    #[test]
+    fn a_refusal_with_a_field_links_to_it_after_its_lead_in() {
+        assert_eq!(
+            refused(
+                Some("The rule was not added."),
+                "Choose the effect allow or deny.",
+                Some(("rule-effect", "effect"))
+            )
+            .into_string(),
+            r##"<div class="notice" data-notice="error" role="alert"><p><strong>The rule was not added.</strong> Choose the effect allow or deny. <a href="#rule-effect">Go to the effect field</a></p></div>"##
+        );
+    }
+
+    #[test]
+    fn a_refusal_without_a_lead_or_a_field_is_its_message_alone() {
+        assert_eq!(
+            refused(None, "Choose only servers that exist.", None).into_string(),
+            r#"<div class="notice" data-notice="error" role="alert"><p>Choose only servers that exist.</p></div>"#
+        );
+    }
+
+    #[test]
     fn a_notice_is_a_div_with_its_kind_around_its_body() {
         assert_eq!(
             notice("warning", html! { p { "Check it." } }).into_string(),
@@ -237,10 +312,14 @@ mod tests {
     }
 
     #[test]
-    fn an_email_breaks_before_the_at_and_inside_each_half_at_a_separator() {
+    fn an_email_splits_into_a_local_span_a_wbr_and_an_at_domain_span() {
         assert_eq!(
             email("tomasz.wisniewski@example.com").into_string(),
             r#"<span class="email"><span>tomasz<wbr>.wisniewski</span><wbr><span>@example<wbr>.com</span></span>"#
+        );
+        assert_eq!(
+            email("bob@example.com").into_string(),
+            r#"<span class="email"><span>bob</span><wbr><span>@example<wbr>.com</span></span>"#
         );
         assert_eq!(
             email("oluwaseun.adebayo-richardson@contractors.example.com").into_string(),
@@ -249,15 +328,23 @@ mod tests {
     }
 
     #[test]
-    fn an_email_splits_at_the_last_at_and_escapes_its_halves() {
+    fn an_email_escapes_markup_characters_in_its_local_part() {
         assert_eq!(
-            email("a<b@x@example.com").into_string(),
-            r#"<span class="email"><span>a&lt;b<wbr>@x</span><wbr><span>@example<wbr>.com</span></span>"#
+            email("x&y<z@example.com").into_string(),
+            r#"<span class="email"><span>x&amp;<wbr>y&lt;z</span><wbr><span>@example<wbr>.com</span></span>"#
         );
     }
 
     #[test]
-    fn an_email_without_an_at_is_one_span() {
+    fn an_email_with_two_ats_splits_at_the_last_one() {
+        assert_eq!(
+            email("x@y@example.com").into_string(),
+            r#"<span class="email"><span>x<wbr>@y</span><wbr><span>@example<wbr>.com</span></span>"#
+        );
+    }
+
+    #[test]
+    fn an_email_without_an_at_is_one_inner_span_with_no_split() {
         assert_eq!(
             email("deploy-bot").into_string(),
             r#"<span class="email"><span>deploy-bot</span></span>"#

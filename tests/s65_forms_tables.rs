@@ -569,21 +569,27 @@ async fn a_tool_name_breaks_only_after_its_underscores() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_email_address_breaks_only_before_the_at_sign() {
+async fn an_email_address_breaks_before_the_at_sign_first() {
     let s = seeded().await;
     let page = s.w.owner.get("/admin/users").await;
     assert!(
-        page.body.contains("bob<wbr>@example.com"),
-        "the raw users page must break bob's address before the @ with wbr"
+        page.body.contains("bob</span><wbr><span>@example"),
+        "the raw users page must split bob's address before the @ with wbr between its spans"
     );
     let doc = Html::parse_document(&page.body);
-    let found = all(doc.root_element(), "*").into_iter().any(|element| {
-        text_of(element) == "bob@example.com"
-            && element.inner_html().contains("bob<wbr>@example.com")
-    });
+    let found = all(doc.root_element(), "span.email")
+        .into_iter()
+        .any(|element| {
+            text_of(element) == "bob@example.com"
+                && element
+                    .inner_html()
+                    .replace("<span>", "")
+                    .replace("</span>", "")
+                    .contains("bob<wbr>@example")
+        });
     assert!(
         found,
-        "an element holding bob's address must keep its text unchanged with wbr before the @"
+        "a span.email holding bob's address must keep its text unchanged with wbr before the @"
     );
 }
 

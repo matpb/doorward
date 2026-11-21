@@ -77,11 +77,17 @@ The other tests of this file check other settings and are not listed here.
    `font-src 'self'`; `stylesheet_href()` is `/assets/doorward.css?v=` and the first 8 bytes
    of the stylesheet's SHA-256 in hex; the stylesheet asked for by that version is cached
    for a year, and any other query revalidates; each of the four fonts is `font/woff2`
-   cached for a year; any other font name is a bare 404. `web::page::tests::the_head_preloads_both_fonts_before_the_stylesheet`
-   (statement 64): the head holds the two font preloads, then the stylesheet link.
+   cached for a year, with `nosniff` and a body starting `wOF2`, for each of the four names
+   (review fix 2, which looped it over all four); any other font name is a bare 404.
+   `web::page::tests::the_head_preloads_both_fonts_before_the_stylesheet` (statement 64): the
+   head holds the two font preloads, then the stylesheet link.
+   `web::page::tests::every_preloaded_font_is_answered_by_the_font_handler` (review fix 5): each
+   `link[rel="preload"]` href of a rendered page is a font the font handler answers 200.
 6. `web::ui::tests::breakable_*`, statement 62 (identifiers): `breakable` breaks after
    `_`, `/`, `?`, `&`, `=`, before `@` and before a `.` that a letter or digit follows; it
-   never breaks after the last character; it escapes `&`, `<`, `>` and `"` first.
+   never breaks after the last character. Maud escapes every piece of the text: the escaping
+   tests are unchanged (review fix 4 rewrote the function without `PreEscaped`), and
+   `breakable_escapes_quotes_and_markup_in_every_piece` is new for it.
 7. Rewritten for the new shell (statement 62): `admin::tests::html_pages_carry_the_browser_headers`
    (the exact policy string now carries `font-src 'self'`);
    `admin::tests::panel_and_mail_refuse_anonymous_and_plain_users` and
@@ -89,12 +95,17 @@ The other tests of this file check other settings and are not listed here.
    with the `not-found` page, not a bare 404); `oauth::tests_consent::the_policy_text_is_fixed_and_takes_one_form_target`
    (the policy string with `font-src 'self'`); `oauth::tests_guard::another_users_client_is_a_plain_404_and_is_not_revoked`
    (a browser-facing 404: the body is the `not-found` page, the status is still 404);
-   `paths_that_are_not_slugs_are_plain_404s` keeps its empty-body assertion, since its
-   404s are machine-facing and come from `not_found_bare()`;
+   `paths_that_are_not_slugs_are_404s_without_a_challenge` answers 404 with no
+   `www-authenticate` on every path: one-segment paths answer an empty 404, deeper paths
+   answer the `not-found` page;
    `accounts::account::tests::the_panel_link_is_in_the_header_not_the_body` (replaces
    `the_admin_link_is_left_out_for_a_plain_user`, which asserted the link in the body).
-8. `web::ui::tests`, statements 65 and 66 (the shared markup): `email` splits at the last `@`
-   and breaks only before the `@` and at a dot inside each half; `time_cell` keeps its
+8. `web::ui::tests`, statements 65 and 66 (the shared markup): `email` is a `span.email` that
+   holds a local-part span, a `<wbr>`, and an `@domain` span, split at the last `@` (the four
+   `email` tests were rewritten to this markup, with markup characters and a second `@` covered);
+   `a_refusal_with_a_field_links_to_it_after_its_lead_in` and
+   `a_refusal_without_a_lead_or_a_field_is_its_message_alone` are new for `refused`;
+   `time_cell` keeps its
    `datetime` and splits the date and the clock into `nowrap` spans, with the `UTC` unit only
    when asked; `count_with_unit` keeps the number beside a `span.unit`; `field`, `check` and
    the notes put the label, the control and the hint or error in the order the tests read.
@@ -107,6 +118,37 @@ The other tests of this file check other settings and are not listed here.
 12. `admin::tests::a_refused_server_form_says_so_and_marks_its_path_field` and
     `admin::tests::a_refused_server_page_says_the_server_was_not_saved`: the refusal is an
     alert with the lead-in, its link to the field, and the field marked `aria-invalid`.
+13. Added for statement 65 (the pages of users, invitations, rules and redirects):
+    `admin::tests::a_refused_invitation_says_so_and_marks_its_email_field`,
+    `admin::tests::a_refused_rule_says_so_and_marks_the_field_it_is_about`,
+    `admin::tests::a_refused_role_on_the_user_page_marks_the_role_field` (each: the notice
+    with its lead-in and its link, the field `aria-invalid` with its `-error` paragraph),
+    `admin::tests::a_refused_address_says_so_and_names_no_field` (a refusal about no one
+    field has no link), and `admin::tests::a_blocked_attempt_that_cannot_be_allowed_gives_its_reason`
+    (plain http reads "Plain http cannot be allowed.", any other case without a one-click
+    allow reads "Add it by hand below.", newest first).
+14. Changed for statement 65 (markup only: a list row is a `tr` where it was an `li`, the
+    counts and pills keep their words, the `Answer::error()` helper reads
+    `[data-notice="error"]` as well as `.error`): `admin::tests::a_blocked_client_name_is_shown_as_a_claim_and_escaped`
+    (the claim is the second cell of the row, its prefix now in the prototype's lower case
+    "asked by a client that calls itself"; the name is still escaped),
+    `admin::tests::a_rule_row_holds_one_pill_and_names_its_target_in_words` (the subject is
+    the lead cell, the target the "Applies to" cell, where it was a paragraph under the subject),
+    `admin::tests::every_refused_rule_answers_400_with_its_message_and_stores_nothing` (the
+    message is inside the refusal notice, which starts "The rule was not added. "; the
+    refused rule is still not stored), `admin::tests::a_refused_address_answers_400_and_stores_nothing`
+    (the refusal is the notice), and the row selectors of
+    `a_blocked_attempt_offers_one_click_allow_only_when_it_may`,
+    `the_shipped_addresses_are_listed_enabled`, `an_admin_address_is_added_disabled_enabled_again_and_recorded`,
+    `an_allowed_address_shows_enabled_or_disabled_and_its_toggle_is_secondary`,
+    `a_rule_is_listed_with_its_subject_effect_scope_and_target`,
+    `a_tool_rule_for_a_tool_that_left_the_list_is_flagged_stale`,
+    `a_rule_is_deleted_and_recorded_and_an_unknown_id_changes_nothing`,
+    `a_rule_ignores_the_fields_its_scope_does_not_use`,
+    `the_user_page_names_the_deciding_rule_for_each_tool`,
+    `a_tool_row_of_the_user_page_holds_one_allow_or_deny_pill_by_its_verdict`,
+    `the_user_page_lists_no_tool_of_a_server_the_user_is_not_assigned_to` and
+    `the_user_list_counts_assigned_servers_and_shows_active_or_disabled` (rows `tr`).
 
 ## s01_install.rs (statement 1)
 
@@ -169,6 +211,7 @@ Uses `TestGateway::start()` and `gw.client()` unless `W` is named.
 9. `invited_admin_reaches_the_panel_and_user_does_not`: `W.admin(..)` gets 200 on
    `/admin`; `W.user(..)` gets 403 forbidden.
 10. `existing_address_cannot_be_invited`: inviting `OWNER_EMAIL` is 400 with an `error()`
+    (now the `[data-notice="error"]` notice; `Page::error` reads it too, changed for statement 65)
     and sends no mail.
 11. `short_password_keeps_the_link_usable`: 11 characters is 400 `invite`; the same link
     then accepts a 12 character password with 303.
@@ -385,12 +428,14 @@ to the gateway with `World::start_with(|c| c.mail.smtp_ca_file = Some(M.ca_pem_p
 ## s08_mail_failure.rs (statement 8)
 
 1. `failed_invitation_shows_the_error_and_the_link`: `fail_next(Fail::SmtpReject)`;
-   `admin::invite` is 200 `invitation-created` with a non-empty `error()` and a
+   `admin::invite` is 200 `invitation-created` with a non-empty `notice()` (changed for
+   statement 65: the failure is the warning notice, not the old `p.error`) and a
    `data-invite-link` attribute starting `{base}/invite/`; that link accepts a password.
 2. `mail_failure_is_in_the_activity_log`: after 1, `admin::activity` has a row of kind
    `mail_failed`.
 3. `unreachable_mail_server_does_not_hang_the_panel`: SMTP pointed at a closed local port;
-   the invitation answers within 10 seconds with the failure page and `/healthz` is 200.
+   the invitation answers within 10 seconds with the failure page, whose non-empty `notice()`
+   is the warning notice (changed for statement 65 from `error()`), and `/healthz` is 200.
 4. `failed_reset_mail_reveals_nothing`: with `fail_next(Fail::SmtpReject)`, `/forgot` for
    bob answers the same body as for an unknown address; within 5 seconds the activity has
    `mail_failed` (the reset mail is sent after the response).
@@ -1629,7 +1674,8 @@ activity of allowed, denied and failed tool calls.
    `/delete` form with csrf, and no other `/delete` form. Posting that form without csrf is
    403 forbidden and deletes nothing; with csrf it is 303 and the row is gone. It is red
    before the change.
-5. `a_status_is_a_word_with_a_marker`: every `[data-pill]` on the covered pages has a tone
+5. `a_status_is_a_word_with_a_marker` (its rows are `tr`, changed for statement 65 from `li`):
+   every `[data-pill]` on the covered pages has a tone
    of ok, bad, warn or muted and text; each rule row holds `Allow` (ok) or `Deny` (bad) by
    its effect; each user row holds `Active` (ok) or `Disabled` (muted); each tool row of
    bob's page holds `Allow` or `Deny` by its verdict; each redirect row holds `Enabled` (ok)
@@ -1684,10 +1730,11 @@ activity of allowed, denied and failed tool calls.
     before the change, since no page does; it guards statement 58.
 22. `the_stylesheet_loads_no_url_and_no_import`: removed: replaced by s62_shell,
     statement 64 (the stylesheet names its four fonts by `url()`, and the gateway serves them).
-23. `every_tone_has_a_marker_rule_with_content`: the stylesheet holds a rule whose selector
-    list contains `.state[data-tone="<tone>"]::before` for each of ok, bad, warn and muted,
-    the marker of statement 54. Rewritten for the `span.state` of the new markup, from
-    `.pill[data-tone="<tone>"]::before`.
+23. `every_tone_has_a_marker_rule_with_content`: the stylesheet holds one rule whose selector
+    list contains `.state::before` and declares `content: ""` (the mark of every
+    `.state[data-tone]`), and for each of ok, bad, warn and muted a rule whose selector list
+    contains `.state[data-tone="<tone>"]::before` and declares `inline-size` (its shape). The
+    marker of statement 54. Review fix 3: it used to check the selector only, not the content.
 24. `every_post_form_carries_the_csrf_field`: on every covered page, each
     `form[method="post"]` holds an `input[name="csrf"]`. It passes before the change, since
     every form carries one today; it guards the anti-forgery rule of statement 33.
@@ -1708,7 +1755,8 @@ more than 100 rows; the expected order and counts come from the same table.
    and links to `/admin/activity`. It is red before the change.
 2. `the_lists_show_counts_and_states`: each `tr[data-server-id]` holds `[data-tool-count]`
    (3 tools for demo, 1 for other), `[data-user-count]` (1 user for demo, 0 for other), its
-   path and one lock-down pill; each `li[data-user-id]` holds `[data-server-count]` (0, 1
+   path and one lock-down pill; each `tr[data-user-id]` (changed for statement 65 from `li`)
+   holds `[data-server-count]` (0, 1
    or 0), its role and one pill, `Active` (ok) or `Disabled` (muted) for carol. It is red
    before the change.
 3. `activity_is_paged`: `Rows 1 to 50 of N` with N the stored row count, 50 rows per page
@@ -1852,9 +1900,10 @@ connected client. Each test builds that world, except the setup page, which has 
 10. `a_tool_name_breaks_only_after_its_underscores`: the raw server page holds `delete_<wbr>db`,
     and an element whose text is `delete_db` holds that markup, so the text is unchanged. It is
     red before the change.
-11. `an_email_address_breaks_only_before_the_at_sign`: the raw users page holds
-    `bob<wbr>@example.com`, and an element whose text is `bob@example.com` holds that markup.
-    It is red before the change.
+11. `an_email_address_breaks_before_the_at_sign_first`: the raw users page holds
+    `bob</span><wbr><span>@example`, and a `span.email` whose text is `bob@example.com` holds
+    `bob<wbr>@example` once its `<span>` and `</span>` tags are removed. It is red before the
+    change.
 12. `a_tool_call_row_shows_its_duration_in_ms`: the activity page holds at least two
     `tr[data-kind="tool_call"]` rows (the allowed and the refused call), each with one
     `td.duration` whose text is digits then ` ms`. It is red before the change.

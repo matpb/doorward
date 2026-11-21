@@ -195,83 +195,154 @@ fn redirects_body(
     blocked: &[Blocked],
     refused: Option<&str>,
 ) -> Markup {
+    let path_note = ui::note_under(None, Some("Ending in / covers everything under it."));
+    let path_described = path_note.describer("redirect-path");
     html! {
-        div.stack {
+        div.page-head {
             h1 { "Redirects" }
             p.lede { "Web addresses that clients may send a code to. Loopback addresses are always allowed." }
-            @if let Some(message) = refused {
-                p.error { (message) }
+            div.head-actions {
+                a.button data-kind="secondary" href="#add" { "Add an address" }
             }
-            div.split {
-                section.card.main {
-                    h2 { "Allowed addresses" }
-                    ul.redirects.rows {
-                        @for entry in entries {
-                            li data-redirect-id=(entry.id) data-scheme=(entry.scheme) data-host=(entry.host)
-                                data-path-prefix=(entry.path_prefix) data-source=(entry.source)
-                                data-enabled=(yes_or_no(entry.enabled)) {
-                                div.row-main {
-                                    code { (address_text(&entry.scheme, &entry.host, &entry.path_prefix)) }
-                                    p.row-meta { (entry.source) }
-                                }
-                                div.row-actions {
-                                    (enabled_pill(entry.enabled))
-                                    form method="post" action=(toggle_action(entry)) {
-                                        input type="hidden" name="csrf" value=(csrf);
-                                        button type="submit" data-kind="secondary" {
-                                            @if entry.enabled { "Disable" } @else { "Enable" }
-                                        }
-                                    }
-                                }
-                            }
+        }
+        @if let Some(message) = refused {
+            (ui::refused(Some("The address was not added."), message, None))
+        }
+        section aria-labelledby="allowed-title" {
+            div.block-head {
+                h2 id="allowed-title" { "Allowed addresses" }
+            }
+            table.list.redirects {
+                thead {
+                    tr {
+                        th scope="col" { "Address" }
+                        th scope="col" class="c-source" { "Source" }
+                        th scope="col" class="c-state" { "State" }
+                        th scope="col" class="c-act" aria-label="Actions" {}
+                    }
+                }
+                tbody {
+                    @for entry in entries {
+                        (entry_row(csrf, entry))
+                    }
+                }
+            }
+        }
+        section.block aria-labelledby="blocked-title" {
+            div.block-head {
+                h2 id="blocked-title" { "Blocked attempts" }
+            }
+            @if blocked.is_empty() {
+                p.muted { "No blocked attempts." }
+            } @else {
+                table.list.blocked {
+                    thead {
+                        tr {
+                            th scope="col" { "Address" }
+                            th scope="col" class="c-client" { "Asked by a client that calls itself" }
+                            th scope="col" class="c-act" aria-label="Actions" {}
+                        }
+                    }
+                    tbody {
+                        @for row in blocked {
+                            (blocked_row(csrf, row))
                         }
                     }
                 }
-                form.card.side method="post" action="/admin/redirects" {
-                    h2 { "Add an address" }
+            }
+        }
+        section.part id="add" aria-labelledby="add-title" {
+            div.part-head {
+                h2 id="add-title" { "Add an address" }
+                p { "A scheme, a host and the start of a path. Clients may be sent to anything that begins with it." }
+            }
+            div.part-body {
+                form.flow method="post" action="/admin/redirects" {
                     input type="hidden" name="csrf" value=(csrf);
-                    div.fields {
-                        div {
-                            label for="redirect-scheme" { "Scheme" }
-                            input id="redirect-scheme" name="scheme" type="text" required;
-                        }
-                        div {
-                            label for="redirect-host" { "Host" }
-                            input id="redirect-host" name="host" type="text" required;
-                        }
-                        div {
-                            label for="redirect-path" { "Path prefix (ending in / covers everything under it)" }
-                            input id="redirect-path" name="path_prefix" type="text";
-                        }
+                    div.fields data-cols="1-2" {
+                        (ui::field(
+                            "redirect-scheme",
+                            "Scheme",
+                            false,
+                            html! { input.mono id="redirect-scheme" name="scheme" type="text" required; },
+                            ui::Note::None,
+                        ))
+                        (ui::field(
+                            "redirect-host",
+                            "Host",
+                            false,
+                            html! { input.mono id="redirect-host" name="host" type="text" required; },
+                            ui::Note::None,
+                        ))
                     }
-                    button type="submit" data-kind="primary" { "Add address" }
+                    div.fields {
+                        (ui::field(
+                            "redirect-path",
+                            "Path prefix",
+                            false,
+                            html! {
+                                input.mono id="redirect-path" name="path_prefix" type="text" aria-describedby=[path_described.as_deref()];
+                            },
+                            path_note,
+                        ))
+                    }
+                    div.form-actions {
+                        button type="submit" data-kind="primary" { "Add address" }
+                    }
                 }
             }
-            section.card {
-                h2 { "Blocked attempts" }
-                @if blocked.is_empty() {
-                    p.muted { "No blocked attempts." }
-                }
-                ol.blocked.rows {
-                    @for row in blocked {
-                        li data-blocked="yes" {
-                            div.row-main {
-                                p.row-meta { "Asked by a client that calls itself " q { (row.client) } }
-                                code { (row.detail) }
-                            }
-                            @if let Some(allow) = one_click(&row.detail) {
-                                div.row-actions {
-                                    form method="post" action="/admin/redirects" {
-                                        input type="hidden" name="csrf" value=(csrf);
-                                        input type="hidden" name="scheme" value=(allow.scheme);
-                                        input type="hidden" name="host" value=(allow.host);
-                                        input type="hidden" name="path_prefix" value=(allow.path);
-                                        button type="submit" data-kind="secondary" { "Allow this address" }
-                                    }
-                                }
-                            }
-                        }
+        }
+    }
+}
+
+/// One allowed address: the address, its source, whether it is enabled, and its enable or disable button.
+fn entry_row(csrf: &str, entry: &Entry) -> Markup {
+    html! {
+        tr data-redirect-id=(entry.id) data-scheme=(entry.scheme) data-host=(entry.host)
+            data-path-prefix=(entry.path_prefix) data-source=(entry.source)
+            data-enabled=(yes_or_no(entry.enabled)) {
+            td.lead {
+                code { (ui::breakable(&address_text(&entry.scheme, &entry.host, &entry.path_prefix))) }
+            }
+            td.half { (entry.source) }
+            td.half { (enabled_pill(entry.enabled)) }
+            td.act {
+                form method="post" action=(toggle_action(entry)) {
+                    input type="hidden" name="csrf" value=(csrf);
+                    button.row-action type="submit" data-kind="secondary" {
+                        @if entry.enabled { "Disable" } @else { "Enable" }
                     }
+                }
+            }
+        }
+    }
+}
+
+/// One blocked attempt: the address, the client that asked, and the one-click allow or the reason
+/// there is none.
+fn blocked_row(csrf: &str, row: &Blocked) -> Markup {
+    html! {
+        tr data-blocked="yes" {
+            td.lead {
+                code { (ui::breakable(&row.detail)) }
+            }
+            td {
+                span.unit { "asked by a client that calls itself " }
+                q { (row.client) }
+            }
+            @if let Some(allow) = one_click(&row.detail) {
+                td.act {
+                    form method="post" action="/admin/redirects" {
+                        input type="hidden" name="csrf" value=(csrf);
+                        input type="hidden" name="scheme" value=(allow.scheme);
+                        input type="hidden" name="host" value=(allow.host);
+                        input type="hidden" name="path_prefix" value=(allow.path);
+                        button.row-action type="submit" data-kind="secondary" { "Allow this address" }
+                    }
+                }
+            } @else {
+                td.act.reason {
+                    span.sub { (unallowed_reason(&row.detail)) }
                 }
             }
         }
@@ -304,6 +375,15 @@ fn one_click(detail: &str) -> Option<Allow<'_>> {
             Some(Allow { scheme, host, path })
         }
         _ => None,
+    }
+}
+
+/// Why a blocked attempt has no one-click allow: plain http is never allowed, every other case
+/// is one to add by hand. A detail that `one_click` accepts never reaches this.
+fn unallowed_reason(detail: &str) -> &'static str {
+    match detail.split_once("://") {
+        Some(("http", _)) => "Plain http cannot be allowed.",
+        _ => "Add it by hand below.",
     }
 }
 

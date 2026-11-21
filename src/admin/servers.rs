@@ -654,12 +654,6 @@ fn list_in(conn: &Connection) -> rusqlite::Result<Vec<ServerRow>> {
     rows.collect()
 }
 
-/// A count with its word in the singular for one and the plural otherwise: "1 tool", "0 tools".
-pub(super) fn counted(count: i64, one: &str, many: &str) -> String {
-    let word = if count == 1 { one } else { many };
-    format!("{count} {word}")
-}
-
 /// The lock-down state as a status: a word with its marker. Answering without the gateway is strong.
 fn lockdown_pill(verdict: &str) -> Markup {
     match verdict {

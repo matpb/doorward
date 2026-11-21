@@ -58,7 +58,7 @@ impl Page {
     }
 
     pub fn error(&self) -> Option<String> {
-        self.text(".error")
+        self.text(r#".error, [data-notice="error"]"#)
     }
 
     pub fn notice(&self) -> Option<String> {
