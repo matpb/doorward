@@ -28,6 +28,10 @@ const RESET_PREFIX: &str = "dw_rs_";
 const MINUTE_SECONDS: i64 = 60;
 /// At most one reset mail per account inside this many seconds.
 pub const REQUEST_GAP_SECONDS: i64 = 300;
+/// At most this many reset mails per account inside one day.
+pub const DAILY_MAILS: i64 = 5;
+/// The window of the daily cap: one day in seconds.
+pub const MAIL_WINDOW_SECONDS: i64 = 86_400;
 
 /// A reset link that can still be used: its user and that user's address.
 struct Reset {
@@ -105,8 +109,8 @@ async fn send_reset_mail(state: &AppState, email: String) {
     let _ = mail::send(state, "reset", message).await;
 }
 
-/// One transaction: the user must exist and be enabled, and no reset may have been stored in the
-/// last five minutes. Returns true when a new reset row was written.
+/// One transaction: the user must exist and be enabled, no reset in the last five minutes, and
+/// fewer than `DAILY_MAILS` mails in the current day. True when a new reset row was written.
 fn store_reset_in(
     conn: &mut Connection,
     email: &str,
@@ -133,15 +137,29 @@ fn store_reset_in(
         params![user_id, now.saturating_sub(REQUEST_GAP_SECONDS)],
         |row| row.get(0),
     )?;
-    if recent {
+    let capped: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM password_resets WHERE user_id = ?1 \
+         AND ?2 - window_start < ?3 AND sent >= ?4)",
+        params![user_id, now, MAIL_WINDOW_SECONDS, DAILY_MAILS],
+        |row| row.get(0),
+    )?;
+    if recent || capped {
         return Ok(false);
     }
+    // The upsert keeps window_start and sent, so a new link carries the day's count over.
     tx.execute(
         "INSERT INTO password_resets (user_id, token_hash, created_at, expires_at) \
          VALUES (?1, ?2, ?3, ?4) \
          ON CONFLICT(user_id) DO UPDATE SET token_hash = excluded.token_hash, \
          created_at = excluded.created_at, expires_at = excluded.expires_at",
         params![user_id, hash, now, now.saturating_add(lifetime)],
+    )?;
+    tx.execute(
+        "UPDATE password_resets SET \
+         sent = CASE WHEN ?2 - window_start >= ?3 THEN 1 ELSE sent + 1 END, \
+         window_start = CASE WHEN ?2 - window_start >= ?3 THEN ?2 ELSE window_start END \
+         WHERE user_id = ?1",
+        params![user_id, now, MAIL_WINDOW_SECONDS],
     )?;
     let requested = Event {
         kind: "reset",

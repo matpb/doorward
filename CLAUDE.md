@@ -331,6 +331,14 @@ L. Added after the owner's auth review
     is answered with `408` and the connection is closed, for browser forms, the token and
     registration endpoints and MCP posts alike. Nothing is processed or forwarded, and no
     activity row is written. A `HEAD` on `/oauth/authorize` is rate limited as a `GET` is.
+77. What a caller without an account can make the gateway write or send is bounded. Failed
+    sign-ins for addresses that match no account write at most 20 activity rows in any hour
+    over the whole instance; a failed sign-in for an existing account always writes its row.
+    An account receives at most five reset mails in any 24 hours, and a request beyond that
+    answers as every other one does and sends nothing; completing a reset, changing the
+    password or an admin disabling the account starts the count again. Every answer of the
+    token, registration, discovery, health and MCP routes carries
+    `X-Content-Type-Options: nosniff`. An upstream secret is never printed by a debug format.
 
 ### Proof
 
@@ -379,6 +387,9 @@ into the test harness. In addition:
 - 76: `tests/s76_body_deadline.rs`, with a raw socket that stalls mid-body on each of the four
   routes, and `a_head_on_authorize_is_limited_at_the_same_count_as_a_get` in
   `tests/s43_rate_limits.rs`.
+- 77: `tests/s77_account_abuse.rs`, which moves the test clock and restarts the gateway to
+  run the housekeeping sweep; the sweep's unit tests in `src/accounts/housekeeping.rs`; and
+  the debug format tests in `src/servers.rs`.
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
   a walk-through of every page in a real browser at 390 px and desktop width in both
   themes, which also measures control heights and sideways scroll; screenshots kept under

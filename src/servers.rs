@@ -1,6 +1,7 @@
 //! Upstream servers and who may use them: the rules, and the storage. No HTTP in this module.
 
 use std::collections::HashSet;
+use std::fmt;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use url::Url;
@@ -74,7 +75,7 @@ pub enum Refusal {
 }
 
 /// The posted form as text. A missing field is empty and a missing checkbox is off.
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct Draft {
     pub name: String,
     pub slug: String,
@@ -85,11 +86,41 @@ pub struct Draft {
     pub pass_prompts: bool,
 }
 
+/// Prints every field but the secret value, which prints as `[redacted]`.
+impl fmt::Debug for Draft {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Draft")
+            .field("name", &self.name)
+            .field("slug", &self.slug)
+            .field("upstream_url", &self.upstream_url)
+            .field("secret_header_name", &self.secret_header_name)
+            .field("secret_header_value", &redacted(&self.secret_header_value))
+            .field("pass_resources", &self.pass_resources)
+            .field("pass_prompts", &self.pass_prompts)
+            .finish()
+    }
+}
+
 /// A secret header to store: the name in lower case, the value not yet sealed.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct Secret {
     pub header_name: String,
     pub value: String,
+}
+
+/// Prints the value as `[redacted]`, or as empty when there is none.
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Secret")
+            .field("header_name", &self.header_name)
+            .field("value", &redacted(&self.value))
+            .finish()
+    }
+}
+
+/// What a secret value prints as: `[redacted]`, or empty when the value is empty.
+fn redacted(value: &str) -> &'static str {
+    if value.is_empty() { "" } else { "[redacted]" }
 }
 
 /// A draft that passed the rules.
@@ -589,6 +620,66 @@ mod tests {
             upstream_url: "https://mcp.example.com/mcp".into(),
             ..Draft::default()
         }
+    }
+
+    #[test]
+    fn a_draft_debug_prints_its_secret_as_redacted() {
+        let draft = Draft {
+            secret_header_name: "x-upstream-secret".into(),
+            secret_header_value: "draft-secret-text".into(),
+            ..draft()
+        };
+        let shown = format!("{draft:?}");
+        assert!(
+            !shown.contains("draft-secret-text"),
+            "the secret must not print: {shown}"
+        );
+        assert!(
+            shown.contains("[redacted]"),
+            "the secret must print as [redacted]: {shown}"
+        );
+        assert!(
+            shown.contains("x-upstream-secret"),
+            "the header name stays visible: {shown}"
+        );
+    }
+
+    #[test]
+    fn a_draft_without_a_secret_prints_the_value_as_empty() {
+        let shown = format!("{:?}", draft());
+        assert!(
+            shown.contains(r#"secret_header_value: """#),
+            "an absent secret must print as empty: {shown}"
+        );
+    }
+
+    #[test]
+    fn a_secret_debug_prints_its_value_as_redacted() {
+        let secret = Secret {
+            header_name: "x-upstream-secret".into(),
+            value: "secret-value-text".into(),
+        };
+        let shown = format!("{secret:?}");
+        assert!(
+            !shown.contains("secret-value-text"),
+            "the value must not print: {shown}"
+        );
+        assert!(
+            shown.contains("[redacted]"),
+            "the value must print as [redacted]: {shown}"
+        );
+    }
+
+    #[test]
+    fn a_secret_without_a_value_prints_the_value_as_empty() {
+        let secret = Secret {
+            header_name: "x-upstream-secret".into(),
+            value: String::new(),
+        };
+        assert!(
+            format!("{secret:?}").contains(r#"value: """#),
+            "an empty value must print as empty"
+        );
     }
 
     #[test]

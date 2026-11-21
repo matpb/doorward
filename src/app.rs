@@ -4,9 +4,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::middleware;
+use axum::extract::{Request, State};
+use axum::http::header::X_CONTENT_TYPE_OPTIONS;
+use axum::http::{HeaderValue, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -197,7 +198,8 @@ fn routes(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             web::limit::api_by_address,
-        ));
+        ))
+        .layer(middleware::from_fn(nosniff));
     let bearer = Router::new()
         .route(
             "/mcp",
@@ -214,7 +216,8 @@ fn routes(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             oauth::origin::guard,
-        ));
+        ))
+        .layer(middleware::from_fn(nosniff));
     api.merge(pages)
         .merge(bearer)
         .layer(middleware::from_fn_with_state(
@@ -222,6 +225,15 @@ fn routes(state: AppState) -> Router {
             web::drain::unread_body,
         ))
         .with_state(state)
+}
+
+/// Sets `x-content-type-options: nosniff` on a response, replacing any value it already has.
+async fn nosniff(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    response
 }
 
 /// Runs the housekeeping at once and then every ten minutes. A failure goes to standard error.

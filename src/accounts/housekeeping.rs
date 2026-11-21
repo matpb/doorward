@@ -2,7 +2,7 @@
 
 use rusqlite::{Connection, params};
 
-use super::reset::REQUEST_GAP_SECONDS;
+use super::reset::{MAIL_WINDOW_SECONDS, REQUEST_GAP_SECONDS};
 
 const DAY_SECONDS: i64 = 86_400;
 /// An invitation stays in the table this long after it expired.
@@ -16,9 +16,15 @@ pub fn sweep(
     activity_seconds: i64,
 ) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM sessions WHERE expires_at <= ?1", params![now])?;
+    // A reset row also stays while its day's mail count is current.
     conn.execute(
-        "DELETE FROM password_resets WHERE expires_at <= ?1 AND created_at <= ?2",
-        params![now, now.saturating_sub(REQUEST_GAP_SECONDS)],
+        "DELETE FROM password_resets WHERE expires_at <= ?1 AND created_at <= ?2 \
+         AND window_start <= ?3",
+        params![
+            now,
+            now.saturating_sub(REQUEST_GAP_SECONDS),
+            now.saturating_sub(MAIL_WINDOW_SECONDS)
+        ],
     )?;
     conn.execute(
         "DELETE FROM invitations WHERE expires_at < ?1",
@@ -178,6 +184,57 @@ mod tests {
             .await
             .expect("sweep");
         assert_eq!(kept, vec!["r_299"]);
+    }
+
+    /// Sets the window and the day's count of the reset row of `label`.
+    fn set_window(conn: &Connection, label: &str, window_start: i64) -> rusqlite::Result<()> {
+        conn.execute(
+            "UPDATE password_resets SET window_start = ?1, sent = 5 WHERE token_hash = ?2",
+            params![window_start, label],
+        )?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_expired_reset_stays_while_its_day_is_current() {
+        let dir = tempfile::tempdir().expect("dir");
+        let db = open_db(&dir);
+        let kept = db
+            .call(|conn| {
+                insert_reset(conn, "r_inside", NOW - 600, NOW - 1)?;
+                insert_reset(conn, "r_last", NOW - 600, NOW - 1)?;
+                set_window(conn, "r_inside", NOW - 100)?;
+                set_window(conn, "r_last", NOW - DAY + 1)?;
+                sweep(conn, NOW, BLOCK, i64::MAX)?;
+                remaining(
+                    conn,
+                    "SELECT token_hash FROM password_resets ORDER BY token_hash",
+                )
+            })
+            .await
+            .expect("sweep");
+        assert_eq!(kept, vec!["r_inside", "r_last"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_expired_reset_goes_once_its_day_has_passed() {
+        let dir = tempfile::tempdir().expect("dir");
+        let db = open_db(&dir);
+        let kept = db
+            .call(|conn| {
+                insert_reset(conn, "r_edge", NOW - 600, NOW - 1)?;
+                insert_reset(conn, "r_past", NOW - 600, NOW - 1)?;
+                set_window(conn, "r_edge", NOW - DAY)?;
+                set_window(conn, "r_past", NOW - DAY - 1)?;
+                sweep(conn, NOW, BLOCK, i64::MAX)?;
+                remaining(
+                    conn,
+                    "SELECT token_hash FROM password_resets ORDER BY token_hash",
+                )
+            })
+            .await
+            .expect("sweep");
+        assert_eq!(kept, Vec::<String>::new());
     }
 
     #[tokio::test(flavor = "multi_thread")]

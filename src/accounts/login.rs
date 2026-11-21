@@ -4,10 +4,11 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use maud::{Markup, html};
+use rusqlite::{Connection, params};
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::audit::{self, OwnedEvent};
+use crate::audit::{self, Event, OwnedEvent};
 use crate::crypto::token_hash;
 use crate::oauth::authorize::is_request_id;
 use crate::report;
@@ -25,6 +26,9 @@ use super::throttle::{self, Attempt, Reserve, Success};
 const WRONG_CREDENTIALS: &str = "Wrong email or password.";
 const BLOCKED: &str = "Too many sign-in attempts. Try again later.";
 const UNKNOWN_ADDRESS: &str = "unknown address";
+const HOUR_SECONDS: i64 = 3600;
+/// Unknown-address rows the instance writes per hour; further failures write no row.
+pub const UNKNOWN_ROWS_PER_HOUR: i64 = 20;
 
 #[derive(Deserialize)]
 pub struct LoginQuery {
@@ -131,22 +135,46 @@ pub(super) fn reservation(state: &AppState, email: &str, address: IpAddr, now: i
 
 /// Writes the `login_failed` row. A failed write is reported and never changes the answer.
 pub(super) async fn record_failed(state: &AppState, user_id: Option<i64>, email: &str) {
-    let event = match user_id {
-        Some(id) => OwnedEvent {
-            kind: "login_failed".to_owned(),
-            user_id: Some(id),
-            user_email: email.to_owned(),
-            ..Default::default()
-        },
-        None => OwnedEvent {
-            kind: "login_failed".to_owned(),
-            detail: UNKNOWN_ADDRESS.to_owned(),
-            ..Default::default()
-        },
+    let result = match user_id {
+        Some(id) => {
+            let event = OwnedEvent {
+                kind: "login_failed".to_owned(),
+                user_id: Some(id),
+                user_email: email.to_owned(),
+                ..Default::default()
+            };
+            audit::record_now(state, event).await
+        }
+        None => {
+            let now = state.clock.now().unix_timestamp();
+            state
+                .db
+                .call(move |conn| record_unknown_in(conn, now))
+                .await
+        }
     };
-    if let Err(err) = audit::record_now(state, event).await {
+    if let Err(err) = result {
         report::failure("sign-in record", &err);
     }
+}
+
+/// Writes an unknown-address row unless this hour already holds `UNKNOWN_ROWS_PER_HOUR`.
+fn record_unknown_in(conn: &Connection, now: i64) -> rusqlite::Result<()> {
+    let recent: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM activity WHERE kind = 'login_failed' AND user_id IS NULL \
+         AND at > ?1",
+        params![now.saturating_sub(HOUR_SECONDS)],
+        |row| row.get(0),
+    )?;
+    if recent >= UNKNOWN_ROWS_PER_HOUR {
+        return Ok(());
+    }
+    let event = Event {
+        kind: "login_failed",
+        detail: UNKNOWN_ADDRESS,
+        ..Default::default()
+    };
+    audit::record(conn, now, &event)
 }
 
 pub async fn post_logout(State(state): State<AppState>, form: VerifiedForm) -> Response {
