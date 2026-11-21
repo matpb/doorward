@@ -210,6 +210,8 @@ The other tests of this file check other settings and are not listed here.
     it in `span.nowrap` (`assignments of github set to 6 users`, a number last, `1 2 servers`,
     a number before an address, an identifier after a number), each with its text checked, and a
     word that is not only digits, or an empty word, does not join.
+16. `web::limit::tests::a_held_body_hands_out_copies_of_its_pieces`: each piece of a held answer is
+    a copy, so no piece points into the answer's own allocation, and the pieces join to the answer.
 
 ## s01_install.rs (statement 1)
 
@@ -2309,7 +2311,7 @@ Items 6 to 14 set their own limits, as their texts say.
 The unit tests of statement 75 are `a_held_body_yields_frames_of_at_most_64_kib_and_keeps_its_guard_until_the_last_frame`
 in `src/web/limit.rs`, and `a_write_that_makes_no_progress_errors_with_timed_out_after_the_stall_time`,
 `a_write_that_progresses_within_the_stall_time_never_errors` and `an_idle_read_is_not_closed_by_the_stall_time`
-in `src/web/stall.rs`. The stall tests run on real time with a stall of 300 ms or 1 second, because the
+in `src/web/stall.rs`. The stall tests run on real time with a stall of 300 ms or 5 seconds, because the
 crate builds tokio without `test-util`.
 
 ## s75_process_memory.rs (statement 75)

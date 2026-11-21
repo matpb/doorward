@@ -184,7 +184,9 @@ impl<G: Unpin> http_body::Body for Held<G> {
             }
         }
         let size = this.kept.len().min(HELD_FRAME);
-        Poll::Ready(Some(Ok(Frame::data(this.kept.split_to(size)))))
+        // A copy, so a piece queued in the connection does not keep the whole answer's allocation alive.
+        let piece = Bytes::copy_from_slice(&this.kept.split_to(size));
+        Poll::Ready(Some(Ok(Frame::data(piece))))
     }
 
     fn is_end_stream(&self) -> bool {
@@ -432,5 +434,26 @@ mod tests {
         );
         drop(body);
         assert!(released.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_held_body_hands_out_copies_of_its_pieces() {
+        let bytes: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
+        let original = Bytes::from(bytes.clone());
+        let kept = original.clone();
+        let start = kept.as_ptr() as usize;
+        let end = start + kept.len();
+        let mut body = hold(Response::new(Body::from(original)), ()).into_body();
+        let mut received = Vec::new();
+        while let Some(frame) = next_frame(&mut body).await {
+            let data = frame.expect("no error").into_data().expect("a data frame");
+            let at = data.as_ptr() as usize;
+            assert!(
+                at < start || at >= end,
+                "a piece of the answer points into the answer's own allocation"
+            );
+            received.extend_from_slice(&data);
+        }
+        assert_eq!(received, bytes);
     }
 }

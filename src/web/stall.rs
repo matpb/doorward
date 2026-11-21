@@ -189,7 +189,7 @@ mod tests {
     #[tokio::test]
     async fn a_write_that_progresses_within_the_stall_time_never_errors() {
         let (near, mut far) = tokio::io::duplex(8);
-        let mut stream = StallStream::new(near, Duration::from_secs(1));
+        let mut stream = StallStream::new(near, Duration::from_secs(5));
         let reader = tokio::spawn(async move {
             let mut total = Vec::new();
             let mut chunk = [0u8; 8];

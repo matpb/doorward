@@ -82,7 +82,12 @@ These are the limits known at this release.
 - Sign-in uses a password only. There is no second factor.
 - The gateway does not limit open connections, and it has no header-read timeout of its own.
   Most of its rate limits count per address, so a flood from many addresses can pass each
-  of them. Keep a proxy in front of it to limit connections and flood traffic.
+  of them. Keep a proxy in front of it to limit connections and flood traffic. Each open
+  connection can also hold about 0.5 MiB of an answer already handed to it for sending, outside
+  the answer memory budget and outside the limit on open requests.
+- A signed-in user who reads answers very slowly keeps them in the memory count for as long as
+  each connection makes some progress. One user can fill only their own share; four such users
+  can use up the whole budget, and others then get `503` on answers until those connections end.
 
 For limits on what the gateway enforces between users and servers, see the README section
 [What the gateway does not do](README.md#what-the-gateway-does-not-do).

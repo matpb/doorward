@@ -378,7 +378,10 @@ L. Added after the owner's auth review
     The HTML part equals the designed mail byte for byte, a host in it breaks only before a
     dot, and the address shown as text equals the link with no character added. The mark,
     the rule under the header and the neutral button outline are borders with no colour of
-    their own, so they take the text colour a mail client gives the mail. On the consent
+    their own, so they take the text colour a mail client gives the mail. Outside a link,
+    no text node of a mail holds two labels joined by a dot: the host in the closing line,
+    the destination and the server name open a plain `span` at every dot, so a mail client
+    finds no address to turn into a link, and the text reads the same. On the consent
     page the sentence about a local app sits inside the one warning box.
 
 ### Proof
@@ -441,7 +444,7 @@ into the test harness. In addition:
   1200 tools, the unit tests in `src/audit.rs` and `src/proxy/catalog.rs`, and the two
   eviction tests in `src/oauth/tests_consent.rs`.
 - 79: `tests/s79_mails.rs`, which reads the mails a first connection, a reset and an
-  invitation send; the byte for byte, host rule, address rule and border tests in
+  invitation send; the byte for byte, host rule, address rule, border and unlinked text tests in
   `src/mail/templates.rs` against `src/mail/fixtures/`; the destination and time tests in
   `src/oauth/token.rs`; and the notice test in `src/oauth/consent.rs`.
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and

@@ -408,8 +408,20 @@ fn escaped(text: &str) -> String {
     html! { (text) }.into_string().replace(NBSP, "&nbsp;")
 }
 
+/// Text outside a link, by the unlinked-text rule.
 fn plain(text: &str) -> Markup {
-    PreEscaped(escaped(text))
+    PreEscaped(unlinked(text))
+}
+
+/// Text outside a link: the part before the first dot as escaped text, each later part as `<span>.part</span>`,
+/// so that no text node holds a dot between two labels.
+fn unlinked(text: &str) -> String {
+    let mut parts = text.split('.');
+    let mut html = parts.next().map(escaped).unwrap_or_default();
+    for part in parts {
+        html.push_str(&format!("<span>.{}</span>", escaped(part)));
+    }
+    html
 }
 
 /// Text whose last word is tied to the word before it.
@@ -425,10 +437,24 @@ fn tie(text: &str) -> String {
     }
 }
 
-/// A host by the host rule: one inline block per piece, with a break between two blocks.
-/// `tail` goes inside the last block.
+/// A host outside a link: one inline block per piece of the host rule, with a break between two blocks.
+/// Each piece's text follows the unlinked-text rule; `tail` goes inside the last block, after that text.
 fn host_html(host: &str, tail: &str) -> Markup {
-    pieces_html(&host_pieces("", host, tail))
+    let pieces = host_pieces("", host, "");
+    let count = pieces.len();
+    html! {
+        @for (index, piece) in pieces.iter().enumerate() {
+            @if index > 0 {
+                wbr;
+            }
+            span style="display:inline-block;max-width:100%;" {
+                (PreEscaped(unlinked(piece)))
+                @if index + 1 == count {
+                    (tail)
+                }
+            }
+        }
+    }
 }
 
 /// Each piece in its own inline block, with a `wbr` between two blocks.
@@ -618,11 +644,11 @@ mod tests {
     fn the_host_rule_writes_the_six_literal_cases() {
         assert_eq!(
             host_html("127.0.0.1:53535", "").into_string(),
-            format!("{SPAN}127.0.0.1:53535</span>")
+            format!("{SPAN}127<span>.0</span><span>.0</span><span>.1:53535</span></span>")
         );
         assert_eq!(
             host_html("example.com", "").into_string(),
-            format!("{SPAN}example.com</span>")
+            format!("{SPAN}example<span>.com</span></span>")
         );
         assert_eq!(
             host_html("localhost:50790", "").into_string(),
@@ -630,7 +656,7 @@ mod tests {
         );
         assert_eq!(
             host_html("mcp.example.com", "").into_string(),
-            format!("{SPAN}mcp</span><wbr>{SPAN}.example.com</span>")
+            format!("{SPAN}mcp</span><wbr>{SPAN}<span>.example</span><span>.com</span></span>")
         );
         assert_eq!(
             host_html(
@@ -639,12 +665,14 @@ mod tests {
             )
             .into_string(),
             format!(
-                "{SPAN}oauth-callback</span><wbr>{SPAN}.developer-tools</span><wbr>{SPAN}.internal</span><wbr>{SPAN}.tessellate</span><wbr>{SPAN}.example.com:443</span>"
+                "{SPAN}oauth-callback</span><wbr>{SPAN}<span>.developer-tools</span></span><wbr>{SPAN}<span>.internal</span></span><wbr>{SPAN}<span>.tessellate</span></span><wbr>{SPAN}<span>.example</span><span>.com:443</span></span>"
             )
         );
         assert_eq!(
             host_html(GATEWAY, ".").into_string(),
-            format!("{SPAN}doorward</span><wbr>{SPAN}.example.com.</span>")
+            format!(
+                "{SPAN}doorward</span><wbr>{SPAN}<span>.example</span><span>.com</span>.</span>"
+            )
         );
     }
 
@@ -657,13 +685,13 @@ mod tests {
     }
 
     #[test]
-    fn a_host_of_five_labels_has_four_spans_and_breaks_before_a_dot_only() {
+    fn a_host_of_five_labels_has_four_pieces_and_breaks_before_a_dot_only() {
         let html = host_html("two.three.four.example.com", "").into_string();
-        assert_eq!(html.matches("<span").count(), 4);
+        assert_eq!(html.matches("<span").count(), 8);
         let pieces: Vec<&str> = html.split("<wbr>").collect();
         assert_eq!(pieces.len(), 4);
         for piece in &pieces[1..] {
-            assert!(piece.starts_with(&format!("{SPAN}.")), "{piece}");
+            assert!(piece.starts_with(&format!("{SPAN}<span>.")), "{piece}");
         }
     }
 
@@ -833,6 +861,136 @@ mod tests {
     fn no_mail_sets_a_colour_scheme_on_the_root() {
         for (name, html) in built_html() {
             assert!(!html.contains(":root"), "{name} sets :root");
+        }
+    }
+
+    /// The HTML parts with dotted names: the three mails, a server with a dotted name, and destinations
+    /// with dots, each with the strings its text must still read.
+    fn dotted_parts() -> Vec<(&'static str, String, Vec<&'static str>)> {
+        let time = "21 November 2026, 14:05 UTC";
+        let dotted_server = Connection {
+            server: "Wiki export for docs.example.org (mirror)",
+            destination: "claude.example.net:8443",
+            time,
+        };
+        let dotted_app = Connection {
+            server: SERVER,
+            destination: "com.example.app:",
+            time,
+        };
+        vec![
+            (
+                "invitation",
+                invitation(INVITE_LINK, GATEWAY).html,
+                vec!["doorward.example.com."],
+            ),
+            (
+                "reset",
+                reset(RESET_LINK, GATEWAY).html,
+                vec!["doorward.example.com."],
+            ),
+            (
+                "new-connection",
+                new_connection(DISCONNECT_LINK, &connection(), GATEWAY).html,
+                vec!["127.0.0.1:53535", "doorward.example.com."],
+            ),
+            (
+                "dotted server and destination",
+                new_connection(DISCONNECT_LINK, &dotted_server, GATEWAY).html,
+                vec![
+                    "docs.example.org",
+                    "claude.example.net:8443",
+                    "doorward.example.com.",
+                ],
+            ),
+            (
+                "dotted app destination",
+                new_connection(DISCONNECT_LINK, &dotted_app, GATEWAY).html,
+                vec!["com.example.app:", "doorward.example.com."],
+            ),
+        ]
+    }
+
+    /// The HTML with every `<a ...>...</a>` element removed.
+    fn without_links(html: &str) -> String {
+        let mut kept = String::new();
+        let mut rest = html;
+        while let Some(start) = rest.find("<a ") {
+            kept.push_str(&rest[..start]);
+            let end = rest[start..].find("</a>").expect("a link closes") + "</a>".len();
+            rest = &rest[start + end..];
+        }
+        kept.push_str(rest);
+        kept
+    }
+
+    /// The text nodes of an HTML part: the text before the first tag, then the text after each tag.
+    fn text_nodes(html: &str) -> Vec<&str> {
+        let mut pieces = html.split('<');
+        let mut nodes: Vec<&str> = pieces.next().into_iter().collect();
+        for piece in pieces {
+            let (_, text) = piece.split_once('>').expect("a tag closes");
+            nodes.push(text);
+        }
+        nodes
+    }
+
+    /// True when a label, a dot and a label stand side by side in the text.
+    fn has_dotted_name(text: &str) -> bool {
+        let label = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'-';
+        text.as_bytes()
+            .windows(3)
+            .any(|window| label(window[0]) && window[1] == b'.' && label(window[2]))
+    }
+
+    /// The text of an HTML part with its tags removed and its entities decoded.
+    fn reading(html: &str) -> String {
+        text_nodes(html)
+            .concat()
+            .replace("&nbsp;", "\u{a0}")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&amp;", "&")
+    }
+
+    #[test]
+    fn no_text_outside_a_link_holds_a_dotted_name() {
+        for (name, html, _) in dotted_parts() {
+            for node in text_nodes(&without_links(&html)) {
+                assert!(
+                    !has_dotted_name(node),
+                    "{name}: text outside a link reads {node:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_dotted_server_name_is_split_by_the_unlinked_rule() {
+        let server = Connection {
+            server: "Wiki export for docs.example.org (mirror)",
+            destination: "127.0.0.1:53535",
+            time: "21 November 2026, 14:05 UTC",
+        };
+        let html = new_connection(DISCONNECT_LINK, &server, GATEWAY).html;
+        assert!(
+            html.contains("Wiki export for docs<span>.example</span><span>.org (mirror)</span>"),
+            "the server name is split at its dots"
+        );
+    }
+
+    #[test]
+    fn unlinked_text_reads_the_same() {
+        for (name, html, needles) in dotted_parts() {
+            let text = reading(&html);
+            for needle in needles {
+                assert!(
+                    text.contains(needle),
+                    "{name}: the text reads {text:?}, without {needle}"
+                );
+            }
         }
     }
 }

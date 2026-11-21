@@ -87,9 +87,12 @@ async fn a_first_connection_to_one_server_is_announced_with_its_facts() {
         "the text closes with the gateway's host: {}",
         message.text
     );
+    let port = host
+        .strip_prefix("127.0.0.1:")
+        .expect("the gateway listens on 127.0.0.1");
     assert!(
         message.html.contains(&format!(
-            r#"<span style="display:inline-block;max-width:100%;">{host}.</span> Doorward decides"#
+            r#"<span style="display:inline-block;max-width:100%;">127<span>.0</span><span>.0</span><span>.1:{port}</span>.</span> Doorward decides"#
         )),
         "the HTML closes with the gateway's host in its last span"
     );
