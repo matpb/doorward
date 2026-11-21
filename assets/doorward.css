@@ -934,6 +934,14 @@ select {
   white-space: nowrap;
 }
 
+/* Under 900 px the path has its own line under the name, on the name's edge, in every row. */
+@media (max-width: 899.98px) {
+  .check > label > code {
+    display: block;
+    line-height: 20px;
+  }
+}
+
 .check > label {
   align-self: first baseline;
   padding-block: var(--r1);
@@ -2161,6 +2169,25 @@ body[data-layout="card"] main > .lede + .actions {
     .site nav[popover]::backdrop {
       inset-block-start: 56px;
       background: var(--scrim);
+    }
+
+    /* The scrim comes and goes with the sheet, on its time and curve; the reduced motion
+       rule does not reach a backdrop, so the fade is declared only where motion is wanted. */
+    @media (prefers-reduced-motion: no-preference) {
+      .site nav[popover]::backdrop {
+        opacity: 0;
+        transition: opacity var(--t-mid) var(--ease-out), overlay var(--t-mid) allow-discrete, display var(--t-mid) allow-discrete;
+      }
+
+      .site nav[popover]:popover-open::backdrop {
+        opacity: 1;
+      }
+
+      @starting-style {
+        .site nav[popover]:popover-open::backdrop {
+          opacity: 0;
+        }
+      }
     }
 
     .site:has(nav:popover-open) .menu-button {
