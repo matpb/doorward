@@ -137,8 +137,9 @@ refresh_replay_seconds = 30
 [limits]
 body_bytes = 1048576
 body_read_seconds = 15 # at most 300; a body slower than this is answered 408 and the connection closed
+write_stall_seconds = 30 # at most 300; a connection whose writes make no progress this long is closed
 tools_list_bytes = 4194304
-answer_memory_bytes = 33554432 # held at once across all users; per user a quarter of it, or tools_list_bytes if that is more; at least tools_list_bytes
+answer_memory_bytes = 33554432 # held at once across all users; per user a quarter of it, or tools_list_bytes if that is more; at least tools_list_bytes; an unread answer keeps its place until the client takes it or the connection is closed for making no progress
 upstream_timeout_seconds = 300 # at most 86400 (one day)
 catalog_refresh_seconds = 30  # least seconds between two catalog refreshes of one server
 account_failures = 5          # wrong passwords for one account from one address inside the window
@@ -627,7 +628,8 @@ Answers that both endpoints share:
 | Stateless request with no `params._meta`, no string protocol version, or no object client capabilities in it; or any stateless message whose `_meta` version is not a string | `400`, JSON-RPC `-32602`, message `Invalid params: missing _meta, protocol version or client capabilities` |
 | Header and body disagree (2026-07-28), or a required header is missing or repeated | `400`, JSON-RPC `-32020` |
 | Session id not issued to this user, family and server | `404`, upstream not contacted |
-| The answer does not fit `answer_memory_bytes`, or the caller's share of it | `503`, `Retry-After: 1`, `Cache-Control: no-store`, JSON-RPC `-32000` with message `The gateway is busy` and a null id; an open stream ends instead, and the combined tool list leaves that server out |
+| The answer does not fit `answer_memory_bytes`, or the caller's share of it, for a request that is not a `tools/call`, or for a `tools/call` refused before the call was sent | `503`, `Retry-After: 1`, `Cache-Control: no-store`, JSON-RPC `-32000` with message `The gateway is busy` and a null id; an open stream ends instead, and the combined tool list leaves that server out, answering this same 503 when no server is left |
+| The answer to a `tools/call` does not fit `answer_memory_bytes`, or the caller's share of it, after the call was sent to the server | `503`, `Cache-Control: no-store`, no `Retry-After` (a retry would run the tool again), JSON-RPC `-32000` with message `The gateway could not hold the server's answer. The call was sent to the server.` and a null id; an open stream ends instead |
 | Upstream unreachable, timed out, answered 401 or 403, redirected, or sent an unexpected content type | `502`, JSON-RPC `-32000` with message `Upstream {slug} is unavailable` |
 | Deeper path `/{slug}/...` | `404` |
 

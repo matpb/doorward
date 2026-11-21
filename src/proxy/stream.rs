@@ -20,6 +20,7 @@ use crate::audit::{self, OwnedEvent};
 use crate::mcp::json::parse_strict;
 use crate::oauth::guard::{Caller, Recheck, still_valid, still_valid_at};
 use crate::report;
+use crate::web::limit::HELD_FRAME;
 
 /// Chunks the client may lag the upstream by before the reading waits.
 const CHANNEL: usize = 8;
@@ -120,7 +121,7 @@ async fn run(ctx: Owned, mut response: reqwest::Response, watch: Watch, tx: Send
             Err(_) => break End::Broken,
         };
         idle.as_mut().reset(tokio::time::Instant::now() + idle_for);
-        if let Err(end) = deliver(&tx, &mut ticks, &ctx, bytes.clone(), at).await {
+        if let Err(end) = deliver_all(&tx, &mut ticks, &ctx, bytes.clone(), at).await {
             break end;
         }
         if observer.feed(&bytes, watch.call.is_some().then_some(&watch.id), limit) {
@@ -145,6 +146,21 @@ async fn run(ctx: Owned, mut response: reqwest::Response, watch: Watch, tx: Send
         };
         record(&ctx, call, "allow", outcome, &detail).await;
     }
+}
+
+/// Hands a chunk to the client in pieces of at most `HELD_FRAME` bytes, each waiting for room in the channel.
+async fn deliver_all(
+    tx: &Sender<Item>,
+    ticks: &mut Interval,
+    ctx: &Owned,
+    mut bytes: Bytes,
+    at: Option<i64>,
+) -> Result<(), End> {
+    while !bytes.is_empty() {
+        let size = bytes.len().min(HELD_FRAME);
+        deliver(tx, ticks, ctx, bytes.split_to(size), at).await?;
+    }
+    Ok(())
 }
 
 /// Hands one chunk to the client, waiting for room in the channel. The wait ends early when the
@@ -275,10 +291,11 @@ pub(super) struct Observer {
 }
 
 impl Observer {
-    /// The open event's bytes and the unread tail: what the relay holds of the stream.
+    /// What the relay holds of the stream: the open event's bytes, which the framing counts and the unread
+    /// tail holds too, so the larger of the two is the count.
     pub(super) fn buffered(&self) -> usize {
         let open = usize::try_from(self.framing.open).unwrap_or(usize::MAX);
-        open.saturating_add(self.answer.pending.len())
+        open.max(self.answer.pending.len())
     }
 
     /// Feeds one chunk; `id` is the watched request's id, None when nothing is watched. True when the

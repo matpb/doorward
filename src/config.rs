@@ -122,6 +122,11 @@ pub const SETTINGS: &[Setting] = &[
         kind: Kind::Whole,
     },
     Setting {
+        variable: "DOORWARD_LIMITS_WRITE_STALL_SECONDS",
+        path: "limits.write_stall_seconds",
+        kind: Kind::Whole,
+    },
+    Setting {
         variable: "DOORWARD_LIMITS_TOOLS_LIST_BYTES",
         path: "limits.tools_list_bytes",
         kind: Kind::Whole,
@@ -285,6 +290,7 @@ pub struct Lifetimes {
 pub struct Limits {
     pub body_bytes: u64,
     pub body_read_seconds: u64,
+    pub write_stall_seconds: u64,
     pub tools_list_bytes: u64,
     pub answer_memory_bytes: u64,
     pub upstream_timeout_seconds: u64,
@@ -336,6 +342,7 @@ impl Default for Limits {
         Limits {
             body_bytes: 1_048_576,
             body_read_seconds: 15,
+            write_stall_seconds: 30,
             tools_list_bytes: 4_194_304,
             answer_memory_bytes: 33_554_432,
             upstream_timeout_seconds: 300,
@@ -706,6 +713,8 @@ fn check_trusted_proxies(ranges: &[Range]) -> Result<(), ConfigError> {
 const UPSTREAM_TIMEOUT_MAX: u64 = 86_400;
 /// The longest `limits.body_read_seconds`: five minutes.
 const BODY_READ_MAX: u64 = 300;
+/// The longest `limits.write_stall_seconds`: five minutes.
+const WRITE_STALL_MAX: u64 = 300;
 
 /// Refuses an `allowed_origins` list that breaks statement 48.
 fn check_allowed_origins(entries: &[String]) -> Result<(), ConfigError> {
@@ -798,6 +807,7 @@ impl Limits {
             &[
                 ("body_bytes", self.body_bytes),
                 ("body_read_seconds", self.body_read_seconds),
+                ("write_stall_seconds", self.write_stall_seconds),
                 ("tools_list_bytes", self.tools_list_bytes),
                 ("answer_memory_bytes", self.answer_memory_bytes),
                 ("upstream_timeout_seconds", self.upstream_timeout_seconds),
@@ -830,6 +840,11 @@ impl Limits {
         if self.body_read_seconds > BODY_READ_MAX {
             return Err(ConfigError::Invalid(format!(
                 "limits.body_read_seconds must be at most {BODY_READ_MAX}"
+            )));
+        }
+        if self.write_stall_seconds > WRITE_STALL_MAX {
+            return Err(ConfigError::Invalid(format!(
+                "limits.write_stall_seconds must be at most {WRITE_STALL_MAX}"
             )));
         }
         if self.answer_memory_bytes < self.tools_list_bytes {
@@ -1191,6 +1206,35 @@ mod tests {
         assert_eq!(
             refusal(&[("DOORWARD_LIMITS_BODY_READ_SECONDS", "301")]),
             "invalid config: limits.body_read_seconds must be at most 300"
+        );
+    }
+
+    #[test]
+    fn the_write_stall_limit_is_30_seconds_by_default() {
+        let config = Config::from_sources(None, &with(&[])).expect("the defaults load");
+        assert_eq!(config.limits.write_stall_seconds, 30);
+        assert_eq!(Limits::default().write_stall_seconds, 30);
+    }
+
+    #[test]
+    fn a_write_stall_limit_of_zero_is_refused() {
+        assert_eq!(
+            refusal(&[("DOORWARD_LIMITS_WRITE_STALL_SECONDS", "0")]),
+            "invalid config: limits.write_stall_seconds must be at least 1"
+        );
+    }
+
+    #[test]
+    fn a_write_stall_limit_of_300_is_valid_and_301_is_refused() {
+        let config = Config::from_sources(
+            None,
+            &with(&[("DOORWARD_LIMITS_WRITE_STALL_SECONDS", "300")]),
+        )
+        .expect("a write stall limit of 300 loads");
+        assert_eq!(config.limits.write_stall_seconds, 300);
+        assert_eq!(
+            refusal(&[("DOORWARD_LIMITS_WRITE_STALL_SECONDS", "301")]),
+            "invalid config: limits.write_stall_seconds must be at most 300"
         );
     }
 

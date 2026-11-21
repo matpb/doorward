@@ -93,7 +93,12 @@ impl Gateway {
         let gateway = assemble(config, deps, Arc::new(hasher))
             .await
             .expect("build");
-        tokio::spawn(serve(listener, gateway.router, std::future::pending()));
+        tokio::spawn(serve(
+            listener,
+            gateway.router,
+            std::time::Duration::from_secs(30),
+            std::future::pending(),
+        ));
         Gateway {
             base,
             db,

@@ -8,6 +8,7 @@ mod form;
 mod headers;
 pub mod limit;
 mod page;
+pub mod stall;
 pub mod ui;
 mod viewer;
 

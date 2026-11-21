@@ -16,6 +16,7 @@ use super::stream::{ACCESS_LOST, CHECK_FAILED, Framing, Owned, detail_of, record
 use super::upstream::{self, Cause, time_limit};
 use crate::mcp::json::parse_strict;
 use crate::oauth::guard::{Recheck, combined_still_valid_at};
+use crate::web::limit::HELD_FRAME;
 
 /// Chunks the client may lag the upstream by before the reading waits.
 const CHANNEL: usize = 8;
@@ -102,8 +103,9 @@ async fn run(call: Call, mut response: reqwest::Response, tx: Sender<Item>) {
         pending.extend_from_slice(&bytes);
         let (datas, used) = sse_events(&pending);
         pending.drain(..used);
+        // The open event counts in the framing and in the unread tail: the larger counts it once.
         let open = usize::try_from(framing.open).unwrap_or(usize::MAX);
-        if !held.set(open.saturating_add(pending.len())) {
+        if !held.set(open.max(pending.len())) {
             break End::Unavailable(Cause::Busy);
         }
         match pass(&call, &tx, &mut ticks, datas).await {
@@ -172,13 +174,27 @@ fn answers(value: &Value, expected: &Value) -> bool {
         && value.get("result").is_some() != value.get("error").is_some()
 }
 
-/// Hands one event to the client, waiting for room in the channel. The wait ends early when the
-/// client leaves or the caller is refused.
+/// Hands one event to the client in pieces of at most `HELD_FRAME` bytes, each waiting for room in the
+/// channel. The wait ends early when the client leaves or the caller is refused.
 async fn deliver(
     tx: &Sender<Item>,
     ticks: &mut Interval,
     call: &Call,
-    event: Bytes,
+    mut event: Bytes,
+) -> Result<(), End> {
+    while !event.is_empty() {
+        let size = event.len().min(HELD_FRAME);
+        send_piece(tx, ticks, call, event.split_to(size)).await?;
+    }
+    Ok(())
+}
+
+/// Waits for room in the channel and queues one piece.
+async fn send_piece(
+    tx: &Sender<Item>,
+    ticks: &mut Interval,
+    call: &Call,
+    piece: Bytes,
 ) -> Result<(), End> {
     loop {
         tokio::select! {
@@ -194,7 +210,7 @@ async fn deliver(
             permit = tx.reserve() => {
                 return match permit {
                     Ok(permit) => {
-                        permit.send(Ok(event));
+                        permit.send(Ok(piece));
                         Ok(())
                     }
                     Err(_) => Err(End::ClientGone),

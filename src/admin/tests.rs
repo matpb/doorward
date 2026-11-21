@@ -203,7 +203,12 @@ async fn start_with(dir: &Path, hasher: Arc<PasswordHasher>) -> (String, String)
         .await
         .expect("build");
     let code = gateway.setup_code.expect("setup code");
-    tokio::spawn(serve(listener, gateway.router, std::future::pending()));
+    tokio::spawn(serve(
+        listener,
+        gateway.router,
+        std::time::Duration::from_secs(30),
+        std::future::pending(),
+    ));
     (base, code)
 }
 
@@ -5205,7 +5210,12 @@ async fn a_limited_page_does_not_mark_its_heading_as_refused() {
     let gateway = assemble(config, Deps::system(), Arc::new(hasher))
         .await
         .expect("build");
-    tokio::spawn(serve(listener, gateway.router, std::future::pending()));
+    tokio::spawn(serve(
+        listener,
+        gateway.router,
+        std::time::Duration::from_secs(30),
+        std::future::pending(),
+    ));
     let mut browser = Browser::new(&base);
     let first = browser.get("/login").await;
     assert_ne!(first.status, 429, "the first request takes the only token");

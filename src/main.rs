@@ -104,6 +104,7 @@ async fn start(config_path: Option<&Path>) -> Result<ExitCode, Box<dyn Error>> {
         eprintln!("{line}");
     }
     let listen = config.listen;
+    let stall = Duration::from_secs(config.limits.write_stall_seconds);
     let gateway = build(config, Deps::system()).await?;
     let listener = TcpListener::bind(listen).await?;
     if let Some(code) = &gateway.setup_code {
@@ -113,7 +114,7 @@ async fn start(config_path: Option<&Path>) -> Result<ExitCode, Box<dyn Error>> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     let (stop, stopping) = oneshot::channel::<()>();
-    let served = serve(listener, gateway.router, async move {
+    let served = serve(listener, gateway.router, stall, async move {
         let _ = stopping.await;
     });
     tokio::pin!(served);

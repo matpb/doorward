@@ -94,10 +94,17 @@ pub enum Cause {
     NotMcp,
     /// The stored secret of the server cannot be opened; the gateway's fault, not the upstream's.
     SecretUnreadable,
-    /// The answer memory budget is used up; the gateway's condition, not the upstream's.
+    /// The answer memory budget is used up while an answer is read; the gateway's condition, not the upstream's.
     Busy,
+    /// The answer memory budget is used up while the link for a call is made; the call was not sent.
+    BusyBeforeSend,
     /// A database error, already written to standard error where it arose.
     Written,
+}
+
+/// True for a fault the answer memory budget caused, whether or not the call had been sent.
+pub fn budget_refused(cause: Cause) -> bool {
+    matches!(cause, Cause::Busy | Cause::BusyBeforeSend)
 }
 
 /// An upstream fault and its cause. The client always gets the same 502; the cause goes to the log.
@@ -115,7 +122,9 @@ impl fmt::Display for Fault {
             Cause::NotJson => f.write_str("an answer that is not valid JSON"),
             Cause::NotMcp => f.write_str("an answer that is not an MCP answer"),
             Cause::SecretUnreadable => f.write_str("the stored secret cannot be opened"),
-            Cause::Busy => f.write_str("the answer memory budget is exhausted"),
+            Cause::Busy | Cause::BusyBeforeSend => {
+                f.write_str("the answer memory budget is exhausted")
+            }
             Cause::Written => f.write_str("the database could not be read"),
         }
     }

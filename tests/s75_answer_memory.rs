@@ -1,10 +1,12 @@
 mod common;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::admin;
-use common::mcp::{McpClient, McpReply};
+use common::client::TestClient;
+use common::mcp::{McpClient, McpReply, stalled_call};
 use common::upstream::{FakeUpstream, Mode, UpstreamOptions};
 use common::world::World;
 use serde_json::{Value, json};
@@ -21,6 +23,9 @@ const BUDGET: u64 = 524_288;
 /// Concurrent calls in the burst tests.
 const CALLS: usize = 6;
 const BUSY: &str = "The gateway is busy";
+/// The refusal of a tools/call whose answer did not fit after the call was sent to the server.
+const BUSY_AFTER_CALL: &str =
+    "The gateway could not hold the server's answer. The call was sent to the server.";
 const WAIT: Duration = Duration::from_secs(20);
 /// How long the burst waits with no further answer before it releases the upstream.
 const QUIET: Duration = Duration::from_secs(3);
@@ -48,13 +53,31 @@ fn assert_whole(reply: &McpReply) {
     );
 }
 
-/// A refusal for the gateway's own budget: 503, Retry-After 1, no-store, JSON-RPC -32000 with a null id.
+/// A refusal of a request that is not a tools/call: 503, Retry-After 1, no-store, JSON-RPC -32000 with a null id.
 fn assert_busy(reply: &McpReply) {
     assert_eq!(reply.status, 503, "a refused call answers 503");
     assert_eq!(reply.header("retry-after").as_deref(), Some("1"));
     assert_eq!(reply.header("cache-control").as_deref(), Some("no-store"));
     assert_eq!(reply.error_code(), Some(-32000));
     assert_eq!(reply.error_message().as_deref(), Some(BUSY));
+    assert_eq!(
+        reply.json.as_ref().and_then(|json| json.get("id")),
+        Some(&Value::Null)
+    );
+}
+
+/// A refusal of a tools/call whose answer did not fit after the call was sent: 503, no Retry-After,
+/// no-store, JSON-RPC -32000 with a null id.
+fn assert_busy_after_call(reply: &McpReply) {
+    assert_eq!(reply.status, 503, "a refused call answers 503");
+    assert_eq!(
+        reply.header("retry-after"),
+        None,
+        "a retry would run the tool again"
+    );
+    assert_eq!(reply.header("cache-control").as_deref(), Some("no-store"));
+    assert_eq!(reply.error_code(), Some(-32000));
+    assert_eq!(reply.error_message().as_deref(), Some(BUSY_AFTER_CALL));
     assert_eq!(
         reply.json.as_ref().and_then(|json| json.get("id")),
         Some(&Value::Null)
@@ -107,7 +130,7 @@ fn assert_burst(early: &[(usize, McpReply)], late: &[(usize, McpReply)]) {
         "while {CALLS} answers were held, no call was refused; statuses were {statuses:?}"
     );
     for (_, reply) in early.iter().filter(|(_, r)| r.status == 503) {
-        assert_busy(reply);
+        assert_busy_after_call(reply);
     }
     let answered: Vec<&McpReply> = early
         .iter()
@@ -139,7 +162,7 @@ async fn call_after(client: &McpClient) -> McpReply {
         if reply.status == 200 || Instant::now() >= deadline {
             return reply;
         }
-        assert_busy(&reply);
+        assert_busy_after_call(&reply);
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -281,7 +304,7 @@ async fn a_user_at_its_share_is_refused_and_another_user_still_answers() {
         refused.len()
     );
     for reply in &refused {
-        assert_busy(reply);
+        assert_busy_after_call(reply);
     }
 
     let bob_client = w.stateless_mcp("plain-answers", &bob_tokens);
@@ -314,7 +337,7 @@ async fn a_user_at_its_share_is_refused_and_another_user_still_answers() {
         assert_whole(reply);
     }
     for reply in answers.iter().filter(|r| r.status != 200) {
-        assert_busy(reply);
+        assert_busy_after_call(reply);
     }
 }
 
@@ -366,4 +389,434 @@ async fn a_refresh_the_budget_refuses_says_the_gateway_is_busy() {
             reply.status
         );
     }
+}
+
+/// The unread answers of the stall test: 4 MB each, more than the socket buffers take in full.
+const UNREAD: usize = 4_000_000;
+/// The defaults of the limits: one user's share, a quarter of the budget, holds two unread answers and not three.
+const UNREAD_TOOLS: u64 = 4_194_304;
+const UNREAD_BUDGET: u64 = 33_554_432;
+/// The write stall of the stall test, in seconds.
+const STALL_SECONDS: u64 = 2;
+
+/// The address of the gateway as a socket address, for the raw clients.
+fn address_of(w: &World) -> SocketAddr {
+    w.base()
+        .trim_start_matches("http://")
+        .parse()
+        .expect("the gateway address")
+}
+
+/// A text of `len` characters, the whole held answer of a call.
+fn assert_answer(reply: &McpReply, len: usize) {
+    assert_eq!(reply.status, 200, "an answer that fits the budget is 200");
+    assert_eq!(
+        reply.text().map(|text| text.len()),
+        Some(len),
+        "the answer must come back whole"
+    );
+}
+
+/// `count` tool names of `width` characters after their number, so a list has a size that is known.
+fn wide_tools(count: usize, width: usize) -> Vec<String> {
+    (0..count)
+        .map(|n| format!("tool_{n:04}_{}", "x".repeat(width)))
+        .collect()
+}
+
+/// Alice's and Bob's world for the stall test: one upstream answering `UNREAD` bytes to every call.
+async fn unread_world() -> (
+    World,
+    TestClient,
+    TestClient,
+    Arc<common::upstream::FakeUpstream>,
+    String,
+) {
+    let w = World::start_with(|c| {
+        c.limits.tools_list_bytes = UNREAD_TOOLS;
+        c.limits.answer_memory_bytes = UNREAD_BUDGET;
+        c.limits.write_stall_seconds = STALL_SECONDS;
+    })
+    .await;
+    let alice = w.user(ALICE).await;
+    let bob = w.user(BOB).await;
+    let (upstream, id) = w.upstream("big", UpstreamOptions::default()).await;
+    w.grant(ALICE, &[&id]).await;
+    w.grant(BOB, &[&id]).await;
+    (w, alice, bob, Arc::new(upstream), id)
+}
+
+/// A client that does not read its answer holds its share of the budget until the gateway closes the
+/// connection for making no progress, and not longer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_does_not_read_keeps_its_share_until_the_connection_is_closed() {
+    let (w, alice, bob, upstream, _) = unread_world().await;
+    let alice_tokens = w.token(&alice, "big").await;
+    let bob_tokens = w.token(&bob, "big").await;
+    upstream.set_mode(Mode::Oversized { bytes: UNREAD });
+    let listed = w.stateless_mcp("big", &alice_tokens).list_tools().await;
+    assert_eq!(listed.status, 200, "the tool list must be stored first");
+
+    let addr = address_of(&w);
+    let mut unread = Vec::new();
+    for call in 0..2 {
+        let (socket, line) =
+            stalled_call(addr, "big", &alice_tokens.access_token, 100 + call).await;
+        assert!(
+            line.contains(" 200"),
+            "the first two answers are 200, got {line:?}"
+        );
+        unread.push(socket);
+    }
+    tokio::time::sleep(SETTLE).await;
+
+    let refused = w
+        .stateless_mcp("big", &alice_tokens)
+        .call_tool("echo", json!({"text": "hi"}))
+        .await;
+    assert_busy_after_call(&refused);
+
+    let other = w
+        .stateless_mcp("big", &bob_tokens)
+        .call_tool("echo", json!({"text": "hi"}))
+        .await;
+    assert_answer(&other, UNREAD);
+
+    let reply = call_after(&w.stateless_mcp("big", &alice_tokens)).await;
+    assert_answer(&reply, UNREAD);
+    drop(unread);
+}
+
+/// A tools list of two thirds of the limit: the combined endpoint reads its page once, into the budget.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tools_list_of_two_thirds_of_the_limit_answers_200_on_mcp() {
+    let w = World::start_with(|c| {
+        c.limits.tools_list_bytes = TOOLS_LIST;
+        c.limits.answer_memory_bytes = TOOLS_LIST;
+    })
+    .await;
+    let bob = w.user(BOB).await;
+    let (_upstream, id) = w
+        .upstream(
+            "big",
+            UpstreamOptions {
+                tools: wide_tools(750, 110),
+                ..Default::default()
+            },
+        )
+        .await;
+    w.grant(BOB, &[&id]).await;
+    let per = w
+        .stateless_mcp("big", &w.token(&bob, "big").await)
+        .list_tools()
+        .await;
+    let len = per.body.len() as u64;
+    assert!(
+        len * 10 >= TOOLS_LIST * 6 && len * 10 <= TOOLS_LIST * 7,
+        "the list must be two thirds of the limit, it is {len} bytes"
+    );
+    let combined = w
+        .stateless_mcp("mcp", &w.token(&bob, "mcp").await)
+        .list_tools()
+        .await;
+    assert_eq!(
+        combined.status, 200,
+        "a list of two thirds of the limit is answered"
+    );
+    assert_eq!(combined.tool_names().len(), 750, "every tool is listed");
+}
+
+/// A 250000 byte answer to a call streams whole on the server path and on the combined endpoint.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_250000_byte_stream_answer_completes_on_the_slug_and_on_mcp() {
+    let w = World::start_with(|c| {
+        c.limits.tools_list_bytes = TOOLS_LIST;
+        c.limits.answer_memory_bytes = TOOLS_LIST;
+    })
+    .await;
+    let bob = w.user(BOB).await;
+    let (upstream, id) = w.upstream("big", UpstreamOptions::default()).await;
+    w.grant(BOB, &[&id]).await;
+    let slug = w.stateless_mcp("big", &w.token(&bob, "big").await);
+    let combined = w.stateless_mcp("mcp", &w.token(&bob, "mcp").await);
+    assert_eq!(
+        slug.list_tools().await.status,
+        200,
+        "the server list is stored"
+    );
+    assert_eq!(
+        combined.list_tools().await.status,
+        200,
+        "the combined list is stored"
+    );
+    upstream.set_mode(Mode::HeldStream { bytes: 250_000 });
+    upstream.release();
+
+    let on_slug = slug.call_tool("echo", json!({"text": "hi"})).await;
+    assert_answer(&on_slug, 250_000);
+    let on_mcp = combined.call_tool("big__echo", json!({"text": "hi"})).await;
+    assert_answer(&on_mcp, 250_000);
+}
+
+/// A call whose answer does not fit, on the server path: the call was sent, so the refusal says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_whose_answer_does_not_fit_is_refused_after_it_was_sent_on_the_server_path() {
+    let w = World::start_with(|c| {
+        c.limits.tools_list_bytes = TOOLS_LIST;
+        c.limits.answer_memory_bytes = TOOLS_LIST;
+    })
+    .await;
+    let alice = w.user(ALICE).await;
+    let bob = w.user(BOB).await;
+    let (held, held_id) = w.upstream("held-answers", UpstreamOptions::default()).await;
+    let (plain, plain_id) = w
+        .upstream("plain-answers", UpstreamOptions::default())
+        .await;
+    w.grant(ALICE, &[&held_id]).await;
+    w.grant(BOB, &[&plain_id]).await;
+    let alice_client =
+        Arc::new(w.stateless_mcp("held-answers", &w.token(&alice, "held-answers").await));
+    let bob_client = w.stateless_mcp("plain-answers", &w.token(&bob, "plain-answers").await);
+    assert_eq!(alice_client.list_tools().await.status, 200);
+    assert_eq!(bob_client.list_tools().await.status, 200);
+    held.set_mode(Mode::HeldAnswer { bytes: 262_000 });
+    plain.set_mode(Mode::Oversized { bytes: 200_000 });
+
+    let held_call = Arc::clone(&alice_client);
+    let first =
+        tokio::spawn(async move { held_call.call_tool("echo", json!({"text": "hi"})).await });
+    assert!(held.wait_held(1, WAIT).await, "alice's answer must begin");
+    tokio::time::sleep(SETTLE).await;
+
+    let refused = bob_client.call_tool("echo", json!({"text": "hi"})).await;
+    assert_busy_after_call(&refused);
+    held.release();
+    let first = first.await.expect("alice's call task");
+    assert!(
+        first.status == 200 || first.status == 503,
+        "alice's held answer ends as 200 or 503, got {}",
+        first.status
+    );
+}
+
+/// A call whose answer does not fit, on the combined endpoint: the call was sent, so the refusal says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_whose_answer_does_not_fit_is_refused_after_it_was_sent_on_mcp() {
+    let w = World::start_with(|c| {
+        c.limits.tools_list_bytes = TOOLS_LIST;
+        c.limits.answer_memory_bytes = TOOLS_LIST;
+    })
+    .await;
+    let alice = w.user(ALICE).await;
+    let bob = w.user(BOB).await;
+    let (held, held_id) = w.upstream("held-answers", UpstreamOptions::default()).await;
+    let (plain, plain_id) = w
+        .upstream("plain-answers", UpstreamOptions::default())
+        .await;
+    w.grant(ALICE, &[&held_id]).await;
+    w.grant(BOB, &[&plain_id]).await;
+    let alice_client = Arc::new(w.stateless_mcp("mcp", &w.token(&alice, "mcp").await));
+    let bob_client = w.stateless_mcp("mcp", &w.token(&bob, "mcp").await);
+    assert_eq!(alice_client.list_tools().await.status, 200);
+    assert_eq!(bob_client.list_tools().await.status, 200);
+    held.set_mode(Mode::HeldAnswer { bytes: 262_000 });
+    plain.set_mode(Mode::Oversized { bytes: 200_000 });
+
+    let held_call = Arc::clone(&alice_client);
+    let first = tokio::spawn(async move {
+        held_call
+            .call_tool("held-answers__echo", json!({"text": "hi"}))
+            .await
+    });
+    assert!(held.wait_held(1, WAIT).await, "alice's answer must begin");
+    tokio::time::sleep(SETTLE).await;
+
+    let refused = bob_client
+        .call_tool("plain-answers__echo", json!({"text": "hi"}))
+        .await;
+    assert_busy_after_call(&refused);
+    held.release();
+    let first = first.await.expect("alice's call task");
+    assert!(
+        first.status == 200 || first.status == 503,
+        "alice's held answer ends as 200 or 503, got {}",
+        first.status
+    );
+}
+
+/// A tools list the budget refuses keeps the busy form of a request that is not a call: Retry-After and
+/// "The gateway is busy".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tools_list_that_does_not_fit_keeps_retry_after_and_the_busy_text() {
+    let w = World::start_with(|c| {
+        c.limits.tools_list_bytes = TOOLS_LIST;
+        c.limits.answer_memory_bytes = TOOLS_LIST;
+    })
+    .await;
+    let alice = w.user(ALICE).await;
+    let bob = w.user(BOB).await;
+    let (held, held_id) = w.upstream("held-answers", UpstreamOptions::default()).await;
+    let (_plain, plain_id) = w
+        .upstream(
+            "plain-answers",
+            UpstreamOptions {
+                tools: wide_tools(800, 150),
+                ..Default::default()
+            },
+        )
+        .await;
+    w.grant(ALICE, &[&held_id]).await;
+    w.grant(BOB, &[&plain_id]).await;
+    let alice_client =
+        Arc::new(w.stateless_mcp("held-answers", &w.token(&alice, "held-answers").await));
+    let bob_client = w.stateless_mcp("plain-answers", &w.token(&bob, "plain-answers").await);
+    assert_eq!(alice_client.list_tools().await.status, 200);
+    let fits = bob_client.list_tools().await;
+    assert_eq!(
+        fits.status, 200,
+        "the list fits the budget while it is free"
+    );
+    held.set_mode(Mode::HeldAnswer { bytes: 262_000 });
+
+    let held_call = Arc::clone(&alice_client);
+    let first =
+        tokio::spawn(async move { held_call.call_tool("echo", json!({"text": "hi"})).await });
+    assert!(held.wait_held(1, WAIT).await, "alice's answer must begin");
+    tokio::time::sleep(SETTLE).await;
+
+    let refused = bob_client.list_tools().await;
+    assert_busy(&refused);
+    held.release();
+    first.await.expect("alice's call task");
+}
+
+/// The combined list leaves out its only server for the budget: the answer is the busy form.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_combined_list_whose_only_server_is_left_out_for_the_budget_answers_busy() {
+    let w = World::start_with(|c| {
+        c.limits.tools_list_bytes = TOOLS_LIST;
+        c.limits.answer_memory_bytes = TOOLS_LIST;
+    })
+    .await;
+    let alice = w.user(ALICE).await;
+    let bob = w.user(BOB).await;
+    let (held, held_id) = w.upstream("held-answers", UpstreamOptions::default()).await;
+    let (_plain, plain_id) = w
+        .upstream(
+            "plain-answers",
+            UpstreamOptions {
+                tools: wide_tools(800, 150),
+                ..Default::default()
+            },
+        )
+        .await;
+    w.grant(ALICE, &[&held_id]).await;
+    w.grant(BOB, &[&plain_id]).await;
+    let alice_client =
+        Arc::new(w.stateless_mcp("held-answers", &w.token(&alice, "held-answers").await));
+    let bob_combined = w.stateless_mcp("mcp", &w.token(&bob, "mcp").await);
+    assert_eq!(alice_client.list_tools().await.status, 200);
+    assert_eq!(
+        bob_combined.list_tools().await.status,
+        200,
+        "the list fits while the budget is free"
+    );
+    held.set_mode(Mode::HeldAnswer { bytes: 262_000 });
+
+    let held_call = Arc::clone(&alice_client);
+    let first =
+        tokio::spawn(async move { held_call.call_tool("echo", json!({"text": "hi"})).await });
+    assert!(held.wait_held(1, WAIT).await, "alice's answer must begin");
+    tokio::time::sleep(SETTLE).await;
+
+    let refused = bob_combined.list_tools().await;
+    assert_busy(&refused);
+    held.release();
+    first.await.expect("alice's call task");
+}
+
+/// Alice's held call takes the budget, and Bob's call to a tool that is not stored yet finds the list of
+/// its server refused by the budget: nothing was sent, so the answer keeps the busy form of item 11.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_refused_before_it_was_sent_keeps_the_busy_form_on_the_server_path() {
+    let (w, alice, bob, held, plain) = refused_before_send_world().await;
+    let alice_client =
+        Arc::new(w.stateless_mcp("held-answers", &w.token(&alice, "held-answers").await));
+    assert_eq!(alice_client.list_tools().await.status, 200);
+    held.set_mode(Mode::HeldAnswer { bytes: 262_000 });
+    let held_call = Arc::clone(&alice_client);
+    let first =
+        tokio::spawn(async move { held_call.call_tool("echo", json!({"text": "hi"})).await });
+    assert!(held.wait_held(1, WAIT).await, "alice's answer must begin");
+    tokio::time::sleep(SETTLE).await;
+
+    let refused = w
+        .stateless_mcp("plain-answers", &w.token(&bob, "plain-answers").await)
+        .call_tool("echo", json!({"text": "hi"}))
+        .await;
+    assert_busy(&refused);
+    assert_eq!(
+        plain.calls_to("echo"),
+        0,
+        "the call must not reach the upstream"
+    );
+    held.release();
+    first.await.expect("alice's call task");
+}
+
+/// The same on the combined endpoint: Bob's call names a tool whose definition is not stored, and the
+/// list that would store it is refused by the budget before the call is sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_refused_before_it_was_sent_keeps_the_busy_form_on_mcp() {
+    let (w, alice, bob, held, _plain) = refused_before_send_world().await;
+    let alice_client = Arc::new(w.stateless_mcp("mcp", &w.token(&alice, "mcp").await));
+    assert_eq!(alice_client.list_tools().await.status, 200);
+    held.set_mode(Mode::HeldAnswer { bytes: 262_000 });
+    let held_call = Arc::clone(&alice_client);
+    let first = tokio::spawn(async move {
+        held_call
+            .call_tool("held-answers__echo", json!({"text": "hi"}))
+            .await
+    });
+    assert!(held.wait_held(1, WAIT).await, "alice's answer must begin");
+    tokio::time::sleep(SETTLE).await;
+
+    let refused = w
+        .stateless_mcp("mcp", &w.token(&bob, "mcp").await)
+        .call_tool("plain-answers__echo", json!({"text": "hi"}))
+        .await;
+    assert_busy(&refused);
+    held.release();
+    first.await.expect("alice's call task");
+}
+
+/// Alice granted the held server, Bob the plain server whose 800 tools list about 216 KB, which the budget
+/// refuses while Alice's answer holds half of it. Neither tool list is stored yet.
+async fn refused_before_send_world() -> (
+    World,
+    TestClient,
+    TestClient,
+    Arc<FakeUpstream>,
+    Arc<FakeUpstream>,
+) {
+    let w = World::start_with(|c| {
+        c.limits.tools_list_bytes = TOOLS_LIST;
+        c.limits.answer_memory_bytes = TOOLS_LIST;
+    })
+    .await;
+    let alice = w.user(ALICE).await;
+    let bob = w.user(BOB).await;
+    let (held, held_id) = w.upstream("held-answers", UpstreamOptions::default()).await;
+    let (plain, plain_id) = w
+        .upstream(
+            "plain-answers",
+            UpstreamOptions {
+                tools: wide_tools(800, 150),
+                ..Default::default()
+            },
+        )
+        .await;
+    w.grant(ALICE, &[&held_id]).await;
+    w.grant(BOB, &[&plain_id]).await;
+    (w, alice, bob, Arc::new(held), Arc::new(plain))
 }

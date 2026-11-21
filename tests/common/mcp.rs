@@ -2,9 +2,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use std::net::SocketAddr;
+
 use base64::Engine as _;
 use reqwest::header::{CONTENT_TYPE, HeaderMap};
 use serde_json::{Map, Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpSocket, TcpStream};
 
 const STATELESS_VERSION: &str = "2026-07-28";
 const SESSION_VERSION: &str = "2025-11-25";
@@ -449,4 +453,46 @@ impl SseParser {
         let data = serde_json::from_str(&text).unwrap_or(Value::String(text));
         self.events.push(SseEvent { at, data });
     }
+}
+
+/// How long a stalled client waits for the status line of its answer.
+#[allow(dead_code)]
+const STATUS_WAIT: Duration = Duration::from_secs(30);
+
+/// Sends a stateless tools/call for `echo` on `/{slug}` through a socket whose receive buffer is 4 KiB,
+/// and reads the status line of the answer only. The socket comes back open, so the client can stall.
+#[allow(dead_code)]
+pub async fn stalled_call(
+    addr: SocketAddr,
+    slug: &str,
+    token: &str,
+    id: u64,
+) -> (TcpStream, String) {
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"echo","arguments":{{"text":"hi"}},"_meta":{{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{{}}}}}}}}"#
+    );
+    let request = format!(
+        "POST /{slug} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/call\r\nMcp-Name: echo\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let socket = TcpSocket::new_v4().expect("socket");
+    socket.set_recv_buffer_size(4096).expect("receive buffer");
+    let mut stream = socket.connect(addr).await.expect("connect");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("send the call");
+    let mut line = Vec::new();
+    tokio::time::timeout(STATUS_WAIT, async {
+        loop {
+            let byte = stream.read_u8().await.expect("the status line");
+            line.push(byte);
+            if byte == b'\n' {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the status line arrives");
+    (stream, String::from_utf8_lossy(&line).into_owned())
 }

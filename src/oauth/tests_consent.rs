@@ -328,7 +328,12 @@ async fn start_with(cimd: Arc<dyn CimdFetcher>, edit: impl FnOnce(&mut Config)) 
     let gateway = assemble(config, deps, Arc::new(hasher))
         .await
         .expect("build");
-    tokio::spawn(serve(listener, gateway.router, std::future::pending()));
+    tokio::spawn(serve(
+        listener,
+        gateway.router,
+        std::time::Duration::from_secs(30),
+        std::future::pending(),
+    ));
     Gateway {
         base,
         db,

@@ -156,7 +156,12 @@ impl Gw {
         let gateway = assemble(config.clone(), deps, Arc::new(hasher))
             .await
             .expect("build");
-        tokio::spawn(serve(listener, gateway.router, std::future::pending()));
+        tokio::spawn(serve(
+            listener,
+            gateway.router,
+            std::time::Duration::from_secs(30),
+            std::future::pending(),
+        ));
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()

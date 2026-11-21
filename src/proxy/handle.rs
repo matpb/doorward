@@ -650,13 +650,15 @@ async fn read_answer(
 /// The 502 of a fault, or the 503 of a used-up budget, with the one line the fault writes.
 fn unavailable_for(ctx: &Ctx<'_>, cause: Cause) -> Response {
     upstream::fail(ctx.slug, cause);
-    answer_for(ctx.slug, cause)
+    answer_for(ctx.slug, cause, false)
 }
 
-/// The answer to an upstream fault: 503 while the answer memory budget is used up, else 502.
-pub(super) fn answer_for(slug: &str, cause: Cause) -> Response {
+/// The answer to an upstream fault: 503 while the answer memory budget is used up, else 502. A call that
+/// was sent gets the 503 that says so; a call refused before it was sent gets the plain busy answer.
+pub(super) fn answer_for(slug: &str, cause: Cause, call: bool) -> Response {
     match cause {
-        Cause::Busy => answer::busy(),
+        Cause::Busy if call => answer::busy_after_call(),
+        Cause::Busy | Cause::BusyBeforeSend => answer::busy(),
         _ => answer::unavailable(slug),
     }
 }
@@ -733,10 +735,11 @@ async fn relay_plain(ctx: &Ctx<'_>, response: reqwest::Response) -> Response {
 /// unavailable, with the phrase of the fault as its detail.
 async fn fault(ctx: &Ctx<'_>, owed: Option<Owed>, cause: Cause) -> Response {
     let phrase = upstream::fail(ctx.slug, cause);
+    let call = owed.is_some();
     if let Some(owed) = owed {
         owed.settle("unavailable", &phrase).await;
     }
-    answer_for(ctx.slug, cause)
+    answer_for(ctx.slug, cause, call)
 }
 
 /// The answer to a request whose caller lost access while it was awaited. A tools/call answers the

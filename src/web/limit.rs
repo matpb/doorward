@@ -1,9 +1,9 @@
 //! The limiter's wiring: the route classes, the middlewares that answer a limited request, the 429
 //! answers, and the hold of an open MCP request.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, ready};
 
 use axum::Json;
 use axum::body::{Body, Bytes};
@@ -22,6 +22,7 @@ use crate::rate::{Class, Key};
 
 use super::address::client_address;
 use super::page;
+use super::stall::Peer;
 
 /// The class of a request by method and path.
 pub fn class_of(method: &Method, path: &str) -> Class {
@@ -43,8 +44,8 @@ pub fn class_of(method: &Method, path: &str) -> Class {
 /// The socket address of the request, unspecified when the server recorded none.
 pub fn peer_of(extensions: &Extensions) -> IpAddr {
     extensions
-        .get::<ConnectInfo<SocketAddr>>()
-        .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |info| info.0.ip())
+        .get::<ConnectInfo<Peer>>()
+        .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |info| info.0.0.ip())
 }
 
 /// The gateway clock in nanoseconds since the Unix epoch, clamped to the range of `u64`.
@@ -151,9 +152,15 @@ pub fn window_seconds(minutes: u64) -> u64 {
     minutes.saturating_mul(60).max(1)
 }
 
-/// A response body that keeps its guard until the body ends or is dropped.
+/// The most bytes in one data frame of a held body, and in one piece of a stream the gateway queues.
+pub const HELD_FRAME: usize = 65_536;
+
+/// A response body that keeps its guard until the body ends or is dropped. Its data frames are at most
+/// `HELD_FRAME` bytes, so the guard lives until the client's bytes are taken from the body.
 struct Held<G> {
     inner: Body,
+    /// The rest of the last data frame of `inner`.
+    kept: Bytes,
     _guard: G,
 }
 
@@ -165,15 +172,34 @@ impl<G: Unpin> http_body::Body for Held<G> {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, axum::Error>>> {
-        Pin::new(&mut self.inner).poll_frame(cx)
+        let this = &mut *self;
+        while this.kept.is_empty() {
+            match ready!(Pin::new(&mut this.inner).poll_frame(cx)) {
+                None => return Poll::Ready(None),
+                Some(Err(err)) => return Poll::Ready(Some(Err(err))),
+                Some(Ok(frame)) => match frame.into_data() {
+                    Ok(data) => this.kept = data,
+                    Err(other) => return Poll::Ready(Some(Ok(other))),
+                },
+            }
+        }
+        let size = this.kept.len().min(HELD_FRAME);
+        Poll::Ready(Some(Ok(Frame::data(this.kept.split_to(size)))))
     }
 
     fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
+        self.kept.is_empty() && self.inner.is_end_stream()
     }
 
     fn size_hint(&self) -> SizeHint {
-        self.inner.size_hint()
+        let kept = self.kept.len() as u64;
+        let inner = self.inner.size_hint();
+        let mut hint = SizeHint::new();
+        hint.set_lower(inner.lower().saturating_add(kept));
+        if let Some(upper) = inner.upper() {
+            hint.set_upper(upper.saturating_add(kept));
+        }
+        hint
     }
 }
 
@@ -184,6 +210,7 @@ pub fn hold<G: Unpin + Send + 'static>(response: Response, guard: G) -> Response
         parts,
         Body::new(Held {
             inner: body,
+            kept: Bytes::new(),
             _guard: guard,
         }),
     )
@@ -354,6 +381,56 @@ mod tests {
         );
         let bytes = to_bytes(response.into_body(), 16).await.expect("the body");
         assert_eq!(&bytes[..], b"abc");
+        assert!(released.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// The next frame of `body`, polled once it is ready.
+    async fn next_frame(body: &mut Body) -> Option<Result<Frame<Bytes>, axum::Error>> {
+        std::future::poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx)).await
+    }
+
+    #[tokio::test]
+    async fn a_held_body_yields_frames_of_at_most_64_kib_and_keeps_its_guard_until_the_last_frame()
+    {
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let bytes: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
+        let response = hold(
+            Response::new(Body::from(bytes.clone())),
+            Guard(Arc::clone(&released)),
+        );
+        let mut body = response.into_body();
+        let mut sizes = Vec::new();
+        let mut received = Vec::new();
+        while received.len() < bytes.len() {
+            let left = (bytes.len() - received.len()) as u64;
+            assert_eq!(
+                body.size_hint().exact(),
+                Some(left),
+                "the size hint is exact before frame {}",
+                sizes.len()
+            );
+            assert!(
+                !body.is_end_stream(),
+                "the body is not at its end while frames remain"
+            );
+            assert!(!released.load(std::sync::atomic::Ordering::SeqCst));
+            let frame = next_frame(&mut body)
+                .await
+                .expect("a frame")
+                .expect("no error");
+            let data = frame.into_data().expect("a data frame");
+            sizes.push(data.len());
+            received.extend_from_slice(&data);
+        }
+        assert_eq!(sizes, vec![65_536, 65_536, 65_536, 3_392]);
+        assert_eq!(received, bytes);
+        assert_eq!(body.size_hint().exact(), Some(0));
+        assert!(body.is_end_stream(), "the body ends with its last frame");
+        assert!(
+            !released.load(std::sync::atomic::Ordering::SeqCst),
+            "the guard lives while the body does"
+        );
+        drop(body);
         assert!(released.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

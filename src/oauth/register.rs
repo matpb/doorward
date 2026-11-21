@@ -1,6 +1,6 @@
 //! `POST /oauth/register`: dynamic client registration, rate limited per address.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr};
 
 use axum::Json;
 use axum::extract::{ConnectInfo, Request, State};
@@ -16,6 +16,7 @@ use crate::crypto::random_token;
 use crate::report;
 use crate::web::body::{ReadError, read, timed_out};
 use crate::web::limit;
+use crate::web::stall::Peer;
 use crate::web::{client_address, throttle_key};
 
 use super::uri;
@@ -134,8 +135,8 @@ pub fn parse_object(bytes: &[u8]) -> Option<Map<String, Value>> {
 fn peer_ip(parts: &Parts) -> IpAddr {
     parts
         .extensions
-        .get::<ConnectInfo<SocketAddr>>()
-        .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |info| info.0.ip())
+        .get::<ConnectInfo<Peer>>()
+        .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |info| info.0.0.ip())
 }
 
 /// The redirect addresses first, then the name: the first refusal in that order decides.

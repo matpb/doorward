@@ -1,7 +1,9 @@
 //! The gateway's own JSON-RPC answers, each with the inert-content headers.
 
-use axum::http::StatusCode;
-use axum::http::header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS};
+use axum::http::header::{
+    CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
+};
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
@@ -102,6 +104,21 @@ pub fn busy() -> Response {
         ),
         1,
     )
+}
+
+/// The 503 of a tools/call whose answer did not fit after the call was sent. No Retry-After: a retry
+/// would run the tool again.
+pub fn busy_after_call() -> Response {
+    let mut response = error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        None,
+        -32000,
+        "The gateway could not hold the server's answer. The call was sent to the server.",
+    );
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// The answer for a `tools/call` whose name is not in the server's list.

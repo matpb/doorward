@@ -1,5 +1,5 @@
 use std::convert::Infallible;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, FromRequestParts};
@@ -12,6 +12,7 @@ use crate::report;
 
 use super::address::{client_address, log_warnings};
 use super::cookies::{CSRF_COOKIE, SESSION_COOKIE, cookie_value};
+use super::stall::Peer;
 
 const ANON_PREFIX: &str = "dw_cs_";
 const ANON_BODY_LEN: usize = 43;
@@ -84,8 +85,8 @@ impl Viewer {
     pub(crate) async fn resolve(parts: &Parts, state: &AppState) -> Viewer {
         let peer = parts
             .extensions
-            .get::<ConnectInfo<SocketAddr>>()
-            .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |info| info.0.ip());
+            .get::<ConnectInfo<Peer>>()
+            .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |info| info.0.0.ip());
         let trusted = &state.config.trusted_proxies;
         let address = client_address(peer, &parts.headers, trusted);
         log_warnings(

@@ -1,5 +1,4 @@
 use std::future::Future;
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,6 +33,7 @@ use crate::proxy::links::Links;
 use crate::rate;
 use crate::report;
 use crate::web;
+use crate::web::stall::{Peer, StallListener};
 
 /// Password reset requests that may run their mail task at once.
 const RESET_REQUEST_PERMITS: usize = 16;
@@ -393,14 +393,20 @@ fn unlock_in(conn: &mut Connection, email: &str, at: i64) -> rusqlite::Result<bo
     Ok(true)
 }
 
-/// Serves `router` until `shutdown` resolves; handlers can read the peer address.
-pub async fn serve<F>(listener: TcpListener, router: Router, shutdown: F) -> std::io::Result<()>
+/// Serves `router` until `shutdown` resolves; handlers can read the peer address. A connection whose
+/// writes make no progress for `stall` is closed.
+pub async fn serve<F>(
+    listener: TcpListener,
+    router: Router,
+    stall: Duration,
+    shutdown: F,
+) -> std::io::Result<()>
 where
     F: Future<Output = ()> + Send + 'static,
 {
     axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
+        StallListener::new(listener, stall),
+        router.into_make_service_with_connect_info::<Peer>(),
     )
     .with_graceful_shutdown(shutdown)
     .await

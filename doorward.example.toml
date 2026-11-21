@@ -26,6 +26,7 @@ trusted_proxies = ["127.0.0.1", "::1"]
 [limits]
 # body_bytes = 1048576
 # body_read_seconds = 15
+# write_stall_seconds = 30
 # tools_list_bytes = 4194304
 # answer_memory_bytes = 33554432
 # upstream_timeout_seconds = 300

@@ -1049,7 +1049,12 @@ async fn gateway(dir: &Path, dcr_per_hour: u64) -> String {
     let gateway = assemble(config, Deps::system(), Arc::new(hasher))
         .await
         .expect("build");
-    tokio::spawn(serve(listener, gateway.router, std::future::pending()));
+    tokio::spawn(serve(
+        listener,
+        gateway.router,
+        std::time::Duration::from_secs(30),
+        std::future::pending(),
+    ));
     base
 }
 

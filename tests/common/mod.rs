@@ -95,7 +95,8 @@ impl TestGateway {
         );
         let cimd = FakeCimd::new();
         let gateway = build_gateway(&config, &clock, &cimd).await;
-        let (stop, server) = spawn_server(listener, gateway.router);
+        let (stop, server) =
+            spawn_server(listener, gateway.router, config.limits.write_stall_seconds);
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -148,7 +149,11 @@ impl TestGateway {
         (&mut self.server).await.expect("server task");
         let listener = bind_with_retry(self.addr).await;
         let gateway = build_gateway(&self.config, &self.clock, &self.cimd).await;
-        let (stop, server) = spawn_server(listener, gateway.router);
+        let (stop, server) = spawn_server(
+            listener,
+            gateway.router,
+            self.config.limits.write_stall_seconds,
+        );
         self.setup_code = gateway.setup_code;
         self.stop = Some(stop);
         self.server = server;
@@ -175,12 +180,21 @@ async fn build_gateway(config: &Config, clock: &Arc<ManualClock>, cimd: &Arc<Fak
     build(config.clone(), deps).await.expect("build gateway")
 }
 
-fn spawn_server(listener: TcpListener, router: Router) -> (oneshot::Sender<()>, JoinHandle<()>) {
+fn spawn_server(
+    listener: TcpListener,
+    router: Router,
+    stall_seconds: u64,
+) -> (oneshot::Sender<()>, JoinHandle<()>) {
     let (stop, stopped) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        serve(listener, router, async {
-            let _ = stopped.await;
-        })
+        serve(
+            listener,
+            router,
+            Duration::from_secs(stall_seconds),
+            async {
+                let _ = stopped.await;
+            },
+        )
         .await
         .expect("serve");
     });

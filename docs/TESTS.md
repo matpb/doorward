@@ -2242,10 +2242,10 @@ are held and again after they are released. A held answer is 200000 bytes of tex
 1. `a_burst_past_the_budget_is_refused_while_held_and_the_budget_comes_back`: the budget is
    524288 bytes. Six `echo` calls on the session route start at once, and the upstream holds all
    six. While they are held, at least one call is refused. The refusals that arrive then are `503`
-   with `Retry-After: 1`, `Cache-Control: no-store`, JSON-RPC `-32000`, message
-   `The gateway is busy` and a null id. Every call answers `200` or `503`, at most two answer
-   `200`, and each `200` holds the whole text. After the release, a new call answers `200` with
-   the whole text within 10 seconds.
+   with `Cache-Control: no-store`, no `Retry-After`, JSON-RPC `-32000`, message
+   `The gateway could not hold the server's answer. The call was sent to the server.` and a null
+   id. Every call answers `200` or `503`, at most two answer `200`, and each `200` holds the whole
+   text. After the release, a new call answers `200` with the whole text within 10 seconds.
 2. `the_same_burst_on_the_stateless_generation`: the same burst on the stateless route, in its own
    world with a budget of 524288 bytes. The call after the burst uses a new stateless client and
    must answer `200` with the whole text within 10 seconds.
@@ -2259,15 +2259,58 @@ are held and again after they are released. A held answer is 200000 bytes of tex
 4. `a_user_at_its_share_is_refused_and_another_user_still_answers`: the budget is 1048576 bytes,
    so one user's share is 262144 bytes. Alice starts four stateless `echo` calls on a held server,
    and the test waits until all four begin. At least two of her calls are refused while the
-   others are held, each in the busy form of item 1. Bob calls a second server whose answer is
+   others are held, each in the form of item 1 for a call that was sent. Bob calls a second server whose answer is
    200000 bytes, sent at once. His call must answer `200` with a result within 20 seconds. After
    the release, at most one of Alice's held answers answers `200` with the whole text, and any
-   other is refused in the busy form. All four of her calls are answered.
+   other is refused in the form of item 1. All four of her calls are answered.
 5. `a_refresh_the_budget_refuses_says_the_gateway_is_busy`: the budget is 262144 bytes. Alice and
    Bob each call one held server whose answers are 262000 bytes, and both answers are held. An
    admin's refresh of that server's tool list answers `503`. The server page shows
    `The gateway is busy. Try again in a moment.` in its error notice. After the release, each of
    the two calls answers `200` or `503`.
+
+6. `a_client_that_does_not_read_keeps_its_share_until_the_connection_is_closed`: the budget is
+   33554432 bytes, so one user's share is 8388608 bytes, and the write stall is 2 seconds. The
+   upstream answers 4000000 bytes to every call. Two raw sockets with a 4 KiB receive buffer send
+   a stateless `echo` call each, read only the status line, and do not read on. Both answer `200`.
+   One second later Alice's third call answers `503` in the form of item 1. Bob's call answers
+   `200` with the whole text. After the stall time, Alice's call answers `200` with the whole
+   text within 10 seconds, and the busy answers in between are in the form of item 1.
+7. `a_tools_list_of_two_thirds_of_the_limit_answers_200_on_mcp`: both limits are 262144 bytes. A
+   server lists 750 tools, whose list is checked to be between 60 and 70 percent of the limit.
+   The combined endpoint lists the same 750 tools as `200`, not `502`.
+8. `a_250000_byte_stream_answer_completes_on_the_slug_and_on_mcp`: both limits are 262144 bytes.
+   A `tools/call` on the server path and on the combined endpoint each answer one stream event of
+   250000 bytes. Each answers `200` with the whole text.
+9. `a_call_whose_answer_does_not_fit_is_refused_after_it_was_sent_on_the_server_path`: both limits
+   are 262144 bytes. Alice's held `echo` call takes the budget, and Bob's `echo` call on a second
+   server, whose answer is 200000 bytes, is refused after it was sent. Bob's refusal is in the
+   form of item 1. Alice's held call ends as `200` or `503`.
+10. `a_call_whose_answer_does_not_fit_is_refused_after_it_was_sent_on_mcp`: the same on the
+    combined endpoint, with the names `held-answers__echo` and `plain-answers__echo`.
+11. `a_tools_list_that_does_not_fit_keeps_retry_after_and_the_busy_text`: while Alice's held
+    call takes the budget, Bob's tools list of a second server, about 216 KB, is refused. The
+    refusal is `503`, `Retry-After: 1`, `Cache-Control: no-store`, JSON-RPC `-32000`, message
+    `The gateway is busy` and a null id.
+12. `a_combined_list_whose_only_server_is_left_out_for_the_budget_answers_busy`: the same with
+    Bob's combined list, whose only server is left out for the budget. The answer is the busy
+    form of item 11.
+
+13. `a_call_refused_before_it_was_sent_keeps_the_busy_form_on_the_server_path`: the limits of item 11.
+    Alice's held `echo` call takes the budget. Bob's `echo` call on the plain server, whose tool
+    list is not stored yet, finds the budget refuses the list that would store it. The call is
+    refused in the form of item 11 and the upstream receives no call.
+14. `a_call_refused_before_it_was_sent_keeps_the_busy_form_on_mcp`: the same on the combined
+    endpoint, with the name `plain-answers__echo`, whose definition is not stored. The answer is
+    the form of item 11.
+
+Items 6 to 14 set their own limits, as their texts say.
+
+The unit tests of statement 75 are `a_held_body_yields_frames_of_at_most_64_kib_and_keeps_its_guard_until_the_last_frame`
+in `src/web/limit.rs`, and `a_write_that_makes_no_progress_errors_with_timed_out_after_the_stall_time`,
+`a_write_that_progresses_within_the_stall_time_never_errors` and `an_idle_read_is_not_closed_by_the_stall_time`
+in `src/web/stall.rs`. The stall tests run on real time with a stall of 300 ms or 1 second, because the
+crate builds tokio without `test-util`.
 
 ## s75_process_memory.rs (statement 75)
 
@@ -2291,6 +2334,11 @@ Linux only.
 2. `the_same_burst_passes_the_ceiling_when_no_budget_is_reached`: with the 8 GiB budget, all 64
    calls answer `200`, and the peak grows by more than 262144 KiB. So the first test would catch a
    missing budget.
+3. `stalled_readers_do_not_grow_the_process_past_the_ceiling`: the default limits, with a write
+   stall of 30 seconds. 200 raw sockets with a 4 KiB receive buffer each send one `echo` call for
+   a 4000000 byte answer, read only its status line, and do not read on. Every client gets a
+   status line, at least one answers `503`, and after 5 seconds the peak resident memory has
+   grown by less than 262144 KiB. The counts are written to standard error.
 
 ## s76_body_deadline.rs (statement 76)
 

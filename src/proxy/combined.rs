@@ -23,7 +23,9 @@ use super::handle::{INVALID, NOT_LISTED, Owed, TOOL_LIMIT, answer_for, bare, cut
 use super::intake::{Intake, intake};
 use super::links::{self, Answer, Ask, Owner};
 use super::stream::{ACCESS_LOST, CHECK_FAILED, Owned, detail_of};
-use super::upstream::{self, Cause, Fault, Kind, LIST_LIMIT, TargetError, time_limit};
+use super::upstream::{
+    self, Cause, Fault, Kind, LIST_LIMIT, TargetError, budget_refused, time_limit,
+};
 use crate::app::AppState;
 use crate::audit::{self, OwnedEvent};
 use crate::mcp::answer;
@@ -511,7 +513,7 @@ async fn refetch(
                 owned_of(state, caller, started, &server.slug, server_id),
                 tool,
             );
-            Err(unavailable(owed, &server.slug, Cause::Busy).await)
+            Err(unavailable(owed, &server.slug, Cause::BusyBeforeSend).await)
         }
         Ok(Refetch::Database) => Err(bare(StatusCode::INTERNAL_SERVER_ERROR)),
         Err(_) => Ok(None),
@@ -540,7 +542,7 @@ async fn refresh_list(
         Ok(fetched) => fetched,
         Err(cause) => {
             refuse(state, slug, server_id, cause).await;
-            return if cause == Cause::Busy {
+            return if budget_refused(cause) {
                 Refetch::Busy
             } else {
                 Refetch::Refused
@@ -605,7 +607,7 @@ fn streamed(body: Body) -> Response {
 async fn unavailable(owed: Owed, slug: &str, cause: Cause) -> Response {
     let phrase = upstream::fail(slug, cause);
     owed.settle("unavailable", &phrase).await;
-    answer_for(slug, cause)
+    answer_for(slug, cause, true)
 }
 
 /// The answer when the access check could not be made: the call is recorded unavailable.
@@ -750,15 +752,18 @@ async fn collect(
     )
     .await;
     let mut fetched: Vec<(usize, Fetched)> = Vec::new();
+    let mut only_budget = true;
     for (position, outcome) in outcomes.into_iter().enumerate() {
         match outcome {
             Ok(list) => fetched.push((position, list)),
             Err(cause) => {
-                if cause == Cause::Busy {
+                if budget_refused(cause) {
                     note(format!(
                         "tools/list: {} left out, the answer memory budget is exhausted",
                         assigned[position].slug
                     ));
+                } else {
+                    only_budget = false;
                 }
                 refuse(
                     state,
@@ -771,7 +776,11 @@ async fn collect(
         }
     }
     if fetched.is_empty() {
-        return Err(answer::unavailable(LABEL));
+        return Err(if only_budget {
+            answer::busy()
+        } else {
+            answer::unavailable(LABEL)
+        });
     }
     let now = state.clock.now().unix_timestamp();
     let jobs: Vec<(i64, Vec<Value>)> = fetched
@@ -1043,6 +1052,8 @@ async fn fetch_pages(state: &AppState, owner: Owner, server_id: i64) -> Result<F
         let reply = links::read(state, sent, limit.saturating_sub(used), &mut page_held)
             .await
             .map_err(|Fault(cause)| cause)?;
+        // The page's bytes are counted by `held` below, so its own reservation goes first.
+        drop(page_held);
         used = used.saturating_add(u64::try_from(reply.to_string().len()).unwrap_or(u64::MAX));
         if !held.set(usize::try_from(used).unwrap_or(usize::MAX)) {
             return Err(Cause::Busy);
@@ -1075,7 +1086,7 @@ async fn refuse(state: &AppState, slug: &str, server_id: i64, cause: Cause) {
     let error = match cause {
         Cause::TooLarge => RefreshError::TooLarge,
         // The gateway's own causes store no refresh error: the upstream was not silent.
-        Cause::SecretUnreadable | Cause::Written | Cause::Busy => return,
+        Cause::SecretUnreadable | Cause::Written | Cause::Busy | Cause::BusyBeforeSend => return,
         _ => RefreshError::Unavailable,
     };
     // catalog::fail reports its own database error.

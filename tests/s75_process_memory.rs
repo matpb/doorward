@@ -1,6 +1,7 @@
 mod common;
 
 use std::fs;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,7 +9,7 @@ use std::time::Duration;
 use common::admin::{self, ServerSpec};
 use common::binary::{Run, free_port, write_file};
 use common::client::{OAuthApp, TestClient};
-use common::mcp::McpClient;
+use common::mcp::{McpClient, stalled_call};
 use common::upstream::{FakeUpstream, Mode, UpstreamOptions};
 use serde_json::json;
 use tempfile::TempDir;
@@ -26,6 +27,12 @@ const BUDGET: u64 = 33_554_432;
 const NO_BUDGET: u64 = 8_589_934_592;
 /// The most the peak resident memory of the gateway process may grow during the bursts, in KiB.
 const CEILING_KIB: u64 = 262_144;
+/// The default `limits.write_stall_seconds`, kept so that no stall ends during the measurement.
+const WRITE_STALL: u64 = 30;
+/// Raw clients that read only the status line of their answer, all sent in a row.
+const READERS: usize = 200;
+/// How long the stalled clients keep their sockets open before the peak is read.
+const STALLED_FOR: Duration = Duration::from_secs(5);
 
 /// How long the upstream may take to begin every answer.
 const WAIT: Duration = Duration::from_secs(60);
@@ -49,14 +56,14 @@ struct Spawned {
 }
 
 impl Spawned {
-    fn start(budget: u64) -> Spawned {
+    fn start(budget: u64, stall: u64) -> Spawned {
         let dir = tempfile::tempdir().expect("temp dir");
         let port = free_port();
         let db = dir.path().join("doorward.db");
         let text = format!(
             "public_url = \"http://127.0.0.1:{port}\"\nlisten = \"127.0.0.1:{port}\"\n\
              database = '{}'\n\n[limits]\ntools_list_bytes = {BUDGET}\n\
-             answer_memory_bytes = {budget}\n",
+             answer_memory_bytes = {budget}\nwrite_stall_seconds = {stall}\n",
             db.display()
         );
         let config = write_file(dir.path(), "doorward.toml", &text)
@@ -116,7 +123,7 @@ impl Spawned {
 /// Sends `CALLS` calls at once through a gateway with `budget`; the upstream sends half of each answer,
 /// waits until all have begun and `HOLD` has passed, then sends the rest.
 async fn measure(budget: u64) -> Measured {
-    let gateway = Spawned::start(budget);
+    let gateway = Spawned::start(budget, WRITE_STALL);
     let owner = gateway.owner().await;
     let upstream = FakeUpstream::start(UpstreamOptions::default()).await;
     let url = upstream.url();
@@ -212,5 +219,79 @@ async fn the_same_burst_passes_the_ceiling_when_no_budget_is_reached() {
         measured.grown_kib > CEILING_KIB,
         "the peak grew {} KiB, so this burst would not show a missing budget",
         measured.grown_kib
+    );
+}
+
+/// Raw clients that read only the status line of a 4 MB answer each. The gateway holds what the clients
+/// have not read, so its peak memory must not pass the ceiling even though every client is answered.
+#[tokio::test(flavor = "multi_thread")]
+async fn stalled_readers_do_not_grow_the_process_past_the_ceiling() {
+    let gateway = Spawned::start(BUDGET, WRITE_STALL);
+    let owner = gateway.owner().await;
+    let upstream = FakeUpstream::start(UpstreamOptions::default()).await;
+    let url = upstream.url();
+    let id = admin::add_server(
+        &owner,
+        &ServerSpec {
+            name: "demo",
+            slug: "demo",
+            upstream_url: &url,
+            secret: None,
+            pass_resources: false,
+            pass_prompts: false,
+        },
+    )
+    .await;
+    let page = admin::refresh_tools(&owner, &id).await;
+    assert_eq!(page.status, 303, "the tool list must be fetched");
+    let owner_id = admin::user_id(&owner, EMAIL).await.expect("the owner");
+    let page = admin::assign(&owner, &owner_id, &[id.as_str()]).await;
+    assert_eq!(page.status, 303, "the owner must be assigned to demo");
+    let registered = owner.register("Memory Probe", &[CALLBACK]).await;
+    let client_id = registered
+        .json()
+        .and_then(|json| json["client_id"].as_str().map(str::to_owned))
+        .expect("registration answers with a client_id");
+    let app = OAuthApp {
+        client_id,
+        redirect_uri: CALLBACK.to_owned(),
+    };
+    let resource = format!("{}/demo", gateway.base);
+    let tokens = owner.connect(&app, &resource).await;
+    upstream.set_mode(Mode::Oversized { bytes: ANSWER });
+    let addr: SocketAddr = gateway
+        .base
+        .trim_start_matches("http://")
+        .parse()
+        .expect("the gateway address");
+
+    let before = gateway.peak_kib();
+    let mut sockets = Vec::new();
+    let mut statuses = Vec::new();
+    for n in 0..READERS {
+        let (socket, line) =
+            stalled_call(addr, "demo", &tokens.access_token, 1000 + n as u64).await;
+        statuses.push(line);
+        sockets.push(socket);
+    }
+    tokio::time::sleep(STALLED_FOR).await;
+    let grown = gateway.peak_kib().saturating_sub(before);
+    let count = |code: &str| statuses.iter().filter(|line| line.contains(code)).count();
+    eprintln!(
+        "stalled readers: {} answered 200, {} answered 503, {} other; peak grew {grown} KiB",
+        count(" 200"),
+        count(" 503"),
+        statuses.len() - count(" 200") - count(" 503")
+    );
+    drop(sockets);
+    assert_eq!(
+        statuses.len(),
+        READERS,
+        "every client must get a status line"
+    );
+    assert!(count(" 503") > 0, "the budget must refuse some answers");
+    assert!(
+        grown < CEILING_KIB,
+        "the peak grew {grown} KiB, the ceiling is {CEILING_KIB} KiB"
     );
 }

@@ -182,6 +182,7 @@ fn sections_default_when_absent() {
         Limits {
             body_bytes: 1_048_576,
             body_read_seconds: 15,
+            write_stall_seconds: 30,
             tools_list_bytes: 4_194_304,
             answer_memory_bytes: 33_554_432,
             upstream_timeout_seconds: 300,

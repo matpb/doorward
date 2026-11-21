@@ -330,11 +330,19 @@ L. Added after the owner's auth review
 75. The bytes of server answers that the gateway holds in memory at one time are bounded by
     `limits.answer_memory_bytes` (32 MiB by default) over all requests, and one user's
     requests together hold at most a quarter of it, or one largest answer
-    (`limits.tools_list_bytes`) when that is more. An answer that does not fit is not read
-    further: a plain answer gets `503` with `Retry-After: 1` and JSON-RPC `-32000` with
-    message `The gateway is busy`, an open stream ends, and the combined tool list leaves
-    that server out. Nothing is stored as a server error, and the bytes count until the
-    client has received them. A user at their share does not stop another user's answers.
+    (`limits.tools_list_bytes`) when that is more. Each held byte counts once. An answer
+    that does not fit is not read further. A plain answer gets `503` and JSON-RPC `-32000`:
+    with `Retry-After: 1` and message `The gateway is busy`, or, for a `tools/call` that was
+    already sent to the server, with no `Retry-After` and message `The gateway could not
+    hold the server's answer. The call was sent to the server.` An open stream ends, and
+    the combined tool list leaves that server out, or answers the busy `503` when every
+    server was left out for this reason. Nothing is stored as a server error. An answer
+    counts until the client has taken it from the gateway: it is handed over in pieces of
+    at most 64 KiB, and a connection whose writes make no progress for
+    `limits.write_stall_seconds` (30 by default) is closed, which frees what it held.
+    Outside the count stay the bytes already handed to a connection for sending, about
+    0.5 MiB per open connection, and the 8 queued pieces of an open stream. A user at
+    their share does not stop another user's answers.
 76. A request body that is not sent in full within `limits.body_read_seconds` (15 by default)
     is answered with `408` and the connection is closed, for browser forms, the token and
     registration endpoints and MCP posts alike. Nothing is processed or forwarded, and no
@@ -417,10 +425,12 @@ into the test harness. In addition:
 - 73: `tests/s73_account_nav.rs`.
 - 74: `tests/s74_key_case.rs`, on the per-server and the combined route under both protocol
   generations, and the classify rows in `src/mcp/tests.rs`.
-- 75: `tests/s75_answer_memory.rs`, with a fake upstream that holds its answers open, and the
-  unit tests in `src/proxy/budget.rs`, `src/web/limit.rs` and `src/proxy/tests_combined.rs`;
-  and `tests/s75_process_memory.rs`, which runs the real binary, holds 64 answers of 4 MB
-  open at once and reads the peak resident memory of the gateway process from `/proc`.
+- 75: `tests/s75_answer_memory.rs`, with a fake upstream that holds its answers open and
+  with clients on raw sockets that read the status line and then stop reading; the unit
+  tests in `src/proxy/budget.rs`, `src/web/limit.rs`, `src/web/stall.rs` and
+  `src/proxy/tests_combined.rs`; and `tests/s75_process_memory.rs`, which runs the real
+  binary, holds 64 answers of 4 MB open at once, then leaves 200 answers unread, and reads
+  the peak resident memory of the gateway process from `/proc`.
 - 76: `tests/s76_body_deadline.rs`, with a raw socket that stalls mid-body on each of the four
   routes, and `a_head_on_authorize_is_limited_at_the_same_count_as_a_get` in
   `tests/s43_rate_limits.rs`.

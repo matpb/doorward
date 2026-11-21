@@ -229,7 +229,7 @@ impl Links {
     ) -> Result<Arc<Link>, Fault> {
         match self.inner.usable(key, target) {
             Some(link) => Ok(link),
-            None => self.make(state, owner, key, target).await,
+            None => self.make(state, owner, key, target).await.map_err(unsent),
         }
     }
 
@@ -708,6 +708,14 @@ struct Exchange {
     answer: Option<Value>,
     /// Why there is no answer, when the status is 200.
     reason: Cause,
+}
+
+/// A budget refusal while the link is made: the call the link was made for has not been sent.
+fn unsent(Fault(cause): Fault) -> Fault {
+    match cause {
+        Cause::Busy => Fault(Cause::BusyBeforeSend),
+        other => Fault(other),
+    }
 }
 
 /// The handshake: the stateless probe, then, when the probe has no result, initialize and
