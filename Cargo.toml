@@ -6,6 +6,7 @@ rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 description = "An authentication gateway for MCP servers: sign-in, per-tool access rules and a record of every call."
 readme = "README.md"
+repository = "https://github.com/matpb/doorward"
 keywords = ["mcp", "oauth", "gateway", "authentication", "proxy"]
 categories = ["authentication", "network-programming", "web-programming::http-server"]
 
