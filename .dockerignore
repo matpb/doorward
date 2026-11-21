@@ -10,3 +10,5 @@ scripts
 *.db
 *.db-*
 *.key
+backup
+*.tar.gz

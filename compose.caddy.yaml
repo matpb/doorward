@@ -3,7 +3,7 @@ name: doorward
 
 services:
   caddy:
-    image: caddy:2.11
+    image: caddy:2.11@sha256:4851e54a46b206517c574821bb5cc67f170d2156041e9fbc4c9193b45e84a75b
     ports:
       - "${HTTP_PORT:-80}:80"
       # Same number on both sides: Caddy listens on the port named in DOORWARD_PUBLIC_URL.

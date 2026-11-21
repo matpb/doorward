@@ -10,6 +10,7 @@ targets = [
 ]
 
 [advisories]
+yanked = "deny"
 
 [licenses]
 allow = [

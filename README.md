@@ -192,11 +192,28 @@ there. Claude Code, Codex and the Cursor command line client were run against 0.
   [docs/DOCKER.md](docs/DOCKER.md#rate-limits).
 - A browser page on another origin cannot call the MCP paths unless its origin is listed
   in `allowed_origins`.
-- A server's answer larger than `tools_list_bytes` (4 MiB by default) is refused with a
-  `502`, whether it is a tool list, a tool result or one event of a stream.
+- A server's answer larger than `tools_list_bytes` (4 MiB by default) is not relayed. A larger
+  JSON answer, such as a tool list or a tool result, gets a `502`. A larger event in a stream
+  ends that stream. On the combined endpoint, a server that is too large is left out of the
+  tool list.
 - Access tokens last 60 minutes and refresh tokens rotate. A refresh token presented again
   within 30 seconds gets the same new pair, which covers a lost answer; presented later, it
   ends that client's connection.
+
+## What the gateway does not do
+
+- Every user reaches a server under one identity: the server's single stored secret header,
+  when it has one. Per-user permissions exist only in the gateway. Anything the server caches
+  or stores per caller is shared.
+- Allow and deny rules cover tools only. A server's resources and prompts are switched on or
+  off per server. When a switch is on, they pass for every user assigned to that server.
+- The combined endpoint `/mcp` puts the tool descriptions of every assigned server in one list.
+  A compromised server can word its descriptions to steer an agent toward other servers' tools.
+- The lock-down check proves that the server refuses a request without the secret. It cannot
+  prove that the server never reveals the secret, for example by echoing request headers back.
+  Keep the network restriction in step 3 as well.
+- A new deny rule applies to the next call. It does not end a call that is already running.
+- A tool call still succeeds when its activity row cannot be written, for example on a full disk.
 
 ## Run the tests
 
@@ -223,3 +240,6 @@ Bugs and questions go to the repository's issue tracker. Security reports do not
 ## License
 
 Licensed under MIT OR Apache-2.0. See `LICENSE-MIT` and `LICENSE-APACHE`.
+
+The bundled fonts, Atkinson Hyperlegible Next and Atkinson Hyperlegible Mono, are licensed
+under the SIL Open Font License 1.1, with the license texts in `assets/fonts/`.

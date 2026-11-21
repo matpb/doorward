@@ -6,3 +6,5 @@ target/
 *.key
 proof/
 __pycache__/
+backup/
+*.tar.gz

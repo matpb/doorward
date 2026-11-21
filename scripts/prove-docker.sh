@@ -279,7 +279,7 @@ stage_a() {
     logged "$WORK/up.log" "A14 stop" compose_caddy stop
     mkdir -p "$WORK/backup"
     logged "$WORK/backup.log" "A14 backup" docker run --rm -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-        -v doorward-proof-data:/data:ro -v "$WORK/backup:/backup" busybox sh -c \
+        -v doorward-proof-data:/data:ro -v "$WORK/backup:/backup" busybox:1.37 sh -c \
         'umask 077 && tar -C /data -czf /backup/doorward-data.tar.gz . && chown "$HOST_UID:$HOST_GID" /backup/doorward-data.tar.gz'
     local archive="$WORK/backup/doorward-data.tar.gz" mode owner
     [[ -f "$archive" ]] || die "A14 backup: no archive was written"
@@ -287,11 +287,11 @@ stage_a() {
     owner="$(stat -c '%u' "$archive")"
     [[ "$mode" == 600 && "$owner" == "$(id -u)" ]] || die "A14 backup: archive mode $mode owner $owner, wanted 600 and $(id -u)"
     pass "A14 backup: archive is mode 0600 and owned by the invoking user"
-    logged "$WORK/restore.log" "A14 empty" docker run --rm -v doorward-proof-data:/data busybox sh -c 'rm -rf /data/* /data/.[!.]*'
+    logged "$WORK/restore.log" "A14 empty" docker run --rm -v doorward-proof-data:/data busybox:1.37 sh -c 'rm -rf /data/* /data/.[!.]*'
     local emptied
-    emptied="$(docker run --rm -v doorward-proof-data:/data busybox sh -c 'if [ -z "$(ls -A /data)" ]; then echo empty; else echo full; fi')"
+    emptied="$(docker run --rm -v doorward-proof-data:/data busybox:1.37 sh -c 'if [ -z "$(ls -A /data)" ]; then echo empty; else echo full; fi')"
     [[ "$emptied" == empty ]] || die "A14 restore: the data volume is not empty before the restore"
-    logged "$WORK/restore.log" "A14 restore" docker run --rm -v doorward-proof-data:/data -v "$WORK/backup:/backup:ro" busybox \
+    logged "$WORK/restore.log" "A14 restore" docker run --rm -v doorward-proof-data:/data -v "$WORK/backup:/backup:ro" busybox:1.37 \
         sh -c 'rm -rf /data/* /data/.[!.]* ; tar -C /data -xzf /backup/doorward-data.tar.gz'
     logged "$WORK/up.log" "A14 start" compose_caddy start
     GW_ID="$(compose_caddy ps -q doorward)"

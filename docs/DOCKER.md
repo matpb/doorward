@@ -38,9 +38,10 @@ To use another HTTPS port, set `HTTPS_PORT` in `.env` and put the same port in
 `DOORWARD_PUBLIC_URL`, for example `https://doorward.example.com:8443`. The two must match,
 because Caddy listens on the port in the address and the host publishes that same number.
 
-The Compose file follows the `caddy:2.11` tag, so patch releases with security fixes arrive
-on `docker compose -f compose.caddy.yaml pull`. A person who wants a frozen image can append
-`@sha256:<digest>` to the `image: caddy:2.11` line.
+The Compose file pins `caddy:2.11` by digest, so `docker compose -f compose.caddy.yaml pull`
+does not fetch a newer Caddy release. Caddy security fixes reach the stack only when the pin
+changes. To update Caddy, change both the tag and the digest on the
+`image: caddy:2.11@sha256:...` line.
 
 ### What the Caddyfile does
 
@@ -183,7 +184,7 @@ database is not written during the copy. The archive is private and owned by you
 docker compose -f compose.caddy.yaml stop
 mkdir -p backup
 docker run --rm -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-  -v doorward-data:/data:ro -v "$PWD/backup:/backup" busybox sh -c \
+  -v doorward-data:/data:ro -v "$PWD/backup:/backup" busybox:1.37 sh -c \
   'umask 077 && tar -C /data -czf /backup/doorward-data.tar.gz . && chown "$HOST_UID:$HOST_GID" /backup/doorward-data.tar.gz'
 docker compose -f compose.caddy.yaml start
 ```
@@ -196,7 +197,7 @@ A restore replaces everything in the volume. Stop the stack first:
 
 ```
 docker compose -f compose.caddy.yaml stop
-docker run --rm -v doorward-data:/data -v "$PWD/backup:/backup:ro" busybox \
+docker run --rm -v doorward-data:/data -v "$PWD/backup:/backup:ro" busybox:1.37 \
   sh -c 'rm -rf /data/* /data/.[!.]* ; tar -C /data -xzf /backup/doorward-data.tar.gz'
 docker compose -f compose.caddy.yaml start
 ```
