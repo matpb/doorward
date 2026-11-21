@@ -420,14 +420,18 @@ fn render(viewer: &Viewer, req: &str, consent: &ConsentPage) -> Response {
 /// The body: what the client asks for, who signs in, then the two decisions.
 fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
     html! {
-        h1 { "You will be sent to " (consent.redirect_host) }
+        h1.consent-title { "You will be sent to " span.dest { (ui::breakable(&consent.redirect_host)) } }
         (client_line(&consent.client, consent.claim))
-        p { "Server: " (consent.server) }
-        p { "Signed in as " (consent.email) }
+        dl.facts {
+            dt { "Server" }
+            dd class=(if consent.server == ALL_SERVERS { "grant" } else { "grant id" }) { (consent.server) }
+            dt { "Signed in as" }
+            dd { (ui::email(&consent.email)) }
+        }
         @if let Some(sentence) = consent.local_sentence {
             (ui::notice("warning", html! { p.local-app { (sentence) } }))
         }
-        p.strong data-consent-notice { "Approve only if you started this sign-in yourself." }
+        p.strong data-consent-notice { "Approve only if you started this " span.nowrap { "sign-in" } " yourself." }
         div.actions {
             form method="post" action="/oauth/consent" {
                 input type="hidden" name="csrf" value=(csrf);
@@ -495,7 +499,7 @@ fn no_access() -> Response {
         "No access",
         html! {
             h1 { "You do not have access to this server" }
-            p { "Ask an administrator to give you access, then start the sign-in again." }
+            p.lede { "Ask an administrator to give you access, then start the sign-in again." }
         },
     )
 }

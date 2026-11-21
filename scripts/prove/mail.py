@@ -112,21 +112,33 @@ class Messages(html.parser.HTMLParser):
         super().__init__()
         self.found = {}
         self.kind = None
+        self.tone = None
         self.text = ""
 
     def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        classes = (attributes.get("class") or "").split()
+        if tag == "div" and "notice" in classes:
+            # A notice is a div whose data-notice names its tone; its paragraph carries the words.
+            self.tone = {"ok": "notice", "error": "error"}.get(attributes.get("data-notice"))
+            return
         if tag != "p":
             return
-        classes = (dict(attrs).get("class") or "").split()
         for name in ("notice", "error"):
             if name in classes and name not in self.found:
                 self.kind = name
                 self.text = ""
+        if self.kind is None and self.tone is not None and self.tone not in self.found:
+            self.kind = self.tone
+            self.text = ""
+        self.tone = None
 
     def handle_endtag(self, tag):
         if tag == "p" and self.kind is not None:
             self.found[self.kind] = self.text.strip()
             self.kind = None
+        if tag == "div":
+            self.tone = None
 
     def handle_data(self, data):
         if self.kind is not None:

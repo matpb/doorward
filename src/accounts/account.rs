@@ -5,6 +5,7 @@ use maud::{Markup, html};
 
 use crate::app::AppState;
 use crate::oauth::connected::{self, Connected};
+use crate::web::ui::{self, Note};
 use crate::web::{MainData, Nav, Viewer, form_page_with, internal_error, redirect};
 
 pub async fn get_account(State(state): State<AppState>, viewer: Viewer) -> Response {
@@ -40,29 +41,54 @@ pub fn account_page(
     })
 }
 
+/// The server name a connected client shows when no server is named: the words, not a path.
+const ALL_SERVERS: &str = "all servers";
+
 fn account_body(csrf: &str, email: &str, error: Option<&str>, clients: &[Connected]) -> Markup {
+    let new_note = Note::Hint("12 to 256 characters.");
+    let new_described = new_note.describer("new_password");
     html! {
-        div.stack {
-            div.page-head {
-                h1 { "Your account" }
+        div.page-head {
+            h1 { "Your account" }
+            p.lede { "Signed in as " (ui::email(email)) }
+            div.head-actions {
+                form method="post" action="/logout" {
+                    input type="hidden" name="csrf" value=(csrf);
+                    button type="submit" data-kind="secondary" { "Sign out" }
+                }
             }
-            p.lede { "Signed in as " (email) }
-            section.card {
-                h2 { "Connected clients" }
-                @if clients.is_empty() {
-                    p { "No client is connected to your account." }
-                } @else {
-                    ul.rows {
+        }
+        section.block aria-labelledby="clients-title" {
+            div.block-head {
+                h2 id="clients-title" { "Connected clients" }
+            }
+            @if clients.is_empty() {
+                p.muted { "No client is connected to your account." }
+            } @else {
+                table.list.clients {
+                    thead {
+                        tr {
+                            th scope="col" { "Client" }
+                            th scope="col" class="c-server" { "Server" }
+                            th scope="col" class="c-act" aria-label="Actions" {}
+                        }
+                    }
+                    tbody {
                         @for row in clients {
-                            li data-family=(row.public_id) data-client-name=(row.client_name) data-server=(row.server) {
-                                div.row-main {
-                                    span.row-title { (row.client_name) }
-                                    p.row-meta { "on " (row.server) }
+                            tr data-family=(row.public_id) data-client-name=(row.client_name) data-server=(row.server) {
+                                td.lead.strong { (row.client_name) }
+                                td.half {
+                                    "on "
+                                    @if row.server == ALL_SERVERS {
+                                        (row.server)
+                                    } @else {
+                                        code { (row.server) }
+                                    }
                                 }
-                                div.row-actions {
+                                td.act {
                                     form method="post" action=(format!("/account/clients/{}/disconnect", row.public_id)) {
                                         input type="hidden" name="csrf" value=(csrf);
-                                        button type="submit" data-kind="danger" { "Disconnect" }
+                                        button.row-action type="submit" data-kind="danger" { "Disconnect" }
                                     }
                                 }
                             }
@@ -70,29 +96,41 @@ fn account_body(csrf: &str, email: &str, error: Option<&str>, clients: &[Connect
                     }
                 }
             }
-            section.card {
-                h2 { "Change password" }
-                @if let Some(message) = error {
-                    p.error { (message) }
-                }
-                form method="post" action="/account/password" {
-                    input type="hidden" name="csrf" value=(csrf);
-                    div.fields {
-                        div {
-                            label for="current_password" { "Current password" }
-                            input id="current_password" name="current_password" type="password" autocomplete="current-password" required;
-                        }
-                        div {
-                            label for="new_password" { "New password" }
-                            input id="new_password" name="new_password" type="password" autocomplete="new-password" required;
-                        }
-                    }
-                    button type="submit" data-kind="primary" { "Change password" }
-                }
+        }
+        section.part aria-labelledby="password-title" {
+            div.part-head {
+                h2 id="password-title" { "Change password" }
+                p { "Enter the current password, then the new one." }
             }
-            form method="post" action="/logout" {
-                input type="hidden" name="csrf" value=(csrf);
-                button type="submit" data-kind="secondary" { "Sign out" }
+            div.part-body {
+                form.flow method="post" action="/account/password" {
+                    input type="hidden" name="csrf" value=(csrf);
+                    @if let Some(message) = error {
+                        (ui::refused(Some("The password was not changed."), message, None))
+                    }
+                    div.fields data-cols="2" {
+                        (ui::field(
+                            "current_password",
+                            "Current password",
+                            false,
+                            html! { input id="current_password" name="current_password" type="password" autocomplete="current-password" required; },
+                            Note::None,
+                        ))
+                        (ui::field(
+                            "new_password",
+                            "New password",
+                            false,
+                            html! {
+                                input id="new_password" name="new_password" type="password" autocomplete="new-password" required
+                                    aria-describedby=[new_described.as_deref()];
+                            },
+                            new_note,
+                        ))
+                    }
+                    div.form-actions {
+                        button type="submit" data-kind="primary" { "Change password" }
+                    }
+                }
             }
         }
     }
@@ -131,15 +169,29 @@ mod tests {
     }
 
     #[test]
-    fn the_page_is_a_stack_of_a_head_a_lede_and_two_cards() {
+    fn the_page_is_a_head_with_the_address_then_two_parts() {
         let doc = body(&[]);
-        assert_eq!(count(&doc, "div.stack > div.page-head > h1"), 1);
+        assert_eq!(count(&doc, "div.page-head > h1"), 1);
         assert_eq!(text(&doc, "div.page-head > h1"), "Your account");
         assert_eq!(text(&doc, "p.lede"), "Signed in as bob@example.com");
-        assert_eq!(count(&doc, "div.stack > section.card"), 2);
+        assert_eq!(count(&doc, "p.lede span.email"), 1);
+        assert_eq!(count(&doc, "section.block"), 1);
+        assert_eq!(count(&doc, "section.part"), 1);
         assert_eq!(
-            text(&doc, "section.card > p"),
+            text(&doc, "section.block p.muted"),
             "No client is connected to your account."
+        );
+    }
+
+    #[test]
+    fn sign_out_sits_on_the_title_row() {
+        let doc = body(&[]);
+        assert_eq!(
+            text(
+                &doc,
+                r#"div.page-head > div.head-actions > form[action="/logout"] > button[data-kind="secondary"]"#
+            ),
+            "Sign out"
         );
     }
 
@@ -161,33 +213,30 @@ mod tests {
         assert_eq!(
             count(
                 &doc,
-                r#"section.card ul.rows > li[data-family="pub-1"][data-client-name="Claude Code"][data-server="demo"]"#
+                r#"table.clients > tbody > tr[data-family="pub-1"][data-client-name="Claude Code"][data-server="demo"]"#
             ),
             1
         );
-        assert_eq!(
-            text(&doc, "li > div.row-main > span.row-title"),
-            "Claude Code"
-        );
-        assert_eq!(text(&doc, "li > div.row-main > p.row-meta"), "on demo");
+        assert_eq!(text(&doc, "tr > td.lead"), "Claude Code");
+        assert_eq!(text(&doc, "tr > td.half"), "on demo");
         assert_eq!(
             text(
                 &doc,
-                r#"li > div.row-actions > form > button[data-kind="danger"]"#
+                r#"tr > td.act > form > button.row-action[data-kind="danger"]"#
             ),
             "Disconnect"
         );
-        assert_eq!(
-            count(&doc, "li > div.row-actions > form > input[name=csrf]"),
-            1
-        );
+        assert_eq!(count(&doc, "tr > td.act > form > input[name=csrf]"), 1);
     }
 
     #[test]
-    fn the_password_fields_sit_in_a_fields_grid_inside_a_card() {
+    fn the_password_fields_sit_in_a_fields_grid_inside_a_part() {
         let doc = body(&[]);
         assert_eq!(
-            count(&doc, "section.card div.fields > div > input[type=password]"),
+            count(
+                &doc,
+                "section.part div.fields > div.field > input[type=password]"
+            ),
             2
         );
         assert_eq!(
@@ -198,11 +247,29 @@ mod tests {
             "Change password"
         );
         assert_eq!(
+            count(
+                &doc,
+                "div.field > input#new_password[aria-describedby=new_password-hint] + p.hint#new_password-hint"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn a_refused_change_names_the_refusal_in_a_notice_above_the_fields() {
+        let markup = account_body(
+            "token",
+            "bob@example.com",
+            Some("The current password is wrong."),
+            &[],
+        );
+        let doc = Html::parse_fragment(&markup.into_string());
+        assert_eq!(
             text(
                 &doc,
-                r#"div.stack > form[action="/logout"] button[data-kind="secondary"]"#
+                r#"form[action="/account/password"] > div.notice[data-notice="error"] > p"#
             ),
-            "Sign out"
+            "The password was not changed. The current password is wrong."
         );
     }
 }

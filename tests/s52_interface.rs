@@ -732,7 +732,7 @@ async fn an_activity_row_reads_in_plain_words() {
     let page = w.owner.get("/admin/activity").await;
     assert_eq!(page.status, 200, "the activity page must answer 200");
     let doc = Html::parse_document(&page.body);
-    let rows = all(doc.root_element(), "li[data-kind]");
+    let rows = all(doc.root_element(), "tbody tr[data-kind]");
     assert!(!rows.is_empty(), "the activity page must list rows");
     let mut seen = BTreeSet::new();
     for row in rows {
@@ -861,8 +861,8 @@ async fn the_mail_page_with_no_provider_shows_all_three_closed() {
         "with no provider in use every provider disclosure must be closed"
     );
     assert!(
-        mail.body.contains("No provider is in use."),
-        "the mail page must say No provider is in use."
+        mail.body.contains("Current provider: none."),
+        "the mail page must name the provider in use, or none"
     );
 }
 
@@ -881,10 +881,10 @@ async fn a_refused_provider_form_is_open_with_its_reason() {
     );
     assert_eq!(
         refused
-            .text(r#"details[data-provider="resend"] p.error"#)
+            .text(r#"details[data-provider="resend"] div.notice[data-notice="error"] p"#)
             .as_deref(),
         Some("A field contains a control character."),
-        "the refused resend form must hold its reason in p.error"
+        "the refused resend form must hold its reason in an error notice"
     );
 }
 
@@ -914,7 +914,9 @@ fn assert_consent(page: &Page, what: &str, local: bool) {
         "the Deny button of {what} must be secondary"
     );
     assert!(
-        page.body
+        doc.root_element()
+            .text()
+            .collect::<String>()
             .contains("Approve only if you started this sign-in yourself."),
         "{what} must keep the sentence about starting the sign-in yourself"
     );
@@ -1123,9 +1125,9 @@ async fn a_test_email_sent_is_an_ok_notice() {
     let page = admin::mail_test(&w.owner, BOB).await;
     assert_eq!(page.status, 200, "the test mail must be answered with 200");
     assert_eq!(
-        page.text(r#"p.notice[data-notice="ok"]"#).as_deref(),
+        page.text(r#"div.notice[data-notice="ok"] p"#).as_deref(),
         Some("Test email sent."),
-        "the sent sentence must be a p.notice carrying data-notice ok"
+        "the sent sentence must be a paragraph in a notice carrying data-notice ok"
     );
 }
 

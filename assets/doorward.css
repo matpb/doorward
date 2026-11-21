@@ -1675,11 +1675,13 @@ body[data-layout="card"] main > .lede + .actions {
       block-size: 44px;
       margin-inline-end: calc(var(--s3) * -1);
       padding-inline: var(--s3);
+      border-color: transparent;
       color: var(--on-door);
       font-size: 14px;
     }
 
     .menu-button:hover {
+      border-color: transparent;
       background: var(--door-hover);
     }
 

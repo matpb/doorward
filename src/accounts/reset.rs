@@ -14,6 +14,7 @@ use crate::crypto::{random_token, token_hash};
 use crate::mail;
 use crate::mail::templates;
 use crate::report;
+use crate::web::ui::{self, Note};
 use crate::web::{
     VerifiedForm, Viewer, busy, form_page, internal_error, not_found_link, page, redirect,
 };
@@ -265,10 +266,17 @@ fn forgot_body(csrf: &str) -> Markup {
     html! {
         h1 { "Forgot your password?" }
         p.lede { "Enter your email address. If an account exists for it, a reset link is sent." }
-        form method="post" action="/forgot" {
+        form.flow method="post" action="/forgot" {
             input type="hidden" name="csrf" value=(csrf);
-            label for="email" { "Email" }
-            input id="email" name="email" type="email" autocomplete="username" required;
+            div.fields {
+                (ui::field(
+                    "email",
+                    "Email",
+                    false,
+                    html! { input id="email" name="email" type="email" autocomplete="username" required; },
+                    Note::None,
+                ))
+            }
             button type="submit" data-kind="primary" { "Send reset link" }
         }
     }
@@ -279,16 +287,31 @@ fn reset_body(csrf: &str) -> Markup {
 }
 
 /// The form posts to the address it was loaded from, so the token never appears in the page.
+/// A refused password is named in a notice and marked under its field.
 fn reset_form(csrf: &str, error: Option<&str>) -> Markup {
+    let note = ui::note_under(error, Some("12 to 256 characters."));
+    let described = note.describer("password");
     html! {
         h1 { "Choose a new password" }
-        @if let Some(message) = error {
-            p.error { (message) }
+        @if error.is_some() {
+            div.notice data-notice="error" role="alert" {
+                p { strong { "The password was not changed." } }
+            }
         }
-        form method="post" {
+        form.flow method="post" {
             input type="hidden" name="csrf" value=(csrf);
-            label for="password" { "New password (12 to 256 characters)" }
-            input id="password" name="password" type="password" autocomplete="new-password" required;
+            div.fields {
+                (ui::field(
+                    "password",
+                    "New password",
+                    false,
+                    html! {
+                        input id="password" name="password" type="password" autocomplete="new-password" required
+                            aria-invalid=[ui::invalid(error)] aria-describedby=[described.as_deref()];
+                    },
+                    note,
+                ))
+            }
             button type="submit" data-kind="primary" { "Set password" }
         }
     }
@@ -312,7 +335,10 @@ mod tests {
         assert_eq!(count(&doc, "h1 + p.lede"), 1);
         assert_eq!(count(&doc, r#"form > button[data-kind="primary"]"#), 1);
         assert_eq!(
-            count(&doc, "form > label[for=email] + input#email[name=email]"),
+            count(
+                &doc,
+                "div.field > label[for=email] + input#email[name=email]"
+            ),
             1
         );
     }
@@ -323,9 +349,36 @@ mod tests {
         assert_eq!(count(&doc, "h1"), 1);
         assert_eq!(count(&doc, r#"form > button[data-kind="primary"]"#), 1);
         assert_eq!(
-            count(&doc, "form > label[for=password] + input#password"),
+            count(
+                &doc,
+                "div.field > label[for=password] + input#password + p.hint"
+            ),
+            1,
+            "the password hint must sit under its field, out of the label"
+        );
+        assert_eq!(count(&doc, "div.notice"), 0);
+    }
+
+    #[test]
+    fn a_refused_password_names_the_refusal_and_marks_its_field() {
+        let doc = Html::parse_fragment(
+            &reset_form("token", Some("The password must be 12 to 256 characters.")).into_string(),
+        );
+        assert_eq!(
+            count(
+                &doc,
+                r#"div.notice[data-notice="error"][role="alert"] > p > strong"#
+            ),
             1
         );
+        assert_eq!(
+            count(
+                &doc,
+                r#"input#password[aria-invalid="true"][aria-describedby="password-error"]"#
+            ),
+            1
+        );
+        assert_eq!(count(&doc, "div.field > p.field-error#password-error"), 1);
     }
 
     #[tokio::test]

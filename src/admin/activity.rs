@@ -305,42 +305,7 @@ fn unknown_label(kind: &str) -> String {
     }
 }
 
-/// One row as an item of the list: its attributes, its label, its time and its detail.
-fn row_item(row: &Row) -> Markup {
-    let (label, tone) = label_of(&row.kind, &row.decision, &row.outcome);
-    html! {
-        li data-kind=(row.kind) data-user=(row.user_email) data-server=(row.server_slug)
-            data-tool=(row.tool) data-decision=(row.decision) data-outcome=(row.outcome)
-            data-time=(row.time) data-duration-ms=[row.duration_ms] {
-            div.row-main {
-                p.row-title {
-                    span data-label data-tone=[tone] { (label) }
-                }
-                p.row-meta {
-                    time datetime=(row.time) { (row.plain) }
-                }
-                p.row-meta { (row.user_email) " " (row.server_slug) " " (row.tool) }
-                p.row-meta { (row.decision) " " (row.outcome) }
-                @if !row.detail.is_empty() {
-                    p.detail { (row.detail) }
-                }
-            }
-        }
-    }
-}
-
-/// The rows as an ordered list, newest first.
-fn rows_list(rows: &[Row]) -> Markup {
-    html! {
-        ol.activity.rows {
-            @for row in rows {
-                (row_item(row))
-            }
-        }
-    }
-}
-
-/// One row of the overview's table: its label and detail, user, server and tool, decision,
+/// One row of the activity table: its label and detail, user, server and tool, decision,
 /// duration and time. An empty user, server, tool or duration leaves its cell empty.
 fn table_row(row: &Row) -> Markup {
     let (label, tone) = label_of(&row.kind, &row.decision, &row.outcome);
@@ -359,7 +324,7 @@ fn table_row(row: &Row) -> Markup {
             td.what {
                 span.event data-label data-tone=[tone] { (label) }
                 @if !row.detail.is_empty() {
-                    span.detail { (row.detail) }
+                    span.detail { (breakable(&row.detail)) }
                 }
             }
             td.user {
@@ -382,6 +347,29 @@ fn table_row(row: &Row) -> Markup {
     }
 }
 
+/// The activity table with its column heads, one row per entry, newest first.
+fn activity_table(rows: &[Row]) -> Markup {
+    html! {
+        table.list.activity {
+            thead {
+                tr {
+                    th scope="col" { "Event" }
+                    th scope="col" class="c-user" { "User" }
+                    th scope="col" class="c-where" { "Server and tool" }
+                    th scope="col" class="c-decision" { "Decision" }
+                    th scope="col" class="c-duration duration num" { "Duration" }
+                    th scope="col" class="c-time" { "Time (UTC)" }
+                }
+            }
+            tbody {
+                @for row in rows {
+                    (table_row(row))
+                }
+            }
+        }
+    }
+}
+
 /// The newest `limit` rows of the activity log as the overview's table, or a sentence when there
 /// are none.
 pub(super) async fn latest(db: &Db, limit: i64) -> Result<Markup, DbError> {
@@ -392,23 +380,7 @@ pub(super) async fn latest(db: &Db, limit: i64) -> Result<Markup, DbError> {
         @if rows.is_empty() {
             p.muted { "No activity yet." }
         } @else {
-            table.list.activity {
-                thead {
-                    tr {
-                        th scope="col" { "Event" }
-                        th scope="col" class="c-user" { "User" }
-                        th scope="col" class="c-where" { "Server and tool" }
-                        th scope="col" class="c-decision" { "Decision" }
-                        th scope="col" class="c-duration duration num" { "Duration" }
-                        th scope="col" class="c-time" { "Time (UTC)" }
-                    }
-                }
-                tbody {
-                    @for row in &rows {
-                        (table_row(row))
-                    }
-                }
-            }
+            (activity_table(&rows))
         }
     })
 }
@@ -476,19 +448,23 @@ fn activity_page(
         "Activity",
         &data,
         html! {
-            div.stack {
+            div.page-head {
                 h1 { "Activity" }
+            }
+            div.toolbar {
                 (filter_form(user, server, &listing.users, &listing.servers))
-                @if rows.is_empty() {
-                    p { "No activity matches." }
-                } @else {
-                    p data-range {
+                @if !rows.is_empty() {
+                    p.range data-range {
                         (format!("Rows {} to {} of {}", offset.saturating_add(1), end, listing.total))
                     }
-                    (rows_list(rows))
                 }
-                (pager(query, number, listing.total, older))
             }
+            @if rows.is_empty() {
+                p.muted { "No activity matches." }
+            } @else {
+                (activity_table(rows))
+            }
+            (pager(query, number, listing.total, older))
         },
     )
 }

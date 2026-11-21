@@ -110,7 +110,7 @@ fn page_limited(wait: u64, browser: bool) -> Response {
     let body = if browser {
         html! {
             h1 { "Too many requests" }
-            p { "Try again in a moment." }
+            p.lede { "Try again in a moment." }
         }
     } else {
         html! { h1 { "Too many requests" } }
@@ -280,7 +280,10 @@ mod tests {
         )
         .expect("utf-8");
         assert!(text.contains("<h1>Too many requests</h1>"), "{text}");
-        assert!(text.contains("<p>Try again in a moment.</p>"), "{text}");
+        assert!(
+            text.contains("<p class=\"lede\">Try again in a moment.</p>"),
+            "{text}"
+        );
 
         let plain = page_limited(3, false);
         let text = String::from_utf8(

@@ -503,6 +503,14 @@ fn count(path: &Path, sql: &str) -> i64 {
         .expect("count")
 }
 
+/// The text a page shows: its markup parsed, with the tags and the `<wbr>` breaks left out.
+fn text_of(body: &str) -> String {
+    Html::parse_document(body)
+        .root_element()
+        .text()
+        .collect::<String>()
+}
+
 /// Inserts a user and a session for it; the returned browser presents that session.
 fn signed_in(gw: &Gateway, email: &str) -> Browser {
     let conn = open(&gw.db);
@@ -803,7 +811,7 @@ async fn a_url_shaped_client_writes_no_blocked_row() {
             .await;
         assert!(reply.is_error(), "request {index} is an error page");
         assert!(
-            reply.body.contains(&format!(
+            text_of(&reply.body).contains(&format!(
                 "Doorward will not send you to n{index}.attacker.example.com."
             )),
             "request {index} names its redirect host as before"
@@ -1032,7 +1040,7 @@ async fn an_address_that_does_not_parse_is_not_recorded() {
         "an address outside the grammar is an error page"
     );
     assert!(
-        reply.body.contains("attacker.example.com"),
+        text_of(&reply.body).contains("attacker.example.com"),
         "the page names the host"
     );
     assert_eq!(
@@ -1346,31 +1354,38 @@ async fn the_consent_page_shows_its_parts_in_order_with_two_decisions() {
     let combined = format!("{}/mcp", gw.base);
     let req = bob.request_of(DOC_ID, REDIRECT, &combined).await;
     let page = bob.get(&format!("/oauth/consent?req={req}")).await;
-    let body = page.body.clone();
+    let shown = text_of(&page.body);
     let places: Vec<usize> = [
         "You will be sent to",
         "Says it is ",
-        "Server: all servers",
+        "Server",
+        "all servers",
         "Signed in as",
     ]
     .iter()
-    .map(|text| body.find(text).unwrap_or_else(|| panic!("{text} missing")))
+    .map(|text| shown.find(text).unwrap_or_else(|| panic!("{text} missing")))
     .collect();
     assert!(
         places.windows(2).all(|pair| pair[0] < pair[1]),
         "headline, client, server, then the signed-in user: {places:?}"
     );
     assert!(
-        body.contains(
+        shown.contains(
             "The sign-in will be handed to whatever program is listening on this computer."
         ),
         "a loopback redirect carries the local-app sentence"
     );
     assert!(
-        body.contains("Approve only if you started this sign-in yourself."),
+        shown.contains("Approve only if you started this sign-in yourself."),
         "every consent page carries the notice"
     );
-    let doc = Html::parse_document(&body);
+    let doc = Html::parse_document(&page.body);
+    let grants = Selector::parse("dl.facts > dd.grant").expect("selector");
+    assert_eq!(
+        doc.select(&grants).count(),
+        1,
+        "the server of the consent page is the grant of a dl.facts list"
+    );
     let forms = Selector::parse(r#"form[action="/oauth/consent"]"#).expect("selector");
     let decisions: Vec<String> = doc
         .select(&forms)
@@ -1420,7 +1435,7 @@ async fn an_attacker_chosen_host_text_is_never_printed() {
         "markup in the authority is an error page"
     );
     assert!(
-        !markup.body.contains("<b>") && !markup.body.contains("evil.example.com"),
+        !markup.body.contains("<b>") && !text_of(&markup.body).contains("evil.example.com"),
         "a host with markup is not printed"
     );
 }

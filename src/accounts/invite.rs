@@ -9,6 +9,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::crypto::token_hash;
+use crate::web::ui::{self, Note};
 use crate::web::{
     VerifiedForm, Viewer, busy, form_page, internal_error, not_found_link, redirect,
     session_cookie, with_cookie,
@@ -175,16 +176,31 @@ fn invite_page(form: &VerifiedForm, email: &str, error: Option<&str>) -> Respons
 
 /// The form posts to the address it was loaded from, so the token never appears in the page.
 fn invite_body(csrf: &str, email: &str, error: Option<&str>) -> Markup {
+    let password_note = Note::Hint("12 to 256 characters.");
+    let password_described = password_note.describer("password");
     html! {
         h1 { "Accept your invitation" }
-        p.lede { "Invited address: " (email) }
-        @if let Some(message) = error {
-            p.error { (message) }
+        dl.facts {
+            dt { "Invited address" }
+            dd { (ui::email(email)) }
         }
-        form method="post" {
+        @if let Some(message) = error {
+            (ui::refused(None, message, None))
+        }
+        form.flow method="post" {
             input type="hidden" name="csrf" value=(csrf);
-            label for="password" { "Choose a password (12 to 256 characters)" }
-            input id="password" name="password" type="password" autocomplete="new-password" required;
+            div.fields {
+                (ui::field(
+                    "password",
+                    "Password",
+                    false,
+                    html! {
+                        input id="password" name="password" type="password" autocomplete="new-password" required
+                            aria-describedby=[password_described.as_deref()];
+                    },
+                    password_note,
+                ))
+            }
             button type="submit" data-kind="primary" { "Set password" }
         }
     }
@@ -202,14 +218,17 @@ mod tests {
     }
 
     #[test]
-    fn the_invitation_page_has_the_address_as_a_lede_and_one_primary_button() {
+    fn the_invitation_page_has_the_address_as_a_fact_and_one_primary_button() {
         let markup = invite_body("token", "bob@example.com", None);
         let doc = Html::parse_fragment(&markup.into_string());
-        assert_eq!(count(&doc, "h1 + p.lede"), 1);
-        assert_eq!(count(&doc, "p.lede"), 1);
+        assert_eq!(count(&doc, "dl.facts > dt"), 1);
+        assert_eq!(count(&doc, "dl.facts > dd span.email"), 1);
         assert_eq!(count(&doc, r#"form > button[data-kind="primary"]"#), 1);
         assert_eq!(
-            count(&doc, "form > label[for=password] + input#password"),
+            count(
+                &doc,
+                "div.field > label[for=password] + input#password + p.hint"
+            ),
             1
         );
     }

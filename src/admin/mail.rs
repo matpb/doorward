@@ -12,6 +12,7 @@ use crate::audit::{self, Event};
 use crate::crypto::{CryptoError, Keys};
 use crate::db::{self, Db, DbError};
 use crate::mail::{self, Message};
+use crate::web::ui::{self, Note};
 use crate::web::{
     FormFields, MainData, SessionUser, VerifiedForm, Viewer, forbidden, form_page_with,
     internal_error, redirect,
@@ -372,41 +373,59 @@ fn mail_forms(
         refused.and_then(|refusal| (refusal.provider == Some(name)).then_some(refusal.reason))
     };
     let unplaced = refused.and_then(|refusal| refusal.provider.is_none().then_some(refusal.reason));
+    let current = in_use.and_then(title_of).unwrap_or("none");
     html! {
-        div.stack {
+        div.page-head {
             h1 { "Mail settings" }
-            p { "Current provider: " (if provider.is_empty() { "none" } else { provider }) }
-            @if in_use.is_none() {
-                p { "No provider is in use." }
+            p.lede { "Doorward sends invitations and password reset links by email. Current provider: " (current) "." }
+        }
+        @if let Some(message) = unplaced {
+            (ui::refused(None, message, None))
+        }
+        div.providers {
+            (provider_disclosure("smtp", "Raw SMTP", in_use == Some("smtp"), refusal_of("smtp"), smtp_form(csrf, view, refusal_of("smtp"))))
+            (provider_disclosure("resend", "Resend", in_use == Some("resend"), refusal_of("resend"), resend_form(csrf, view, refusal_of("resend"))))
+            (provider_disclosure("mailgun", "Mailgun", in_use == Some("mailgun"), refusal_of("mailgun"), mailgun_form(csrf, view, refusal_of("mailgun"))))
+        }
+        section.part aria-labelledby="test-title" {
+            div.part-head {
+                h2 id="test-title" { "Test email" }
+                p { "Sends one message through the provider in use." }
             }
-            @if let Some(message) = unplaced {
-                p.error { (message) }
-            }
-            div.providers {
-                (provider_disclosure("smtp", "Raw SMTP", in_use == Some("smtp"), refusal_of("smtp"), smtp_form(csrf, view)))
-                (provider_disclosure("resend", "Resend", in_use == Some("resend"), refusal_of("resend"), resend_form(csrf, view)))
-                (provider_disclosure("mailgun", "Mailgun", in_use == Some("mailgun"), refusal_of("mailgun"), mailgun_form(csrf, view)))
-            }
-            section.card {
-                h2 { "Test email" }
-                @if let Some(message) = notice {
-                    p.notice data-notice="ok" { (message) }
-                }
-                @if let Some(message) = error {
-                    p.error { (message) }
-                }
-                form method="post" action="/admin/mail/test" {
+            div.part-body {
+                form.flow method="post" action="/admin/mail/test" {
                     input type="hidden" name="csrf" value=(csrf);
-                    div.fields {
-                        div {
-                            label for="test-to" { "Send the test email to" }
-                            input id="test-to" name="to" type="email" required;
-                        }
+                    @if let Some(message) = notice {
+                        (ui::notice("ok", html! { p { (message) } }))
                     }
-                    button type="submit" data-kind="secondary" { "Send test email" }
+                    @if let Some(message) = error {
+                        (ui::refused(None, message, None))
+                    }
+                    div.fields {
+                        (ui::field(
+                            "test-to",
+                            "Send the test email to",
+                            false,
+                            html! { input id="test-to" name="to" type="email" required; },
+                            Note::None,
+                        ))
+                    }
+                    div.form-actions {
+                        button type="submit" data-kind="secondary" { "Send test email" }
+                    }
                 }
             }
         }
+    }
+}
+
+/// The name the lead line and the provider's row give a provider, or None for an unknown one.
+fn title_of(name: &str) -> Option<&'static str> {
+    match name {
+        "smtp" => Some("Raw SMTP"),
+        "resend" => Some("Resend"),
+        "mailgun" => Some("Mailgun"),
+        _ => None,
     }
 }
 
@@ -421,110 +440,208 @@ fn provider_disclosure(
 ) -> Markup {
     let is_open = in_use || reason.is_some();
     html! {
-        details class=(if in_use { "provider card in-use" } else { "provider card" }) data-provider=(name) open[is_open] {
+        details.provider name="provider" data-provider=(name) open[is_open] {
             summary {
-                span { (title) }
-                span class="provider-state" data-in-use[in_use] {
-                    (if in_use { "In use" } else { "Not in use" })
+                span.provider-name { (title) }
+                @if in_use {
+                    span.state data-tone="ok" data-in-use { "In use" }
+                } @else {
+                    span.state data-tone="muted" { "Not in use" }
                 }
-            }
-            @if let Some(message) = reason {
-                p.error { (message) }
+                span.chevron aria-hidden="true" {}
             }
             (form)
         }
     }
 }
 
-fn smtp_form(csrf: &str, view: &View) -> Markup {
+/// The notice of a refused save sits first in its form, when that form was posted.
+fn smtp_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
     let tls = shown(view, "mail.smtp_tls");
+    let password_note = Note::Hint("Empty keeps the stored one.");
+    let password_described = password_note.describer("smtp-password");
+    let tls_note = Note::Hint("Off sends the password and the mail unencrypted.");
+    let tls_described = tls_note.describer("smtp-tls");
     html! {
-        form method="post" action="/admin/mail" {
+        form.flow method="post" action="/admin/mail" {
             input type="hidden" name="csrf" value=(csrf);
             input type="hidden" name="provider" value="smtp";
-            div.fields {
-                div {
-                    label for="smtp-from" { "From address" }
-                    input id="smtp-from" name="from" type="text" value=(shown(view, "mail.from"));
-                }
-                div {
-                    label for="smtp-host" { "Server" }
-                    input id="smtp-host" name="smtp_host" type="text" value=(shown(view, "mail.smtp_host"));
-                }
-                div {
-                    label for="smtp-port" { "Port" }
-                    input id="smtp-port" name="smtp_port" type="text" inputmode="numeric" value=(shown(view, "mail.smtp_port"));
-                }
-                div {
-                    label for="smtp-username" { "Username" }
-                    input id="smtp-username" name="smtp_username" type="text" value=(shown(view, "mail.smtp_username"));
-                }
-                div {
-                    label for="smtp-password" { "Password (empty keeps the stored one)" }
-                    input id="smtp-password" name="smtp_password" type="password" autocomplete="new-password";
-                }
-                div {
-                    label for="smtp-tls" { "TLS" }
-                    select id="smtp-tls" name="smtp_tls" {
-                        option value="off" selected[tls == "off"] { "Off (password and mail are sent unencrypted)" }
-                        option value="starttls" selected[tls == "starttls"] { "STARTTLS" }
-                        option value="implicit" selected[tls == "implicit"] { "Implicit TLS" }
-                    }
-                }
+            @if let Some(message) = refusal {
+                (ui::refused(None, message, None))
             }
-            button type="submit" data-kind="primary" { "Save SMTP settings" }
+            div.fields {
+                (ui::field(
+                    "smtp-from",
+                    "From address",
+                    false,
+                    html! { input id="smtp-from" name="from" type="text" value=(shown(view, "mail.from")); },
+                    Note::None,
+                ))
+            }
+            div.fields data-cols="2-1" {
+                (ui::field(
+                    "smtp-host",
+                    "Server",
+                    false,
+                    html! { input class="mono" id="smtp-host" name="smtp_host" type="text" value=(shown(view, "mail.smtp_host")); },
+                    Note::None,
+                ))
+                (ui::field(
+                    "smtp-port",
+                    "Port",
+                    false,
+                    html! { input class="mono" id="smtp-port" name="smtp_port" type="text" inputmode="numeric" value=(shown(view, "mail.smtp_port")); },
+                    Note::None,
+                ))
+            }
+            div.fields data-cols="2" {
+                (ui::field(
+                    "smtp-username",
+                    "Username",
+                    false,
+                    html! { input id="smtp-username" name="smtp_username" type="text" value=(shown(view, "mail.smtp_username")); },
+                    Note::None,
+                ))
+                (ui::field(
+                    "smtp-password",
+                    "Password",
+                    false,
+                    html! {
+                        input id="smtp-password" name="smtp_password" type="password" autocomplete="new-password"
+                            aria-describedby=[password_described.as_deref()];
+                    },
+                    password_note,
+                ))
+            }
+            div.fields data-cols="2" {
+                (ui::field(
+                    "smtp-tls",
+                    "TLS",
+                    false,
+                    html! {
+                        select id="smtp-tls" name="smtp_tls" aria-describedby=[tls_described.as_deref()] {
+                            option value="off" selected[tls == "off"] { "Off" }
+                            option value="starttls" selected[tls == "starttls"] { "STARTTLS" }
+                            option value="implicit" selected[tls == "implicit"] { "Implicit TLS" }
+                        }
+                    },
+                    tls_note,
+                ))
+            }
+            div.form-actions {
+                button type="submit" data-kind="primary" { "Save SMTP settings" }
+            }
         }
     }
 }
 
-fn resend_form(csrf: &str, view: &View) -> Markup {
+fn resend_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
+    let key_note = Note::Hint("Empty keeps the stored one.");
+    let key_described = key_note.describer("resend-key");
+    let base_note = Note::Hint("Empty means the provider's own address.");
+    let base_described = base_note.describer("resend-base");
     html! {
-        form method="post" action="/admin/mail" {
+        form.flow method="post" action="/admin/mail" {
             input type="hidden" name="csrf" value=(csrf);
             input type="hidden" name="provider" value="resend";
-            div.fields {
-                div {
-                    label for="resend-from" { "From address" }
-                    input id="resend-from" name="from" type="text" value=(shown(view, "mail.from"));
-                }
-                div {
-                    label for="resend-key" { "API key (empty keeps the stored one)" }
-                    input id="resend-key" name="resend_api_key" type="password" autocomplete="new-password";
-                }
-                div {
-                    label for="resend-base" { "Base address (empty means the provider's own)" }
-                    input id="resend-base" name="resend_base_url" type="text" value=(shown(view, "mail.resend_base_url"));
-                }
+            @if let Some(message) = refusal {
+                (ui::refused(None, message, None))
             }
-            button type="submit" data-kind="primary" { "Save Resend settings" }
+            div.fields {
+                (ui::field(
+                    "resend-from",
+                    "From address",
+                    false,
+                    html! { input id="resend-from" name="from" type="text" value=(shown(view, "mail.from")); },
+                    Note::None,
+                ))
+            }
+            div.fields {
+                (ui::field(
+                    "resend-key",
+                    "API key",
+                    false,
+                    html! {
+                        input id="resend-key" name="resend_api_key" type="password" autocomplete="new-password"
+                            aria-describedby=[key_described.as_deref()];
+                    },
+                    key_note,
+                ))
+            }
+            div.fields {
+                (ui::field(
+                    "resend-base",
+                    "Base address",
+                    true,
+                    html! {
+                        input class="mono" id="resend-base" name="resend_base_url" type="text"
+                            value=(shown(view, "mail.resend_base_url")) aria-describedby=[base_described.as_deref()];
+                    },
+                    base_note,
+                ))
+            }
+            div.form-actions {
+                button type="submit" data-kind="primary" { "Save Resend settings" }
+            }
         }
     }
 }
 
-fn mailgun_form(csrf: &str, view: &View) -> Markup {
+fn mailgun_form(csrf: &str, view: &View, refusal: Option<&str>) -> Markup {
+    let key_note = Note::Hint("Empty keeps the stored one.");
+    let key_described = key_note.describer("mailgun-key");
+    let base_note = Note::Hint("Empty means the provider's own address.");
+    let base_described = base_note.describer("mailgun-base");
     html! {
-        form method="post" action="/admin/mail" {
+        form.flow method="post" action="/admin/mail" {
             input type="hidden" name="csrf" value=(csrf);
             input type="hidden" name="provider" value="mailgun";
-            div.fields {
-                div {
-                    label for="mailgun-from" { "From address" }
-                    input id="mailgun-from" name="from" type="text" value=(shown(view, "mail.from"));
-                }
-                div {
-                    label for="mailgun-key" { "API key (empty keeps the stored one)" }
-                    input id="mailgun-key" name="mailgun_api_key" type="password" autocomplete="new-password";
-                }
-                div {
-                    label for="mailgun-domain" { "Domain" }
-                    input id="mailgun-domain" name="mailgun_domain" type="text" value=(shown(view, "mail.mailgun_domain"));
-                }
-                div {
-                    label for="mailgun-base" { "Base address (empty means the provider's own)" }
-                    input id="mailgun-base" name="mailgun_base_url" type="text" value=(shown(view, "mail.mailgun_base_url"));
-                }
+            @if let Some(message) = refusal {
+                (ui::refused(None, message, None))
             }
-            button type="submit" data-kind="primary" { "Save Mailgun settings" }
+            div.fields {
+                (ui::field(
+                    "mailgun-from",
+                    "From address",
+                    false,
+                    html! { input id="mailgun-from" name="from" type="text" value=(shown(view, "mail.from")); },
+                    Note::None,
+                ))
+            }
+            div.fields data-cols="2" {
+                (ui::field(
+                    "mailgun-key",
+                    "API key",
+                    false,
+                    html! {
+                        input id="mailgun-key" name="mailgun_api_key" type="password" autocomplete="new-password"
+                            aria-describedby=[key_described.as_deref()];
+                    },
+                    key_note,
+                ))
+                (ui::field(
+                    "mailgun-domain",
+                    "Domain",
+                    false,
+                    html! { input class="mono" id="mailgun-domain" name="mailgun_domain" type="text" value=(shown(view, "mail.mailgun_domain")); },
+                    Note::None,
+                ))
+            }
+            div.fields {
+                (ui::field(
+                    "mailgun-base",
+                    "Base address",
+                    true,
+                    html! {
+                        input class="mono" id="mailgun-base" name="mailgun_base_url" type="text"
+                            value=(shown(view, "mail.mailgun_base_url")) aria-describedby=[base_described.as_deref()];
+                    },
+                    base_note,
+                ))
+            }
+            div.form-actions {
+                button type="submit" data-kind="primary" { "Save Mailgun settings" }
+            }
         }
     }
 }

@@ -8,6 +8,7 @@ use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::crypto::constant_time_eq;
 use crate::db::{Db, DbError};
+use crate::web::ui::{self, Note};
 use crate::web::{
     VerifiedForm, Viewer, busy, forbidden, form_page, internal_error, not_found, redirect,
     session_cookie, with_cookie,
@@ -154,20 +155,46 @@ fn setup_error(form: &VerifiedForm, message: &str) -> Response {
 }
 
 fn setup_form(csrf: &str, error: Option<&str>) -> Markup {
+    let password_note = Note::Hint("12 to 256 characters.");
+    let password_described = password_note.describer("password");
     html! {
         h1 { "Set up Doorward" }
-        p.lede { "Enter the setup code printed when the gateway started, then the owner's email and a password of 12 to 256 characters." }
+        p.lede { "Enter the setup code printed when the gateway started, then the owner's email and a password." }
         @if let Some(message) = error {
-            p.error { (message) }
+            (ui::refused(None, message, None))
         }
-        form method="post" action="/setup" {
+        form.flow method="post" action="/setup" {
             input type="hidden" name="csrf" value=(csrf);
-            label for="setup_code" { "Setup code" }
-            input id="setup_code" name="setup_code" type="text" autocomplete="off" required;
-            label for="email" { "Owner email" }
-            input id="email" name="email" type="email" autocomplete="username" required;
-            label for="password" { "Password" }
-            input id="password" name="password" type="password" autocomplete="new-password" required;
+            div.fields {
+                (ui::field(
+                    "setup_code",
+                    "Setup code",
+                    false,
+                    html! { input class="mono" id="setup_code" name="setup_code" type="text" autocomplete="off" required; },
+                    Note::None,
+                ))
+            }
+            div.fields {
+                (ui::field(
+                    "email",
+                    "Owner email",
+                    false,
+                    html! { input id="email" name="email" type="email" autocomplete="username" required; },
+                    Note::None,
+                ))
+            }
+            div.fields {
+                (ui::field(
+                    "password",
+                    "Password",
+                    false,
+                    html! {
+                        input id="password" name="password" type="password" autocomplete="new-password" required
+                            aria-describedby=[password_described.as_deref()];
+                    },
+                    password_note,
+                ))
+            }
             button type="submit" data-kind="primary" { "Create owner" }
         }
     }
@@ -194,6 +221,14 @@ mod tests {
             "the sentence under the heading must be a lede"
         );
         assert_eq!(count(&doc, r#"form > button[data-kind="primary"]"#), 1);
-        assert_eq!(count(&doc, "p.error"), 0);
+        assert_eq!(count(&doc, "div.notice"), 0);
+        assert_eq!(
+            count(
+                &doc,
+                "div.field > label[for=password] + input#password[aria-describedby=password-hint] + p.hint#password-hint"
+            ),
+            1,
+            "the password field must carry its hint, not a bracket in its label"
+        );
     }
 }

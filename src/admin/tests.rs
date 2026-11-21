@@ -895,9 +895,10 @@ async fn a_detail_with_markup_is_escaped_on_the_page() {
     audit::record(&open_db(dir.path()), AT, &event).expect("record");
     let mut owner = sign_in(&base, OWNER).await;
     let page = owner.get("/admin/activity").await;
-    assert!(
-        page.body.contains("&lt;b&gt;x&lt;/b&gt;"),
-        "the detail must be escaped"
+    assert_eq!(
+        text_of(&page.body, "span.detail").as_deref(),
+        Some("<b>x</b>"),
+        "the detail must read as its own text, escaped"
     );
     assert!(
         !page.body.contains("<b>x</b>"),
@@ -3975,7 +3976,7 @@ async fn each_row_reads_in_plain_words_beside_its_time_element() {
         ),
     ];
     for (stamp, shown, label, tone) in rows {
-        let row = format!(r#"li[data-time="{stamp}"]"#);
+        let row = format!(r#"tr[data-time="{stamp}"]"#);
         assert_eq!(
             text_of(&body, &format!("{row} [data-label]")).as_deref(),
             Some(label),
@@ -4029,7 +4030,7 @@ async fn the_activity_pages_hold_fifty_rows_and_link_with_the_filters() {
 
     let first = owner.get("/admin/activity").await.body;
     assert_eq!(
-        elements(&first, "li[data-kind]").len(),
+        elements(&first, "tr[data-kind]").len(),
         50,
         "page one holds 50 rows"
     );
@@ -4069,7 +4070,7 @@ async fn the_activity_pages_hold_fifty_rows_and_link_with_the_filters() {
 
     let past = owner.get("/admin/activity?page=4").await.body;
     assert!(
-        elements(&past, "li[data-kind]").is_empty(),
+        elements(&past, "tr[data-kind]").is_empty(),
         "a page past the end holds no rows"
     );
     assert!(past.contains("No activity matches."));
@@ -4107,7 +4108,7 @@ async fn a_newer_link_past_the_end_goes_to_the_last_page_with_rows() {
             .await
             .body;
         assert!(
-            elements(&past, "li[data-kind]").is_empty(),
+            elements(&past, "tr[data-kind]").is_empty(),
             "page {number} holds no rows"
         );
         assert_eq!(
@@ -4240,7 +4241,7 @@ async fn a_post_naming_no_provider_is_refused_at_the_top_of_the_mail_page() {
         "a post naming no provider must be refused"
     );
     assert_eq!(
-        text_of(&refused.body, ".error").as_deref(),
+        text_of(&refused.body, r#"[data-notice="error"] p"#).as_deref(),
         Some("Choose a provider: smtp, resend or mailgun.")
     );
     assert!(

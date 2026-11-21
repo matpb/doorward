@@ -12,6 +12,7 @@ use crate::crypto::token_hash;
 use crate::oauth::authorize::is_request_id;
 use crate::report;
 use crate::web::limit;
+use crate::web::ui::{self, Note};
 use crate::web::{
     SESSION_COOKIE, VerifiedForm, Viewer, busy, clear_cookie, form_page, internal_error, redirect,
     session_cookie, throttle_key, with_cookie,
@@ -158,15 +159,27 @@ fn login_form(csrf: &str, req: &str, error: Option<&str>) -> Markup {
     html! {
         h1 { "Sign in" }
         @if let Some(message) = error {
-            p.error { (message) }
+            (ui::refused(None, message, None))
         }
-        form method="post" action="/login" {
+        form.flow method="post" action="/login" {
             input type="hidden" name="csrf" value=(csrf);
             input type="hidden" name="req" value=(req);
-            label for="email" { "Email" }
-            input id="email" name="email" type="email" autocomplete="username" required;
-            label for="password" { "Password" }
-            input id="password" name="password" type="password" autocomplete="current-password" required;
+            div.fields {
+                (ui::field(
+                    "email",
+                    "Email",
+                    false,
+                    html! { input id="email" name="email" type="email" autocomplete="username" required; },
+                    Note::None,
+                ))
+            }
+            div.fields {
+                div.field {
+                    label for="password" { "Password" }
+                    input id="password" name="password" type="password" autocomplete="current-password" required;
+                    a.field-link href="/forgot" { "Forgot your password?" }
+                }
+            }
             button type="submit" data-kind="primary" { "Sign in" }
         }
     }
@@ -197,24 +210,37 @@ mod tests {
         assert_eq!(
             count(
                 &doc,
-                r#"form > label[for="email"] + input#email[name=email]"#
+                r#"div.field > label[for="email"] + input#email[name=email]"#
             ),
             1
         );
         assert_eq!(
             count(
                 &doc,
-                r#"form > label[for="password"] + input#password[name=password]"#
+                r#"div.field > label[for="password"] + input#password[name=password]"#
             ),
             1
         );
-        assert_eq!(count(&doc, "p.error"), 0);
+        assert_eq!(count(&doc, "div.notice"), 0);
     }
 
     #[test]
-    fn a_refused_sign_in_shows_its_message_as_an_error_paragraph() {
+    fn the_forgot_link_is_the_password_fields_last_child() {
+        let doc = body(None);
+        let link = Selector::parse("div.field > a.field-link").expect("selector");
+        let links: Vec<String> = doc
+            .select(&link)
+            .map(|element| element.text().collect())
+            .collect();
+        assert_eq!(links, vec!["Forgot your password?".to_owned()]);
+        assert_eq!(count(&doc, r#"a.field-link[href="/forgot"]"#), 1);
+    }
+
+    #[test]
+    fn a_refused_sign_in_shows_its_message_in_an_error_notice() {
         let doc = body(Some(WRONG_CREDENTIALS));
-        let selector = Selector::parse("p.error").expect("selector");
+        let selector = Selector::parse(r#"div.notice[data-notice="error"][role="alert"] > p"#)
+            .expect("selector");
         let errors: Vec<String> = doc
             .select(&selector)
             .map(|element| element.text().collect())

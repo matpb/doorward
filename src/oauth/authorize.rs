@@ -13,6 +13,7 @@ use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::crypto::{random_token, token_hash};
 use crate::servers::valid_slug;
+use crate::web::ui::breakable;
 use crate::web::{Viewer, internal_error, page, redirect, throttle_key};
 
 use super::clients::{self, Client};
@@ -149,9 +150,9 @@ pub fn error_page(host: Option<&str>) -> Response {
         html! {
             h1 { "This sign-in cannot continue" }
             @if let Some(host) = host.filter(|text| !text.is_empty()) {
-                p { "Doorward will not send you to " (host) "." }
+                p.lede { "Doorward will not send you to " span.client-host { (breakable(host)) } "." }
             }
-            p { "Start the sign-in again from the app." }
+            p.lede { "Start the sign-in again from the app." }
         },
     )
 }

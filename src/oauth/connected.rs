@@ -270,12 +270,27 @@ fn link_body(csrf: &str, family: &Family) -> Markup {
     html! {
         h1 { "Disconnect this app?" }
         p.lede {
-            (family.client_name) " on " (family.server_label())
+            (family.client_name) " on " (server_text(family))
             " will no longer be able to use your account."
         }
-        form method="post" {
-            input type="hidden" name="csrf" value=(csrf);
-            button type="submit" data-kind="danger" { "Disconnect" }
+        div.actions {
+            form method="post" {
+                input type="hidden" name="csrf" value=(csrf);
+                button type="submit" data-kind="danger" { "Disconnect" }
+            }
+            a.button data-kind="secondary" href="/account" { "Keep connected" }
+        }
+    }
+}
+
+/// The server of a family: its path in code, or the words "all servers" with no code.
+fn server_text(family: &Family) -> Markup {
+    let label = family.server_label();
+    html! {
+        @if label == ALL_SERVERS {
+            (label)
+        } @else {
+            code { (label) }
         }
     }
 }
@@ -288,7 +303,7 @@ fn disconnected_page(family: &Family) -> Response {
         html! {
             h1 { "The app is disconnected" }
             p.lede {
-                (family.client_name) " on " (family.server_label())
+                (family.client_name) " on " (server_text(family))
                 " can no longer use your account."
             }
         },
@@ -334,5 +349,41 @@ mod tests {
             .expect("body");
         let doc = Html::parse_document(std::str::from_utf8(&bytes).expect("utf-8"));
         assert_eq!(count(&doc, "h1 + p.lede"), 1);
+    }
+
+    #[test]
+    fn keep_connected_is_a_link_to_the_account_beside_the_disconnect_button() {
+        let doc = Html::parse_fragment(&link_body("token", &family()).into_string());
+        assert_eq!(
+            count(
+                &doc,
+                r#"div.actions > a.button[data-kind="secondary"][href="/account"]"#
+            ),
+            1
+        );
+        assert_eq!(
+            count(&doc, r#"div.actions > form > button[data-kind="danger"]"#),
+            1
+        );
+    }
+
+    #[test]
+    fn a_server_path_is_code_and_all_servers_is_plain_words() {
+        let doc = Html::parse_fragment(&link_body("token", &family()).into_string());
+        assert_eq!(count(&doc, "p.lede > code"), 1);
+        let mut everywhere = family();
+        everywhere.server_slug = None;
+        let doc = Html::parse_fragment(&link_body("token", &everywhere).into_string());
+        assert_eq!(count(&doc, "p.lede > code"), 0);
+        let lede = doc
+            .select(&Selector::parse("p.lede").expect("selector"))
+            .next()
+            .expect("a lede")
+            .text()
+            .collect::<String>();
+        assert_eq!(
+            lede,
+            "Claude Code on all servers will no longer be able to use your account."
+        );
     }
 }

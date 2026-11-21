@@ -56,7 +56,7 @@ fn pills_in(row: ElementRef<'_>) -> Vec<(String, String)> {
 /// The data-time of each activity row on the page, in the order shown.
 fn row_times(page: &Page) -> Vec<String> {
     let doc = Html::parse_document(&page.body);
-    all(doc.root_element(), "li[data-kind]")
+    all(doc.root_element(), "tr[data-kind]")
         .into_iter()
         .map(|row| row.value().attr("data-time").unwrap_or("").to_string())
         .collect()
@@ -447,7 +447,7 @@ async fn activity_is_paged() {
         .await;
     assert_eq!(past.status, 200, "a page past the end must answer 200");
     assert_eq!(
-        past.count("li[data-kind]"),
+        past.count("tr[data-kind]"),
         0,
         "a page past the end must show no rows"
     );

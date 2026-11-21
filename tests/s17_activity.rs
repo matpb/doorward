@@ -621,7 +621,7 @@ async fn the_activity_page_offers_a_user_and_a_server_filter() {
 
     let by_bob = w.owner.get(&format!("/admin/activity?user={bob_id}")).await;
     assert_eq!(by_bob.status, 200, "the filtered page must answer 200");
-    let users = by_bob.attrs("li[data-kind]", "data-user");
+    let users = by_bob.attrs("tr[data-kind]", "data-user");
     assert!(!users.is_empty(), "bob's activity must not be empty");
     assert!(
         users.iter().all(|user| user == BOB),
@@ -636,16 +636,16 @@ async fn the_activity_page_offers_a_user_and_a_server_filter() {
     let every = w.owner.get("/admin/activity").await;
     let empty = w.owner.get("/admin/activity?user=&server=").await;
     assert_eq!(empty.status, 200, "the empty filters must answer 200");
-    let every_time = every.attrs("li[data-kind]", "data-time");
+    let every_time = every.attrs("tr[data-kind]", "data-time");
     assert!(!every_time.is_empty(), "the activity page must hold rows");
     assert_eq!(
-        empty.attrs("li[data-kind]", "data-time"),
+        empty.attrs("tr[data-kind]", "data-time"),
         every_time,
         "empty user and server filters must show every row"
     );
     assert_eq!(
-        empty.attrs("li[data-kind]", "data-user"),
-        every.attrs("li[data-kind]", "data-user"),
+        empty.attrs("tr[data-kind]", "data-user"),
+        every.attrs("tr[data-kind]", "data-user"),
         "empty user and server filters must show the rows of every user"
     );
 }

@@ -149,6 +149,48 @@ The other tests of this file check other settings and are not listed here.
     `a_tool_row_of_the_user_page_holds_one_allow_or_deny_pill_by_its_verdict`,
     `the_user_page_lists_no_tool_of_a_server_the_user_is_not_assigned_to` and
     `the_user_list_counts_assigned_servers_and_shows_active_or_disabled` (rows `tr`).
+15. Changed for statements 65 and 66 (markup and wording only: each test asserts the same
+    status, redirect, stored value, logged row, shown fact and warning as before):
+    `accounts::login::tests::the_sign_in_form_has_one_primary_button_and_keeps_its_fields`
+    (the labels sit in `div.field`, no `p.error`), `accounts::login::tests::a_refused_sign_in_shows_its_message_as_an_error_paragraph`
+    (renamed `a_refused_sign_in_shows_its_message_in_an_error_notice`: the message is in
+    `div.notice[data-notice="error"]`), `accounts::setup::tests::the_setup_page_has_a_lede_under_its_heading_and_one_primary_button`
+    (no `p.error`; the password hint is under its field), `accounts::reset::tests::the_forgot_page_has_a_lede_and_one_primary_button`
+    and `accounts::reset::tests::the_choose_password_page_has_one_primary_button_and_its_field`
+    (labels in `div.field`, the hint out of the bracketed label), `accounts::invite::tests::the_invitation_page_has_the_address_as_a_lede_and_one_primary_button`
+    (renamed `..._as_a_fact_and_one_primary_button`: section 10 sets the address in `dl.facts`),
+    `accounts::account::tests::the_page_is_a_stack_of_a_head_a_lede_and_two_cards` (renamed
+    `the_page_is_a_head_with_the_address_then_two_parts`), `accounts::account::tests::a_connected_client_is_a_row_with_its_details_and_a_danger_disconnect`
+    and `accounts::account::tests::the_password_fields_sit_in_a_fields_grid_inside_a_card`
+    (rows are `table.clients` rows, the Sign out button is on the title row),
+    `web::limit::tests::a_limited_page_tells_a_browser_when_to_try_again_and_no_one_else`
+    (the sentence is a `p.lede`), `admin::tests::a_post_naming_no_provider_is_refused_at_the_top_of_the_mail_page`
+    (the refusal is a `div.notice[data-notice="error"]`), `admin::tests::a_detail_with_markup_is_escaped_on_the_page`
+    (compares the detail text; the escaping and the absent raw `<b>` are still checked),
+    `admin::tests::each_row_reads_in_plain_words_beside_its_time_element` and
+    `admin::tests::the_activity_pages_hold_fifty_rows_and_link_with_the_filters` (rows `tr`),
+    `oauth::tests_consent::a_url_shaped_client_writes_no_blocked_row`,
+    `oauth::tests_consent::an_address_that_does_not_parse_is_not_recorded`,
+    `oauth::tests_consent::the_consent_page_shows_its_parts_in_order_with_two_decisions`
+    (the page is compared by its text, since the host and the approve sentence are split by
+    `<wbr>` and `<span>`; the host of an attacker-chosen address is checked in text, which is
+    stricter than the raw markup, in `an_attacker_chosen_host_text_is_never_printed`).
+    Added: `accounts::login::tests::the_forgot_link_is_the_password_fields_last_child`,
+    `accounts::reset::tests::a_refused_password_names_the_refusal_and_marks_its_field`,
+    `accounts::account::tests::sign_out_sits_on_the_title_row`,
+    `accounts::account::tests::a_refused_change_names_the_refusal_in_a_notice_above_the_fields`,
+    `oauth::connected::tests::keep_connected_is_a_link_to_the_account_beside_the_disconnect_button`,
+    `oauth::connected::tests::a_server_path_is_code_and_all_servers_is_plain_words` and
+    `web::page::tests::each_message_page_is_a_heading_and_one_lede`. The consent test
+    `the_consent_page_shows_its_parts_in_order_with_two_decisions` also asserts that the server
+    value is a `dl.facts > dd.grant`.
+    Integration: `s17_activity.rs` and `s59_counts_paging.rs` read rows as `tr[data-kind]`;
+    `s52_interface.rs`: `an_activity_row_reads_in_plain_words` (rows `tr`),
+    `the_mail_page_with_no_provider_shows_all_three_closed` (section 10 replaces "No provider
+    is in use." with "Current provider: none."), `a_refused_provider_form_is_open_with_its_reason`
+    and `a_test_email_sent_is_an_ok_notice` (the notice markup), and `assert_consent` (the
+    approve sentence is read as text, since "sign-in" sits in a `span.nowrap`). The shared
+    reader `tests/common/admin.rs` takes `.detail` for a row's detail, which is now a span.
 
 ## s01_install.rs (statement 1)
 
@@ -1684,7 +1726,7 @@ activity of allowed, denied and failed tool calls.
    upstream refuses without the secret), one open (answers without it), one unchecked. The
    Lock-down part of each server page holds one pill with tone ok, bad and warn. It is red
    before the change.
-7. `an_activity_row_reads_in_plain_words`: every `li[data-kind]` row on the activity page has
+7. `an_activity_row_reads_in_plain_words`: every `tbody tr[data-kind]` row on the activity page has
    `data-time`, one `[data-label]` that is not the raw kind, and one `time` whose `datetime`
    is `data-time` and whose text reads `20 Nov 2026 19:25:09 UTC`. The labels are `Tool call`,
    `Tool call refused`, `Tool call failed`, `Sign-in`, `Client connected`, `Admin change`,
@@ -1694,11 +1736,11 @@ activity of allowed, denied and failed tool calls.
    for each of `smtp`, `resend`, `mailgun`, each holding its form; with smtp in use, only smtp
    is open and marked `[data-in-use]`. It is red before the change.
 9. `the_mail_page_with_no_provider_shows_all_three_closed`: on a gateway with no mail
-   settings, all three disclosures are closed and the page says `No provider is in use.`
+   settings, all three disclosures are closed and the lead line says `Current provider: none.`
    It is red before the change.
 10. `a_refused_provider_form_is_open_with_its_reason`: a resend form with a control character
     in its from address is refused with 400; the resend disclosure is open and holds
-    `p.error` "A field contains a control character.". It is red before the change.
+    a paragraph of a `div.notice[data-notice="error"]` reading "A field contains a control character.". It is red before the change.
 11. `consent_has_one_primary_button`: on the local-client and the web-client consent pages,
     one primary button reads Approve, Deny is secondary, the sentence "Approve only if you
     started this sign-in yourself." is present; on the local-client page `p.local-app` sits
@@ -1719,7 +1761,7 @@ activity of allowed, denied and failed tool calls.
 17. `the_mail_providers_sit_in_one_wrapper`: the mail page holds the three
     `details[data-provider]` directly in one `div.providers`. It is red before the change.
 18. `a_test_email_sent_is_an_ok_notice`: after a test email, the mail page holds
-    `p.notice[data-notice="ok"]` reading "Test email sent.". It is red before the change.
+    a paragraph of `div.notice[data-notice="ok"]` reading "Test email sent.". It is red before the change.
 19. `the_panel_navigation_is_labelled_admin`: each panel page of the covered set holds one
     `nav[data-nav="panel"][aria-label="Admin"]`. It is red before the change.
 20. `no_covered_page_holds_a_script`: no covered page holds `<script`, in any case. It passes

@@ -237,7 +237,7 @@ pub fn forbidden() -> Response {
         "Forbidden",
         html! {
             h1 { "Forbidden" }
-            p { "This request was refused." }
+            p.lede { "This request was refused." }
         },
     )
 }
@@ -249,7 +249,7 @@ pub fn not_found_link() -> Response {
         "Link not valid",
         html! {
             h1 { "This link is not valid" }
-            p { "It may have expired or been used already." }
+            p.lede { "It may have expired or been used already." }
         },
     )
 }
@@ -267,7 +267,7 @@ pub fn not_found() -> Response {
         "Page not found",
         html! {
             h1 { "Page not found" }
-            p { "This address does not lead anywhere in Doorward." }
+            p.lede { "This address does not lead anywhere in Doorward." }
         },
     )
 }
@@ -281,7 +281,7 @@ pub fn internal_error(what: &str, err: &dyn std::fmt::Display) -> Response {
         "Something went wrong",
         html! {
             h1 { "Something went wrong" }
-            p { "Try again in a moment." }
+            p.lede { "Try again in a moment." }
         },
     )
 }
@@ -293,7 +293,7 @@ pub fn busy() -> Response {
         "Busy",
         html! {
             h1 { "The server is busy" }
-            p { "Try again in a moment." }
+            p.lede { "Try again in a moment." }
         },
     )
 }
@@ -495,6 +495,35 @@ mod tests {
             assert!(
                 plain.iter().all(|(key, _)| key != name),
                 "{name} must be absent from a default page"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn each_message_page_is_a_heading_and_one_lede() {
+        let cases = [
+            (forbidden(), "Forbidden", "This request was refused."),
+            (
+                not_found_link(),
+                "This link is not valid",
+                "It may have expired or been used already.",
+            ),
+            (
+                not_found(),
+                "Page not found",
+                "This address does not lead anywhere in Doorward.",
+            ),
+            (busy(), "The server is busy", "Try again in a moment."),
+        ];
+        for (response, heading, lede) in cases {
+            let text = text_of(response).await;
+            assert!(
+                text.contains("<main data-page="),
+                "the message page must hold a main element"
+            );
+            assert!(
+                text.contains(&format!("<h1>{heading}</h1><p class=\"lede\">{lede}</p>")),
+                "the message page {heading} must hold its heading and one lede: {text}"
             );
         }
     }
