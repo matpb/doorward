@@ -498,7 +498,7 @@ fn no_access() -> Response {
         "no-access",
         "No access",
         html! {
-            h1 { "You do not have access to this server" }
+            h1 data-tone="bad" { "You do not have access to this server" }
             p.lede { "Ask an administrator to give you access, then start the sign-in again." }
             p.back { a href="/account" { "Your account" } }
         },
@@ -875,6 +875,24 @@ mod tests {
                 r#"body[data-layout="card"] > header[data-brand] .brand"#
             ),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn the_no_access_page_marks_its_heading_as_refused() {
+        let bytes = to_bytes(no_access().into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let doc = Html::parse_document(std::str::from_utf8(&bytes).expect("utf-8"));
+        assert_eq!(
+            count(&doc, r#"main h1[data-tone="bad"]"#),
+            1,
+            "the no-access page must mark its heading bad"
+        );
+        assert_eq!(
+            text(&doc, "main h1"),
+            "You do not have access to this server",
+            "the heading text must not change"
         );
     }
 }

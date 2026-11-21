@@ -490,6 +490,22 @@ body[data-layout="card"] main > .lede + .back {
   color: var(--ink-2);
 }
 
+/* A refusal as a title: the bar of the log, hung in the margin, 12 px from the words. */
+h1[data-tone="bad"] {
+  position: relative;
+}
+
+h1[data-tone="bad"]::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: -28px;
+  inset-block-start: 14px;
+  inline-size: 16px;
+  block-size: 6px;
+  border-radius: 1px;
+  background: var(--deny);
+}
+
 /* The sentence belongs to the two buttons, not to the warning above it. */
 body[data-layout="card"] main > [data-consent-notice] {
   margin-block-start: var(--s6);
@@ -502,6 +518,11 @@ body[data-layout="card"] main > [data-consent-notice] {
   font: 400 16px/24px var(--sans);
   max-inline-size: 64ch;
   text-wrap: balance;
+}
+
+/* Beside a 400 px form a paragraph fills the same width; it is not balanced into a column. */
+body[data-layout="card"] .lede {
+  text-wrap: pretty;
 }
 
 .lede code,
@@ -575,19 +596,20 @@ body[data-layout="page"] main > .notice {
   margin-block-end: var(--s6);
 }
 
-/* A page notice runs the room's width like a table; its text keeps a reading measure. */
-body[data-layout="panel"] main > .notice > p,
-body[data-layout="page"] main > .notice > p {
-  max-inline-size: 864px;
-}
-
-/* A part: title and one sentence on the left, the thing itself on the right. */
+/* A part: title and one sentence on the left, the thing itself on the right.
+   The first line of the right column sits on the title's baseline, whatever it is. */
 .part {
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr);
+  align-items: first baseline;
   column-gap: var(--s7);
-  padding-block: var(--s6);
+  padding-block: var(--s5) var(--s6);
   border-block-start: 1px solid var(--line);
+}
+
+/* 24 + 8: the title stays 32 px under the rule, with room for a boxed first line beside it. */
+.part-head {
+  padding-block-start: var(--s2);
 }
 
 .part-head > p {
@@ -609,6 +631,7 @@ body[data-layout="page"] main > .notice > p {
   margin-block-start: var(--s4);
 }
 
+
 .flow > .fields + .fields,
 .flow > fieldset,
 .flow > .fields + .checks,
@@ -627,6 +650,13 @@ body[data-layout="page"] main > .notice > p {
 
 .flow > .form-actions {
   margin-block-start: var(--s6);
+}
+
+/* The first thing in a flow starts at its top. Hidden inputs come first in a form and take
+   no room, so what follows them is the first thing. */
+.flow > :first-child,
+.flow > input[type="hidden"] + * {
+  margin-block-start: 0;
 }
 
 /* A fact and the one action that changes it: apart from the form above, close to
@@ -693,16 +723,16 @@ body[data-layout="page"] main > .notice > p {
   column-gap: var(--s4);
 }
 
-.fields[data-cols="2"] {
+/* Every pair shares the same two columns, so a second field always starts on one edge. */
+.fields[data-cols="2"],
+.fields[data-cols="2-1"],
+.fields[data-cols="1-2"] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.fields[data-cols="2-1"] {
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-}
-
-.fields[data-cols="1-2"] {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+/* The short field of a long and short pair: a third of the form, ragged right. */
+.fields[data-cols="2-1"] > .field + .field {
+  max-inline-size: 208px;
 }
 
 .field {
@@ -858,6 +888,7 @@ select {
 }
 
 .check > label {
+  align-self: first baseline;
   padding-block: var(--r1);
   font-weight: 400;
   font-size: 14px;
@@ -1118,12 +1149,28 @@ body[data-layout="card"] [data-kind="danger"]:hover {
   background: var(--allow-wash);
 }
 
+/* The text, not the mark, is the notice's baseline for whatever aligns to it. */
 .notice > * {
   grid-column: 2;
+  align-self: first baseline;
 }
 
 .notice > * + * {
   margin-block-start: var(--s1);
+}
+
+/* The box runs as wide as its place; the text keeps a reading measure. */
+.notice > p {
+  max-inline-size: 64ch;
+}
+
+/* A link goes to the next line whole; it breaks only when it is longer than a line.
+   A 24 px target on the 20 px line. */
+.notice a {
+  display: inline-block;
+  max-inline-size: 100%;
+  margin-block: calc(var(--r1) * -1);
+  padding-block: var(--r1);
 }
 
 @starting-style {
@@ -1242,8 +1289,8 @@ body[data-layout="card"] [data-kind="danger"]:hover {
 .rules .c-act { inline-size: 120px; }
 
 .invitations .c-role { inline-size: 56px; }
-.invitations .c-when { inline-size: 22%; }
-.invitations .c-by { inline-size: 31%; }
+.invitations .c-when { inline-size: 176px; }
+.invitations .c-by { inline-size: 248px; }
 .invitations .c-act { inline-size: 56px; }
 
 .redirects .c-source { inline-size: 136px; }
@@ -1257,7 +1304,7 @@ body[data-layout="card"] [data-kind="danger"]:hover {
 .clients .c-act { inline-size: 128px; }
 
 .tools { max-inline-size: 640px; }
-.tools .c-effect { inline-size: 80px; }
+.tools .c-effect { inline-size: 72px; }
 .tools .c-server { inline-size: 32%; }
 
 /* Two tables size a column by what is in it. Tools: the tool column is as wide as its
@@ -1265,7 +1312,7 @@ body[data-layout="card"] [data-kind="danger"]:hover {
 @media (min-width: 900px) {
   .tools {
     display: grid;
-    grid-template-columns: 80px fit-content(58%) minmax(0, 1fr);
+    grid-template-columns: 72px fit-content(61%) minmax(0, 1fr);
   }
 
   /* Rules: Subject is as wide as its longest address, and "Applies to" keeps at least 30%. */
@@ -1354,6 +1401,8 @@ body[data-layout="card"] [data-kind="danger"]:hover {
 /* A path is 24 characters at most: 208 px holds it, and the name takes the rest. */
 @media (min-width: 1280px) {
   .servers .c-path { inline-size: 208px; }
+  .invitations .c-when { inline-size: 20%; }
+  .invitations .c-by { inline-size: 28%; }
 }
 
 /* The log as a table: each row is a grid of two lines, the label's and one under it
@@ -1596,16 +1645,20 @@ body[data-layout="card"] [data-kind="danger"]:hover {
   overflow-wrap: anywhere;
 }
 
-/* Tool names in columns. */
+/* Tool names, one to a ruled row. From thirteen names on they fill two columns. */
 .catalog {
   max-inline-size: 640px;
+}
+
+.catalog:has(> li:nth-child(13)) {
   columns: 280px 2;
   column-gap: var(--s4);
 }
 
 .catalog li {
   break-inside: avoid;
-  padding-block: var(--r1);
+  padding-block: var(--s2);
+  border-block-end: 1px solid var(--line);
 }
 
 /* ---------- Disclosures ---------- */
@@ -1677,7 +1730,7 @@ details[open] > summary .chevron {
 .provider > form {
   max-inline-size: 640px;
   margin-inline-start: calc(232px + var(--s7));
-  padding-block: var(--s2) var(--s6);
+  padding-block: var(--s5) var(--s6);
 }
 
 /* Confirming something that cannot be undone. The closed summary already says so:
@@ -1984,9 +2037,24 @@ body[data-layout="card"] main > .lede + .actions {
     block-size: 56px;
   }
 
-  body[data-layout="card"] .site::after,
-  .site-note {
+  body[data-layout="card"] .site::after {
     display: none;
+  }
+
+  /* The closed door as a bar still says what Doorward is, under its name. */
+  .site-note {
+    margin-block-start: 0;
+    padding: 0 var(--gutter) var(--s4);
+    max-inline-size: none;
+  }
+
+  /* No margin to hang in: the bar stands on the page edge and the title moves in. */
+  h1[data-tone="bad"] {
+    padding-inline-start: 28px;
+  }
+
+  h1[data-tone="bad"]::before {
+    inset-inline-start: 0;
   }
 
   body[data-layout="card"] main {
@@ -1995,7 +2063,7 @@ body[data-layout="card"] main > .lede + .actions {
 
   .part {
     grid-template-columns: minmax(0, 1fr);
-    row-gap: var(--s4);
+    row-gap: var(--s5);
   }
 
   .part-head > p {
@@ -2295,6 +2363,10 @@ body[data-layout="card"] main > .lede + .actions {
     line-height: 32px;
   }
 
+  h1[data-tone="bad"]::before {
+    inset-block-start: 12px;
+  }
+
   /* A title that is an address: between the phone title and h2, so it breaks less. */
   .title-id {
     font-size: 24px;
@@ -2326,6 +2398,10 @@ body[data-layout="card"] main > .lede + .actions {
   .field {
     grid-row: auto;
     grid-template-rows: auto auto auto;
+  }
+
+  .fields[data-cols="2-1"] > .field + .field {
+    max-inline-size: none;
   }
 
   .checks[data-cols="2"] {
@@ -2558,6 +2634,7 @@ main {
   .notice::before,
   .event[data-tone]::before,
   .field-error::before,
+  h1[data-tone="bad"]::before,
   .nav-mark,
   body[data-layout="card"] .site::after,
   input[type="checkbox"]::before,
@@ -2572,6 +2649,7 @@ main {
   .notice[data-notice="error"]::before,
   .event[data-tone="bad"]::before,
   .field-error::before,
+  h1[data-tone="bad"]::before,
   .nav-mark,
   body[data-layout="card"] .site::after,
   input[type="checkbox"]:checked::before {

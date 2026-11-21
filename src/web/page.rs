@@ -254,7 +254,7 @@ pub fn forbidden() -> Response {
         "forbidden",
         "Request refused",
         html! {
-            h1 { "Request refused" }
+            h1 data-tone="bad" { "Request refused" }
             p.lede { "Doorward did not carry out this request. If you were sending a form, go back, reload the page and send it again. If you followed a link, your account may not open it." }
         },
     )
@@ -532,11 +532,43 @@ mod tests {
         assert_eq!(title, "Request refused");
         assert!(
             doc.root_element().html().contains(
-                r#"<h1>Request refused</h1><p class="lede">Doorward did not carry out this request. If you were sending a form, go back, reload the page and send it again. If you followed a link, your account may not open it.</p>"#
+                r#"<h1 data-tone="bad">Request refused</h1><p class="lede">Doorward did not carry out this request. If you were sending a form, go back, reload the page and send it again. If you followed a link, your account may not open it.</p>"#
             ),
             "the refusal page must hold its heading and its lede"
         );
         assert_eq!(count(&doc, r#"main[data-page="forbidden"]"#), 1);
+    }
+
+    #[tokio::test]
+    async fn the_refusal_page_marks_its_heading_as_refused() {
+        let doc = Html::parse_document(&text_of(forbidden()).await);
+        assert_eq!(
+            count(&doc, r#"main h1[data-tone="bad"]"#),
+            1,
+            "the refusal page must mark its heading bad"
+        );
+        let heading = doc
+            .select(&Selector::parse("main h1").expect("selector"))
+            .next()
+            .expect("a heading");
+        assert_eq!(heading.text().collect::<String>(), "Request refused");
+    }
+
+    #[tokio::test]
+    async fn the_messages_that_are_not_verdicts_have_no_tone_on_their_heading() {
+        for response in [not_found(), not_found_link(), busy()] {
+            let doc = Html::parse_document(&text_of(response).await);
+            assert_eq!(
+                count(&doc, "main h1"),
+                1,
+                "a message page holds one heading"
+            );
+            assert_eq!(
+                count(&doc, "main h1[data-tone]"),
+                0,
+                "a message page other than the refusal must not mark its heading"
+            );
+        }
     }
 
     #[test]
@@ -571,20 +603,24 @@ mod tests {
         let cases = [
             (
                 forbidden(),
-                "Request refused",
+                r#"<h1 data-tone="bad">Request refused</h1>"#,
                 "Doorward did not carry out this request. If you were sending a form, go back, reload the page and send it again. If you followed a link, your account may not open it.",
             ),
             (
                 not_found_link(),
-                "This link is not valid",
+                "<h1>This link is not valid</h1>",
                 "It may have expired or been used already.",
             ),
             (
                 not_found(),
-                "Page not found",
+                "<h1>Page not found</h1>",
                 "This address does not lead anywhere in Doorward.",
             ),
-            (busy(), "The server is busy", "Try again in a moment."),
+            (
+                busy(),
+                "<h1>The server is busy</h1>",
+                "Try again in a moment.",
+            ),
         ];
         for (response, heading, lede) in cases {
             let text = text_of(response).await;
@@ -593,7 +629,7 @@ mod tests {
                 "the message page must hold a main element"
             );
             assert!(
-                text.contains(&format!("<h1>{heading}</h1><p class=\"lede\">{lede}</p>")),
+                text.contains(&format!("{heading}<p class=\"lede\">{lede}</p>")),
                 "the message page {heading} must hold its heading and one lede: {text}"
             );
         }

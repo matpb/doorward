@@ -284,7 +284,7 @@ fn redirects_body(
             div.part-body {
                 form.flow method="post" action="/admin/redirects" {
                     input type="hidden" name="csrf" value=(csrf);
-                    div.fields data-cols="1-2" {
+                    div.fields data-cols="2" {
                         (ui::field(
                             "redirect-scheme",
                             "Scheme",
@@ -292,6 +292,8 @@ fn redirects_body(
                             html! { input.mono id="redirect-scheme" name="scheme" type="text" required value=[scheme]; },
                             ui::Note::None,
                         ))
+                    }
+                    div.fields {
                         (ui::field(
                             "redirect-host",
                             "Host",

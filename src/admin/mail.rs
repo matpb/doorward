@@ -774,7 +774,7 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<Refused>, entered_again: b
                     field_note("smtp-from", from_error, None, from_described.as_deref()),
                 ))
             }
-            div.fields data-cols="2-1" {
+            div.fields {
                 (ui::field(
                     "smtp-host",
                     "Server",
@@ -785,6 +785,8 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<Refused>, entered_again: b
                     },
                     field_note("smtp-host", host_error, None, host_described.as_deref()),
                 ))
+            }
+            div.fields data-cols="2" {
                 (ui::field(
                     "smtp-port",
                     "Port",
@@ -794,6 +796,19 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<Refused>, entered_again: b
                             aria-invalid=[ui::invalid(port_error)] aria-describedby=[port_described.as_deref()];
                     },
                     field_note("smtp-port", port_error, None, port_described.as_deref()),
+                ))
+                (ui::field(
+                    "smtp-tls",
+                    "TLS",
+                    false,
+                    html! {
+                        select id="smtp-tls" name="smtp_tls" aria-invalid=[ui::invalid(tls_error)] aria-describedby=[tls_described.as_deref()] {
+                            option value="off" selected[tls == "off"] { "Off" }
+                            option value="starttls" selected[tls == "starttls"] { "STARTTLS" }
+                            option value="implicit" selected[tls == "implicit"] { "Implicit TLS" }
+                        }
+                    },
+                    field_note("smtp-tls", tls_error, tls_hint, tls_described.as_deref()),
                 ))
             }
             div.fields data-cols="2" {
@@ -816,21 +831,6 @@ fn smtp_form(csrf: &str, view: &View, refusal: Option<Refused>, entered_again: b
                             aria-invalid=[ui::invalid(password_error)] aria-describedby=[password_described.as_deref()];
                     },
                     field_note("smtp-password", password_error, password_hint, password_described.as_deref()),
-                ))
-            }
-            div.fields data-cols="2" {
-                (ui::field(
-                    "smtp-tls",
-                    "TLS",
-                    false,
-                    html! {
-                        select id="smtp-tls" name="smtp_tls" aria-invalid=[ui::invalid(tls_error)] aria-describedby=[tls_described.as_deref()] {
-                            option value="off" selected[tls == "off"] { "Off" }
-                            option value="starttls" selected[tls == "starttls"] { "STARTTLS" }
-                            option value="implicit" selected[tls == "implicit"] { "Implicit TLS" }
-                        }
-                    },
-                    field_note("smtp-tls", tls_error, tls_hint, tls_described.as_deref()),
                 ))
             }
             div.form-actions {

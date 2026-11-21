@@ -148,7 +148,7 @@ pub fn error_page(host: Option<&str>) -> Response {
         "error",
         "Sign-in cannot continue",
         html! {
-            h1 { "This sign-in cannot continue" }
+            h1 data-tone="bad" { "This sign-in cannot continue" }
             @if let Some(host) = host.filter(|text| !text.is_empty()) {
                 p.lede { "Doorward will not send you to " span.client-host { (breakable(host)) } "." }
             }
@@ -470,6 +470,25 @@ mod tests {
     use crate::db::Db;
 
     const NOW: i64 = 1_800_000_000;
+
+    #[tokio::test]
+    async fn the_sign_in_cannot_continue_page_marks_its_heading_as_refused() {
+        let response = error_page(None);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let text = String::from_utf8(bytes.to_vec()).expect("utf-8");
+        assert!(
+            text.contains(r#"<h1 data-tone="bad">This sign-in cannot continue</h1>"#),
+            "the sign-in refusal must mark its heading bad: {text}"
+        );
+        let doc = scraper::Html::parse_document(&text);
+        let marked = doc
+            .select(&scraper::Selector::parse(r#"main h1[data-tone="bad"]"#).expect("selector"))
+            .count();
+        assert_eq!(marked, 1, "the page must hold one marked heading");
+    }
 
     fn request(address: &str, id: &str) -> NewRequest {
         NewRequest {

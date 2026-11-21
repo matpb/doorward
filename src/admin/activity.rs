@@ -305,19 +305,50 @@ fn unknown_label(kind: &str) -> String {
     }
 }
 
-/// The stored detail as markup: each word that is an address through `email`, every other word
-/// through `breakable`, joined by single spaces. Its text is the detail itself.
+/// The stored detail as markup, its words joined by single spaces. A number and the word after it
+/// sit in a `nowrap` span. Its text is the detail itself.
 fn detail_markup(detail: &str) -> Markup {
     html! {
-        @for (index, word) in detail.split(' ').enumerate() {
+        @for (index, (word, joined)) in word_groups(detail).into_iter().enumerate() {
             @if index > 0 {
                 " "
             }
-            @if is_address(word) {
-                (email(word))
+            @if let Some(next) = joined {
+                span.nowrap { (word_markup(word)) " " (word_markup(next)) }
             } @else {
-                (breakable(word))
+                (word_markup(word))
             }
+        }
+    }
+}
+
+/// Each word of a detail with the word it joins: a number joins the non-empty word after it, once,
+/// and that word joins nothing more.
+fn word_groups(detail: &str) -> Vec<(&str, Option<&str>)> {
+    let mut words = detail.split(' ').peekable();
+    let mut groups = Vec::new();
+    while let Some(word) = words.next() {
+        let joined = match words.peek() {
+            Some(next) if is_number(word) && !next.is_empty() => words.next(),
+            _ => None,
+        };
+        groups.push((word, joined));
+    }
+    groups
+}
+
+/// A word made only of ASCII digits.
+fn is_number(word: &str) -> bool {
+    !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// One word: an address through `email`, any other word through `breakable`.
+fn word_markup(word: &str) -> Markup {
+    html! {
+        @if is_address(word) {
+            (email(word))
+        } @else {
+            (breakable(word))
         }
     }
 }
@@ -589,6 +620,62 @@ mod tests {
                 "{word} must not be an address, got {markup}"
             );
             assert_eq!(text, word);
+        }
+    }
+
+    #[test]
+    fn a_number_joins_the_word_after_it_in_a_nowrap_span() {
+        let (markup, text) = shown("assignments of github set to 6 users");
+        assert_eq!(
+            markup,
+            r#"assignments of github set to <span class="nowrap">6 users</span>"#
+        );
+        assert_eq!(text, "assignments of github set to 6 users");
+    }
+
+    #[test]
+    fn a_number_as_the_last_word_has_no_span() {
+        let (markup, text) = shown("assignments of 6");
+        assert_eq!(markup, "assignments of 6");
+        assert_eq!(text, "assignments of 6");
+    }
+
+    #[test]
+    fn two_numbers_in_a_row_join_once_and_the_third_word_stands_alone() {
+        let (markup, text) = shown("1 2 servers");
+        assert_eq!(markup, r#"<span class="nowrap">1 2</span> servers"#);
+        assert_eq!(text, "1 2 servers");
+    }
+
+    #[test]
+    fn a_number_before_an_address_joins_the_address() {
+        let (markup, text) = shown("set 3 bob@example.com");
+        assert_eq!(
+            markup,
+            r#"set <span class="nowrap">3 <span class="email"><span>bob</span><wbr><span>@example<wbr>.com</span></span></span>"#
+        );
+        assert_eq!(text, "set 3 bob@example.com");
+    }
+
+    #[test]
+    fn the_word_after_a_number_still_breaks_as_an_identifier() {
+        let (markup, text) = shown("set 3 create_pull_request");
+        assert_eq!(
+            markup,
+            r#"set <span class="nowrap">3 create_<wbr>pull_<wbr>request</span>"#
+        );
+        assert_eq!(text, "set 3 create_pull_request");
+    }
+
+    #[test]
+    fn a_word_that_is_not_only_digits_or_an_empty_word_does_not_join() {
+        for detail in ["v1 servers", "3a servers", "3  servers", "servers 3"] {
+            let (markup, text) = shown(detail);
+            assert!(
+                !markup.contains("nowrap"),
+                "{detail} must not join its words, got {markup}"
+            );
+            assert_eq!(text, detail);
         }
     }
 }

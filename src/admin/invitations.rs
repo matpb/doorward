@@ -338,7 +338,7 @@ fn invitations_body(
             div.part-body {
                 form.flow method="post" action="/admin/invitations" {
                     input type="hidden" name="csrf" value=(csrf);
-                    div.fields data-cols="2-1" {
+                    div.fields {
                         (ui::field(
                             "invite-email",
                             "Email",
@@ -349,6 +349,8 @@ fn invitations_body(
                             },
                             email_note,
                         ))
+                    }
+                    div.fields data-cols="2" {
                         (ui::field(
                             "invite-role",
                             "Role",

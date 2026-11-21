@@ -9,7 +9,7 @@ use axum::http::StatusCode;
 use reqwest::Method;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, ORIGIN, SET_COOKIE};
 use rusqlite::OptionalExtension;
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 use serde_json::json;
 use tokio::net::TcpListener;
 use url::form_urlencoded::Serializer;
@@ -5078,5 +5078,148 @@ async fn a_blocked_attempt_that_cannot_be_allowed_gives_its_reason() {
             Some("Plain http cannot be allowed.".to_owned()),
         ],
         "newest first: the subtree needs adding by hand, plain http cannot be allowed"
+    );
+}
+
+/// The first form of `doc` that holds an element matching `inner`.
+fn form_holding<'a>(doc: &'a Html, inner: &str) -> ElementRef<'a> {
+    let inner = Selector::parse(inner).expect("selector");
+    let forms = Selector::parse("form").expect("selector");
+    doc.select(&forms)
+        .find(|form| form.select(&inner).next().is_some())
+        .expect("a form holding the element")
+}
+
+/// The `div.fields` rows of `form` in order: each row's data-cols, its number of `div.field`, and
+/// the ids of its controls.
+fn field_rows(form: ElementRef<'_>) -> Vec<(Option<String>, usize, Vec<String>)> {
+    let rows = Selector::parse("div.fields").expect("selector");
+    let fields = Selector::parse("div.field").expect("selector");
+    let controls =
+        Selector::parse("div.field > input[id], div.field > select[id]").expect("selector");
+    form.select(&rows)
+        .map(|row| {
+            let ids = row
+                .select(&controls)
+                .filter_map(|control| control.value().attr("id"))
+                .map(str::to_owned)
+                .collect();
+            let cols = row.value().attr("data-cols").map(str::to_owned);
+            (cols, row.select(&fields).count(), ids)
+        })
+        .collect()
+}
+
+/// One expected row for `field_rows`.
+fn row(cols: Option<&str>, fields: usize, ids: &[&str]) -> (Option<String>, usize, Vec<String>) {
+    (
+        cols.map(str::to_owned),
+        fields,
+        ids.iter().map(|id| (*id).to_owned()).collect(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_invitation_email_has_a_row_of_its_own_and_the_role_a_narrower_one() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner.get("/admin/invitations").await;
+    let doc = Html::parse_document(&page.body);
+    assert_eq!(
+        field_rows(form_holding(&doc, "#invite-email")),
+        vec![
+            row(None, 1, &["invite-email"]),
+            row(Some("2"), 1, &["invite-role"]),
+        ],
+        "the email must sit alone in a row, the role alone in a data-cols 2 row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_redirect_scheme_has_a_wide_row_and_the_host_a_row_of_its_own() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner.get("/admin/redirects").await;
+    let doc = Html::parse_document(&page.body);
+    assert_eq!(
+        field_rows(form_holding(&doc, "#redirect-scheme")),
+        vec![
+            row(Some("2"), 1, &["redirect-scheme"]),
+            row(None, 1, &["redirect-host"]),
+            row(None, 1, &["redirect-path"]),
+        ],
+        "the scheme must sit in a data-cols 2 row, the host alone, the path prefix after them"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_raw_smtp_form_puts_server_alone_then_port_and_tls_then_the_credentials() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner.get("/admin/mail").await;
+    let doc = Html::parse_document(&page.body);
+    let form = form_holding(&doc, r#"input[name="provider"][value="smtp"]"#);
+    assert_eq!(
+        field_rows(form),
+        vec![
+            row(None, 1, &["smtp-from"]),
+            row(None, 1, &["smtp-host"]),
+            row(Some("2"), 2, &["smtp-port", "smtp-tls"]),
+            row(Some("2"), 2, &["smtp-username", "smtp-password"]),
+        ],
+        "the SMTP rows must group the fields as the design gives them"
+    );
+    let controls = Selector::parse("input[id], select[id]").expect("selector");
+    let order: Vec<&str> = form
+        .select(&controls)
+        .filter_map(|control| control.value().attr("id"))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            "smtp-from",
+            "smtp-host",
+            "smtp-port",
+            "smtp-tls",
+            "smtp-username",
+            "smtp-password",
+        ],
+        "in the document the server must come before the port, the TLS mode before the username"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_limited_page_does_not_mark_its_heading_as_refused() {
+    let dir = tempfile::tempdir().expect("dir");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let base = format!("http://{}", listener.local_addr().expect("address"));
+    let mut config = config_in(dir.path(), &base);
+    config.limits.general_burst = 1;
+    config.limits.general_per_minute = 1;
+    let hasher = PasswordHasher::new().await.expect("hasher");
+    let gateway = assemble(config, Deps::system(), Arc::new(hasher))
+        .await
+        .expect("build");
+    tokio::spawn(serve(listener, gateway.router, std::future::pending()));
+    let mut browser = Browser::new(&base);
+    let first = browser.get("/login").await;
+    assert_ne!(first.status, 429, "the first request takes the only token");
+    let limited = browser
+        .answer(
+            browser
+                .request(Method::GET, "/login")
+                .header("accept", "text/html"),
+        )
+        .await;
+    assert_eq!(limited.status, 429, "the second request must be limited");
+    assert_eq!(
+        text_of(&limited.body, "main h1").as_deref(),
+        Some("Too many requests"),
+        "the limited page must head itself Too many requests"
+    );
+    assert_eq!(
+        attr_of(&limited.body, "main h1", "data-tone"),
+        None,
+        "the limited page is not a verdict on the person"
     );
 }

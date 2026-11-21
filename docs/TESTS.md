@@ -192,6 +192,24 @@ The other tests of this file check other settings and are not listed here.
     and `a_test_email_sent_is_an_ok_notice` (the notice markup), and `assert_consent` (the
     approve sentence is read as text, since "sign-in" sits in a `span.nowrap`). The shared
     reader `tests/common/admin.rs` takes `.detail` for a row's detail, which is now a span.
+15. Refusal marks, form rows and activity details (the look changes of round 7): the refusal page's heading is
+    `h1[data-tone="bad"]`, the other message pages' headings carry no tone:
+    `web::page::tests::the_refusal_page_marks_its_heading_as_refused`,
+    `web::page::tests::the_messages_that_are_not_verdicts_have_no_tone_on_their_heading` and
+    `web::page::tests::each_message_page_is_a_heading_and_one_lede` (its refusal case is the
+    marked heading), with `the_refusal_page_is_a_403_with_its_title_heading_and_lede` rewritten
+    to the marked heading; `oauth::authorize::tests::the_sign_in_cannot_continue_page_marks_its_heading_as_refused`
+    and `oauth::consent::tests::the_no_access_page_marks_its_heading_as_refused` do the same for
+    the sign-in and no-access pages. `admin::tests::a_limited_page_does_not_mark_its_heading_as_refused`
+    reads a real 429 page (a burst of one) and finds `Too many requests` with no tone.
+    `admin::tests::the_invitation_email_has_a_row_of_its_own_and_the_role_a_narrower_one`,
+    `admin::tests::the_redirect_scheme_has_a_wide_row_and_the_host_a_row_of_its_own` and
+    `admin::tests::the_raw_smtp_form_puts_server_alone_then_port_and_tls_then_the_credentials`
+    check the `div.fields` rows of each form (`data-cols` and the fields in each) and, for SMTP,
+    the document order of the controls. `admin::activity::tests`: a number joins the word after
+    it in `span.nowrap` (`assignments of github set to 6 users`, a number last, `1 2 servers`,
+    a number before an address, an identifier after a number), each with its text checked, and a
+    word that is not only digits, or an empty word, does not join.
 
 ## s01_install.rs (statement 1)
 
