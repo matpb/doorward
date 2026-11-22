@@ -238,12 +238,12 @@ h1 > .title-line {
 }
 
 /* The name of a header in a title: an inline box, so the question mark after it can follow on its line,
-   in the mono face at 30 px, breaking only at its hyphens. */
+   in the mono face at 30 px. It breaks at its hyphens first; a segment too long for a line is broken. */
 h1 > .title-line > .title-name {
   display: inline;
   font-family: var(--mono);
   font-size: 30px;
-  overflow-wrap: normal;
+  overflow-wrap: break-word;
 }
 
 h2 {
@@ -1071,6 +1071,11 @@ select {
   margin-block-start: 0;
 }
 
+/* The hint of a credentials form sits under the last field, not against its status line. */
+[data-values-server] > form.flow > p.hint {
+  margin-block-start: var(--s4);
+}
+
 /* The hint of each switch keeps a reading measure under its label. */
 [data-switches] > .check > .hint {
   max-inline-size: 60ch;
@@ -1343,6 +1348,11 @@ body[data-layout="card"] [data-kind="danger"] {
 
 .notice[data-notice="ok"] {
   background: var(--allow-wash);
+}
+
+/* A success notice that carries an attention line takes the caution fill; its marks stay as they are. */
+.notice[data-notice="ok"]:has(> .attention) {
+  background: var(--warn-wash);
 }
 
 /* The text, not the mark, is the notice's baseline for whatever aligns to it. */

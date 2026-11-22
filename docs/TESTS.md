@@ -2014,7 +2014,7 @@ part body is capped at `640px` with a page notice. `the_header_name_in_the_remov
 `h1 > .title-line > .title-name` is set in `var(--mono)`, the face of the consent destination.
 
 Changed in the title and list round (statements 65 and 66): `the_remove_title_name_is_inline_breaks_at_hyphens_and_is_30_px_then_26_px_on_a_phone`
-reads the served stylesheet: `h1 > .title-name` is `display: inline`, `overflow-wrap: normal`, 30 px, and 26 px inside the
+reads the served stylesheet: `h1 > .title-line > .title-name` is `display: inline`, `overflow-wrap: break-word` (fourth round; was `normal`), 30 px, and 26 px inside the
 640 px query. `the_locked_list_is_one_grid_of_a_max_content_name_column_and_a_16_px_gap` reads that `.locked-list` is one grid
 of `max-content minmax(0, 1fr)` with `column-gap: var(--s4)` and `--s4` is 16 px.
 
@@ -2022,6 +2022,17 @@ Changed in the fourth round (statement 65 and 80): `the_title_line_is_a_block_so
 reads the served stylesheet for `h1 > .title-line` with `display: block`. `the_remove_title_name_is_inline_breaks_at_hyphens_and_is_30_px_then_26_px_on_a_phone`
 now targets `h1 > .title-line > .title-name`, the selector the title's name has under the second line. `the_add_a_header_form_starts_64_px_below_the_switches_form`
 (new) reads that `form.flow[action$="/headers"]` has `margin-block-start: var(--s8)` and that `--s8` is 64 px, the nearest token above 56 px.
+
+Changed in the review pass after the fourth round (statements 65, 80 and 82): `a_success_notice_with_an_attention_line_takes_the_caution_fill_and_keeps_its_mark`
+(new) reads that `.notice[data-notice="ok"]:has(> .attention)` has the caution fill `var(--warn-wash)` and that `.notice[data-notice="ok"]`
+keeps `var(--allow-wash)`. `the_kept_encrypted_hint_starts_16_px_below_the_field_above_it` (new) reads that
+`[data-values-server] > form.flow > p.hint` has `margin-block-start: var(--s4)`. `the_remove_title_name_is_inline_breaks_at_hyphens_and_is_30_px_then_26_px_on_a_phone`
+now pins `overflow-wrap: break-word`. s80 `the_add_header_hint_sets_the_example_name_in_code` (new): the add form's hint reads
+`For example X-Api-Key. Up to 8 per server.` with `X-Api-Key` in a `code` element. s80 `a_headers_saved_notice_with_an_attention_line_holds_one_success_line_and_that_line`
+and `a_headers_saved_notice_without_an_attention_line_holds_the_success_line_alone` (new): one `p.attention` in the saved notice, and none.
+s84 `a_saved_notice_with_a_missing_credential_holds_the_attention_line_in_its_success_notice` and
+`a_saved_notice_with_nothing_missing_holds_the_success_line_alone` (new): the same two sides on the account page.
+The 16 px spacing of the kept-encrypted hint is pinned by the s65 test above; its presence and its slot are pinned by the s84 tests of the fourth round.
 
 ## s68_exposed.rs (statement 68)
 

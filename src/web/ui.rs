@@ -231,6 +231,8 @@ pub fn count_with_unit(count: i64, one: &str, many: &str) -> Markup {
 pub enum Note<'a> {
     None,
     Hint(&'a str),
+    /// A hint whose text holds markup, such as a header name set in code.
+    HintMarkup(Markup),
     Error(&'a str),
     Below(&'a str, Markup),
 }
@@ -240,7 +242,7 @@ impl Note<'_> {
     pub fn describer(&self, id: &str) -> Option<String> {
         match self {
             Note::None => None,
-            Note::Hint(_) => Some(format!("{id}-hint")),
+            Note::Hint(_) | Note::HintMarkup(_) => Some(format!("{id}-hint")),
             Note::Error(_) => Some(format!("{id}-error")),
             Note::Below(describer, _) => Some((*describer).to_owned()),
         }
@@ -267,6 +269,7 @@ fn note_markup(id: &str, note: Note<'_>) -> Markup {
     match note {
         Note::None => html! {},
         Note::Hint(text) => hint(&format!("{id}-hint"), text),
+        Note::HintMarkup(markup) => html! { p.hint id=(format!("{id}-hint")) { (markup) } },
         Note::Error(text) => field_error(&format!("{id}-error"), text),
         Note::Below(_, markup) => html! { div.below { (markup) } },
     }

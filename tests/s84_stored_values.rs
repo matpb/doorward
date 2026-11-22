@@ -2147,6 +2147,51 @@ async fn the_kept_encrypted_hint_is_absent_in_the_locked_and_retired_states() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_saved_notice_with_a_missing_credential_holds_the_attention_line_in_its_success_notice() {
+    let w = World::start().await;
+    let (_upstream, id, first, bob) = demo_for_bob(&w, true).await;
+    declare_ok(&w.owner, &id, "X-Region", true).await;
+    let saved = store_value(&bob, SLUG, &first, CANARY).await;
+    let shown = bob.follow(&saved).await;
+    assert_eq!(
+        shown.count(&format!(
+            r#"section[data-values-server="{SLUG}"] > div.notice[data-notice="ok"] > p.attention"#
+        )),
+        1,
+        "a missing required credential keeps its attention line in the saved notice"
+    );
+    assert_eq!(
+        shown.count(&format!(
+            r#"section[data-values-server="{SLUG}"] > div.notice[data-notice="ok"]"#
+        )),
+        1,
+        "the saved notice is one notice, whose stylesheet fill is the caution fill"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_notice_with_nothing_missing_holds_the_success_line_alone() {
+    let w = World::start().await;
+    let (_upstream, _id, hid, bob) = demo_for_bob(&w, false).await;
+    let saved = store_value(&bob, SLUG, &hid, CANARY).await;
+    let shown = bob.follow(&saved).await;
+    assert_eq!(
+        shown.count(&format!(
+            r#"section[data-values-server="{SLUG}"] > div.notice[data-notice="ok"] > p.attention"#
+        )),
+        0,
+        "with nothing missing the saved notice has no attention line"
+    );
+    assert_eq!(
+        shown.count(&format!(
+            r#"section[data-values-server="{SLUG}"] > div.notice[data-notice="ok"] > p"#
+        )),
+        1,
+        "the saved notice holds only its success line"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_retired_block_says_its_credentials_are_still_stored_but_no_longer_sent() {
     let w = World::start().await;
     let (_upstream, id, hid, bob) = demo_for_bob(&w, false).await;

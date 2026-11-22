@@ -1206,6 +1206,64 @@ async fn a_saved_switch_with_no_required_header_names_no_one_in_a_notice() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_headers_saved_notice_with_an_attention_line_holds_one_success_line_and_that_line() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    grant_bob(&w, &[&id]).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    let hid = id_of(&w, &id, HEADER).await;
+    let saved = save_headers(&w.owner, &id, &[&hid], &[&hid], false, false).await;
+    let shown = w.owner.follow(&saved).await;
+    assert_eq!(
+        shown.count(r#"div.notice[data-notice="ok"] > p.attention"#),
+        1,
+        "a save that makes a header required holds its attention line in the saved notice"
+    );
+    assert_eq!(
+        shown.count(r#"div.notice[data-notice="ok"]"#),
+        1,
+        "the saved notice is one notice, whose stylesheet fill is the caution fill"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_headers_saved_notice_without_an_attention_line_holds_the_success_line_alone() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    let hid = id_of(&w, &id, HEADER).await;
+    let saved = save_headers(&w.owner, &id, &[&hid], &[], true, true).await;
+    let shown = w.owner.follow(&saved).await;
+    assert_eq!(
+        shown.count(r#"div.notice[data-notice="ok"] > p.attention"#),
+        0,
+        "a save that makes no header required has no attention line"
+    );
+    assert_eq!(
+        shown.count(r#"div.notice[data-notice="ok"] > p"#),
+        1,
+        "the saved notice holds only its success line"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_add_header_hint_sets_the_example_name_in_code() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    let page = w.owner.get(&server_path(&id)).await;
+    assert_eq!(
+        page.text("#header-name-hint").as_deref(),
+        Some("For example X-Api-Key. Up to 8 per server."),
+        "the hint of the add form keeps its text"
+    );
+    assert_eq!(
+        page.text("#header-name-hint code").as_deref(),
+        Some("X-Api-Key"),
+        "the example header name is set in code, as every header name is"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn with_both_switches_off_and_a_required_header_a_no_source_line_sits_under_the_switches() {
     let w = World::start().await;
     let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;

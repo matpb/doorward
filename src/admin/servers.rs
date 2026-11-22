@@ -1333,7 +1333,9 @@ fn headers_section(
             "header-name-error",
             html! { p.field-error id="header-name-error" { span { (message) } } },
         ),
-        None => ui::Note::Hint("For example X-Api-Key. Up to 8 per server."),
+        None => ui::Note::HintMarkup(
+            html! { "For example " code { "X-Api-Key" } ". Up to 8 per server." },
+        ),
     };
     let name_described = name_note.describer("header-name");
     let count = headers.declared.len();

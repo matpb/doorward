@@ -856,8 +856,8 @@ async fn the_remove_title_name_is_inline_breaks_at_hyphens_and_is_30_px_then_26_
     );
     assert_eq!(
         value_of("overflow-wrap", false).as_deref(),
-        Some("normal"),
-        "the name breaks only at its hyphens, not anywhere in a word"
+        Some("break-word"),
+        "the name breaks at its hyphens first, and only a segment too long for a line is broken"
     );
     assert_eq!(
         value_of("font-size", false).as_deref(),
@@ -918,6 +918,61 @@ async fn the_add_a_header_form_starts_64_px_below_the_switches_form() {
     assert!(
         token_is_64 && spaced,
         "the Add a header form must start at --s8, 64 px, the nearest token above 56 px"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_success_notice_with_an_attention_line_takes_the_caution_fill_and_keeps_its_mark() {
+    let w = TestGateway::start().await;
+    let c = w.client();
+    let page = c.get("/login").await;
+    let href = page
+        .attr(r#"link[rel="stylesheet"]"#, "href")
+        .expect("the sign-in page must link a stylesheet");
+    let css = c.get(&href).await.body;
+    let rules = declarations(&css);
+    let caution = rules.iter().any(|(_, selector, name, value)| {
+        name == "background"
+            && value == "var(--warn-wash)"
+            && selector
+                .split(',')
+                .any(|part| part.trim() == r#".notice[data-notice="ok"]:has(> .attention)"#)
+    });
+    let success = rules.iter().any(|(_, selector, name, value)| {
+        name == "background"
+            && value == "var(--allow-wash)"
+            && selector
+                .split(',')
+                .any(|part| part.trim() == r#".notice[data-notice="ok"]"#)
+    });
+    assert!(
+        caution && success,
+        "a success notice holding an attention line must take the caution fill, and a notice without one keeps the success fill"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_kept_encrypted_hint_starts_16_px_below_the_field_above_it() {
+    let w = TestGateway::start().await;
+    let c = w.client();
+    let page = c.get("/login").await;
+    let href = page
+        .attr(r#"link[rel="stylesheet"]"#, "href")
+        .expect("the sign-in page must link a stylesheet");
+    let css = c.get(&href).await.body;
+    let spaced = declarations(&css)
+        .into_iter()
+        .any(|(ancestors, selector, name, value)| {
+            ancestors.is_empty()
+                && name == "margin-block-start"
+                && value == "var(--s4)"
+                && selector
+                    .split(',')
+                    .any(|part| part.trim() == "[data-values-server] > form.flow > p.hint")
+        });
+    assert!(
+        spaced,
+        "the hint of a credentials form must start 16 px (--s4) below the field above it"
     );
 }
 
