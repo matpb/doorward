@@ -193,7 +193,13 @@ pub(super) fn change_in(
             )?;
             Some((rekeyed, &vault.keys))
         }
-        None => None,
+        None => {
+            let dropped = keys::forget(&tx, change.user_id)?;
+            if dropped > 0 {
+                audit::values_dropped(&tx, change.now, change.user_id, &change.email, dropped)?;
+            }
+            None
+        }
     };
     session::revoke_all(&tx, change.user_id)?;
     let token = session::insert(&tx, change.user_id, change.now, change.lifetime)?;

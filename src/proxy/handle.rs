@@ -15,6 +15,7 @@ use serde_json::{Map, Value, json};
 
 use super::budget::Reservation;
 use super::catalog;
+use super::combined;
 use super::intake::{Intake, intake};
 use super::sessions;
 use super::stream::{self, ACCESS_LOST, CHECK_FAILED, Owned, Watch};
@@ -95,7 +96,14 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
     } else {
         match caller_session(ctx, headers).await {
             Ok(session) => session,
-            Err(refusal) => return refusal,
+            Err(refusal) => {
+                if refusal.status() == StatusCode::NOT_FOUND
+                    && let Some(held) = withheld_probe(ctx, headers).await
+                {
+                    return answer_withheld(ctx, &message, &held, message.tool.as_deref()).await;
+                }
+                return refusal;
+            }
         }
     };
     if message.shape == Shape::Response && session.is_none() {
@@ -148,7 +156,14 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
     };
     let user_headers = match declared_headers(ctx, headers, message.id.as_ref(), &target).await {
         Ok(user_headers) => user_headers,
-        Err(refused) => return refused.response,
+        Err(Refused {
+            held: Some(held), ..
+        }) => return answer_withheld(ctx, &message, &held, call.as_deref()).await,
+        Err(refused) => {
+            return refused
+                .response
+                .unwrap_or_else(|| bare(StatusCode::BAD_GATEWAY));
+        }
     };
     if let Some(name) = call.as_deref() {
         match refusal_of(ctx, &target, name, &user_headers).await {
@@ -194,7 +209,18 @@ pub(super) async fn get_or_delete(ctx: &Ctx<'_>, method: &Method, headers: &Head
     let session = match caller_session(ctx, headers).await {
         Ok(Some(session)) => session,
         Ok(None) => return not_allowed(),
-        Err(refusal) => return refusal,
+        Err(refusal) => {
+            if refusal.status() == StatusCode::NOT_FOUND
+                && withheld_probe(ctx, headers).await.is_some()
+            {
+                return if *method == Method::DELETE {
+                    relayed(StatusCode::NO_CONTENT, None, Body::empty(), None)
+                } else {
+                    not_allowed()
+                };
+            }
+            return refusal;
+        }
     };
     let target = match target(ctx, None).await {
         Ok(target) => target,
@@ -202,11 +228,18 @@ pub(super) async fn get_or_delete(ctx: &Ctx<'_>, method: &Method, headers: &Head
     };
     let user_headers = match declared_headers(ctx, headers, None, &target).await {
         Ok(user_headers) => user_headers,
-        Err(refused) if refused.withheld && *method == Method::DELETE => {
-            forget(ctx, session.id).await;
-            return relayed(StatusCode::NO_CONTENT, None, Body::empty(), None);
+        Err(Refused { held: Some(_), .. }) => {
+            if *method == Method::DELETE {
+                forget(ctx, session.id).await;
+                return relayed(StatusCode::NO_CONTENT, None, Body::empty(), None);
+            }
+            return not_allowed();
         }
-        Err(refused) => return refused.response,
+        Err(refused) => {
+            return refused
+                .response
+                .unwrap_or_else(|| bare(StatusCode::BAD_GATEWAY));
+        }
     };
     let outgoing = Outgoing {
         method: method.clone(),
@@ -389,25 +422,31 @@ async fn target(ctx: &Ctx<'_>, call: Option<&str>) -> Result<Target, Response> {
     }
 }
 
-/// The answer that stops a request before any upstream; `withheld` when the caller's values are missing,
-/// locked or unopenable.
+/// What a withheld caller is told: the server's name, the text, and the activity detail.
+pub(super) struct Held {
+    name: String,
+    text: String,
+    detail: &'static str,
+}
+
+/// The answer that stops a request before any upstream, or the withheld state the gateway answers for.
 struct Refused {
-    response: Response,
-    withheld: bool,
+    response: Option<Response>,
+    held: Option<Held>,
 }
 
 impl Refused {
     fn other(response: Response) -> Refused {
         Refused {
-            response,
-            withheld: false,
+            response: Some(response),
+            held: None,
         }
     }
 
-    fn withheld(response: Response) -> Refused {
+    fn held(held: Held) -> Refused {
         Refused {
-            response,
-            withheld: true,
+            response: None,
+            held: Some(held),
         }
     }
 }
@@ -434,75 +473,196 @@ async fn declared_headers(
             return Err(Refused::other(bare(StatusCode::INTERNAL_SERVER_ERROR)));
         }
     };
-    match (reached.resolved, reached.name) {
-        (Resolved::Ready(headers), _) => Ok(headers),
-        (Resolved::Bad, _) => Err(Refused::other(answer::error(
+    if let Resolved::Ready(headers) = reached.resolved {
+        return Ok(headers);
+    }
+    if matches!(reached.resolved, Resolved::Bad) {
+        return Err(Refused::other(answer::error(
             StatusCode::BAD_REQUEST,
             id,
             -32600,
             INVALID,
-        ))),
-        (Resolved::Missing { header }, Some(name)) => Err(Refused::withheld(missing_header(
-            ctx.state,
-            &name,
-            reached.store,
-            &header,
-        ))),
-        (Resolved::Locked, Some(name)) => Err(Refused::withheld(reconnect(&name))),
-        (Resolved::Unopenable, Some(name)) => Err(Refused::withheld(unopenable(ctx.state, &name))),
-        (Resolved::Missing { .. } | Resolved::Locked | Resolved::Unopenable, None) => {
-            Err(Refused::other(answer::unavailable(ctx.slug)))
-        }
+        )));
     }
+    let named = reached.name.as_deref().and_then(|name| {
+        withheld_text(
+            &ctx.state.config.public_url,
+            name,
+            reached.store,
+            &reached.resolved,
+        )
+        .map(|(text, detail)| Held {
+            name: name.to_owned(),
+            text,
+            detail,
+        })
+    });
+    Err(match named {
+        Some(held) => Refused::held(held),
+        None => Refused::other(answer::unavailable(ctx.slug)),
+    })
 }
 
-/// The text of a request whose connection cannot open the user's key.
-pub(super) fn reconnect_text(server: &str) -> String {
-    format!("Reconnect this app to use {server}")
-}
-
-/// The text of a request whose stored value is held but does not open.
-pub(super) fn unopenable_text(state: &AppState, server: &str) -> String {
-    format!(
-        "Your stored credentials for {server} cannot be opened. Store them again at {}/account",
-        state.config.public_url
+/// True for a resolution that withholds the caller's values.
+pub(super) fn is_withheld_kind(resolved: &Resolved) -> bool {
+    matches!(
+        resolved,
+        Resolved::Missing { .. } | Resolved::Locked | Resolved::Unopenable
     )
 }
 
-/// The text of a request whose required header has no value.
-pub(super) fn missing_text(state: &AppState, server: &str, store: bool, header: &str) -> String {
-    if store {
-        format!(
-            "{server} needs your credentials. Add them at {}/account",
-            state.config.public_url
-        )
-    } else {
-        format!("{server} needs the header {header} from this app")
+/// The text a withheld caller is told, and the activity detail of the refused call; None when the
+/// headers resolved or are bad.
+pub(super) fn withheld_text(
+    public_url: &str,
+    server: &str,
+    store: bool,
+    resolved: &Resolved,
+) -> Option<(String, &'static str)> {
+    match resolved {
+        Resolved::Missing { header } => {
+            let text = if store {
+                format!("{server} needs your credentials. Add them at {public_url}/account")
+            } else {
+                format!("{server} needs the header {header} from this app")
+            };
+            Some((text, "credentials missing"))
+        }
+        Resolved::Unopenable => Some((
+            format!(
+                "Your stored credentials for {server} cannot be opened. Store them again at {public_url}/account"
+            ),
+            "credentials missing",
+        )),
+        Resolved::Locked => Some((
+            format!("Reconnect this app to use {server}"),
+            "reconnect needed",
+        )),
+        Resolved::Ready(_) | Resolved::Bad => None,
     }
 }
 
-fn refusal_403(message: &str) -> Response {
-    let mut response = answer::error(StatusCode::FORBIDDEN, None, -32000, message);
+/// The caller's withheld state on this server, when a request carrying an unrecorded session id would
+/// otherwise be told to start a new session.
+async fn withheld_probe(ctx: &Ctx<'_>, headers: &HeaderMap) -> Option<Held> {
+    let target = target(ctx, None).await.ok()?;
+    declared_headers(ctx, headers, None, &target)
+        .await
+        .err()
+        .and_then(|refused| refused.held)
+}
+
+/// The answer of the gateway for a withheld caller to one POST. Nothing goes upstream.
+async fn answer_withheld(
+    ctx: &Ctx<'_>,
+    message: &Message,
+    held: &Held,
+    call: Option<&str>,
+) -> Response {
+    let null = Value::Null;
+    let id = message.id.as_ref().unwrap_or(&null);
+    let stateless = message.generation == Generation::Stateless;
+    let mut response = if message.shape != Shape::Request {
+        bare(StatusCode::ACCEPTED)
+    } else {
+        match (message.generation, message.method.as_deref()) {
+            (Generation::Session, Some("initialize")) => {
+                let mut reply = combined::result(
+                    id,
+                    combined::initialize_for(message, &held.name, Some(&held.text)),
+                );
+                let wait = format!("dw-wait-{}", crate::crypto::random_id());
+                if let Ok(value) = HeaderValue::from_str(&wait) {
+                    reply.headers_mut().insert(MCP_SESSION_ID, value);
+                }
+                reply
+            }
+            (Generation::Session, Some("ping")) => combined::result(id, json!({})),
+            (Generation::Stateless, Some("server/discover")) => {
+                combined::result(id, combined::discover_for(&held.name, Some(&held.text)))
+            }
+            (_, Some("tools/list")) => match withheld_list(ctx, id, stateless).await {
+                Ok(reply) | Err(reply) => reply,
+            },
+            (_, Some("tools/call")) => withheld_call(ctx, message, held, call, stateless).await,
+            _ => answer::error(StatusCode::OK, Some(id), -32000, &held.text),
+        }
+    };
     response
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
 
-/// The 403 of a request whose connection cannot open the user's key.
-fn reconnect(server: &str) -> Response {
-    refusal_403(&reconnect_text(server))
+/// The stored catalog of the server under the caller's rules, as a tools/list answer.
+async fn withheld_list(ctx: &Ctx<'_>, id: &Value, stateless: bool) -> Result<Response, Response> {
+    let server = ctx.server_id;
+    let definitions = match ctx
+        .state
+        .db
+        .call(move |conn| catalog::definitions(conn, server))
+        .await
+    {
+        Ok(definitions) => definitions,
+        Err(err) => {
+            report::failure("tool catalog", &err);
+            return Err(bare(StatusCode::INTERNAL_SERVER_ERROR));
+        }
+    };
+    let tools: Vec<Value> = definitions
+        .iter()
+        .filter_map(|(_, definition)| serde_json::from_str(definition).ok())
+        .collect();
+    let mut shaped = json!({"result": {"tools": tools}});
+    hide_refused(ctx, &mut shaped).await?;
+    let tools = match shaped.pointer_mut("/result/tools").map(Value::take) {
+        Some(Value::Array(tools)) => tools,
+        _ => Vec::new(),
+    };
+    Ok(combined::result(
+        id,
+        combined::list_result(tools, stateless),
+    ))
 }
 
-/// The 403 of a request whose stored value does not open.
-fn unopenable(state: &AppState, server: &str) -> Response {
-    refusal_403(&unopenable_text(state, server))
-}
-
-/// The 403 of a request whose required header has no value: the account page's address when values can
-/// be stored there, else the header's name.
-fn missing_header(state: &AppState, server: &str, store: bool, header: &str) -> Response {
-    refusal_403(&missing_text(state, server, store, header))
+/// A tools/call of a withheld caller: the rule and catalog checks come first, then a tool error with
+/// the text and one deny row.
+async fn withheld_call(
+    ctx: &Ctx<'_>,
+    message: &Message,
+    held: &Held,
+    call: Option<&str>,
+    stateless: bool,
+) -> Response {
+    let null = Value::Null;
+    let id = message.id.as_ref().unwrap_or(&null);
+    let Some(name) = call else {
+        return answer::error(StatusCode::BAD_REQUEST, Some(id), -32600, INVALID);
+    };
+    let rules = match rules_of(ctx).await {
+        Ok(rules) => rules,
+        Err(refusal) => return refusal,
+    };
+    let verdict = policy::decide(&rules, ctx.caller.user_id, ctx.server_id, name);
+    let unknown = if !verdict.allowed {
+        Some(format!("rule {}", verdict.rule.unwrap_or_default()))
+    } else {
+        match stored(ctx, name).await {
+            Ok(true) => None,
+            Ok(false) => Some(NOT_LISTED.to_owned()),
+            Err(refusal) => return refusal,
+        }
+    };
+    if let Some(detail) = unknown {
+        record(ctx, name, "deny", "refused", &detail).await;
+        return answer::unknown_tool(id, name);
+    }
+    record(ctx, name, "deny", "refused", held.detail).await;
+    let mut body = json!({"content": [{"type": "text", "text": held.text}], "isError": true});
+    if stateless {
+        body["resultType"] = json!("complete");
+    }
+    combined::result(id, body)
 }
 
 /// True when `name` is in the server's catalog. A miss refreshes it unless a miss refresh of the server

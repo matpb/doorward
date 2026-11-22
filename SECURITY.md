@@ -116,7 +116,7 @@ Not covered:
   default) a rotated refresh token together with a copy of the database still opens that
   person's key.
 - Values held in memory. The gateway clears them on a best effort basis, and a value lives in
-  memory for the length of a request.
+  memory for about the length of a request.
 
 Sharing limits. On the combined endpoint a header a client passes goes to every server that
 declares that name and passes headers through. One cached tool list for each server is shared

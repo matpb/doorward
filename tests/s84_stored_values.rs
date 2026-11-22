@@ -559,10 +559,10 @@ async fn a_missing_or_partial_set_of_required_values_reaches_no_upstream_and_nam
     let stateless = w.stateless_mcp(SLUG, &tokens);
     let refused = stateless_call(&stateless, "echo", &[]).await;
     assert_eq!(
-        refused.status, 403,
-        "a partial set must answer 403 on the server path"
+        refused.status, 200,
+        "a partial set is a tool error on the server path, never 401 or 403"
     );
-    let message = refused.error_message().unwrap_or_default();
+    let message = refused.text().unwrap_or_default();
     assert!(
         message.contains(&format!("{}/account", w.base())),
         "the refusal must name the account page, got {message:?}"
@@ -570,8 +570,8 @@ async fn a_missing_or_partial_set_of_required_values_reaches_no_upstream_and_nam
     let session = w.session_mcp(SLUG, &tokens);
     let refused = session.initialize().await;
     assert_eq!(
-        refused.status, 403,
-        "a partial set must answer 403 to initialize"
+        refused.status, 200,
+        "a partial set is answered by the gateway on initialize"
     );
     assert!(
         upstream.requests().is_empty(),
@@ -584,11 +584,8 @@ async fn a_missing_or_partial_set_of_required_values_reaches_no_upstream_and_nam
     let listed = combined.list_tools().await;
     assert_eq!(listed.status, 200, "the combined tool list must answer 200");
     assert!(
-        !listed
-            .tool_names()
-            .iter()
-            .any(|name| name.starts_with("demo__")),
-        "the server with missing values must be left out of the combined list"
+        listed.tool_names().iter().any(|name| name == "demo__echo"),
+        "the server with missing values is listed from its stored catalog"
     );
     assert!(
         upstream.requests().is_empty(),
@@ -1445,20 +1442,25 @@ async fn with_every_wrap_damaged_sign_in_consent_exchange_and_refresh_still_work
     ] {
         let refused = stateless_call(&w.stateless_mcp(SLUG, token), "echo", &[]).await;
         assert_eq!(
-            refused.status, 403,
-            "{what} must be refused with 403 when its key cannot open"
+            refused.status, 200,
+            "{what} is answered by the gateway when its key cannot open, never 401 or 403"
         );
-        let message = refused.error_message().unwrap_or_default();
+        assert_eq!(
+            refused.result().and_then(|result| result.get("isError")),
+            Some(&serde_json::json!(true))
+        );
+        let message = refused.text().unwrap_or_default();
         assert!(
             message.contains("Reconnect this app"),
             "{what} must say Reconnect this app, got {message:?}"
         );
     }
     assert_eq!(
-        upstream.calls_to("echo"),
+        upstream.requests().len(),
         1,
-        "only the healed connection may reach the upstream"
+        "the only request that reaches the upstream is the healed connection's call"
     );
+    assert_eq!(upstream.calls_to("echo"), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1576,15 +1578,19 @@ async fn editing_the_upstream_address_in_the_database_keeps_the_canary_from_the_
     moved.clear();
     let refused = stateless_call(&w.stateless_mcp(SLUG, &fresh), "echo", &[]).await;
     assert_eq!(
-        refused.status, 403,
-        "a value sealed for the old address does not open, so the call is refused"
+        refused.status, 200,
+        "a value sealed for the old address does not open, so the gateway answers with a tool error"
     );
     assert!(
         refused
-            .error_message()
+            .text()
             .unwrap_or_default()
             .contains("cannot be opened"),
         "the refusal must say the stored credentials cannot be opened"
+    );
+    assert!(
+        moved.requests().is_empty(),
+        "the new upstream must see no request at all"
     );
     assert!(
         !any_request_carries(&moved, CANARY),
@@ -2078,7 +2084,18 @@ async fn a_locked_connection_whose_client_passes_the_header_itself_is_served() {
     let stateless = w.stateless_mcp(SLUG, &tokens);
     upstream.clear();
     let refused = stateless_call(&stateless, "echo", &[]).await;
-    assert_eq!(refused.status, 403, "without the header the call is locked");
+    assert_eq!(
+        refused.status, 200,
+        "without the header the call is a tool error"
+    );
+    assert!(
+        refused
+            .text()
+            .unwrap_or_default()
+            .contains("Reconnect this app"),
+        "without the header the connection is locked"
+    );
+    assert!(upstream.requests().is_empty());
     let served = stateless_call(&stateless, "echo", &[(HEADER, CLIENT_VALUE)]).await;
     assert_eq!(
         served.text().as_deref(),
@@ -2273,11 +2290,7 @@ async fn a_client_delete_while_the_values_are_locked_is_answered_and_the_session
     upstream.clear();
 
     let closed = session.delete().await;
-    assert!(
-        closed.status == 204 || closed.status == 200,
-        "the close must be answered as a success, got {}",
-        closed.status
-    );
+    assert_eq!(closed.status, 204, "the close is answered 204");
     assert!(
         upstream.requests().is_empty(),
         "the close must not reach the upstream"
@@ -2355,4 +2368,68 @@ async fn a_refresh_without_the_admins_openable_key_says_the_stored_credentials_w
         notice,
         "Tools refreshed without your stored credentials. Sign out and sign in again to send them."
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refresh_with_a_stored_value_that_does_not_open_says_the_stored_credentials_were_not_sent()
+ {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream(SLUG, UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    switches_ok(&w.owner, &id, false, true).await;
+    w.grant(OWNER_EMAIL, &[&id]).await;
+    let hid = header_of(&w.owner, &id, HEADER).await;
+    store_ok(&w.owner, SLUG, &hid, CANARY).await;
+    let moved = FakeUpstream::start(UpstreamOptions {
+        require_header: Some((SECRET_HEADER.into(), secret_for(SLUG))),
+        ..Default::default()
+    })
+    .await;
+    live_db(&w)
+        .execute(
+            "UPDATE servers SET upstream_url = ?1 WHERE id = ?2",
+            params![moved.url(), number(&id)],
+        )
+        .expect("the address is edited in the database");
+    let path = server_path(&id);
+    let done = w
+        .owner
+        .submit(&path, &format!("{path}/refresh-tools"), &[])
+        .await;
+    assert_eq!(done.status, 303);
+    let page = w.owner.follow(&done).await;
+    assert_eq!(
+        page.text(r#"div.notice[data-notice="warning"]"#)
+            .unwrap_or_default(),
+        "Tools refreshed without your stored credentials. Sign out and sign in again to send them."
+    );
+    assert!(!any_request_carries(&moved, CANARY));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_saved_notice_shows_only_when_the_query_carries_the_saved_marker() {
+    let w = World::start().await;
+    let (_upstream, _id, hid, bob) = demo_for_bob(&w, false).await;
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    let bare = bob.get("/account?server=demo").await;
+    assert!(!bare.body.contains("Credentials saved for"));
+    let marked = bob.get("/account?done=credentials-saved&server=demo").await;
+    assert!(marked.body.contains("Credentials saved for demo."));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forget_with_the_store_switch_on_does_not_redirect_with_the_saved_notice() {
+    let w = World::start().await;
+    let (_upstream, _id, hid, bob) = demo_for_bob(&w, false).await;
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    let csrf = common::values::account_csrf(&bob).await;
+    let page = bob
+        .post(
+            &format!("/account/values/{SLUG}"),
+            &[("csrf", csrf.as_str()), ("forget", "1")],
+        )
+        .await;
+    assert_eq!(page.status, 303);
+    let location = page.location().unwrap_or_default();
+    assert!(!location.contains("credentials-saved"), "got {location:?}");
 }

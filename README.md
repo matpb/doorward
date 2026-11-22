@@ -165,7 +165,7 @@ such as `X-Api-Key`, and mark each one as required or not. Then switch on one or
 
 - **Pass these headers through from the client** (pass-through). A declared header that the
   client sends reaches the server with the client's value.
-- **Let each person store their own values.** Each person saves their values on their
+- **Let each person store their own credentials.** Each person saves their values on their
   account page.
 
 `Authorization` can be declared, but the gateway never passes it through from a client. It
@@ -177,11 +177,14 @@ value already stored. To delete one, tick Remove the stored credential. The fiel
 a stored value again. The page shows only the date it was set. Values are saved encrypted.
 
 If a required header has no value for a person, nothing is sent to that server for that
-person. The server's path answers with HTTP 403 and an error that names the server and the
-account page, so the person knows where to add the value. Where storing is switched off, the
-error names the header instead. On the combined endpoint `/mcp`, the server is left out of
-that person's tool list, and the other servers keep working. The account page marks each
-server that still needs values.
+person. The gateway answers for the server itself, never with HTTP 401 or 403, so a client does
+not mistake it for a failed sign-in. The connection opens, the tool list is the gateway's stored
+list for that server under the person's rules, and every tool call returns a tool error that
+names the server and the account page, so the person knows where to add the value. Where storing
+is switched off, the error names the header instead. This holds on the server's path and on the
+combined endpoint `/mcp`, and the other servers keep working. Once the value is stored, the
+client's next request on the server's path is told to start a new session. The account page
+marks each server that still needs values.
 
 The gateway deletes stored credentials when:
 
@@ -189,11 +192,12 @@ The gateway deletes stored credentials when:
 - the server's upstream address changes, for every person;
 - a declared header is removed, and renaming a header counts as removing it;
 - an admin unassigns the person from the server;
-- the server is deleted.
+- the server is deleted;
+- the gateway cannot open a person's key at a password change or a sign-in.
 
-A password change keeps them. The gateway seals them again, so they stay.
+A password change normally keeps them. If the gateway cannot open a person's key at a password change or a sign-in, it deletes that person's stored credentials and records it in the activity log.
 
-Turning off "Let each person store their own values" for a server stops the gateway from
+Turning off "Let each person store their own credentials" for a server stops the gateway from
 attaching stored values to calls to it. It does not delete them. What people stored stays until
 they delete it with Delete my stored credentials on their account page, or until the server's
 address changes or one of its headers is removed.
@@ -230,7 +234,7 @@ Not covered:
   default) a rotated refresh token together with a copy of the database still opens that
   person's key.
 - Values held in memory. The gateway clears them on a best effort basis, and a value lives in
-  memory for the length of a request.
+  memory for about the length of a request.
 
 If you suspect that a stored credential was stolen, rotate the upstream credential at the
 upstream server, then have each person store the new value. The gateway cannot tell that a

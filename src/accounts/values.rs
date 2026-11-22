@@ -202,6 +202,11 @@ pub fn saved_name(part: &Part, raw: Option<&str>) -> Option<String> {
     let slug = form_urlencoded::parse(raw.unwrap_or("").as_bytes())
         .find(|(key, _)| key == "server")
         .map(|(_, value)| value.into_owned())?;
+    let marked = form_urlencoded::parse(raw.unwrap_or("").as_bytes())
+        .any(|(key, value)| key == "done" && value == "credentials-saved");
+    if !marked {
+        return None;
+    }
     part.servers
         .iter()
         .find(|server| server.slug == slug)
@@ -305,7 +310,9 @@ pub async fn post_values(
             .collect()
     };
     let now = state.clock.now().unix_timestamp();
-    if fields.get("forget") == "1" {
+    let forget = fields.get("forget") == "1";
+    let bare_forget = forget && posted.is_empty();
+    if forget {
         let (user_id, email, lookup) = (user.id, user.email.clone(), slug.clone());
         let forgotten = state
             .db
@@ -334,6 +341,7 @@ pub async fn post_values(
         })
         .await;
     match outcome {
+        Ok(Outcome::Saved) if bare_forget => redirect("/account"),
         Ok(Outcome::Saved) => redirect(&format!(
             "/account?done=credentials-saved&server={slug}#values-title"
         )),

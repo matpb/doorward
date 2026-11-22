@@ -325,3 +325,161 @@ fn clear_user_tokens_nulls_codes_and_both_token_tables_of_that_user_only() {
         );
     }
 }
+
+fn unlocked(password: &str, salt: [u8; 16], fresh: bool) -> keys::Unlocked {
+    keys::Unlocked {
+        keys: std::sync::Arc::new(server_keys()),
+        unlock: unlock(password, salt, fresh),
+    }
+}
+
+fn generation_of(conn: &Connection, user: i64) -> i64 {
+    conn.query_row(
+        "SELECT dek_gen FROM users WHERE id = ?1",
+        params![user],
+        |row| row.get(0),
+    )
+    .expect("generation")
+}
+
+fn value_count(conn: &Connection) -> i64 {
+    conn.query_row("SELECT COUNT(*) FROM user_header_values", [], |row| {
+        row.get(0)
+    })
+    .expect("count")
+}
+
+/// A user with a key, a second session that opens it, one stored value and a third, new session.
+fn healing_setup() -> (tempfile::TempDir, Connection, i64, [u8; 32]) {
+    let (dir, conn) = open();
+    let user = add_user(&conn, "bob@example.com");
+    let ks = server_keys();
+    let key = keys::open_or_create(&conn, &ks, user, &unlock(PASSWORD, SALT, true))
+        .expect("reads")
+        .expect("a key");
+    add_session(&conn, user, OTHER);
+    keys::wrap_row(
+        &conn,
+        &ks,
+        user,
+        Table::Sessions,
+        &token_hash(OTHER),
+        OTHER,
+        &key,
+    )
+    .expect("wrap");
+    let ids = add_header(&conn);
+    store_value(&conn, &key, user, ids, 0);
+    add_session(&conn, user, TOKEN);
+    (dir, conn, user, *key.bytes())
+}
+
+const EMAIL: &str = "bob@example.com";
+
+#[test]
+fn a_heal_changes_nothing_while_the_password_wrap_opens() {
+    let (_dir, mut conn, user, _old) = healing_setup();
+    keys::heal(
+        &mut conn,
+        &unlocked(PASSWORD, SALT, false),
+        (user, EMAIL),
+        TOKEN,
+        5,
+    )
+    .expect("heal");
+    assert_eq!((generation_of(&conn, user), value_count(&conn)), (0, 1));
+}
+
+#[test]
+fn a_heal_changes_nothing_when_the_salt_differs() {
+    let (_dir, mut conn, user, _old) = healing_setup();
+    for fresh in [false, true] {
+        keys::heal(
+            &mut conn,
+            &unlocked(PASSWORD, [2; 16], fresh),
+            (user, EMAIL),
+            TOKEN,
+            5,
+        )
+        .expect("heal");
+        assert_eq!((generation_of(&conn, user), value_count(&conn)), (0, 1));
+    }
+}
+
+#[test]
+fn a_heal_changes_nothing_without_a_wrap_or_without_a_salt() {
+    let (_dir, mut conn, user, _old) = healing_setup();
+    conn.execute("UPDATE users SET dek_wrap = NULL", [])
+        .expect("clear");
+    keys::heal(
+        &mut conn,
+        &unlocked(PASSWORD, SALT, false),
+        (user, EMAIL),
+        TOKEN,
+        5,
+    )
+    .expect("heal");
+    assert_eq!((generation_of(&conn, user), value_count(&conn)), (0, 1));
+    conn.execute("UPDATE users SET dek_wrap = 'garbage', dek_salt = NULL", [])
+        .expect("damage");
+    keys::heal(
+        &mut conn,
+        &unlocked(PASSWORD, SALT, false),
+        (user, EMAIL),
+        TOKEN,
+        5,
+    )
+    .expect("heal");
+    assert_eq!((generation_of(&conn, user), value_count(&conn)), (0, 1));
+}
+
+#[test]
+fn a_heal_leaves_one_wrapped_session_and_the_other_wraps_cleared() {
+    let (_dir, mut conn, user, old) = healing_setup();
+    assert_eq!(
+        key_of(&conn, user, Table::Sessions, &token_hash(OTHER), OTHER),
+        Some(old),
+        "the other session opens the old key before the heal"
+    );
+    conn.execute("UPDATE users SET dek_wrap = 'garbage'", [])
+        .expect("damage");
+    keys::heal(
+        &mut conn,
+        &unlocked(PASSWORD, SALT, false),
+        (user, EMAIL),
+        TOKEN,
+        5,
+    )
+    .expect("heal");
+    assert_eq!((generation_of(&conn, user), value_count(&conn)), (1, 0));
+    assert_eq!(
+        key_of(&conn, user, Table::Sessions, &token_hash(OTHER), OTHER),
+        None
+    );
+    let fresh = key_of(&conn, user, Table::Sessions, &token_hash(TOKEN), TOKEN)
+        .expect("the new session opens the new key");
+    assert_ne!(fresh, old);
+    assert_eq!(
+        wrapped_rows(&conn, "sessions"),
+        1,
+        "exactly one session holds a wrap"
+    );
+    assert_eq!(
+        key_of_password(&conn, user, &unlock(PASSWORD, SALT, false)),
+        Some(fresh)
+    );
+}
+
+#[test]
+fn a_heal_also_fires_when_the_wrap_is_under_an_older_password_with_the_same_salt() {
+    let (_dir, mut conn, user, _old) = healing_setup();
+    keys::heal(
+        &mut conn,
+        &unlocked("another accepted password", SALT, false),
+        (user, EMAIL),
+        TOKEN,
+        5,
+    )
+    .expect("heal");
+    assert_eq!((generation_of(&conn, user), value_count(&conn)), (1, 0));
+}

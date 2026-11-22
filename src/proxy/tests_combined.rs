@@ -2787,7 +2787,7 @@ async fn a_declared_header_sent_twice_refuses_the_whole_list_before_any_upstream
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_missing_required_header_leaves_its_server_out_and_its_call_unavailable() {
+async fn a_call_to_a_server_missing_its_required_header_is_a_tool_error_not_a_502() {
     let fx = fixture().await;
     let one = stateless_up(vec![tool("echo")]).await;
     let two = stateless_up(vec![tool("alpha")]).await;
@@ -2799,7 +2799,7 @@ async fn a_missing_required_header_leaves_its_server_out_and_its_call_unavailabl
     assert_eq!(
         names(&listed),
         vec!["two__alpha".to_string()],
-        "the server missing its required header must be left out"
+        "the server missing its required header has no stored catalog yet, so it lists nothing and is not contacted"
     );
     assert!(one.seen().is_empty(), "nothing may be sent to that server");
     let call = send(

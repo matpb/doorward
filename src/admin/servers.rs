@@ -1091,7 +1091,7 @@ async fn own_values(
             }
             let via = session.as_deref().map(Via::Session);
             let opened = values::open_for(conn, &keys, user, server, &url, via, false)?;
-            let locked = opened.locked && !opened.held.is_empty();
+            let locked = (opened.locked && !opened.held.is_empty()) || !opened.unopened.is_empty();
             let own = opened
                 .stored
                 .into_iter()

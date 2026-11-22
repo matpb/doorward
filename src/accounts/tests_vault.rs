@@ -555,3 +555,37 @@ async fn signing_out_takes_the_session_wrap_with_the_row() {
     .await
     .expect("run");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_password_change_without_a_vault_part_clears_the_wrap_and_drops_the_values() {
+    let (_dir, db) = open();
+    db.call(|conn| {
+        let user = add_user(conn);
+        let old_session = sign_in(conn, user, Some(unlocked(PASSWORD, SALT, true)));
+        let old_key = session_key(conn, user, &old_session).expect("old key");
+        seed_value(conn, user, &DataKey::from_test_bytes(old_key), 0);
+        let mut change = change_with(
+            user,
+            old_session,
+            Some(unlock(PASSWORD, SALT, false)),
+            unlock(NEW_PASSWORD, NEW_SALT, true),
+        );
+        change.vault = None;
+        change_in(conn, &change)?.expect("the change goes through");
+        let (wrap, salt): (Option<String>, Option<String>) = conn.query_row(
+            "SELECT dek_wrap, dek_salt FROM users WHERE id = ?1",
+            params![user],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        assert_eq!((wrap, salt), (None, None));
+        let dropped: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM activity WHERE kind = 'values_dropped'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(dropped, 1);
+        Ok(())
+    })
+    .await
+    .expect("run");
+}

@@ -20,8 +20,8 @@ use super::budget::Reservation;
 use super::catalog::{self, RefreshError, SESSION, STATELESS};
 use super::combined_stream::{self, Call};
 use super::handle::{
-    INVALID, NOT_LISTED, Owed, TOOL_LIMIT, answer_for, bare, cut, missing_text, not_allowed,
-    reconnect_text, unopenable_text,
+    INVALID, NOT_LISTED, Owed, TOOL_LIMIT, answer_for, bare, cut, is_withheld_kind, not_allowed,
+    withheld_text,
 };
 use super::intake::{Intake, intake};
 use super::links::{self, Answer, Ask, Owner};
@@ -195,32 +195,59 @@ fn unsupported(message: &Message) -> Option<&str> {
 }
 
 fn initialize(message: &Message) -> Value {
+    initialize_for(message, "doorward", None)
+}
+
+/// The initialize result under `name`, with `instructions` when given.
+pub(super) fn initialize_for(message: &Message, name: &str, instructions: Option<&str>) -> Value {
     let requested = param(&message.value, "protocolVersion").and_then(Value::as_str);
     let revision = REVISIONS
         .iter()
         .copied()
         .find(|revision| Some(*revision) == requested)
         .unwrap_or(SESSION);
-    json!({
+    let mut out = json!({
         "protocolVersion": revision,
         "capabilities": {"tools": {"listChanged": false}},
-        "serverInfo": server_info(),
-    })
+        "serverInfo": server_info(name),
+    });
+    if let Some(text) = instructions {
+        out["instructions"] = json!(text);
+    }
+    out
 }
 
 fn discover() -> Value {
-    json!({
-        "supportedVersions": SUPPORTED,
-        "capabilities": {"tools": {}},
-        "serverInfo": server_info(),
-        "_meta": {"io.modelcontextprotocol/serverInfo": server_info()},
-        "cacheScope": "private",
-        "resultType": "complete",
-    })
+    discover_for("doorward", None)
 }
 
-fn server_info() -> Value {
-    json!({"name": "doorward", "version": env!("CARGO_PKG_VERSION")})
+/// The stateless discover result under `name`, with `instructions` when given.
+pub(super) fn discover_for(name: &str, instructions: Option<&str>) -> Value {
+    let mut out = json!({
+        "supportedVersions": SUPPORTED,
+        "capabilities": {"tools": {}},
+        "serverInfo": server_info(name),
+        "_meta": {"io.modelcontextprotocol/serverInfo": server_info(name)},
+        "cacheScope": "private",
+        "resultType": "complete",
+    });
+    if let Some(text) = instructions {
+        out["instructions"] = json!(text);
+    }
+    out
+}
+
+/// The tools/list result for `tools`, with the cache fields under the stateless rules.
+pub(super) fn list_result(tools: Vec<Value>, stateless: bool) -> Value {
+    if stateless {
+        json!({"tools": tools, "resultType": "complete", "ttlMs": TTL_MS, "cacheScope": "private"})
+    } else {
+        json!({"tools": tools})
+    }
+}
+
+fn server_info(name: &str) -> Value {
+    json!({"name": name, "version": env!("CARGO_PKG_VERSION")})
 }
 
 /// The parts of a tools/call body the upstream may see, borrowed from the body bytes.
@@ -369,7 +396,7 @@ async fn call(
             url,
             ..
         }) => (user_headers.as_slice(), url.as_str()),
-        Some(reached) if withheld_reason(&reached.resolved).is_some() && reached.name.is_some() => {
+        Some(reached) if is_withheld(reached) => {
             let held = Withheld {
                 slug,
                 tool,
@@ -727,13 +754,9 @@ async fn check_failed(owed: Owed) -> Response {
     answer::unavailable(LABEL)
 }
 
-/// The activity detail of a server left out for this caller, or None when its headers resolved.
-fn withheld_reason(resolved: &Resolved) -> Option<&'static str> {
-    match resolved {
-        Resolved::Missing { .. } | Resolved::Unopenable => Some("credentials missing"),
-        Resolved::Locked => Some("reconnect needed"),
-        Resolved::Ready(_) | Resolved::Bad => None,
-    }
+/// True when the server's headers did not resolve for the caller and it has a name to answer under.
+fn is_withheld(reached: &Reached) -> bool {
+    reached.name.is_some() && is_withheld_kind(&reached.resolved)
 }
 
 /// The server and tool of a call that is refused for want of the caller's values.
@@ -754,12 +777,13 @@ async fn withheld_call(
     reached: &Reached,
 ) -> Response {
     let name = reached.name.as_deref().unwrap_or(held.slug);
-    let text = match &reached.resolved {
-        Resolved::Missing { header } => missing_text(state, name, reached.store, header),
-        Resolved::Unopenable => unopenable_text(state, name),
-        _ => reconnect_text(name),
-    };
-    let detail = withheld_reason(&reached.resolved).unwrap_or_default();
+    let (text, detail) = withheld_text(
+        &state.config.public_url,
+        name,
+        reached.store,
+        &reached.resolved,
+    )
+    .unwrap_or_default();
     record_denial(
         state,
         caller,
@@ -951,24 +975,23 @@ async fn collect(
     }))
     .await;
     let mut fetched: Vec<(usize, Fetched)> = Vec::new();
+    let mut withheld: Vec<usize> = Vec::new();
     let mut only_budget = true;
-    let all_left_out = outcomes.iter().all(Option::is_none);
+    let mut failed = false;
     for (position, outcome) in outcomes.into_iter().enumerate() {
         match outcome {
             None => {
                 only_budget = false;
-                if let Some(reason) = resolved
+                if resolved
                     .get(&assigned[position].server_id)
-                    .and_then(|reached| withheld_reason(&reached.resolved))
+                    .is_some_and(is_withheld)
                 {
-                    note(format!(
-                        "tools/list: {} left out, {reason}",
-                        assigned[position].slug
-                    ));
+                    withheld.push(position);
                 }
             }
             Some(Ok(list)) => fetched.push((position, list)),
             Some(Err(cause)) => {
+                failed = true;
                 if budget_refused(cause) {
                     note(format!(
                         "tools/list: {} left out, the answer memory budget is exhausted",
@@ -988,15 +1011,36 @@ async fn collect(
         }
     }
     if fetched.is_empty() {
-        if all_left_out {
+        if failed {
+            return Err(if only_budget {
+                answer::busy()
+            } else {
+                answer::unavailable(LABEL)
+            });
+        }
+        if withheld.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
-        return Err(if only_budget {
-            answer::busy()
-        } else {
-            answer::unavailable(LABEL)
-        });
     }
+    let kept: Vec<(usize, i64)> = withheld
+        .iter()
+        .map(|&position| (position, assigned[position].server_id))
+        .collect();
+    let stored_withheld = match state
+        .db
+        .call(move |conn| {
+            kept.into_iter()
+                .map(|(position, server)| Ok((position, catalog::definitions(conn, server)?)))
+                .collect::<rusqlite::Result<Vec<(usize, Vec<(String, String)>)>>>()
+        })
+        .await
+    {
+        Ok(stored) => stored,
+        Err(err) => {
+            report::failure("tool catalog", &err);
+            return Err(bare(StatusCode::INTERNAL_SERVER_ERROR));
+        }
+    };
     let now = state.clock.now().unix_timestamp();
     let jobs: Vec<(i64, Vec<Value>)> = fetched
         .iter_mut()
@@ -1014,12 +1058,26 @@ async fn collect(
             return Err(bare(StatusCode::INTERNAL_SERVER_ERROR));
         }
     };
-    let candidates: Vec<Candidate> = fetched
+    let mut ordered: Vec<(usize, Candidate)> = fetched
         .iter()
         .zip(stored)
         .map(|((position, list), definitions)| {
-            candidate(&assigned[*position], user, list.stateless, &definitions)
+            (
+                *position,
+                candidate(&assigned[*position], user, list.stateless, &definitions),
+            )
         })
+        .collect();
+    for (position, definitions) in &stored_withheld {
+        ordered.push((
+            *position,
+            candidate(&assigned[*position], user, false, definitions),
+        ));
+    }
+    ordered.sort_by_key(|(position, _)| *position);
+    let candidates: Vec<Candidate> = ordered
+        .into_iter()
+        .map(|(_, candidate)| candidate)
         .collect();
     let admitted = admit(&candidates, state.config.limits.tools_list_bytes);
     let tools = candidates
@@ -1319,7 +1377,7 @@ async fn refuse(state: &AppState, slug: &str, server_id: i64, cause: Cause) {
 }
 
 /// A JSON-RPC result with the inert-content headers of the server path's own answers.
-fn result(id: &Value, result: Value) -> Response {
+pub(super) fn result(id: &Value, result: Value) -> Response {
     respond(
         StatusCode::OK,
         &json!({"jsonrpc": "2.0", "id": id, "result": result}),

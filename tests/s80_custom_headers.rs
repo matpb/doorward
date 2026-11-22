@@ -650,7 +650,7 @@ async fn bad_header_values_are_refused_before_the_upstream() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_missing_required_header_answers_403_on_the_server_path() {
+async fn a_missing_required_header_is_answered_by_the_gateway_on_the_server_path() {
     let w = World::start().await;
     let (upstream, id) = add_server_named(&w.owner, "Demo Server", "demo", true).await;
     let bob = grant_bob(&w, &[&id]).await;
@@ -661,10 +661,10 @@ async fn a_missing_required_header_answers_403_on_the_server_path() {
     let stateless = w.stateless_mcp("demo", &tokens);
     let refused = stateless_call(&stateless, "echo", &[]).await;
     assert_eq!(
-        refused.status, 403,
-        "a missing required header must answer 403"
+        refused.status, 200,
+        "a missing required header is a tool error, never 401 or 403"
     );
-    let message = refused.error_message().unwrap_or_default();
+    let message = refused.text().unwrap_or_default();
     assert!(
         message.contains("Demo Server") && message.to_ascii_lowercase().contains(LOWER),
         "the refusal must name the server and the header, got {message:?}"
@@ -677,10 +677,15 @@ async fn a_missing_required_header_answers_403_on_the_server_path() {
     let session = w.session_mcp("demo", &tokens);
     let refused = session.initialize().await;
     assert_eq!(
-        refused.status, 403,
-        "a missing required header must answer 403 to initialize"
+        refused.status, 200,
+        "initialize is answered by the gateway, never 401 or 403"
     );
-    let message = refused.error_message().unwrap_or_default();
+    let message = refused
+        .result()
+        .and_then(|result| result.get("instructions"))
+        .and_then(|text| text.as_str())
+        .unwrap_or_default()
+        .to_owned();
     assert!(
         message.contains("Demo Server") && message.to_ascii_lowercase().contains(LOWER),
         "the initialize refusal must name the server and the header, got {message:?}"
@@ -692,7 +697,7 @@ async fn a_missing_required_header_answers_403_on_the_server_path() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_missing_required_header_leaves_its_server_out_of_the_combined_list() {
+async fn a_missing_required_header_lists_the_servers_stored_tools_on_the_combined_endpoint() {
     let w = World::start().await;
     let (a, a_id) = w.upstream("a", UpstreamOptions::default()).await;
     let b_options = UpstreamOptions {
@@ -712,8 +717,13 @@ async fn a_missing_required_header_leaves_its_server_out_of_the_combined_list() 
     assert_eq!(listed.status, 200, "the combined tool list must answer 200");
     assert_eq!(
         listed.tool_names(),
-        vec!["b__alpha".to_string()],
-        "the server with a missing required header must be left out of the list"
+        vec![
+            "a__echo".to_string(),
+            "a__search".to_string(),
+            "a__delete_db".to_string(),
+            "b__alpha".to_string()
+        ],
+        "the server with a missing required header is listed from its stored catalog"
     );
     assert!(
         a.requests().is_empty(),

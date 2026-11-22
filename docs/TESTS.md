@@ -2674,3 +2674,27 @@ declared and the store switch is on. The value is the canary `canary-7f3a9c51e2d
    `crypto::tests::the_vault_key_derivation_has_a_known_answer`,
    `crypto::tests::the_hash_job_still_returns_a_hash_when_the_vault_derivation_fails` and
    `db::tests::a_schema_14_database_upgrades_and_keeps_its_users_sessions_and_tokens` (migration 17).
+
+## s90_withheld.rs (statement 90)
+
+Bob is assigned to the demo server with a required header and nothing stored, unless a test says otherwise.
+
+1. `a_caller_with_a_missing_required_value_opens_a_connection_on_the_server_path`: initialize is 200 with a
+   `dw-wait-` session id, instructions naming the account page, `no-store`, and the upstream sees nothing.
+2. `the_tool_list_of_a_withheld_caller_is_the_stored_catalog_under_that_callers_rules`.
+3. `a_tool_call_of_a_withheld_caller_is_a_tool_error_with_one_deny_row`: the row says `credentials missing`;
+   a rule-denied tool and an unlisted tool are still unknown tools with their usual rows.
+4. `a_locked_connection_gets_reconnect_this_app_the_same_way` (`reconnect needed`).
+5. `a_value_that_cannot_be_opened_gets_the_store_again_text_the_same_way`.
+6. `after_the_value_is_stored_the_placeholder_session_is_answered_404_and_a_new_one_carries_it`.
+7. `with_pass_through_only_the_text_names_the_header`.
+8. `the_stateless_generation_gets_the_same_answers`.
+9. `get_is_405_and_delete_is_204_for_a_withheld_caller`.
+10. `on_the_combined_endpoint_the_withheld_servers_tools_are_listed_and_a_call_returns_the_text`.
+11. `no_answer_to_a_withheld_caller_is_a_401_or_a_403`.
+
+Review additions in `s84_stored_values.rs`: `a_refresh_with_a_stored_value_that_does_not_open_says_the_stored_credentials_were_not_sent`,
+`the_saved_notice_shows_only_when_the_query_carries_the_saved_marker` and
+`forget_with_the_store_switch_on_does_not_redirect_with_the_saved_notice`. Units: `vault::tests_keys`
+heal tests (including one wrapped session after a heal) and
+`accounts::tests_vault::a_password_change_without_a_vault_part_clears_the_wrap_and_drops_the_values`.

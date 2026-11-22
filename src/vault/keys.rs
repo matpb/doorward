@@ -420,8 +420,8 @@ pub fn release(
     Ok(())
 }
 
-/// After a sign-in whose accepted password cannot open the user's own password wrap: makes a new data key
-/// one generation up, deletes the values (they are unreadable), and wraps the key onto the new session.
+/// Repairs a password wrap that does not open: a new key one generation up, wrapped for the new session.
+/// Other wraps may have opened the old key, so they are cleared and the values deleted.
 pub fn heal(
     conn: &mut Connection,
     unlocked: &Unlocked,
@@ -462,6 +462,11 @@ pub fn heal(
         audit::values_dropped(&tx, now, user, email, deleted)?;
     }
     let row = token_hash(session_token);
+    clear_user_tokens(&tx, user)?;
+    tx.execute(
+        "UPDATE sessions SET dek_wrap = NULL WHERE user_id = ?1 AND id_hash <> ?2",
+        params![user, row],
+    )?;
     wrap_row(
         &tx,
         &unlocked.keys,

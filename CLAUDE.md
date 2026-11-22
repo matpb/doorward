@@ -417,6 +417,7 @@ M. Added for custom headers and per-user credentials
     account page marks each server that still needs values, and the consent page names
     them. A connection made before the user had a key gets the same refusal with the words
     `Reconnect this app`.
+    Replaced by 90.
 84. Stored values are encrypted so that the database and the key file together do not open
     them. Each user has one random 256-bit data key, made the first time a password is in
     hand (setup, invitation, sign-in), before any value exists. A value is sealed under the
@@ -461,6 +462,20 @@ M. Added for custom headers and per-user credentials
     before users store values again, and a server that echoes a credential back. It tells
     the reader to rotate the upstream credential after a suspected theft and to keep the
     key file out of backups of the data directory.
+90. When a required header has no value for a caller, stored or passed through, when the
+    caller's connection cannot open the user's key, or when a stored value cannot be
+    opened, nothing is sent to that server for that caller and the gateway answers for the
+    server itself, on the server's path and on the combined endpoint alike: the connection
+    opens, the tool list is the gateway's stored list for that server under the caller's
+    rules, and every tool call returns a tool error that names the server and what to do:
+    the account page's address when values can be stored there, else the header's name;
+    `Reconnect this app` for a connection made before the user had a key; store the
+    credentials again for a value that cannot be opened. No request of that caller gets an
+    HTTP 401 or 403 for this reason, so a client does not mistake it for a failed sign-in.
+    Each refused call is in the activity log with the reason. Once the values are there,
+    the client's next request on the server's path is told to start a new session. The
+    account page marks each server that still needs values, and the consent page names
+    them. Proven with Claude Code and Codex connecting before the value is stored.
 
 ### Proof
 
@@ -539,6 +554,8 @@ into the test harness. In addition:
   client of statement 49 against a server that demands a per-user header, once passed
   through and once stored.
 - 89: `tests/s41_docs.rs`.
+- 90: `tests/s90_withheld.rs`, the updated tests of 83 in `tests/s80_custom_headers.rs` and
+  `tests/s84_stored_values.rs`, and one run each with Claude Code and Codex.
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
   a walk-through of every page in a real browser at 390 px and desktop width in both
   themes, which also measures control heights and sideways scroll; screenshots kept under
