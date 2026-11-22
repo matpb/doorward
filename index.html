@@ -136,7 +136,7 @@
         <li class="step">
           <div class="cell at-door">
             <span class="who">Doorward</span>
-            <p><span class="verdict"><span class="mark" data-v="allow" aria-hidden="true"></span><strong>Allow.</strong></span> With no matching deny rule, every tool of an assigned server is allowed. The gateway adds the server&rsquo;s secret header to the request it forwards and removes the visitor&rsquo;s own credentials.</p>
+            <p><span class="verdict"><span class="mark" data-v="allow" aria-hidden="true"></span><strong>Allow.</strong></span> With no matching deny rule, every tool of an assigned server is allowed. The gateway adds the server&rsquo;s secret header to the request it forwards and never passes on the visitor&rsquo;s token or cookies. Another header that a client sends reaches the server only where an admin declared it and switched on <span class="nb">pass-through</span>.</p>
           </div>
           <span class="wire" data-dir="up" aria-hidden="true"></span>
           <div class="cell at-server">

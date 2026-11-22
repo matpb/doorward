@@ -1145,10 +1145,35 @@ video {
   color: var(--on-door-2);
 }
 
+/* The note's lines are made alike, so it never ends on "of 49 MB." alone: it did from 427 to 543 px and beside the player. */
 .parts p {
   margin-top: var(--s3);
   font: 400 14px/20px var(--sans);
   color: var(--on-door-2);
+  text-wrap: balance;
+}
+
+/* The link is never cut in two underlined pieces. */
+.parts p a {
+  white-space: nowrap;
+}
+
+/* 600 to 1199 px: two columns, read down the first and then the second, six rows and five. Each column starts */
+/* under a rule of its own, as each of its rows ends on one, so the gap between the columns stays clear. */
+/* At 600 px a column is 256 px and the longest row needs 243. */
+@media (min-width: 600px) and (max-width: 1199.98px) {
+  .parts ol {
+    display: grid;
+    grid-auto-flow: column;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: repeat(6, auto);
+    column-gap: var(--gap);
+    border-top: 0;
+  }
+
+  .parts li:nth-child(6n + 1) {
+    border-top: 1px solid var(--door-line);
+  }
 }
 
 /* ---------- Quick start ---------- */
@@ -1953,9 +1978,33 @@ video {
     padding-block: var(--s1);
   }
 
+  /* On a touch screen this wide a row is 44 px at least, and the list may end under the player. */
+  @media (pointer: coarse) {
+    .parts li a {
+      min-height: 44px;
+    }
+  }
+
   .parts p {
     grid-column: 8;
     grid-row: 4;
+  }
+
+  /* 1200 to 1279 px: the column is 228 to 248 px, and the longest name needs 243 at 14 px. At 13 px, */
+  /* 8 px after the time, it is 171 px in 180: every name on one line, with 5 px to spare where 14 px returns. */
+  @media (max-width: 1279.98px) {
+    .parts li a {
+      font-size: 13px;
+    }
+
+    .parts time {
+      margin-inline-end: var(--s2);
+    }
+
+    /* The note is never larger than the names it stands under. */
+    .parts p {
+      font-size: 13px;
+    }
   }
 
   .foot {
