@@ -943,7 +943,8 @@ loopback through. `system()` behaviour is tested without any server.
     `mcp-session-id`.
 11. `foreign_and_invented_session_ids_are_refused`: bob initialises; carol, assigned to
     the same server, sends bob's session id: 404 on POST, GET and DELETE, upstream
-    untouched; an invented id likewise.
+    untouched; an invented id likewise, except a placeholder-shaped id (`dw-wait-` and 32 hex digits) and any id
+    from a caller whose headers are withheld, which the gateway answers itself (see s90_withheld).
 12. `a_reused_upstream_session_id_is_not_rebound`: `Mode::ReuseSessionId`: bob
     initialises, then carol initialises; bob's session keeps working and carol's
     `list_tools` is not 200.
@@ -2767,6 +2768,18 @@ Bob is assigned to the demo server with a required header and nothing stored, un
 9. `get_is_405_and_delete_is_204_for_a_withheld_caller`.
 10. `on_the_combined_endpoint_the_withheld_servers_tools_are_listed_and_a_call_returns_the_text`.
 11. `no_answer_to_a_withheld_caller_is_a_401_or_a_403`.
+12. Third review: `a_session_only_upstream_is_steered_from_discover_to_a_session_that_survives_the_store` (T1),
+    `a_streamed_call_on_a_placeholder_session_completes_and_loses_access_cleanly` (T2),
+    `two_users_sending_the_same_placeholder_id_each_get_their_own_value_and_row` (T3),
+    `a_token_for_another_server_with_a_placeholder_id_is_a_401` (T4),
+    `an_invented_placeholder_id_from_a_caller_who_resolves_is_served_and_records_no_session` (T5),
+    `a_withheld_caller_with_an_unrecorded_plain_id_gets_the_gateway_made_answer` (T6),
+    `no_upstream_request_carries_a_placeholder_session_id` (T7),
+    `a_withheld_tool_list_with_an_empty_stored_catalog_answers_no_tools` (T8),
+    `a_placeholder_list_with_the_upstream_down_names_the_server` (C1, the slug in the 502),
+    `a_placeholder_list_is_rechecked_after_the_fetch` (C2, unassigned during the fetch),
+    `a_task_call_on_a_placeholder_session_is_answered_as_on_a_recorded_session` (C3, `-32601`).
+    A placeholder session serves tools only (no resources or prompts, no GET stream, notifications `202`).
 
 Review additions in `s84_stored_values.rs`: `a_refresh_with_a_stored_value_that_does_not_open_says_the_stored_credentials_were_not_sent`,
 `the_saved_notice_shows_only_when_the_query_carries_the_saved_marker` and

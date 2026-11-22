@@ -587,6 +587,12 @@ async fn placeholder(
             INVALID,
         );
     }
+    if !matches!(decide(message, combined::ALL), Decision::Forward) {
+        return match message.shape {
+            Shape::Request => answer::method_not_found(message),
+            _ => bare(StatusCode::ACCEPTED),
+        };
+    }
     if is_withheld_kind(&reached.resolved) {
         return match held_of(ctx, &reached) {
             Some(held) => answer_withheld(ctx, message, &held, message.tool.as_deref()).await,
@@ -608,7 +614,12 @@ async fn placeholder(
         Some("ping") => combined::result(id, json!({})),
         Some("tools/list") => {
             let target = (ctx.slug, ctx.server_id);
-            combined::list_one(ctx.state, &ctx.caller, message, target, reached).await
+            let listed = combined::list_one(ctx.state, &ctx.caller, message, target, reached).await;
+            match combined::recheck(ctx.state, &ctx.caller, ctx.slug, ctx.server_id).await {
+                Recheck::Live => listed,
+                Recheck::Lost => access_lost(ctx, None, id).await,
+                Recheck::Failed => check_failed(ctx, None).await,
+            }
         }
         Some("tools/call") => {
             let target = (ctx.slug, ctx.server_id);

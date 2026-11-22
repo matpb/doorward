@@ -465,18 +465,23 @@ M. Added for custom headers and per-user credentials
 90. When a required header has no value for a caller, stored or passed through, when the
     caller's connection cannot open the user's key, or when a stored value cannot be
     opened, nothing is sent to that server for that caller and the gateway answers for the
-    server itself, on the server's path and on the combined endpoint alike: the connection
-    opens, the tool list is the gateway's stored list for that server under the caller's
-    rules, and every tool call returns a tool error that names the server and what to do:
-    the account page's address when values can be stored there, else the header's name;
-    `Reconnect this app` for a connection made before the user had a key; store the
-    credentials again for a value that cannot be opened. No request of that caller gets an
-    HTTP 401 or 403 for this reason, so a client does not mistake it for a failed sign-in.
-    Each refused call is in the activity log with the reason. Once the values are there,
-    the same connection keeps working without a new sign-in or a restart of the client:
-    the gateway relays its tool calls to the server itself, under the caller's rules. The
-    account page marks each server that still needs values, and the consent page names
-    them. Proven with Claude Code and Codex connecting before the value is stored.
+    server itself, on the server's path and on the combined endpoint: the client connects,
+    the tool list is the gateway's stored list for that server under the caller's rules
+    (empty until the server's tools were refreshed once), and a call to a tool on that list
+    returns a tool error that names the server and what to do: the account page's address
+    when values can be stored there, else the header's name; `Reconnect this app` for a
+    connection that holds no copy of the user's key; store the credentials again for a
+    value that cannot be opened. No request of that caller gets an HTTP 401 or 403 for this
+    reason, so a client does not mistake it for a failed sign-in. Each refused call is in
+    the activity log with the reason. On the server's path such a caller is steered to a
+    session: the probe of the stateless protocol is answered Method not found, and the
+    session the client then opens is kept by the gateway. Once the values are there, that
+    session keeps working without a new sign-in or a restart of the client: the gateway
+    relays its tool lists and tool calls to the server itself, under the caller's rules,
+    and serves nothing else on it. A connection that cannot open the user's key has to be
+    reconnected. The account page marks each server that still needs values, and the
+    consent page says so. Proven with Claude Code and Codex connecting before the value is
+    stored.
 
 ### Proof
 

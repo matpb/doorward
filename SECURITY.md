@@ -120,7 +120,7 @@ Not covered:
 
 Sharing limits. On the combined endpoint a header a client passes goes to every server that
 declares that name and passes headers through. One cached tool list for each server is shared
-by its users, so a server whose list depends on the caller's credentials shows the list of
+by its users and shown to people who have not stored a credential yet, so a server whose list depends on the caller's credentials shows the list of
 whoever fetched it last. Turning "store credentials" off for a server keeps what people
 stored until they delete it on their account page or the server changes.
 

@@ -580,7 +580,9 @@ fn done_notice(
                     @for (name, unstored, total) in &lines {
                         p.attention {
                             code { (ui::breakable(name)) }
-                            " is now required. " (unstored) " of " (total) " users have not stored it."
+                            " is now required. "
+                            span.nowrap { (unstored) " of " (total) " users" }
+                            " have not stored it."
                         }
                     }
                 },

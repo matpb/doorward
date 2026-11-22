@@ -6,7 +6,7 @@ use common::headers::{
     add_server_named, declare_header, header_id, session_call, set_switches, stateless_call,
 };
 use common::mcp::{McpClient, McpReply};
-use common::upstream::{FakeUpstream, UpstreamOptions};
+use common::upstream::{FakeUpstream, Generation, Mode, UpstreamOptions};
 use common::values::{CANARY, live_db, store_value};
 use common::world::{SECRET_HEADER, World, secret_for};
 use serde_json::json;
@@ -555,4 +555,329 @@ async fn a_client_that_probes_discover_first_is_steered_to_a_session_that_surviv
     let reply = client.call_tool("echo", json!({})).await;
     assert_eq!(reply.text().as_deref(), Some("called: echo"));
     assert_eq!(carried(&upstream, "echo"), vec![Some(CANARY.to_string())]);
+}
+
+const CAROL: &str = "carol@example.com";
+
+/// The (email, slug, tool, decision, outcome, detail) of every tool_call row, oldest first.
+fn full_rows(w: &World) -> Vec<(String, String, String, String, String, String)> {
+    let live = live_db(w);
+    let mut statement = live
+        .prepare(
+            "SELECT user_email, server_slug, tool, decision, outcome, detail FROM activity \
+             WHERE kind = 'tool_call' ORDER BY id",
+        )
+        .expect("prepares");
+    statement
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })
+        .expect("runs")
+        .map(|row| row.expect("row"))
+        .collect()
+}
+
+async fn wait_for_rows(
+    w: &World,
+    count: usize,
+) -> Vec<(String, String, String, String, String, String)> {
+    for _ in 0..40 {
+        let rows = full_rows(w);
+        if rows.len() >= count {
+            return rows;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    full_rows(w)
+}
+
+/// Bob on a server with the given options, the required header declared, store switch on, nothing stored.
+async fn bob_on(w: &World, options: UpstreamOptions) -> (FakeUpstream, String, String, TestClient) {
+    let (upstream, id) = w.upstream(SLUG, options).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[&id]).await;
+    declare_ok(&w.owner, &id, true).await;
+    switches_ok(&w.owner, &id, false, true).await;
+    let hid = header_id(&w.owner, &id, HEADER).await.expect("header id");
+    upstream.clear();
+    (upstream, id, hid, bob)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_only_upstream_is_steered_from_discover_to_a_session_that_survives_the_store() {
+    let w = World::start().await;
+    let options = UpstreamOptions {
+        generation: Generation::Session,
+        ..UpstreamOptions::default()
+    };
+    let (upstream, _id, hid, bob) = bob_on(&w, options).await;
+    let tokens = w.token(&bob, SLUG).await;
+    let probe = w.stateless_mcp(SLUG, &tokens);
+    let discovered = probe.discover().await;
+    assert_eq!(
+        (discovered.status, discovered.error_code()),
+        (200, Some(-32601))
+    );
+    let client = w.session_mcp(SLUG, &tokens);
+    let init = client.initialize().await;
+    assert!(
+        init.header("mcp-session-id")
+            .unwrap_or_default()
+            .starts_with("dw-wait-")
+    );
+    assert!(is_tool_error(&client.call_tool("echo", json!({})).await));
+    assert!(upstream.requests().is_empty());
+    assert_eq!(store_value(&bob, SLUG, &hid, CANARY).await.status, 303);
+    let reply = client.call_tool("echo", json!({})).await;
+    assert_eq!(reply.text().as_deref(), Some("called: echo"));
+    assert_eq!(carried(&upstream, "echo"), vec![Some(CANARY.to_string())]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_streamed_call_on_a_placeholder_session_completes_and_loses_access_cleanly() {
+    let w = World::start().await;
+    let mode = Mode::Progress {
+        steps: 2,
+        interval_ms: 20,
+    };
+    let (_upstream, _id, hid, bob) = bob_on(
+        &w,
+        UpstreamOptions {
+            mode,
+            ..UpstreamOptions::default()
+        },
+    )
+    .await;
+    let client = open(&w, &bob, SLUG).await;
+    assert_eq!(store_value(&bob, SLUG, &hid, CANARY).await.status, 303);
+    let accept = [("Accept", "application/json, text/event-stream")];
+    let reply = session_call(&client, "echo", &accept).await;
+    assert_eq!(reply.status, 200);
+    assert!(!reply.events.is_empty(), "the call is streamed");
+    let rows = wait_for_rows(&w, 1).await;
+    let last = rows.last().expect("a row");
+    assert_eq!(
+        (last.3.as_str(), last.4.as_str()),
+        ("allow", "ok"),
+        "{last:?}"
+    );
+
+    let mode = Mode::Progress {
+        steps: 30,
+        interval_ms: 100,
+    };
+    _upstream.set_mode(mode);
+    let user = w.user_id(BOB).await;
+    let call = session_call(&client, "echo", &accept);
+    let unassign = async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        admin::assign(&w.owner, &user, &[]).await
+    };
+    let (_reply, page) = tokio::join!(call, unassign);
+    assert_eq!(page.status, 303);
+    let rows = wait_for_rows(&w, 2).await;
+    let last = rows.last().expect("a row");
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(
+        (last.3.as_str(), last.4.as_str()),
+        ("allow", "refused"),
+        "{last:?}"
+    );
+    assert!(last.5.contains("access was lost"), "{last:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_users_sending_the_same_placeholder_id_each_get_their_own_value_and_row() {
+    let w = World::start().await;
+    let (upstream, id, hid, bob) = bob_without_a_value(&w).await;
+    let carol = w.user(CAROL).await;
+    w.grant(CAROL, &[&id]).await;
+    let waiting = open(&w, &bob, SLUG).await;
+    let shared = waiting.session_id().expect("the placeholder id");
+    assert_eq!(store_value(&bob, SLUG, &hid, CANARY).await.status, 303);
+    assert_eq!(
+        store_value(&carol, SLUG, &hid, "carol-value").await.status,
+        303
+    );
+    let carols = w.session_mcp(SLUG, &w.token(&carol, SLUG).await);
+    carols.set_session_id(Some(&shared));
+    upstream.clear();
+    assert_eq!(
+        waiting.call_tool("echo", json!({})).await.text().as_deref(),
+        Some("called: echo")
+    );
+    assert_eq!(
+        carols.call_tool("echo", json!({})).await.text().as_deref(),
+        Some("called: echo")
+    );
+    assert_eq!(
+        carried(&upstream, "echo"),
+        vec![Some(CANARY.to_string()), Some("carol-value".to_string())]
+    );
+    let rows = wait_for_rows(&w, 2).await;
+    let emails: Vec<_> = rows
+        .iter()
+        .map(|r| (r.0.as_str(), r.1.as_str(), r.2.as_str()))
+        .collect();
+    assert_eq!(
+        emails,
+        vec![(BOB, SLUG, "echo"), (CAROL, SLUG, "echo")],
+        "{rows:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_for_another_server_with_a_placeholder_id_is_a_401() {
+    let w = World::start().await;
+    let (_upstream, id, hid, bob) = bob_without_a_value(&w).await;
+    let (_other, other_id) = w.upstream("other", UpstreamOptions::default()).await;
+    w.grant(BOB, &[&id, &other_id]).await;
+    assert_eq!(store_value(&bob, SLUG, &hid, CANARY).await.status, 303);
+    let tokens = w.token(&bob, SLUG).await;
+    let wrong = w.session_mcp("other", &tokens);
+    wrong.set_session_id(Some(WAIT_ID));
+    assert_eq!(session_call(&wrong, "echo", &[]).await.status, 401);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_invented_placeholder_id_from_a_caller_who_resolves_is_served_and_records_no_session() {
+    let w = World::start().await;
+    let (upstream, _id, hid, bob) = bob_without_a_value(&w).await;
+    assert_eq!(store_value(&bob, SLUG, &hid, CANARY).await.status, 303);
+    let client = w.session_mcp(SLUG, &w.token(&bob, SLUG).await);
+    client.set_session_id(Some(WAIT_ID));
+    let reply = client.call_tool("echo", json!({})).await;
+    assert_eq!(reply.text().as_deref(), Some("called: echo"));
+    let live = live_db(&w);
+    let count: i64 = live
+        .query_row("SELECT COUNT(*) FROM upstream_sessions", [], |r| r.get(0))
+        .expect("counts");
+    assert_eq!(count, 0);
+    for request in upstream.requests() {
+        assert!(
+            !request
+                .header_all("mcp-session-id")
+                .iter()
+                .any(|v| v.starts_with("dw-wait-")),
+            "no upstream request carries a placeholder id"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_withheld_caller_with_an_unrecorded_plain_id_gets_the_gateway_made_answer() {
+    let w = World::start().await;
+    let (upstream, _id, _hid, bob) = bob_without_a_value(&w).await;
+    let client = w.session_mcp(SLUG, &w.token(&bob, SLUG).await);
+    client.set_session_id(Some("some-unrecorded-session"));
+    let reply = client.call_tool("echo", json!({})).await;
+    assert!(is_tool_error(&reply), "got {:?}", reply.body);
+    assert!(
+        reply
+            .text()
+            .unwrap_or_default()
+            .contains("needs your credentials")
+    );
+    assert!(upstream.requests().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_upstream_request_carries_a_placeholder_session_id() {
+    let w = World::start().await;
+    let (upstream, _id, hid, bob) = bob_without_a_value(&w).await;
+    let client = open(&w, &bob, SLUG).await;
+    client.list_tools().await;
+    client.call_tool("echo", json!({})).await;
+    assert_eq!(store_value(&bob, SLUG, &hid, CANARY).await.status, 303);
+    client.list_tools().await;
+    client.call_tool("echo", json!({})).await;
+    client.notify("notifications/initialized", json!({})).await;
+    assert!(!upstream.requests().is_empty());
+    for request in upstream.requests() {
+        assert!(
+            !request
+                .header_all("mcp-session-id")
+                .iter()
+                .any(|v| v.starts_with("dw-wait-"))
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_withheld_tool_list_with_an_empty_stored_catalog_answers_no_tools() {
+    let w = World::start().await;
+    let (_upstream, _id, _hid, bob) = bob_without_a_value(&w).await;
+    live_db(&w)
+        .execute("DELETE FROM tool_catalog", [])
+        .expect("empties");
+    let client = open(&w, &bob, SLUG).await;
+    let listed = client.list_tools().await;
+    assert_eq!(listed.status, 200);
+    assert_eq!(
+        listed.result().and_then(|r| r.get("tools")),
+        Some(&json!([]))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_placeholder_list_with_the_upstream_down_names_the_server() {
+    let w = World::start().await;
+    let (mut upstream, _id, hid, bob) = bob_without_a_value(&w).await;
+    let client = open(&w, &bob, SLUG).await;
+    assert_eq!(store_value(&bob, SLUG, &hid, CANARY).await.status, 303);
+    upstream.shutdown().await;
+    let listed = client.list_tools().await;
+    assert_eq!(listed.status, 502);
+    assert!(
+        listed.error_message().unwrap_or_default().contains(SLUG),
+        "got {:?}",
+        listed.body
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_placeholder_list_is_rechecked_after_the_fetch() {
+    let w = World::start().await;
+    let (upstream, _id, hid, bob) = bob_without_a_value(&w).await;
+    let client = open(&w, &bob, SLUG).await;
+    assert_eq!(store_value(&bob, SLUG, &hid, CANARY).await.status, 303);
+    upstream.set_mode(Mode::SlowListing { millis: 600 });
+    let user = w.user_id(BOB).await;
+    let list = client.list_tools();
+    let unassign = async {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        admin::assign(&w.owner, &user, &[]).await
+    };
+    let (listed, page) = tokio::join!(list, unassign);
+    assert_eq!(page.status, 303);
+    assert!(listed.tool_names().is_empty(), "got {:?}", listed.body);
+    assert_ne!(listed.status, 200, "got {:?}", listed.body);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_call_on_a_placeholder_session_is_answered_as_on_a_recorded_session() {
+    let w = World::start().await;
+    let (upstream, _id, hid, bob) = bob_without_a_value(&w).await;
+    let waiting = open(&w, &bob, SLUG).await;
+    assert_eq!(store_value(&bob, SLUG, &hid, CANARY).await.status, 303);
+    let recorded = open(&w, &bob, SLUG).await;
+    let body = json!({"name": "echo", "arguments": {}, "task": {"ttl": 1000}});
+    let on_recorded = recorded.request("tools/call", body.clone()).await;
+    let on_placeholder = waiting.request("tools/call", body).await;
+    assert_eq!(
+        on_recorded.error_code(),
+        Some(-32601),
+        "got {:?}",
+        on_recorded.body
+    );
+    assert_eq!(on_placeholder.status, on_recorded.status);
+    assert_eq!(on_placeholder.error_code(), on_recorded.error_code());
+    assert_eq!(upstream.calls_to("echo"), 0);
 }

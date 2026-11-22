@@ -175,17 +175,27 @@ Each person assigned to such a server opens Your account and finds Your credenti
 one field for each header. Type the value and press Save credentials. An empty field keeps the
 value already stored. To delete one, tick Remove the stored credential. The field never shows
 a stored value again. The page shows only the date it was set. Values are saved encrypted.
+Changing or removing a stored credential ends that person's open sessions with the server; a
+client that does not reconnect by itself has to be reconnected.
 
 If a required header has no value for a person, nothing is sent to that server for that
 person. The gateway answers for the server itself, never with HTTP 401 or 403, so a client does
-not mistake it for a failed sign-in. The connection opens, the tool list is the gateway's stored
-list for that server under the person's rules, and every tool call returns a tool error that
-names the server and the account page, so the person knows where to add the value. Where storing
-is switched off, the error names the header instead. This holds on the server's path and on the
-combined endpoint `/mcp`, and the other servers keep working. Once the value is stored, the
-same session keeps working: the gateway serves the placeholder session itself until the client
-opens a new one. The account page
-marks each server that still needs values.
+not mistake it for a failed sign-in. The client connects, the tool list is the gateway's stored
+list for that server under the person's rules, and a call to a tool on that list returns a tool
+error that names the server and the account page, so the person knows where to add the value.
+Where storing is switched off, the error names the header instead. This holds on the server's
+path and on the combined endpoint `/mcp`, and the other servers keep working. Once the value is
+stored, the same connection keeps working without a new sign-in. On the server's path the
+gateway keeps serving that connection itself, tool lists and tool calls only, until the client
+reconnects. A connection that holds no copy of the person's key, such as one made before the
+person had stored anything at all, may be asked to reconnect instead; the error says so. The
+account page marks each server that still needs values.
+
+The stored list is what the server answered the last time its tools were refreshed. A server
+that answers its tool list only with credentials has an empty list until someone whose
+credentials work refreshes it: store your own credentials on Your account, then press Refresh
+tools on the server's page, before you invite people. Until then a person who connects sees no
+tools.
 
 The gateway deletes stored credentials when:
 
@@ -207,8 +217,9 @@ Two limits of sharing a server between people:
 
 - On the combined endpoint `/mcp`, a header a client passes goes to every server that declares
   that name and passes headers through, not only to the one being called.
-- The gateway keeps one cached tool list for each server, shared by all its users. A server
-  whose list depends on the caller's credentials shows the list of whoever fetched it last.
+- The gateway keeps one cached tool list for each server, shared by all its users, and shown
+  to people who have not stored a credential yet. A server whose list depends on the caller's
+  credentials shows the list of whoever fetched it last.
 
 ### What the encryption covers
 
@@ -308,7 +319,7 @@ there. Claude Code, Codex and the Cursor command line client were run against 0.
   well. Per-user permissions exist only in the gateway. Anything the server caches or stores
   per caller is shared.
 - A server's cached tool list is shared by its users, even when each of them sends different
-  credentials.
+  credentials, and it is shown to people who have not stored a credential yet.
 - Allow and deny rules cover tools only. A server's resources and prompts are switched on or
   off per server. When a switch is on, they pass for every user assigned to that server.
 - The combined endpoint `/mcp` puts the tool descriptions of every assigned server in one list.

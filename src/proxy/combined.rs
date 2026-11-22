@@ -56,7 +56,7 @@ const LABEL: &str = "mcp";
 /// The row detail of a call whose stateless request headers do not match the stored definition.
 const HEADER_MISMATCH: &str = "the request headers do not match the call";
 const TTL_MS: i64 = 60_000;
-const ALL: Switches = Switches {
+pub(super) const ALL: Switches = Switches {
     resources: true,
     prompts: true,
 };
@@ -532,7 +532,7 @@ async fn run_call(
                     owed.settle("refused", ACCESS_LOST).await;
                     return answer::unknown_tool(id, name);
                 }
-                Recheck::Failed => return check_failed(owed).await,
+                Recheck::Failed => return check_failed(owed, only.unwrap_or(LABEL)).await,
             }
             owed.settle(outcome, detail).await;
             let status = if client_stateless {
@@ -570,7 +570,7 @@ async fn run_call(
             owed.settle("refused", ACCESS_LOST).await;
             return answer::unknown_tool(id, name);
         }
-        Recheck::Failed => return check_failed(owed).await,
+        Recheck::Failed => return check_failed(owed, only.unwrap_or(LABEL)).await,
     }
     owed.settle(outcome, detail).await;
     hold(respond(StatusCode::OK, &reply), held)
@@ -793,9 +793,9 @@ async fn unavailable(owed: Owed, slug: &str, cause: Cause) -> Response {
 }
 
 /// The answer when the access check could not be made: the call is recorded unavailable.
-async fn check_failed(owed: Owed) -> Response {
+async fn check_failed(owed: Owed, label: &str) -> Response {
     owed.settle("unavailable", CHECK_FAILED).await;
-    answer::unavailable(LABEL)
+    answer::unavailable(label)
 }
 
 /// True when the server's headers did not resolve for the caller and it has a name to answer under.
@@ -981,7 +981,7 @@ async fn list_with(
     let limit = time_limit(state).min(LIST_LIMIT);
     let turn = match timeout(limit, enter(&state.turns, caller.user_id)).await {
         Ok(turn) => turn,
-        Err(_) => return answer::unavailable(LABEL),
+        Err(_) => return answer::unavailable(only.map_or(LABEL, |(slug, _)| slug)),
     };
     let deadline = Instant::now() + limit;
     let built = collect(state, caller, deadline, resolved, only.map(|(_, id)| id)).await;
@@ -1035,6 +1035,9 @@ async fn collect(
     if assigned.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
+    let label = only
+        .and(assigned.first())
+        .map_or(LABEL, |server| server.slug.as_str());
     let owner = Owner {
         user_id: caller.user_id,
         family_id: caller.family_id,
@@ -1101,7 +1104,7 @@ async fn collect(
             return Err(if only_budget {
                 answer::busy()
             } else {
-                answer::unavailable(LABEL)
+                answer::unavailable(label)
             });
         }
         if withheld.is_empty() {
