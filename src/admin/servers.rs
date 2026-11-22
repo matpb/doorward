@@ -89,14 +89,21 @@ struct HeaderForm {
     refusal: Option<AddRefusal>,
 }
 
+/// Where a step's notice shows: under the page title, or first in the part it reports on.
+#[derive(Clone, Copy)]
+enum Place {
+    Title,
+    Headers,
+}
+
 /// What a server page shows besides the server: the settings draft, its refusal, the header form,
-/// and the notice of a step the redirect says was done.
+/// and the notice of a step the redirect says was done, with the place it shows.
 struct Shown<'a> {
     draft: &'a Draft,
     refusal: Option<Refusal>,
     secret_sent: bool,
     header: HeaderForm,
-    done: Option<Markup>,
+    done: Option<(Place, Markup)>,
 }
 
 impl<'a> Shown<'a> {
@@ -526,51 +533,71 @@ fn done_of(raw: Option<&str>) -> Option<Done> {
     }
 }
 
-/// The notice of a step, from the server's own rows. A step whose header is gone shows no notice,
-/// except a removal, which names the header it was given.
-fn done_notice(conn: &Connection, server: i64, done: &Done) -> rusqlite::Result<Option<Markup>> {
+/// The notice of a step, from the server's own rows, and the place it shows. A step whose header is gone
+/// shows no notice, except a removal, which names the header it was given.
+fn done_notice(
+    conn: &Connection,
+    server: i64,
+    done: &Done,
+) -> rusqlite::Result<Option<(Place, Markup)>> {
     let declared = custom_headers::load(conn, server)?.declared;
     Ok(match done {
         Done::HeaderAdded(id) => declared
             .iter()
             .find(|header| header.id == *id)
-            .map(|header| ui::notice("ok", html! { p { (header.name) " added." } })),
-        Done::HeaderRemoved(name) => Some(ui::notice("ok", html! { p { (name) " removed." } })),
-        Done::RefreshedWithoutValues => Some(ui::notice(
-            "warning",
-            html! { p { (REFRESHED_WITHOUT_VALUES) } },
+            .map(|header| {
+                let notice = ui::notice(
+                    "ok",
+                    html! { p { code { (ui::breakable(&header.name)) } " added." } },
+                );
+                (Place::Headers, notice)
+            }),
+        Done::HeaderRemoved(name) => {
+            let notice = ui::notice(
+                "ok",
+                html! { p { code { (ui::breakable(name)) } " removed." } },
+            );
+            Some((Place::Headers, notice))
+        }
+        Done::RefreshedWithoutValues => Some((
+            Place::Title,
+            ui::notice("warning", html! { p { (REFRESHED_WITHOUT_VALUES) } }),
         )),
         Done::HeadersSaved(ids) => {
             let assigned = assigned_count(conn, server)?;
             let stored = stored_counts(conn, server)?;
-            let mut sentences = Vec::new();
+            let mut lines = Vec::new();
             for header in declared.iter().filter(|header| ids.contains(&header.id)) {
                 if header.required {
                     let unstored = assigned.saturating_sub(stored_for(&stored, header.id));
-                    sentences.push((header.name.clone(), unstored, assigned));
+                    lines.push((header.name.clone(), unstored, assigned));
                 }
             }
-            Some(ui::notice(
+            let notice = ui::notice(
                 "ok",
                 html! {
-                    p {
-                        "Headers saved."
-                        @for (name, unstored, total) in &sentences {
-                            " " (name) " is now required. " (unstored) " of " (total) " users have not stored it."
+                    p { "Headers saved." }
+                    @for (name, unstored, total) in &lines {
+                        p {
+                            span.state data-pill data-tone="warn" {
+                                code { (ui::breakable(name)) }
+                                " is now required. " (unstored) " of " (total) " users have not stored it."
+                            }
                         }
                     }
                 },
-            ))
+            );
+            Some((Place::Headers, notice))
         }
     })
 }
 
-/// The notice a server page's query names, or None.
+/// The notice a server page's query names, with the place it shows, or None.
 async fn done_for(
     state: &AppState,
     server: i64,
     raw: Option<&str>,
-) -> Result<Option<Markup>, DbError> {
+) -> Result<Option<(Place, Markup)>, DbError> {
     let Some(done) = done_of(raw) else {
         return Ok(None);
     };
@@ -1275,17 +1302,17 @@ fn list_in(conn: &Connection) -> rusqlite::Result<Vec<ServerRow>> {
     rows.collect()
 }
 
-/// The text a refused header name shows under its field, with the name as it was typed.
-fn header_refusal_text(refusal: AddRefusal, name: &str) -> String {
+/// The reason a header name was refused, with the name as it was typed set in code.
+fn header_refusal(refusal: AddRefusal, name: &str) -> Markup {
     match refusal {
         AddRefusal::Invalid | AddRefusal::SecretName if name.is_empty() => {
-            "This header name cannot be used. Choose another name.".to_owned()
+            html! { "This header name cannot be used. Choose another name." }
         }
-        AddRefusal::Invalid | AddRefusal::SecretName => {
-            format!("{name} cannot be used as a custom header. Choose another name.")
-        }
-        AddRefusal::Duplicate => "This server already declares that header.".to_owned(),
-        AddRefusal::Full => "A server takes at most 8 custom headers.".to_owned(),
+        AddRefusal::Invalid | AddRefusal::SecretName => html! {
+            code { (ui::breakable(name)) } " cannot be used as a custom header. Choose another name."
+        },
+        AddRefusal::Duplicate => html! { "This server already declares that header." },
+        AddRefusal::Full => html! { "A server takes at most 8 custom headers." },
     }
 }
 
@@ -1295,17 +1322,26 @@ fn headers_section(
     server: &Server,
     (headers, stored, assigned): (&ServerHeaders, &[(i64, i64)], usize),
     header: &HeaderForm,
+    done: Option<&Markup>,
 ) -> Markup {
     let path = format!("/admin/servers/{}", server.id);
     let error = header
         .refusal
-        .map(|refusal| header_refusal_text(refusal, &header.name));
-    let name_note = ui::note_under(
-        error.as_deref(),
-        Some("For example X-Api-Key. Up to 8 per server."),
-    );
+        .map(|refusal| header_refusal(refusal, &header.name));
+    let name_note = match &error {
+        Some(message) => ui::Note::Below(
+            "header-name-error",
+            html! { p.field-error id="header-name-error" { (message) } },
+        ),
+        None => ui::Note::Hint("For example X-Api-Key. Up to 8 per server."),
+    };
     let name_described = name_note.describer("header-name");
     let count = headers.declared.len();
+    let required: Vec<&Declared> = headers
+        .declared
+        .iter()
+        .filter(|declared| declared.required)
+        .collect();
     html! {
         section.part aria-labelledby="headers-title" {
             div.part-head {
@@ -1313,6 +1349,9 @@ fn headers_section(
                 p { "Headers this server needs from each person, such as an API token." }
             }
             div.part-body.flow {
+                @if let Some(done) = done {
+                    (done)
+                }
                 @if headers.declared.is_empty() {
                     p.muted.narrow { "No custom headers. The gateway sends nothing from a client to this server except the MCP protocol headers." }
                 } @else {
@@ -1343,7 +1382,7 @@ fn headers_section(
                         p.muted { "Required: without a value, nothing is sent to this server for that person." }
                         fieldset.flow {
                             legend { "Where the credentials come from" }
-                            div.checks {
+                            div.checks data-switches {
                                 (ui::check(
                                     "pass-headers",
                                     "pass_headers",
@@ -1360,6 +1399,18 @@ fn headers_section(
                                     "Let each person store their own credentials",
                                     Some("Each person saves their credentials on their account page. They are encrypted so that the database and its key cannot open them without that person's password or connected app."),
                                 ))
+                            }
+                        }
+                        @if let Some(first) = required.first().filter(|_| !headers.pass && !headers.store) {
+                            p data-no-source {
+                                span.state data-pill data-tone="warn" {
+                                    "No source is on. "
+                                    @if required.len() == 1 {
+                                        code { (ui::breakable(&first.name)) } " is required, so nothing is sent to this server."
+                                    } @else {
+                                        (required.len()) " headers are required, so nothing is sent to this server."
+                                    }
+                                }
                             }
                         }
                         div.form-actions {
@@ -1379,7 +1430,7 @@ fn headers_section(
                                     false,
                                     html! {
                                         input.mono id="header-name" name="name" type="text" value=(header.name)
-                                            aria-invalid=[ui::invalid(error.as_deref())] aria-describedby=[name_described.as_deref()];
+                                            aria-invalid=[error.as_ref().map(|_| "true")] aria-describedby=[name_described.as_deref()];
                                     },
                                     name_note,
                                 ))
@@ -1400,7 +1451,7 @@ fn headers_section(
                         }
                     }
                 } @else {
-                    p.muted.narrow data-headers-full { "This server has its " (MAX_PER_SERVER) " headers. Remove one to add another." }
+                    p.muted.narrow data-headers-full { "This server has " (count) " of " (MAX_PER_SERVER) " headers. Remove one to add another." }
                 }
             }
         }
@@ -1414,6 +1465,11 @@ fn header_row(
     (store, stored, assigned): (bool, i64, usize),
 ) -> Markup {
     let required = if declared.required { "yes" } else { "no" };
+    let word = if declared.required {
+        "Required"
+    } else {
+        "Optional"
+    };
     let box_id = format!("required-{}", declared.id);
     let box_label = format!("Required, {}", declared.name);
     html! {
@@ -1423,7 +1479,7 @@ fn header_row(
                 div.check {
                     input type="checkbox" id=(box_id) name=(format!("required_{}", declared.id)) value="1"
                         checked[declared.required] aria-label=(box_label);
-                    label for=(box_id) { "Required" }
+                    label for=(box_id) { (word) }
                 }
             }
             td.half data-stored-by {
@@ -1431,7 +1487,7 @@ fn header_row(
                     span.unit { "Stored by " }
                     span.nowrap { (stored) " of " (assigned) " " (if assigned == 1 { "user" } else { "users" }) }
                 } @else {
-                    "Not stored"
+                    "Storing is off"
                 }
             }
             td.act {
@@ -1581,6 +1637,10 @@ fn server_body(
     let note = lockdown_note(effective_lockdown(server));
     let assigned = users.iter().filter(|user| user.assigned).count();
     let (draft, refusal, secret_sent) = (shown.draft, shown.refusal, shown.secret_sent);
+    let headers_done = shown.done.as_ref().and_then(|(place, markup)| match place {
+        Place::Headers => Some(markup),
+        Place::Title => None,
+    });
     html! {
         div.page-head {
             p.crumb { a href="/admin/servers" { "Servers" } }
@@ -1596,10 +1656,14 @@ fn server_body(
         @if let Some(refusal) = refusal {
             (ui::refused(Some("The server was not saved."), refusal.to_string().as_str(), refused_field(refusal)))
         }
-        @if shown.header.refusal.is_some() {
-            (ui::refused(Some("The header was not added."), None::<&str>, Some(("header-name", "header name"))))
+        @if let Some(refusal) = shown.header.refusal {
+            (ui::refused_markup(
+                Some("The header was not added."),
+                Some(header_refusal(refusal, &shown.header.name)),
+                Some(("header-name", "header name")),
+            ))
         }
-        @if let Some(done) = &shown.done {
+        @if let Some((Place::Title, done)) = &shown.done {
             (done)
         }
         @if server.lockdown == "open" {
@@ -1626,7 +1690,7 @@ fn server_body(
                 }
             }
         }
-        (headers_section(csrf, server, (headers, stored, assigned), &shown.header))
+        (headers_section(csrf, server, (headers, stored, assigned), &shown.header, headers_done))
         section.part aria-labelledby="tools-title" {
             div.part-head {
                 h2 id="tools-title" { "Tools " span.count { (tools.len()) } }

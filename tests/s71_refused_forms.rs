@@ -862,8 +862,15 @@ async fn a_refused_header_form_sends_back_its_name_and_its_required_box() {
     assert_eq!(
         page.text(r#"div.notice[data-notice="error"] > p"#)
             .as_deref(),
-        Some("The header was not added. Go to the header name field"),
-        "the notice names the outcome and links to the field"
+        Some(
+            "The header was not added. Cookie cannot be used as a custom header. Choose another name. Go to the header name field"
+        ),
+        "the notice names the outcome, then the reason, then links to the field"
+    );
+    assert_eq!(
+        page.count(r#"div.notice[data-notice="error"] > p > code"#),
+        1,
+        "the header name in the notice is set in code"
     );
     assert_eq!(
         value(&page, "input#header-name").as_deref(),

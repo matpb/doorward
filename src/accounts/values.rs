@@ -50,9 +50,15 @@ pub struct ServerView {
 impl ServerView {
     /// True while a required header has no stored value.
     pub fn needs_values(&self) -> bool {
+        self.missing() > 0
+    }
+
+    /// How many required headers have no stored value.
+    pub fn missing(&self) -> usize {
         self.headers
             .iter()
-            .any(|header| header.required && header.set_at.is_none())
+            .filter(|header| header.required && header.set_at.is_none())
+            .count()
     }
 }
 
@@ -63,7 +69,7 @@ pub struct Refusal {
 }
 
 /// The account page's credentials part: the servers, whether the session can open the key, a refusal,
-/// and the name of the server whose credentials were just saved.
+/// and the slug of the server whose credentials were just saved.
 #[derive(Default)]
 pub struct Part {
     pub servers: Vec<ServerView>,
@@ -196,9 +202,9 @@ pub fn part_in(
     })
 }
 
-/// The name of the server a query names as saved, when the part holds that server. The query's slug is
+/// The slug of the server a query names as saved, when the part holds that server. The query's slug is
 /// only compared, never shown.
-pub fn saved_name(part: &Part, raw: Option<&str>) -> Option<String> {
+pub fn saved_slug(part: &Part, raw: Option<&str>) -> Option<String> {
     let slug = form_urlencoded::parse(raw.unwrap_or("").as_bytes())
         .find(|(key, _)| key == "server")
         .map(|(_, value)| value.into_owned())?;
@@ -210,7 +216,7 @@ pub fn saved_name(part: &Part, raw: Option<&str>) -> Option<String> {
     part.servers
         .iter()
         .find(|server| server.slug == slug)
-        .map(|server| server.name.clone())
+        .map(|server| server.slug.clone())
 }
 
 /// True when the session cookie `session` carries a wrap that opens.

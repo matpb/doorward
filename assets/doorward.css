@@ -813,12 +813,6 @@ h3 > .state {
   font: 400 14px/20px var(--sans);
 }
 
-/* Without the key the blocks are a list of names, each with its state on the line under it,
-   so every mark stands on the list's edge: read, not filled in. */
-[data-values-locked] .block-name {
-  display: block;
-}
-
 [data-values-locked] > section + section {
   margin-block-start: var(--s3);
 }
@@ -1041,6 +1035,11 @@ select {
 .check > .hint {
   grid-column: 2;
   margin-block-start: 0;
+}
+
+/* The hint of each switch keeps a reading measure under its label. */
+[data-switches] > .check > .hint {
+  max-inline-size: 60ch;
 }
 
 .checks {

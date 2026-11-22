@@ -106,7 +106,15 @@ pub fn refused<'a>(
     message: impl Into<Option<&'a str>>,
     field: Option<(&str, &str)>,
 ) -> Markup {
-    let message = message.into();
+    refused_markup(lead, message.into().map(|text| html! { (text) }), field)
+}
+
+/// `refused` with its refusal as markup, so a header name in the reason can be set in code.
+pub fn refused_markup(
+    lead: Option<&str>,
+    message: Option<Markup>,
+    field: Option<(&str, &str)>,
+) -> Markup {
     html! {
         div.notice data-notice="error" role="alert" {
             p {
@@ -396,6 +404,19 @@ mod tests {
         assert_eq!(
             refused(None, "Choose only servers that exist.", None).into_string(),
             r#"<div class="notice" data-notice="error" role="alert"><p>Choose only servers that exist.</p></div>"#
+        );
+    }
+
+    #[test]
+    fn a_refusal_whose_reason_is_markup_keeps_the_markup_before_its_link() {
+        assert_eq!(
+            refused_markup(
+                Some("The header was not added."),
+                Some(html! { code { "X-Trace-Id" } " cannot be used." }),
+                Some(("header-name", "header name"))
+            )
+            .into_string(),
+            r##"<div class="notice" data-notice="error" role="alert"><p><strong>The header was not added.</strong> <code>X-Trace-Id</code> cannot be used. <a href="#header-name">Go to the header name field</a></p></div>"##
         );
     }
 

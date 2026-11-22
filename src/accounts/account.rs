@@ -24,7 +24,7 @@ pub async fn get_account(
     };
     match values::part_for(&state, &viewer).await {
         Ok(mut part) => {
-            part.saved = values::saved_name(&part, raw.as_deref());
+            part.saved = values::saved_slug(&part, raw.as_deref());
             account_page_with(&viewer, StatusCode::OK, None, &clients, &part)
         }
         Err(err) => internal_error("stored values", &err),
@@ -84,9 +84,6 @@ fn account_body_with(
                     button type="submit" data-kind="secondary" { "Sign out" }
                 }
             }
-        }
-        @if let Some(name) = &part.saved {
-            (ui::notice("ok", html! { p { "Credentials saved for " (name) "." } }))
         }
         section.block aria-labelledby="clients-title" {
             div.block-head {
@@ -161,7 +158,7 @@ fn account_body_with(
                         ))
                     }
                     div.form-actions {
-                        button type="submit" data-kind="primary" { "Change password" }
+                        button type="submit" data-kind="secondary" { "Change password" }
                     }
                 }
             }
@@ -183,21 +180,20 @@ fn credentials_part(csrf: &str, email: &str, part: &Part) -> Markup {
                     @for server in &part.servers {
                         (server_name(server))
                     }
+                    @for (slug, name) in &part.retired {
+                        (retired_values(csrf, slug, name))
+                    }
                     p { (values::LOCKED) }
                     form.form-actions method="post" action="/logout" {
                         input type="hidden" name="csrf" value=(csrf);
                         button type="submit" data-kind="secondary" { "Sign out and sign in again" }
                     }
                 }
-            } @else if !part.servers.is_empty() {
+            } @else if !part.servers.is_empty() || !part.retired.is_empty() {
                 div.part-body {
                     @for server in &part.servers {
                         (server_values(csrf, email, server, part))
                     }
-                }
-            }
-            @if !part.retired.is_empty() {
-                div.part-body {
                     @for (slug, name) in &part.retired {
                         (retired_values(csrf, slug, name))
                     }
@@ -207,22 +203,55 @@ fn credentials_part(csrf: &str, email: &str, part: &Part) -> Markup {
     }
 }
 
-/// A server that no longer uses stored credentials while the user still holds some: one button deletes them.
+/// A server that no longer uses stored credentials while the user still holds some: its head as the other
+/// blocks have it, and a closed disclosure whose one button deletes them.
 fn retired_values(csrf: &str, slug: &str, name: &str) -> Markup {
     let name_id = format!("values-{slug}-title");
     html! {
-        section.flow.narrow data-values-retired=(slug) aria-labelledby=(name_id) {
-            h3 id=(name_id) { span.block-name { (name) } }
-            p.muted { "This server no longer uses stored credentials." }
-            form method="post" action=(format!("/account/values/{slug}")) {
-                input type="hidden" name="csrf" value=(csrf);
-                input type="hidden" name="forget" value="1";
-                div.form-actions {
-                    button type="submit" data-kind="danger" { "Delete my stored credentials" }
+        section.flow.narrow data-values-server=(slug) data-values-retired=(slug) data-needs-values="no" aria-labelledby=(name_id) {
+            h3 id=(name_id) {
+                span.block-name { (name) }
+                " "
+                (ui::pill("muted", "No longer uses stored credentials"))
+            }
+            details.confirm data-confirm {
+                summary {
+                    span.confirm-open { "Delete my stored credentials " span.chevron aria-hidden="true" {} }
+                    " "
+                    span.confirm-note { "This cannot be undone." }
+                }
+                div.confirm-body {
+                    form method="post" action=(format!("/account/values/{slug}")) {
+                        input type="hidden" name="csrf" value=(csrf);
+                        input type="hidden" name="forget" value="1";
+                        div.form-actions {
+                            button type="submit" data-kind="danger" { "Delete my stored credentials" }
+                        }
+                    }
+                    p.muted { "This cannot be undone." }
                 }
             }
         }
     }
+}
+
+/// The notice of a save, first in the block of the server it reports on: how many required credentials
+/// of that server are still missing.
+fn saved_notice(server: &ServerView) -> Markup {
+    let missing = server.missing();
+    ui::notice(
+        "ok",
+        html! {
+            p {
+                "Credentials saved for " (server.name) "."
+                @if missing == 1 {
+                    " 1 required credential is still missing."
+                } @else if missing > 1 {
+                    " " (missing) " required credentials are still missing."
+                }
+            }
+        },
+    )
 }
 
 /// A server's name as the block's heading, with its state after it.
@@ -257,8 +286,18 @@ fn server_values(csrf: &str, email: &str, server: &ServerView, part: &Part) -> M
         .refusal
         .as_ref()
         .filter(|refusal| refusal.slug == server.slug);
+    let saved = part.saved.as_deref() == Some(server.slug.as_str());
+    let stored = server.headers.iter().any(|header| header.set_at.is_some());
+    let save_kind = if server.needs_values() {
+        "primary"
+    } else {
+        "secondary"
+    };
     html! {
         section.flow.narrow data-values-server=(server.slug) data-needs-values=(needs) aria-labelledby=(name_id) {
+            @if saved {
+                (saved_notice(server))
+            }
             h3 id=(name_id) {
                 span.block-name { (server.name) }
                 " "
@@ -285,9 +324,11 @@ fn server_values(csrf: &str, email: &str, server: &ServerView, part: &Part) -> M
                         (header_field(header))
                     }
                 }
-                p.muted { "A stored credential is never shown again. Leave a field empty to keep it." }
+                @if stored {
+                    p.muted { "A stored credential is never shown again. Leave a field empty to keep it." }
+                }
                 div.form-actions {
-                    button type="submit" data-kind="secondary" { "Save credentials" }
+                    button type="submit" data-kind=(save_kind) { "Save credentials" }
                 }
             }
         }
@@ -459,9 +500,17 @@ mod tests {
         assert_eq!(
             text(
                 &doc,
-                r#"form[action="/account/password"] button[data-kind="primary"]"#
+                r#"form[action="/account/password"] button[data-kind="secondary"]"#
             ),
             "Change password"
+        );
+        assert_eq!(
+            count(
+                &doc,
+                r#"form[action="/account/password"] button[data-kind="primary"]"#
+            ),
+            0,
+            "Change password is secondary, so the page has no primary button"
         );
         assert_eq!(
             count(
@@ -533,6 +582,171 @@ mod tests {
                 r#"form[action="/account/password"] > div.notice[data-notice="error"] > p"#
             ),
             "The password was not changed. The current password is wrong."
+        );
+    }
+
+    fn view_header(id: i64, name: &str, required: bool, set_at: Option<i64>) -> values::HeaderView {
+        values::HeaderView {
+            id,
+            name: name.to_owned(),
+            lower: name.to_ascii_lowercase(),
+            required,
+            set_at,
+        }
+    }
+
+    fn view_server(slug: &str, name: &str, headers: Vec<values::HeaderView>) -> ServerView {
+        ServerView {
+            slug: slug.to_owned(),
+            name: name.to_owned(),
+            host: "demo.example.com".to_owned(),
+            plain_http: false,
+            headers,
+        }
+    }
+
+    #[test]
+    fn the_retired_block_sits_in_the_credentials_body_with_a_server_head_and_a_danger_disconnect() {
+        let part = Part {
+            retired: vec![("old".to_owned(), "Old Server".to_owned())],
+            ..Part::default()
+        };
+        let markup = account_body_with("token", "bob@example.com", None, &[], &part);
+        let doc = Html::parse_fragment(&markup.into_string());
+        assert_eq!(
+            count(
+                &doc,
+                r#"section.part[aria-labelledby="values-title"] > div.part-body > section[data-values-retired="old"][data-values-server="old"]"#
+            ),
+            1,
+            "the retired block is a server block in the credentials part body"
+        );
+        assert_eq!(
+            text(
+                &doc,
+                r#"section[data-values-retired="old"] > h3 > span.block-name"#
+            ),
+            "Old Server"
+        );
+        assert_eq!(
+            text(
+                &doc,
+                r#"section[data-values-retired="old"] > h3 > span.state[data-tone="muted"]"#
+            ),
+            "No longer uses stored credentials"
+        );
+        assert_eq!(
+            text(
+                &doc,
+                r#"section[data-values-retired="old"] details[data-confirm] button[data-kind="danger"]"#
+            ),
+            "Delete my stored credentials"
+        );
+        assert_eq!(
+            text(
+                &doc,
+                r#"section[data-values-retired="old"] details[data-confirm] div.confirm-body > p.muted"#
+            ),
+            "This cannot be undone."
+        );
+        assert_eq!(
+            count(&doc, "section[data-values-retired] p.muted"),
+            1,
+            "the only muted sentence of the block is the one after the button"
+        );
+    }
+
+    #[test]
+    fn the_saved_notice_leads_its_servers_block_and_counts_the_missing_credentials() {
+        let part = Part {
+            servers: vec![view_server(
+                "demo",
+                "Demo",
+                vec![
+                    view_header(1, "X-Trace-Id", true, Some(1_700_000_000)),
+                    view_header(2, "X-Region", true, None),
+                ],
+            )],
+            saved: Some("demo".to_owned()),
+            ..Part::default()
+        };
+        let markup = account_body_with("token", "bob@example.com", None, &[], &part);
+        let doc = Html::parse_fragment(&markup.into_string());
+        assert_eq!(
+            count(&doc, r#"div.notice[data-notice="ok"]"#),
+            1,
+            "the saved notice is rendered once"
+        );
+        assert_eq!(
+            text(
+                &doc,
+                r#"section[data-values-server="demo"] > div.notice[data-notice="ok"]:first-child > p"#
+            ),
+            "Credentials saved for Demo. 1 required credential is still missing."
+        );
+    }
+
+    #[test]
+    fn a_saved_server_with_nothing_missing_says_only_that_it_saved() {
+        let part = Part {
+            servers: vec![view_server(
+                "demo",
+                "Demo",
+                vec![view_header(1, "X-Trace-Id", true, Some(1_700_000_000))],
+            )],
+            saved: Some("demo".to_owned()),
+            ..Part::default()
+        };
+        let markup = account_body_with("token", "bob@example.com", None, &[], &part);
+        let doc = Html::parse_fragment(&markup.into_string());
+        assert_eq!(
+            text(
+                &doc,
+                r#"section[data-values-server="demo"] > div.notice > p"#
+            ),
+            "Credentials saved for Demo."
+        );
+    }
+
+    #[test]
+    fn save_credentials_is_primary_only_for_a_server_that_needs_values() {
+        let part = Part {
+            servers: vec![
+                view_server(
+                    "needs",
+                    "Needs",
+                    vec![view_header(1, "X-Trace-Id", true, None)],
+                ),
+                view_server(
+                    "stored",
+                    "Stored",
+                    vec![view_header(2, "X-Region", true, Some(1_700_000_000))],
+                ),
+            ],
+            ..Part::default()
+        };
+        let markup = account_body_with("token", "bob@example.com", None, &[], &part);
+        let doc = Html::parse_fragment(&markup.into_string());
+        assert_eq!(
+            count(
+                &doc,
+                r#"form[action="/account/values/needs"] button[data-kind="primary"]"#
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &doc,
+                r#"form[action="/account/values/stored"] button[data-kind="primary"]"#
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &doc,
+                r#"form[action="/account/values/stored"] button[data-kind="secondary"]"#
+            ),
+            1
         );
     }
 }

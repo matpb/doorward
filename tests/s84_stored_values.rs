@@ -551,8 +551,8 @@ async fn a_missing_or_partial_set_of_required_values_reaches_no_upstream_and_nam
     assert_eq!(consent.status, 200, "the consent page must be shown");
     let named = consent.text("[data-needs-values]").unwrap_or_default();
     assert!(
-        named.contains("Demo Server"),
-        "the consent page must name the server with missing values, got {named:?}"
+        named.starts_with("This server needs credentials you have not stored yet. After you approve, add them on your account page:"),
+        "the consent page must say this server needs credentials, got {named:?}"
     );
 
     let tokens = w.token(&bob, SLUG).await;
@@ -1941,6 +1941,109 @@ async fn saving_credentials_lands_on_the_part_with_the_server_named_in_the_notic
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_saved_notice_is_the_first_child_of_that_servers_block_and_shown_once() {
+    let w = World::start().await;
+    let (_upstream, _id, hid, bob) = demo_for_bob(&w, true).await;
+    let saved = store_value(&bob, SLUG, &hid, CANARY).await;
+    let shown = bob.follow(&saved).await;
+    assert_eq!(
+        shown.count(&format!(
+            r#"section[data-values-server="{SLUG}"] > div.notice[data-notice="ok"]:first-child"#
+        )),
+        1,
+        "the saved notice must be the first child of the server's block"
+    );
+    assert_eq!(
+        shown.count(r#"div.notice[data-notice="ok"]"#),
+        1,
+        "the saved notice must be rendered once"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_saved_notice_counts_the_required_credentials_still_missing() {
+    let w = World::start().await;
+    let (_upstream, id, first, bob) = demo_for_bob(&w, true).await;
+    declare_ok(&w.owner, &id, "X-Region", true).await;
+    declare_ok(&w.owner, &id, "X-Tenant", true).await;
+    let second = header_of(&w.owner, &id, "X-Region").await;
+    let third = header_of(&w.owner, &id, "X-Tenant").await;
+
+    let saved = store_value(&bob, SLUG, &first, CANARY).await;
+    let shown = bob.follow(&saved).await;
+    assert_eq!(
+        shown.text(r#"div.notice[data-notice="ok"] > p"#).as_deref(),
+        Some("Credentials saved for demo. 2 required credentials are still missing."),
+        "two required credentials missing must be counted in the plural"
+    );
+
+    let saved = store_value(&bob, SLUG, &second, OTHER).await;
+    let shown = bob.follow(&saved).await;
+    assert_eq!(
+        shown.text(r#"div.notice[data-notice="ok"] > p"#).as_deref(),
+        Some("Credentials saved for demo. 1 required credential is still missing."),
+        "one required credential missing must take the singular"
+    );
+
+    let saved = store_value(&bob, SLUG, &third, "tenant-1").await;
+    let shown = bob.follow(&saved).await;
+    assert_eq!(
+        shown.text(r#"div.notice[data-notice="ok"] > p"#).as_deref(),
+        Some("Credentials saved for demo."),
+        "with every required credential stored the notice has no missing sentence"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn save_credentials_is_primary_only_while_a_required_credential_is_missing() {
+    let w = World::start().await;
+    let (_upstream, _id, hid, bob) = demo_for_bob(&w, true).await;
+    let form = format!(r#"form[action="/account/values/{SLUG}"]"#);
+    let page = bob.get("/account").await;
+    assert_eq!(
+        page.text(&format!(r#"{form} button[data-kind="primary"]"#))
+            .as_deref(),
+        Some("Save credentials"),
+        "a server that needs credentials has the primary Save credentials"
+    );
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    let page = bob.get("/account").await;
+    assert_eq!(
+        page.count(&format!(r#"{form} button[data-kind="primary"]"#)),
+        0,
+        "once nothing is missing Save credentials is secondary"
+    );
+    assert_eq!(
+        page.text(&format!(r#"{form} button[data-kind="secondary"]"#))
+            .as_deref(),
+        Some("Save credentials"),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_write_only_hint_shows_only_when_a_field_of_the_form_is_stored() {
+    let w = World::start().await;
+    let (_upstream, _id, hid, bob) = demo_for_bob(&w, false).await;
+    let hint = "A stored credential is never shown again. Leave a field empty to keep it.";
+    let page = bob.get("/account").await;
+    assert!(
+        !page
+            .texts(&format!(r#"form[action="/account/values/{SLUG}"] p.muted"#))
+            .iter()
+            .any(|text| text == hint),
+        "with nothing stored the form must not carry the write-only hint"
+    );
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    let page = bob.get("/account").await;
+    assert!(
+        page.texts(&format!(r#"form[action="/account/values/{SLUG}"] p.muted"#))
+            .iter()
+            .any(|text| text == hint),
+        "with a stored field the form must carry the write-only hint"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_session_whose_key_does_not_open_shows_the_locked_credentials_part() {
     let w = World::start().await;
     let (_upstream, _id, hid, bob) = demo_for_bob(&w, false).await;
@@ -2230,15 +2333,40 @@ async fn with_the_store_switch_off_no_value_is_attached_and_the_user_can_delete_
     let account = bob.get("/account").await;
     assert_eq!(
         account
-            .text(r#"section[data-values-retired="demo"] p.muted"#)
+            .text(r#"section[data-values-retired="demo"] h3 > span.state[data-tone="muted"]"#)
             .as_deref(),
-        Some("This server no longer uses stored credentials.")
+        Some("No longer uses stored credentials"),
+        "the retired block's status reads No longer uses stored credentials"
+    );
+    assert_eq!(
+        account.texts(r#"section[data-values-retired="demo"] p.muted"#),
+        vec!["This cannot be undone.".to_owned()],
+        "the only muted sentence of the block is the one after the button"
     );
     assert_eq!(
         account
             .text(r#"section[data-values-retired="demo"] button[data-kind="danger"]"#)
             .as_deref(),
         Some("Delete my stored credentials")
+    );
+    assert_eq!(
+        account
+            .text(r#"section[data-values-retired="demo"] div.confirm-body > p.muted"#)
+            .as_deref(),
+        Some("This cannot be undone."),
+        "the muted sentence sits after the button in the closed disclosure"
+    );
+    assert_eq!(
+        account.count(r#"section[data-values-retired="demo"] details[data-confirm]:not([open])"#),
+        1,
+        "the delete button sits in a closed disclosure"
+    );
+    assert_eq!(
+        account.count(
+            r#"section[aria-labelledby="values-title"] > div.part-body > section[data-values-retired="demo"]"#
+        ),
+        1,
+        "the retired block is in the body of the credentials part, not beside it"
     );
     let csrf = account.csrf().expect("the page carries a csrf field");
     let forgotten = bob

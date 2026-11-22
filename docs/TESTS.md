@@ -2006,6 +2006,9 @@ connected client. Each test builds that world, except the setup page, which has 
     id is on two elements, every `label[for]` names an id on the page, and every id in an
     `aria-describedby` exists. It passed on the pages as they stood, so no page was changed.
 
+Added in the notices round (statements 65 and 66): `the_hints_under_the_two_switches_are_held_to_a_measure_of_60_characters`
+reads the served stylesheet and checks that it caps `[data-switches] > .check > .hint` at `60ch`.
+
 ## s68_exposed.rs (statement 68)
 
 Each test builds its own world. An exposed server is one whose upstream asks for no secret;
@@ -2089,6 +2092,10 @@ The owner's rule and redirect forms use `W.upstream("demo", ..)` and `W.user(bob
 The helper `sent_back` in `src/web/ui.rs` has in-crate tests for its limit, its counting of
 characters and its control characters: `a_sent_back_value_*`. The sign-in form's hidden `req`
 has an in-crate test in `src/accounts/login.rs`, `a_req_that_is_a_request_id_is_sent_back_and_any_other_is_not`.
+
+Changed in the notices round (statement 71): `a_refused_header_form_sends_back_its_name_and_its_required_box`
+now reads the refused add notice as `The header was not added. Cookie cannot be used as a custom header.
+Choose another name. Go to the header name field`, with the name in a `code` element.
 
 ## s72_overview_state.rs (statement 72)
 
@@ -2576,6 +2583,25 @@ Rewritten tests (the old markup or sentence they pinned):
   reads "is asking to sign in as you" (change 7).
 - `web::page::tests::each_message_page_is_a_heading_and_one_lede`: the refusal row carries the
   round 5 title and lede (change 8).
+13. `the_notice_of_each_header_step_is_the_first_child_of_the_headers_part_body` (statement 80, the
+    notices): the added, saved and removed notices are the first child of the headers part body,
+    each rendered once, with the header's name in a `code` element.
+14. `saving_a_header_made_required_says_how_many_have_not_stored_it` (statement 80): `Headers saved.` is
+    the first line, and the second line, a `span.state[data-tone="warn"]`, names the header made
+    required and counts the people without a stored value.
+15. `a_saved_switch_with_no_required_header_names_no_one_in_a_notice` (statement 80): the notice reads
+    `Headers saved.` alone.
+16. `with_both_switches_off_and_a_required_header_a_no_source_line_sits_under_the_switches`,
+    `no_source_line_counts_the_required_headers_when_there_are_two_or_more` and
+    `no_source_line_is_absent_when_a_switch_is_on_or_no_header_is_required` (statement 83, the server
+    page's switches): `p[data-no-source]` sits directly after the switches group, with the attention mark, when
+    both switches are off and a header is required; it names one header or counts two or more.
+17. `with_storing_off_each_stored_by_cell_reads_storing_is_off`,
+    `an_optional_header_reads_optional_beside_its_box` and `with_storing_on_the_stored_by_cell_still_counts_users`
+    (statement 80, the table): `Storing is off` when the store switch is off, the box reads `Required`
+    or `Optional`, and the count stays when storing is on.
+18. `at_eight_headers_the_add_form_gives_way_to_one_sentence` (statement 80): the sentence reads
+    `This server has 8 of 8 headers. Remove one to add another.`.
 
 ## Key layer of stored values (statements 84 and 85)
 
@@ -2674,6 +2700,32 @@ declared and the store switch is on. The value is the canary `canary-7f3a9c51e2d
    `crypto::tests::the_vault_key_derivation_has_a_known_answer`,
    `crypto::tests::the_hash_job_still_returns_a_hash_when_the_vault_derivation_fails` and
    `db::tests::a_schema_14_database_upgrades_and_keeps_its_users_sessions_and_tokens` (migration 17).
+
+Account page and consent, changed in the notices and blocks round (statements 82 and 90):
+
+- `the_saved_notice_is_the_first_child_of_that_servers_block_and_shown_once`: the notice
+  `Credentials saved for demo.` is the first child of the server's block and rendered once.
+- `the_saved_notice_counts_the_required_credentials_still_missing`: two, then one, then none missing read
+  `2 required credentials are still missing.`, `1 required credential is still missing.` and
+  `Credentials saved for demo.`.
+- `save_credentials_is_primary_only_while_a_required_credential_is_missing`: `Save credentials` is the
+  primary button of its form only while a required value is missing.
+- `the_write_only_hint_shows_only_when_a_field_of_the_form_is_stored`: the hint `A stored credential is
+  never shown again. Leave a field empty to keep it.` is absent with nothing stored, present once one is.
+- `a_missing_or_partial_set_of_required_values_reaches_no_upstream_and_names_the_account_page` (updated):
+  the consent note reads `This server needs credentials you have not stored yet.` on the server's endpoint.
+- `with_the_store_switch_off_no_value_is_attached_and_the_user_can_delete_what_was_stored` (updated): the
+  retired block's head reads `No longer uses stored credentials`, it holds one closed disclosure, and its
+  only muted sentence after the button is `This cannot be undone.`; the block sits in the credentials body.
+
+Units: `accounts::account::tests::the_retired_block_sits_in_the_credentials_body_with_a_server_head_and_a_danger_disconnect`,
+`accounts::account::tests::the_saved_notice_leads_its_servers_block_and_counts_the_missing_credentials`,
+`accounts::account::tests::a_saved_server_with_nothing_missing_says_only_that_it_saved`,
+`accounts::account::tests::save_credentials_is_primary_only_for_a_server_that_needs_values` and
+`accounts::account::tests::the_password_fields_sit_in_a_fields_grid_inside_a_part` (Change password is
+secondary); `oauth::consent::tests::a_server_that_needs_credentials_is_this_server_on_its_own_endpoint` and
+`oauth::consent::tests::servers_that_need_credentials_are_named_on_the_combined_endpoint`;
+`web::ui::tests::a_refusal_whose_reason_is_markup_keeps_the_markup_before_its_link`.
 
 ## s90_withheld.rs (statement 90)
 

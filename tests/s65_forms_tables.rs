@@ -751,3 +751,28 @@ async fn the_duration_cell_keeps_its_text_on_one_line() {
         "the stylesheet must hold a rule for .duration that declares white-space: nowrap"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_hints_under_the_two_switches_are_held_to_a_measure_of_60_characters() {
+    let w = TestGateway::start().await;
+    let c = w.client();
+    let page = c.get("/login").await;
+    let href = page
+        .attr(r#"link[rel="stylesheet"]"#, "href")
+        .expect("the sign-in page must link a stylesheet");
+    let css = c.get(&href).await.body;
+    let capped = declarations(&css)
+        .into_iter()
+        .any(|(_, selector, name, value)| {
+            (name == "max-inline-size" || name == "max-width")
+                && value == "60ch"
+                && selector.split(',').any(|part| {
+                    let part = part.trim();
+                    part.contains("[data-switches]") && part.ends_with(".hint")
+                })
+        });
+    assert!(
+        capped,
+        "the stylesheet must cap the hint of each switch in [data-switches] at 60ch"
+    );
+}

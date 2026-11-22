@@ -469,9 +469,8 @@ fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
         }
         @if !consent.needs_values.is_empty() {
             p.muted data-needs-values {
-                (names_sentence(&consent.needs_values))
-                (if consent.needs_values.len() == 1 { " needs" } else { " need" })
-                " credentials you have not stored yet. After you approve, add them on your account page: "
+                (needs_credentials(consent))
+                " After you approve, add them on your account page: "
                 a href="/account" target="_blank" rel="noopener" {
                     (ui::address(&consent.account))
                 }
@@ -502,6 +501,23 @@ fn names_sentence(names: &[String]) -> String {
         [only] => only.clone(),
         [init @ .., last] => format!("{} and {last}", init.join(", ")),
     }
+}
+
+/// Who needs credentials: "This server" when the approved server is one server and needs them,
+/// else the names of the servers that do.
+fn needs_credentials(consent: &ConsentPage) -> String {
+    if consent.server != ALL_SERVERS && consent.needs_values.len() == 1 {
+        return "This server needs credentials you have not stored yet.".to_owned();
+    }
+    let verb = if consent.needs_values.len() == 1 {
+        "needs"
+    } else {
+        "need"
+    };
+    format!(
+        "{} {verb} credentials you have not stored yet.",
+        names_sentence(&consent.needs_values)
+    )
 }
 
 /// The client line: a claim for a registered client, a publisher for a web document, and a claim
@@ -869,6 +885,38 @@ mod tests {
                 "the client's line follows the local sentence"
             );
         }
+    }
+
+    /// The collapsed text of the credentials note of a consent page.
+    fn needs_note(page: &ConsentPage) -> String {
+        let doc = Html::parse_fragment(&consent_body("token", "req", page).into_string());
+        text(&doc, "p[data-needs-values]")
+    }
+
+    #[test]
+    fn a_server_that_needs_credentials_is_this_server_on_its_own_endpoint() {
+        let mut page = consent(false, Some("example.com"));
+        page.needs_values = vec!["Demo Server".to_owned()];
+        assert_eq!(
+            needs_note(&page),
+            "This server needs credentials you have not stored yet. After you approve, add them on your account page: https://gateway.example.com/account"
+        );
+    }
+
+    #[test]
+    fn servers_that_need_credentials_are_named_on_the_combined_endpoint() {
+        let mut page = consent(false, Some("example.com"));
+        page.server = ALL_SERVERS.to_owned();
+        page.needs_values = vec!["Atlassian".to_owned()];
+        assert_eq!(
+            needs_note(&page),
+            "Atlassian needs credentials you have not stored yet. After you approve, add them on your account page: https://gateway.example.com/account"
+        );
+        page.needs_values = vec!["Atlassian".to_owned(), "Billing".to_owned()];
+        assert_eq!(
+            needs_note(&page),
+            "Atlassian and Billing need credentials you have not stored yet. After you approve, add them on your account page: https://gateway.example.com/account"
+        );
     }
 
     #[test]

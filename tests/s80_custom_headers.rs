@@ -1085,9 +1085,217 @@ async fn saving_a_header_made_required_says_how_many_have_not_stored_it() {
     assert_eq!(saved.query("done").as_deref(), Some("headers-saved"));
     let shown = w.owner.follow(&saved).await;
     assert_eq!(
+        shown
+            .text(r#"section[aria-labelledby="headers-title"] > div.part-body > div.notice[data-notice="ok"] > p"#)
+            .as_deref(),
+        Some("Headers saved."),
+        "the first line of the notice is the success line"
+    );
+    assert_eq!(
+        shown
+            .text(r#"section[aria-labelledby="headers-title"] div.notice > p > span.state[data-tone="warn"]"#)
+            .as_deref(),
+        Some("X-Trace-Id is now required. 1 of 1 users have not stored it."),
+        "the second line must name the header made required and count the people without it"
+    );
+    assert_eq!(
+        shown.count(
+            r#"section[aria-labelledby="headers-title"] div.notice > p > span.state > code"#
+        ),
+        1,
+        "the header's name must be set in code inside the second line"
+    );
+    assert_eq!(
+        shown.count(r#"div.notice[data-notice="ok"]"#),
+        1,
+        "the notice must be rendered once"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_notice_of_each_header_step_is_the_first_child_of_the_headers_part_body() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    grant_bob(&w, &[&id]).await;
+    let added = declare_header(&w.owner, &id, HEADER, false).await;
+    assert_eq!(added.status, 303, "declaring a header must be accepted");
+    let shown = w.owner.follow(&added).await;
+    assert_eq!(
+        shown.count(
+            r#"section[aria-labelledby="headers-title"] > div.part-body > div.notice:first-child"#
+        ),
+        1,
+        "the added notice must be the first child of the headers part body"
+    );
+    assert_eq!(
+        shown.count(r#"div.notice[data-notice="ok"]"#),
+        1,
+        "the added notice must not be rendered twice"
+    );
+    assert_eq!(
+        shown.count(r#"div.notice[data-notice="ok"] > p > code"#),
+        1,
+        "the header's name must be set in code inside the notice"
+    );
+    let hid = id_of(&w, &id, HEADER).await;
+    let saved = save_headers(&w.owner, &id, &[&hid], &[&hid], false, false).await;
+    let shown = w.owner.follow(&saved).await;
+    assert_eq!(
+        shown.count(
+            r#"section[aria-labelledby="headers-title"] > div.part-body > div.notice:first-child"#
+        ),
+        1,
+        "the saved notice must be the first child of the headers part body"
+    );
+    let removed = remove_header(&w.owner, &id, &hid).await;
+    let shown = w.owner.follow(&removed).await;
+    assert_eq!(
+        shown.text(r#"section[aria-labelledby="headers-title"] > div.part-body > div.notice[data-notice="ok"] > p"#).as_deref(),
+        Some("X-Trace-Id removed."),
+        "the removed notice must sit at the top of the headers part"
+    );
+    assert_eq!(
+        shown.count(r#"div.notice[data-notice="ok"]"#),
+        1,
+        "the removed notice must not be rendered twice"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_switch_with_no_required_header_names_no_one_in_a_notice() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    let hid = id_of(&w, &id, HEADER).await;
+    let saved = save_headers(&w.owner, &id, &[&hid], &[], true, true).await;
+    let shown = w.owner.follow(&saved).await;
+    assert_eq!(
         shown.text(r#"div.notice[data-notice="ok"] > p"#).as_deref(),
-        Some("Headers saved. X-Trace-Id is now required. 1 of 1 users have not stored it."),
-        "the notice must name the header made required and count the people without it"
+        Some("Headers saved."),
+        "a save that makes no header required says only that it saved"
+    );
+    assert_eq!(
+        shown.count(r#"div.notice[data-notice="ok"] span.state"#),
+        0,
+        "no attention line when no header became required"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_both_switches_off_and_a_required_header_a_no_source_line_sits_under_the_switches() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, true).await;
+    switches_ok(&w.owner, &id, false, false).await;
+    let page = server_page(&w.owner, &id).await;
+    assert_eq!(
+        page.text("p[data-no-source]").as_deref(),
+        Some("No source is on. X-Trace-Id is required, so nothing is sent to this server."),
+        "the line must name the first required header"
+    );
+    assert_eq!(
+        page.count("fieldset + p[data-no-source]"),
+        1,
+        "the line must sit directly under the group Where the credentials come from"
+    );
+    assert_eq!(
+        page.count(r#"p[data-no-source] span.state[data-tone="warn"]"#),
+        1,
+        "the line carries the attention mark"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_source_line_counts_the_required_headers_when_there_are_two_or_more() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, true).await;
+    declare_ok(&w.owner, &id, "X-Region", true).await;
+    declare_ok(&w.owner, &id, "X-Optional", false).await;
+    switches_ok(&w.owner, &id, false, false).await;
+    let page = server_page(&w.owner, &id).await;
+    assert_eq!(
+        page.text("p[data-no-source]").as_deref(),
+        Some("No source is on. 2 headers are required, so nothing is sent to this server."),
+        "two or more required headers are counted"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_source_line_is_absent_when_a_switch_is_on_or_no_header_is_required() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, true).await;
+    switches_ok(&w.owner, &id, true, false).await;
+    assert_eq!(
+        server_page(&w.owner, &id).await.count("[data-no-source]"),
+        0,
+        "pass through on means a source is on"
+    );
+    switches_ok(&w.owner, &id, false, true).await;
+    assert_eq!(
+        server_page(&w.owner, &id).await.count("[data-no-source]"),
+        0,
+        "storing on means a source is on"
+    );
+    switches_ok(&w.owner, &id, false, false).await;
+    let hid = id_of(&w, &id, HEADER).await;
+    save_headers(&w.owner, &id, &[&hid], &[], false, false).await;
+    assert_eq!(
+        server_page(&w.owner, &id).await.count("[data-no-source]"),
+        0,
+        "with no required header there is nothing to send, so no line"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_storing_off_each_stored_by_cell_reads_storing_is_off() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, true).await;
+    switches_ok(&w.owner, &id, false, false).await;
+    let page = server_page(&w.owner, &id).await;
+    assert_eq!(
+        page.text(&format!(r#"tr[data-header="{LOWER}"] td[data-stored-by]"#))
+            .as_deref(),
+        Some("Storing is off"),
+        "a store switch that is off reads Storing is off, not Not stored"
+    );
+    assert_eq!(
+        page.text(&format!(r#"tr[data-header="{LOWER}"] td.c-required label"#))
+            .as_deref(),
+        Some("Required"),
+        "a required header's box reads Required on a phone"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_optional_header_reads_optional_beside_its_box() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    switches_ok(&w.owner, &id, false, false).await;
+    let page = server_page(&w.owner, &id).await;
+    assert_eq!(
+        page.text(&format!(r#"tr[data-header="{LOWER}"] td.c-required label"#))
+            .as_deref(),
+        Some("Optional"),
+        "an optional header's box reads Optional, so the phone row reads Optional · Storing is off"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_storing_on_the_stored_by_cell_still_counts_users() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    switches_ok(&w.owner, &id, false, true).await;
+    let page = server_page(&w.owner, &id).await;
+    assert_eq!(
+        page.text(&format!(r#"tr[data-header="{LOWER}"] td[data-stored-by]"#))
+            .as_deref(),
+        Some("Stored by 0 of 0 users"),
+        "with storing on the cell keeps its count"
     );
 }
 
@@ -1190,7 +1398,7 @@ async fn at_eight_headers_the_add_form_gives_way_to_one_sentence() {
     );
     assert_eq!(
         page.text("p[data-headers-full]").as_deref(),
-        Some("This server has its 8 headers. Remove one to add another."),
+        Some("This server has 8 of 8 headers. Remove one to add another."),
         "at 8 headers one sentence says so"
     );
 }
