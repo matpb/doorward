@@ -133,7 +133,8 @@ the server only answers the gateway:
 
 1. Give the server a secret header (a name and a value) and configure the server to refuse
    any request without it. The gateway adds the header to every request it forwards and
-   removes the visitor's own credentials.
+   never passes on the visitor's token or cookies. Another header that a client sends
+   reaches the server only where an admin declared it and switched on pass-through.
 2. Press "Check lock-down" on the server page. The gateway calls the server without the
    secret and shows one of three states. "Locked down" means the server refused a request
    without the secret. "Answers without the gateway" means anyone who can reach its address
