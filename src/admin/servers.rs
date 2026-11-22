@@ -423,7 +423,7 @@ fn remove_body(
 ) -> Markup {
     let path = format!("/admin/servers/{}", server.id);
     html! {
-        h1 { "Remove " span.title-name { (ui::breakable(&declared.name)) } "?" }
+        h1 { "Remove " span.title-name { (ui::hyphenated(&declared.name)) } "\u{2060}?" }
         p.lede data-stored-by=(stored) {
             @if stored == 0 {
                 "No user stored a credential for it on " (server.name) "."
@@ -1465,11 +1465,6 @@ fn header_row(
     (store, stored, assigned): (bool, i64, usize),
 ) -> Markup {
     let required = if declared.required { "yes" } else { "no" };
-    let word = if declared.required {
-        "Required"
-    } else {
-        "Optional"
-    };
     let box_id = format!("required-{}", declared.id);
     let box_label = format!("Required, {}", declared.name);
     html! {
@@ -1479,7 +1474,7 @@ fn header_row(
                 div.check {
                     input type="checkbox" id=(box_id) name=(format!("required_{}", declared.id)) value="1"
                         checked[declared.required] aria-label=(box_label);
-                    label for=(box_id) { (word) }
+                    label for=(box_id) { "Required" }
                 }
             }
             td.half data-stored-by {
@@ -1487,7 +1482,7 @@ fn header_row(
                     span.unit { "Stored by " }
                     span.nowrap { (stored) " of " (assigned) " " (if assigned == 1 { "user" } else { "users" }) }
                 } @else {
-                    "Storing is off"
+                    span.muted { "Storing is off" }
                 }
             }
             td.act {

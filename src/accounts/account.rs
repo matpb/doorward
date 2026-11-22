@@ -177,8 +177,10 @@ fn credentials_part(csrf: &str, email: &str, part: &Part) -> Markup {
             }
             @if part.locked {
                 div.part-body.flow data-values-locked {
-                    @for server in &part.servers {
-                        (server_name(server))
+                    div.locked-list {
+                        @for server in &part.servers {
+                            (server_name(server))
+                        }
                     }
                     @for (slug, name) in &part.retired {
                         (retired_values(csrf, slug, name))
@@ -261,7 +263,6 @@ fn server_name(server: &ServerView) -> Markup {
         section data-values-server=(server.slug) data-needs-values=(needs) aria-labelledby=(name_id) {
             h3 id=(name_id) {
                 span.block-name { (server.name) }
-                " "
                 (state_pill(server.state()))
             }
         }

@@ -901,7 +901,7 @@ async fn the_remove_link_opens_a_confirm_page_that_names_the_header_the_server_a
     assert_eq!(page.kind().as_deref(), Some("remove-header"));
     assert_eq!(
         page.text("main > h1").as_deref(),
-        Some("Remove X-Trace-Id?"),
+        Some("Remove X-Trace-Id\u{2060}?"),
         "the title must name the header"
     );
     assert_eq!(
@@ -939,6 +939,26 @@ async fn the_remove_link_opens_a_confirm_page_that_names_the_header_the_server_a
             .as_deref(),
         Some(keep.as_str()),
         "keep must return to the headers part"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_remove_title_breaks_only_at_hyphens_and_the_question_mark_is_glued_to_the_name() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    let hid = id_of(&w, &id, HEADER).await;
+    let page = w.owner.get(&remove_path(&id, &hid)).await;
+    assert!(
+        page.body.contains(
+            "<h1>Remove <span class=\"title-name\">X-<wbr>Trace-<wbr>Id</span>\u{2060}?</h1>"
+        ),
+        "the name breaks only after a hyphen, and a word joiner sits between the name and the question mark"
+    );
+    assert_eq!(
+        page.count("main > h1 > span.title-name > wbr"),
+        2,
+        "the name has a break opportunity after each of its two hyphens and none elsewhere"
     );
 }
 
@@ -1260,6 +1280,14 @@ async fn with_storing_off_each_stored_by_cell_reads_storing_is_off() {
         "a store switch that is off reads Storing is off, not Not stored"
     );
     assert_eq!(
+        page.text(&format!(
+            r#"tr[data-header="{LOWER}"] td[data-stored-by] > span.muted"#
+        ))
+        .as_deref(),
+        Some("Storing is off"),
+        "Storing is off is set in the muted colour"
+    );
+    assert_eq!(
         page.text(&format!(r#"tr[data-header="{LOWER}"] td.c-required label"#))
             .as_deref(),
         Some("Required"),
@@ -1268,7 +1296,7 @@ async fn with_storing_off_each_stored_by_cell_reads_storing_is_off() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_optional_header_reads_optional_beside_its_box() {
+async fn an_optional_headers_box_reads_required_and_stays_unticked_and_no_cell_reads_optional() {
     let w = World::start().await;
     let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
     declare_ok(&w.owner, &id, HEADER, false).await;
@@ -1277,8 +1305,22 @@ async fn an_optional_header_reads_optional_beside_its_box() {
     assert_eq!(
         page.text(&format!(r#"tr[data-header="{LOWER}"] td.c-required label"#))
             .as_deref(),
-        Some("Optional"),
-        "an optional header's box reads Optional, so the phone row reads Optional · Storing is off"
+        Some("Required"),
+        "the box's label is Required in both states: the tick carries the state"
+    );
+    assert_eq!(
+        page.count(&format!(
+            r#"tr[data-header="{LOWER}"] td.c-required input[type="checkbox"][checked]"#
+        )),
+        0,
+        "an optional header's box is unticked"
+    );
+    assert!(
+        !page
+            .text("table.headers")
+            .unwrap_or_default()
+            .contains("Optional"),
+        "no cell of the headers table reads Optional"
     );
 }
 

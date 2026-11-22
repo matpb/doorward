@@ -2102,6 +2102,55 @@ async fn the_retired_block_says_its_credentials_are_still_stored_but_no_longer_s
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_locked_list_holds_each_name_and_its_state_on_one_grid_row() {
+    let w = World::start().await;
+    let (_upstream, _id, hid, bob) = demo_for_bob(&w, true).await;
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    let live = live_db(&w);
+    live.execute(
+        "UPDATE sessions SET dek_wrap = 'garbage' WHERE dek_wrap IS NOT NULL",
+        [],
+    )
+    .expect("the session's wrap is replaced by garbage");
+    let page = bob.get("/account").await;
+    assert_eq!(
+        page.count(r#"[data-values-locked] div.locked-list > section[data-values-server="demo"] > h3 > span.block-name"#),
+        1,
+        "the name of each server sits in the locked list's grid"
+    );
+    assert_eq!(
+        page.count(r#"[data-values-locked] div.locked-list > section[data-values-server="demo"] > h3 > span.state"#),
+        1,
+        "the state of each server sits in the same grid, after its name"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_saved_account_page_focuses_nothing_and_lands_on_a_heading() {
+    let w = World::start().await;
+    let (_upstream, _id, hid, bob) = demo_for_bob(&w, true).await;
+    let saved = store_value(&bob, SLUG, &hid, CANARY).await;
+    assert!(
+        saved
+            .location()
+            .unwrap_or_default()
+            .ends_with("#values-title"),
+        "the redirect lands on the credentials heading, not on a field"
+    );
+    let shown = bob.follow(&saved).await;
+    assert_eq!(
+        shown.count("[autofocus]"),
+        0,
+        "no field of the saved page asks for focus"
+    );
+    assert_eq!(
+        shown.count("h2#values-title"),
+        1,
+        "the fragment names a heading, which takes no focus"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_session_whose_key_does_not_open_shows_the_locked_credentials_part() {
     let w = World::start().await;
     let (_upstream, _id, hid, bob) = demo_for_bob(&w, false).await;

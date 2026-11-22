@@ -45,6 +45,19 @@ pub fn breakable(text: &str) -> Markup {
     }
 }
 
+/// A name that may break only after a hyphen: a `wbr` follows each `-` that is not the last character.
+pub fn hyphenated(text: &str) -> Markup {
+    let pieces: Vec<&str> = text.split_inclusive('-').collect();
+    html! {
+        @for (index, piece) in pieces.iter().enumerate() {
+            (piece)
+            @if index + 1 < pieces.len() {
+                wbr;
+            }
+        }
+    }
+}
+
 /// A web address in a table cell: its origin, then each path piece in a `span.whole` behind a `wbr`.
 /// The cuts are on ASCII `://` and `/` only, so the text is unchanged.
 pub fn web_address(text: &str) -> Markup {
@@ -347,6 +360,25 @@ mod tests {
     fn breakable_breaks_after_a_slash_only_when_no_slash_follows_it() {
         assert_eq!(breakable("//x").into_string(), "//<wbr>x");
         assert_eq!(breakable("a/b").into_string(), "a/<wbr>b");
+    }
+
+    #[test]
+    fn hyphenated_breaks_after_each_hyphen_and_nowhere_else() {
+        assert_eq!(
+            hyphenated("X-Atlassian-Api-Token").into_string(),
+            "X-<wbr>Atlassian-<wbr>Api-<wbr>Token"
+        );
+        assert_eq!(
+            hyphenated("create_pull.request").into_string(),
+            "create_pull.request"
+        );
+        assert_eq!(hyphenated("a-").into_string(), "a-");
+        assert_eq!(hyphenated("").into_string(), "");
+    }
+
+    #[test]
+    fn hyphenated_escapes_its_text() {
+        assert_eq!(hyphenated("a<-b").into_string(), "a&lt;-<wbr>b");
     }
 
     #[test]

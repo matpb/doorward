@@ -231,9 +231,13 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+/* The name of a header in a title: an inline box, so the question mark after it can follow on its line,
+   in the mono face at 30 px, breaking only at its hyphens. */
 h1 > .title-name {
-  display: inline-block;
+  display: inline;
   font-family: var(--mono);
+  font-size: 30px;
+  overflow-wrap: normal;
 }
 
 h2 {
@@ -815,11 +819,27 @@ h3 > .state {
   font: 400 14px/20px var(--sans);
 }
 
+/* The locked list: each server's name and its state share one grid, so every mark starts on one edge. */
+[data-values-locked] > .locked-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: var(--s4);
+  row-gap: var(--s3);
+}
+
+[data-values-locked] > .locked-list > section,
+[data-values-locked] > .locked-list > section > h3 {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+[data-values-locked] > .locked-list + section,
 [data-values-locked] > section + section {
   margin-block-start: var(--s3);
 }
 
-[data-values-locked] > section + p {
+[data-values-locked] > :is(.locked-list, section) + p {
   margin-block-start: var(--s5);
 }
 
@@ -2812,6 +2832,10 @@ body[data-layout="card"] main > .lede + .actions {
   h1 {
     font-size: 28px;
     line-height: 32px;
+  }
+
+  h1 > .title-name {
+    font-size: 26px;
   }
 
   .dest {

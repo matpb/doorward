@@ -823,3 +823,73 @@ async fn the_header_name_in_the_remove_title_is_set_in_the_mono_face() {
         "the stylesheet must set h1 > .title-name in the mono face, as the consent destination is"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_remove_title_name_is_inline_breaks_at_hyphens_and_is_30_px_then_26_px_on_a_phone() {
+    let w = TestGateway::start().await;
+    let c = w.client();
+    let page = c.get("/login").await;
+    let href = page
+        .attr(r#"link[rel="stylesheet"]"#, "href")
+        .expect("the sign-in page must link a stylesheet");
+    let css = c.get(&href).await.body;
+    let rules = declarations(&css);
+    let on_name = |selector: &str| {
+        selector
+            .split(',')
+            .any(|part| part.trim() == "h1 > .title-name")
+    };
+    let value_of = |name: &str, phone: bool| {
+        rules
+            .iter()
+            .filter(|(ancestors, selector, _, _)| {
+                on_name(selector) && (ancestors.iter().any(|at| at.contains("639.98px")) == phone)
+            })
+            .filter(|(_, _, property, _)| property == name)
+            .map(|(_, _, _, value)| value.clone())
+            .next_back()
+    };
+    assert_eq!(
+        value_of("display", false).as_deref(),
+        Some("inline"),
+        "the name is an inline box, so the question mark can follow it on its line"
+    );
+    assert_eq!(
+        value_of("overflow-wrap", false).as_deref(),
+        Some("normal"),
+        "the name breaks only at its hyphens, not anywhere in a word"
+    );
+    assert_eq!(
+        value_of("font-size", false).as_deref(),
+        Some("30px"),
+        "the name is 30 px at desktop width"
+    );
+    assert_eq!(
+        value_of("font-size", true).as_deref(),
+        Some("26px"),
+        "the name is 26 px at the phone breakpoint"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_locked_list_is_one_grid_of_a_max_content_name_column_and_a_16_px_gap() {
+    let w = TestGateway::start().await;
+    let c = w.client();
+    let page = c.get("/login").await;
+    let href = page
+        .attr(r#"link[rel="stylesheet"]"#, "href")
+        .expect("the sign-in page must link a stylesheet");
+    let css = c.get(&href).await.body;
+    let grid = declarations(&css)
+        .into_iter()
+        .any(|(_, selector, name, value)| {
+            selector.contains(".locked-list")
+                && ((name == "grid-template-columns" && value == "max-content minmax(0, 1fr)")
+                    || (name == "column-gap" && value == "var(--s4)"))
+        });
+    let gap_is_16 = css.contains("--s4: 16px;");
+    assert!(
+        grid && gap_is_16,
+        "the locked list must be a grid of max-content and 1fr with a column gap of --s4, 16 px"
+    );
+}

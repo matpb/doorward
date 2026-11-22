@@ -2013,6 +2013,11 @@ reads the served stylesheet and checks that it caps `[data-switches] > .check > 
 part body is capped at `640px` with a page notice. `the_header_name_in_the_remove_title_is_set_in_the_mono_face`:
 `h1 > .title-name` is set in `var(--mono)`, the face of the consent destination.
 
+Changed in the title and list round (statements 65 and 66): `the_remove_title_name_is_inline_breaks_at_hyphens_and_is_30_px_then_26_px_on_a_phone`
+reads the served stylesheet: `h1 > .title-name` is `display: inline`, `overflow-wrap: normal`, 30 px, and 26 px inside the
+640 px query. `the_locked_list_is_one_grid_of_a_max_content_name_column_and_a_16_px_gap` reads that `.locked-list` is one grid
+of `max-content minmax(0, 1fr)` with `column-gap: var(--s4)` and `--s4` is 16 px.
+
 ## s68_exposed.rs (statement 68)
 
 Each test builds its own world. An exposed server is one whose upstream asks for no secret;
@@ -2607,9 +2612,17 @@ Rewritten tests (the old markup or sentence they pinned):
 17. `with_storing_off_each_stored_by_cell_reads_storing_is_off`,
     `an_optional_header_reads_optional_beside_its_box` and `with_storing_on_the_stored_by_cell_still_counts_users`
     (statement 80, the table): `Storing is off` when the store switch is off, the box reads `Required`
-    or `Optional`, and the count stays when storing is on.
+    (with round three: `Required` in both states, and no cell reads `Optional`), and the count stays when storing is on.
 18. `at_eight_headers_the_add_form_gives_way_to_one_sentence` (statement 80): the sentence reads
     `This server has 8 of 8 headers. Remove one to add another.`.
+
+Changed in the title and list round (statements 80 and 83): `the_remove_title_breaks_only_at_hyphens_and_the_question_mark_is_glued_to_the_name`
+(new): the name's only break opportunities are its two hyphens, and U+2060 sits between the name and the `?`.
+`an_optional_headers_box_reads_required_and_stays_unticked_and_no_cell_reads_optional` (replaces the Optional
+label test): the box reads `Required` unticked, and no cell of the headers table reads `Optional`.
+`with_storing_off_each_stored_by_cell_reads_storing_is_off` (updated): `Storing is off` is a `span.muted`.
+Units: `web::ui::tests::hyphenated_breaks_after_each_hyphen_and_nowhere_else` and
+`web::ui::tests::hyphenated_escapes_its_text`.
 
 ## Key layer of stored values (statements 84 and 85)
 
@@ -2741,6 +2754,12 @@ Units: `accounts::account::tests::the_retired_block_sits_in_the_credentials_body
 secondary); `oauth::consent::tests::a_server_that_needs_credentials_is_this_server_on_its_own_endpoint` and
 `oauth::consent::tests::servers_that_need_credentials_are_named_on_the_combined_endpoint`;
 `web::ui::tests::a_refusal_whose_reason_is_markup_keeps_the_markup_before_its_link`.
+
+Changed in the title and list round (statements 82 and 90): `the_locked_list_holds_each_name_and_its_state_on_one_grid_row`
+(new): each server's `span.block-name` and `span.state` sit in `div.locked-list`. `the_saved_account_page_focuses_nothing_and_lands_on_a_heading`
+(new, a guard for the focus report): the redirect lands on `#values-title`, the heading, and the saved page holds no `[autofocus]`.
+`a_session_whose_key_does_not_open_shows_the_locked_credentials_part` now reads the locked sentence
+`This session cannot open your stored credentials. Sign in again to store or change them.` (updated).
 
 ## s90_withheld.rs (statement 90)
 
