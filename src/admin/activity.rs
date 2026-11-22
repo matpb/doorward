@@ -300,6 +300,9 @@ pub(super) fn label_of(
         "redirect_blocked" => ("Redirect blocked", Some("bad")),
         "tool_appeared" => ("New tool listed", None),
         "unlock" => ("Gateway unlocked", None),
+        "value_set" => ("Credential stored", None),
+        "value_removed" => ("Credential removed", None),
+        "values_dropped" => ("Credentials deleted", None),
         _ => return (unknown_label(kind), None),
     };
     (label.to_owned(), tone)

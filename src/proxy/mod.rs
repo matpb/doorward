@@ -35,6 +35,7 @@ mod tests_links;
 #[cfg(test)]
 mod tests_stream;
 pub mod upstream;
+pub mod values;
 
 /// Relays one request of an authorized caller on `/{slug}`, under the POST order and the GET and DELETE rules.
 pub async fn handle(state: &AppState, caller: Caller, slug: &str, request: Request) -> Response {

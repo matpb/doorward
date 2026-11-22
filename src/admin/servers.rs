@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
 use maud::{Markup, html};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -16,7 +16,9 @@ use crate::db::DbError;
 use crate::oauth::families;
 use crate::proxy::catalog::{self, RefreshError};
 use crate::proxy::upstream::{self, TargetError};
+use crate::proxy::values::{self, Via};
 use crate::servers::{self, Draft, Refusal, Scope, SecretChange, Server, Settings, UserChoice};
+use crate::vault::keys;
 use crate::web::{
     FormFields, MainData, SessionUser, VerifiedForm, Viewer, forbidden, form_page_with,
     internal_error, not_found, redirect, ui,
@@ -452,6 +454,9 @@ fn update_in(
     if stored.slug != settings.slug {
         families::revoke_server(&tx, id, &stored.slug, at)?;
     }
+    if stored.upstream_url != settings.upstream_url {
+        keys::release(&tx, id, None, None, at, true)?;
+    }
     match servers::secret_change(&stored.upstream_url, settings, remove) {
         SecretChange::Keep => {}
         SecretChange::Drop => servers::set_secret(&tx, id, "", None)?,
@@ -511,6 +516,7 @@ fn assign_users_in(
     ids.dedup();
     for (user_id, server_id) in servers::set_assignments(&tx, Scope::Server(id), &ids)? {
         families::revoke_pair(&tx, user_id, server_id, at)?;
+        keys::release(&tx, server_id, Some(user_id), None, at, true)?;
     }
     let noun = if ids.len() == 1 { "user" } else { "users" };
     let detail = format!("assignments of {} set to {} {noun}", server.slug, ids.len());
@@ -560,6 +566,7 @@ fn remove_header_in(
     let Some(declared) = declared else {
         return Ok(Deleted::Missing);
     };
+    keys::release(&tx, id, None, Some(header_id), at, false)?;
     custom_headers::remove(&tx, id, header_id)?;
     let detail = format!("removed header {}", declared.lower);
     record(&tx, at, actor, Some(id), &server.slug, &detail)?;
@@ -708,11 +715,12 @@ async fn server_page(
             let users = servers::user_choices(conn, id)?;
             let tools = catalog::names(conn, id)?;
             let headers = custom_headers::load(conn, id)?;
-            Ok((users, tools, headers))
+            let stored = stored_counts(conn, id)?;
+            Ok((users, tools, headers, stored))
         })
         .await
     {
-        Ok((users, tools, headers)) => {
+        Ok((users, tools, headers, stored)) => {
             let lockdown = effective_lockdown(server);
             let data = MainData {
                 nav: panel_nav(viewer, "/admin/servers"),
@@ -721,7 +729,7 @@ async fn server_page(
             };
             form_page_with(viewer, status, "server", "Server", &data, |csrf| {
                 html! {
-                    (server_body(csrf, server, shown, &users, &tools, &headers))
+                    (server_body(csrf, server, shown, &users, &tools, (&headers, &stored)))
                 }
             })
         }
@@ -759,7 +767,17 @@ pub async fn post_refresh_tools(
         Err(err) => return internal_error("tool refresh", &err),
     };
     let outcome = match upstream::target(&state, id).await {
-        Ok(Some(target)) => catalog::refresh(&state, &target, None).await.map(|_| ()),
+        Ok(Some(target)) => {
+            let session = form.viewer.presented_session().map(str::to_owned);
+            let own = match own_values(&state, actor.id, id, &target.url, session).await {
+                Ok(own) => own,
+                Err(err) => return internal_error("tool refresh", &err),
+            };
+            let limit = upstream::time_limit(&state);
+            catalog::refresh_within(&state, &target, limit, None, &own)
+                .await
+                .map(|_| ())
+        }
         Ok(None) => return not_found(),
         Err(TargetError::Secret) => {
             match catalog::fail(&state, id, RefreshError::Unavailable).await {
@@ -782,6 +800,39 @@ pub async fn post_refresh_tools(
         Ok(()) => redirect(&format!("/admin/servers/{id}")),
         Err(err) => internal_error("tool refresh record", &err),
     }
+}
+
+/// The pressing admin's own stored values for the server's declared headers, opened for `url` with the
+/// admin's browser session. None when the switch is off, the admin has none or the session holds no key.
+async fn own_values(
+    state: &AppState,
+    user: i64,
+    server: i64,
+    url: &str,
+    session: Option<String>,
+) -> Result<Vec<(HeaderName, HeaderValue)>, DbError> {
+    let keys = Arc::clone(&state.keys);
+    let url = url.to_owned();
+    state
+        .db
+        .call(move |conn| {
+            let config = custom_headers::load(conn, server)?;
+            if !config.store || config.declared.is_empty() {
+                return Ok(Vec::new());
+            }
+            let via = session.as_deref().map(Via::Session);
+            let opened = values::open_for(conn, &keys, user, server, &url, via, false)?;
+            Ok(opened
+                .stored
+                .into_iter()
+                .filter_map(|(name, value)| {
+                    HeaderName::from_bytes(name.as_bytes())
+                        .ok()
+                        .map(|name| (name, value))
+                })
+                .collect())
+        })
+        .await
 }
 
 /// The server page again, saying the gateway is busy in the tool list's notice. The notice is not stored.
@@ -963,7 +1014,7 @@ fn header_refusal_text(refusal: AddRefusal) -> &'static str {
 fn headers_section(
     csrf: &str,
     server: &Server,
-    headers: &ServerHeaders,
+    (headers, stored, assigned): (&ServerHeaders, &[(i64, i64)], usize),
     header: &HeaderForm,
 ) -> Markup {
     let path = format!("/admin/servers/{}", server.id);
@@ -988,12 +1039,18 @@ fn headers_section(
                             tr {
                                 th scope="col" { "Header" }
                                 th scope="col" { "Required" }
+                                th scope="col" { "Stored by" }
                                 th scope="col" { "Action" }
                             }
                         }
                         tbody {
                             @for declared in &headers.declared {
-                                (header_row(csrf, &path, declared))
+                                (header_row(
+                                    csrf,
+                                    &path,
+                                    declared,
+                                    (headers.store, stored_for(stored, declared.id), assigned),
+                                ))
                             }
                         }
                     }
@@ -1057,12 +1114,24 @@ fn headers_section(
 }
 
 /// One declared header as a row: its name, whether it is required, and its remove form.
-fn header_row(csrf: &str, path: &str, declared: &Declared) -> Markup {
+fn header_row(
+    csrf: &str,
+    path: &str,
+    declared: &Declared,
+    (store, stored, assigned): (bool, i64, usize),
+) -> Markup {
     let required = if declared.required { "yes" } else { "no" };
     html! {
-        tr data-header=(declared.lower) data-required=(required) {
+        tr data-header=(declared.lower) data-required=(required) data-stored=(stored) {
             td { code { (declared.name) } }
             td { (if declared.required { "Yes" } else { "No" }) }
+            td {
+                @if store {
+                    (stored) " of " (assigned) " " (if assigned == 1 { "user" } else { "users" })
+                } @else {
+                    "Not stored"
+                }
+            }
             td {
                 form method="post" action=(format!("{path}/headers/{}/remove", declared.id)) {
                     input type="hidden" name="csrf" value=(csrf);
@@ -1071,6 +1140,25 @@ fn header_row(csrf: &str, path: &str, declared: &Declared) -> Markup {
             }
         }
     }
+}
+
+/// How many users stored a value, per declared header id of the server.
+fn stored_counts(conn: &Connection, server: i64) -> rusqlite::Result<Vec<(i64, i64)>> {
+    let mut statement = conn.prepare(
+        "SELECT h.id, COUNT(v.user_id) FROM server_headers h \
+         LEFT JOIN user_header_values v ON v.header_id = h.id \
+         WHERE h.server_id = ?1 GROUP BY h.id",
+    )?;
+    statement
+        .query_map(params![server], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
+}
+
+fn stored_for(counts: &[(i64, i64)], header: i64) -> i64 {
+    counts
+        .iter()
+        .find(|(id, _)| *id == header)
+        .map_or(0, |(_, count)| *count)
 }
 
 /// The lock-down state as a status: a word with its marker. Answering without the gateway is strong.
@@ -1178,7 +1266,7 @@ fn server_body(
     shown: &Shown<'_>,
     users: &[UserChoice],
     tools: &[String],
-    headers: &ServerHeaders,
+    (headers, stored): (&ServerHeaders, &[(i64, i64)]),
 ) -> Markup {
     let path = format!("/admin/servers/{}", server.id);
     let note = lockdown_note(&server.lockdown);
@@ -1223,7 +1311,7 @@ fn server_body(
                 }
             }
         }
-        (headers_section(csrf, server, headers, &shown.header))
+        (headers_section(csrf, server, (headers, stored, assigned), &shown.header))
         section.part aria-labelledby="tools-title" {
             div.part-head {
                 h2 id="tools-title" { "Tools " span.count { (tools.len()) } }

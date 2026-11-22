@@ -1818,6 +1818,7 @@ fn a_caller_debug_text_never_shows_the_token_hash() {
         client_name: CLIENT.to_owned(),
         token_hash: hash.clone(),
         admitted: NOW,
+        values_version: 0,
     };
     let text = format!("{caller:?}");
     assert!(

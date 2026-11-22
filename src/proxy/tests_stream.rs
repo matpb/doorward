@@ -131,6 +131,7 @@ enum Cut {
     Reset,
     Expire,
     Unassign,
+    Values,
 }
 
 /// Applies `how` to `user`, whose access token is `token`, on the server of `demo`.
@@ -159,6 +160,13 @@ fn cut(demo: &Demo, user: i64, token: &str, how: Cut) {
                 params![user, demo.server],
             )
             .expect("unassign");
+        }
+        Cut::Values => {
+            conn.execute(
+                "UPDATE users SET values_version = values_version + 1 WHERE id = ?1",
+                params![user],
+            )
+            .expect("change the stored values");
         }
     }
 }
@@ -434,6 +442,11 @@ async fn a_password_reset_ends_an_open_stream() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_change_of_the_users_stored_values_ends_an_open_stream() {
+    a_cut_off_ends_an_open_stream(Cut::Values).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_expired_access_token_does_not_cut_the_answer_to_a_post() {
     let demo = demo().await;
     demo.gw.seed(demo.server, &["echo"]);
@@ -593,6 +606,11 @@ async fn a_password_reset_does_not_end_another_users_stream() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unassigned_user_does_not_end_another_users_stream() {
     a_cut_off_spares_another_users_stream(Cut::Unassign).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_of_stored_values_does_not_end_another_users_stream() {
+    a_cut_off_spares_another_users_stream(Cut::Values).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

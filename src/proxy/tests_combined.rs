@@ -89,6 +89,7 @@ fn caller(user_id: i64) -> Caller {
         client_name: "test client".to_owned(),
         token_hash: "hash".to_owned(),
         admitted: 0,
+        values_version: 0,
     }
 }
 
@@ -1031,6 +1032,7 @@ async fn combined_caller(state: &AppState, user_id: i64) -> Caller {
         client_name: "test client".to_owned(),
         token_hash: token_hash(&access),
         admitted: now,
+        values_version: 0,
     }
 }
 
@@ -1044,6 +1046,7 @@ fn same_family(caller: &Caller) -> Caller {
         client_name: caller.client_name.clone(),
         token_hash: caller.token_hash.clone(),
         admitted: caller.admitted,
+        values_version: caller.values_version,
     }
 }
 

@@ -289,7 +289,11 @@ fn target_at(fx: &Fixture, url: &str) -> Target {
 }
 
 fn owned(user_id: i64, family_id: i64) -> Owner {
-    Owner { user_id, family_id }
+    Owner {
+        user_id,
+        family_id,
+        values_version: 0,
+    }
 }
 
 fn list() -> Ask<'static> {
@@ -1553,4 +1557,40 @@ async fn stateless_makes_each_link_once_and_tells_its_form() {
         "the session link is made with one initialize"
     );
     assert_eq!(links.len(), 2, "one link per owner and server");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_link_made_under_other_stored_values_is_not_reused() {
+    let up = start(Behave::default()).await;
+    let fx = fixture().await;
+    let links = Links::new();
+    let target = target_at(&fx, up.url());
+    let before = owned(1, 1);
+    ask(&links, &fx.state, before, &target, list())
+        .await
+        .expect("the first link");
+    let first = links
+        .generation_of(before, fx.server_id)
+        .expect("the first link is kept");
+    ask(&links, &fx.state, before, &target, list())
+        .await
+        .expect("the same numbered request reuses it");
+    assert_eq!(links.generation_of(before, fx.server_id), Some(first));
+    assert_eq!(up.count("initialize"), 1);
+
+    let after = Owner {
+        values_version: 1,
+        ..before
+    };
+    ask(&links, &fx.state, after, &target, list())
+        .await
+        .expect("a request after a change makes a new link");
+    let second = links
+        .generation_of(after, fx.server_id)
+        .expect("the new link is kept");
+    assert_ne!(
+        first, second,
+        "a changed values version must not reuse the link"
+    );
+    assert_eq!(up.count("initialize"), 2);
 }

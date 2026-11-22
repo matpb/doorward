@@ -42,6 +42,8 @@ pub struct Caller {
     pub token_hash: String,
     /// The clock's second when the request passed the bearer check.
     pub admitted: i64,
+    /// The user's `values_version` when the request passed the bearer check.
+    pub values_version: i64,
 }
 
 /// The outcome of a re-check: the caller still passes, has lost access, or the check could not be made.
@@ -161,7 +163,12 @@ pub async fn still_valid_at(state: &AppState, caller: &Caller, slug: &str, at: i
         .call(move |conn| find_caller(conn, &hash, at, Some(&slug)))
         .await
     {
-        Ok(Some(found)) if found.family_id == caller.family_id => Recheck::Live,
+        Ok(Some(found))
+            if found.family_id == caller.family_id
+                && found.values_version == caller.values_version =>
+        {
+            Recheck::Live
+        }
         Ok(_) => Recheck::Lost,
         Err(err) => {
             report::failure("access check", &err);
@@ -188,13 +195,17 @@ pub async fn combined_still_valid_at(
         .db
         .call(move |conn| {
             conn.query_row(COMBINED_SQL, params![hash, at, server_id], |row| {
-                row.get::<_, i64>(0)
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
             })
             .optional()
         })
         .await
     {
-        Ok(Some(family)) if family == caller.family_id => Recheck::Live,
+        Ok(Some((family, version)))
+            if family == caller.family_id && version == caller.values_version =>
+        {
+            Recheck::Live
+        }
         Ok(_) => Recheck::Lost,
         Err(err) => {
             report::failure("access check", &err);
@@ -256,7 +267,7 @@ fn resource_of(state: &AppState, target: Target<'_>) -> String {
 }
 
 /// The token of the only Authorization header, when it is `Bearer <token>` in the exact shape.
-pub(super) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     let mut values = headers.get_all(AUTHORIZATION).iter();
     let value = match (values.next(), values.next()) {
         (Some(value), None) => value,
@@ -271,7 +282,7 @@ fn is_base64url(byte: u8) -> bool {
 }
 
 /// The token row, its family and its user, when every check passes for the path.
-const CHECK_SQL: &str = "SELECT f.user_id, u.email, f.id, f.server_id, f.client_name \
+const CHECK_SQL: &str = "SELECT f.user_id, u.email, f.id, f.server_id, f.client_name, u.values_version \
     FROM access_tokens a \
     JOIN token_families f ON f.id = a.family_id \
     JOIN users u ON u.id = f.user_id \
@@ -285,7 +296,7 @@ const CHECK_SQL: &str = "SELECT f.user_id, u.email, f.id, f.server_id, f.client_
 
 /// The family of the caller's combined token when it passes every check for `/mcp` and the user is
 /// assigned to the server in `?3`.
-const COMBINED_SQL: &str = "SELECT f.id FROM access_tokens a \
+const COMBINED_SQL: &str = "SELECT f.id, u.values_version FROM access_tokens a \
     JOIN token_families f ON f.id = a.family_id \
     JOIN users u ON u.id = f.user_id \
     WHERE a.token_hash = ?1 AND a.expires_at > ?2 \
@@ -310,6 +321,7 @@ fn find_caller(
             client_name: row.get(4)?,
             token_hash: hash.to_owned(),
             admitted: now,
+            values_version: row.get(5)?,
         })
     })
     .optional()

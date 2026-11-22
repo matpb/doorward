@@ -241,6 +241,26 @@ runs); a first key's salt is derived from the server key and the user id so that
 sign-ins that race make one key. Every wrap change shares the transaction of the row change it
 follows; `session::revoke_all` and the sweep null the wraps of codes and tokens.
 
+Where a value is used. `POST /account/values/{slug}` (`accounts::values`) seals each value under the
+data key that the browser session's wrap opens, and writes the row, the activity row, the
+`values_version` bump and (for a replaced or removed value) the deletion of the user's
+`upstream_sessions` rows on that server in one transaction. On a call, `proxy::values` opens the key
+from the access token's wrap and each of the user's rows for that server under the upstream address
+the request goes to, in the request's own database call; the values reach `custom_headers::resolve`
+as sensitive header values and are dropped with the request. A held value whose key does not open is a
+refusal (`Reconnect this app`), never a request without it. Combined requests carry the address with
+their resolved headers and refuse a server whose target address differs. `keys::release` deletes a
+server's values (one user's, one header's, or all) with the version bump and session deletion; the
+panel calls it on an upstream address change and on an unassignment (each writes a `values_dropped`
+row per user) and before a header removal (the admin's own row is the record).
+
+What ends a session or stream. `Caller.values_version` is the user's number when the request was
+admitted; `still_valid_at` and `combined_still_valid_at` compare it with the stored one, so an open
+stream or a buffered answer of a user whose values changed ends as a lost access does. A link
+(`proxy::links`) records the number in its `Owner` and is dropped unused when a request comes with
+another number. An upstream session id of the user on that server is forgotten when a value is
+replaced or removed, so the client's old session id answers `404`.
+
 ## Tests
 
 `tests/common` provides `TestGateway`, `FakeUpstream`, `MailCatcher` and `TestClient`.

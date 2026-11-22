@@ -59,23 +59,34 @@ pub fn invitation(link: &str, host: &str) -> Parts {
 }
 
 pub fn reset(link: &str, host: &str) -> Parts {
+    reset_with(link, host, false)
+}
+
+/// The reset mail; with `drops_values` it also says that resetting deletes the user's stored credentials.
+pub fn reset_with(link: &str, host: &str, drops_values: bool) -> Parts {
     let subject = "Reset your Doorward password";
     let asked = "Someone asked to reset the password of your Doorward account.";
+    let dropped = if drops_values {
+        format!("{RESET_DROPS}\n\n")
+    } else {
+        String::new()
+    };
+    let mut body = vec![asked, RESET_NOTE];
+    if drops_values {
+        body.push(RESET_DROPS);
+    }
+    body.push("Set a new one with this link. It works once.");
     Parts {
         subject: subject.to_owned(),
         text: format!(
-            "{asked}\n\nSet a new password at this link. It works once:\n\n{link}\n\n{RESET_NOTE}\n\n{}\n",
+            "{asked}\n\nSet a new password at this link. It works once:\n\n{link}\n\n{RESET_NOTE}\n\n{dropped}{}\n",
             closing_line(host)
         ),
         html: document(&Slots {
             subject,
             heading: subject,
             facts: &[],
-            body: &[
-                asked,
-                RESET_NOTE,
-                "Set a new one with this link. It works once.",
-            ],
+            body: &body,
             button: "Set a new password",
             link,
             host,
@@ -135,6 +146,7 @@ const MONO: &str = "ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation M
 const CAPTION: &str = "Or copy this address into your browser:";
 const CLOSING: &str = "Doorward decides who reaches which MCP server and which tool, and keeps a record of every call.";
 const RESET_NOTE: &str = "If this was not you, ignore this mail. Your password stays the same.";
+const RESET_DROPS: &str = "Resetting deletes the credentials you stored for servers.";
 const NBSP: char = '\u{a0}';
 const NL: PreEscaped<&str> = PreEscaped("\n");
 const MSO_OPEN: &str = r#"<!--[if mso]><table role="presentation" width="560" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->"#;
@@ -543,6 +555,7 @@ mod tests {
     const SERVER: &str = "Internal documentation search and retrieval (staging mirror)";
     const SPAN: &str = r#"<span style="display:inline-block;max-width:100%;">"#;
     const RESET_NOTE: &str = "If this was not you, ignore this mail. Your password stays the same.";
+    const RESET_DROPS: &str = "Resetting deletes the credentials you stored for servers.";
     const INVISIBLE: [char; 8] = [
         '\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}', '\u{feff}', '\u{00ad}', '\u{200e}',
         '\u{200f}',
@@ -626,6 +639,26 @@ mod tests {
             reset(RESET_LINK, GATEWAY).text,
             format!(
                 "Someone asked to reset the password of your Doorward account.\n\nSet a new password at this link. It works once:\n\n{RESET_LINK}\n\n{RESET_NOTE}\n\nSent by the Doorward gateway at {GATEWAY}. Doorward decides who reaches which MCP server and which tool, and keeps a record of every call.\n"
+            )
+        );
+    }
+
+    #[test]
+    fn the_reset_mail_names_the_deleted_credentials_only_when_asked() {
+        let plain = reset_with(RESET_LINK, GATEWAY, false);
+        let reference = reset(RESET_LINK, GATEWAY);
+        assert_eq!(plain.text, reference.text);
+        assert_eq!(plain.html, reference.html);
+        let words = "Resetting deletes the credentials you stored for&nbsp;servers";
+        assert!(!plain.text.contains(RESET_DROPS));
+        assert!(!plain.html.contains(words));
+
+        let dropping = reset_with(RESET_LINK, GATEWAY, true);
+        assert!(dropping.html.contains(words));
+        assert_eq!(
+            dropping.text,
+            format!(
+                "Someone asked to reset the password of your Doorward account.\n\nSet a new password at this link. It works once:\n\n{RESET_LINK}\n\n{RESET_NOTE}\n\n{RESET_DROPS}\n\nSent by the Doorward gateway at {GATEWAY}. Doorward decides who reaches which MCP server and which tool, and keeps a record of every call.\n"
             )
         );
     }

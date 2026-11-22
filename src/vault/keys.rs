@@ -365,6 +365,60 @@ pub fn forget(tx: &Connection, user: i64) -> rusqlite::Result<usize> {
     Ok(deleted)
 }
 
+/// Deletes stored values of a server (one user's, one header's, or all), then raises each holder's
+/// `values_version` and drops their upstream sessions there; `record` adds a `values_dropped` row each.
+pub fn release(
+    tx: &Connection,
+    server: i64,
+    user: Option<i64>,
+    header: Option<i64>,
+    now: i64,
+    record: bool,
+) -> rusqlite::Result<()> {
+    let holders: Vec<(i64, String, i64)> = {
+        let mut statement = tx.prepare(
+            "SELECT v.user_id, u.email, COUNT(*) FROM user_header_values v \
+             JOIN server_headers h ON h.id = v.header_id JOIN users u ON u.id = v.user_id \
+             WHERE h.server_id = ?1 AND (?2 IS NULL OR v.user_id = ?2) AND (?3 IS NULL OR h.id = ?3) \
+             GROUP BY v.user_id ORDER BY v.user_id",
+        )?;
+        statement
+            .query_map(params![server, user, header], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    if holders.is_empty() {
+        return Ok(());
+    }
+    let slug: String = tx.query_row(
+        "SELECT slug FROM servers WHERE id = ?1",
+        params![server],
+        |row| row.get(0),
+    )?;
+    tx.execute(
+        "DELETE FROM user_header_values WHERE header_id IN \
+         (SELECT id FROM server_headers WHERE server_id = ?1 AND (?3 IS NULL OR id = ?3)) \
+         AND (?2 IS NULL OR user_id = ?2)",
+        params![server, user, header],
+    )?;
+    for (holder, email, count) in &holders {
+        tx.execute(
+            "UPDATE users SET values_version = values_version + 1 WHERE id = ?1",
+            params![holder],
+        )?;
+        tx.execute(
+            "DELETE FROM upstream_sessions WHERE server_id = ?1 AND user_id = ?2",
+            params![server, holder],
+        )?;
+        if record {
+            let count = usize::try_from(*count).unwrap_or(usize::MAX);
+            audit::values_dropped_on(tx, now, *holder, email, (server, &slug), count)?;
+        }
+    }
+    Ok(())
+}
+
 /// Sign-in, setup and invitation: opens or makes the data key and wraps it onto the new session.
 pub fn sign_in(
     tx: &Connection,

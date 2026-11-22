@@ -14,6 +14,7 @@ use crate::oauth::families;
 use crate::policy;
 use crate::proxy::catalog;
 use crate::servers::{self, Scope, ServerChoice};
+use crate::vault::keys;
 use crate::web::{
     MainData, Role, SessionUser, VerifiedForm, Viewer, forbidden, form_page_with, internal_error,
     not_found, page_with, redirect, ui,
@@ -428,6 +429,7 @@ fn assign_servers_in(
     ids.dedup();
     for (user_id, server_id) in servers::set_assignments(&tx, Scope::User(id), &ids)? {
         families::revoke_pair(&tx, user_id, server_id, now)?;
+        keys::release(&tx, server_id, Some(user_id), None, now, true)?;
     }
     let noun = if ids.len() == 1 { "server" } else { "servers" };
     let detail = format!(

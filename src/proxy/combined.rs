@@ -19,15 +19,14 @@ use tokio::time::{Instant, timeout, timeout_at};
 use super::budget::Reservation;
 use super::catalog::{self, RefreshError, SESSION, STATELESS};
 use super::combined_stream::{self, Call};
-use super::handle::{
-    INVALID, NOT_LISTED, Owed, TOOL_LIMIT, answer_for, bare, cut, not_allowed, resolve_server,
-};
+use super::handle::{INVALID, NOT_LISTED, Owed, TOOL_LIMIT, answer_for, bare, cut, not_allowed};
 use super::intake::{Intake, intake};
 use super::links::{self, Answer, Ask, Owner};
 use super::stream::{ACCESS_LOST, CHECK_FAILED, Owned, detail_of};
 use super::upstream::{
     self, Cause, Fault, Kind, LIST_LIMIT, TargetError, budget_refused, time_limit,
 };
+use super::values::{self, Reached};
 use crate::app::AppState;
 use crate::audit::{self, OwnedEvent};
 use crate::custom_headers::Resolved;
@@ -253,10 +252,11 @@ const NOT_ASSIGNED: &str = "the server is not assigned";
 /// request sends unusably on any of them is refused for the whole request, before any upstream.
 async fn resolutions(
     state: &AppState,
-    user: i64,
+    caller: &Caller,
     headers: &HeaderMap,
     id: Option<&Value>,
-) -> Result<HashMap<i64, Resolved>, Response> {
+) -> Result<HashMap<i64, Reached>, Response> {
+    let user = caller.user_id;
     let ids = match state.db.call(move |conn| assigned_ids(conn, user)).await {
         Ok(ids) => ids,
         Err(err) => {
@@ -266,8 +266,11 @@ async fn resolutions(
     };
     let mut resolved = HashMap::new();
     for server_id in ids {
-        match resolve_server(state, server_id, headers).await {
-            Ok(Resolved::Bad) => {
+        match values::resolve(state, caller, headers, server_id, None).await {
+            Ok(Reached {
+                resolved: Resolved::Bad,
+                ..
+            }) => {
                 return Err(answer::error(StatusCode::BAD_REQUEST, id, -32600, INVALID));
             }
             Ok(outcome) => {
@@ -323,7 +326,7 @@ async fn call(
             );
         }
     };
-    let resolved = match resolutions(state, caller.user_id, headers, message.id.as_ref()).await {
+    let resolved = match resolutions(state, caller, headers, message.id.as_ref()).await {
         Ok(resolved) => resolved,
         Err(refusal) => return refusal,
     };
@@ -357,8 +360,12 @@ async fn call(
         let detail = format!("rule {}", verdict.rule.unwrap_or_default());
         return deny_call(state, caller, started, id, name, row, &detail).await;
     }
-    let user_headers = match resolved.get(&server_id) {
-        Some(Resolved::Ready(user_headers)) => user_headers.as_slice(),
+    let (user_headers, bound) = match resolved.get(&server_id) {
+        Some(Reached {
+            resolved: Resolved::Ready(user_headers),
+            url,
+            ..
+        }) => (user_headers.as_slice(), url.as_str()),
         _ => {
             let owed = Owed::of(owned_of(state, caller, started, slug, server_id), tool);
             return unavailable(owed, slug, Cause::NoConnection).await;
@@ -366,7 +373,16 @@ async fn call(
     };
     let definition = match found.definition {
         Some(definition) => definition,
-        None => match refetch(state, caller, &found.server, tool, started, user_headers).await {
+        None => match refetch(
+            state,
+            caller,
+            &found.server,
+            tool,
+            started,
+            (user_headers, bound),
+        )
+        .await
+        {
             Ok(Some(definition)) => definition,
             Ok(None) => {
                 return deny_call(state, caller, started, id, name, row, NOT_LISTED).await;
@@ -389,9 +405,14 @@ async fn call(
             return bare(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
+    if target.url != bound {
+        let owed = Owed::of(owned_of(state, caller, started, slug, server_id), tool);
+        return unavailable(owed, slug, Cause::NoConnection).await;
+    }
     let owner = Owner {
         user_id: user,
         family_id: caller.family_id,
+        values_version: caller.values_version,
     };
     let stateless = match state
         .links
@@ -539,7 +560,7 @@ async fn refetch(
     server: &Assigned,
     tool: &str,
     started: std::time::Instant,
-    user_headers: &[(HeaderName, HeaderValue)],
+    (user_headers, bound): (&[(HeaderName, HeaderValue)], &str),
 ) -> Result<Option<String>, Response> {
     let server_id = server.server_id;
     let mut last = state.turns.misses.lock(server_id).await;
@@ -565,13 +586,22 @@ async fn refetch(
     let owner = Owner {
         user_id: caller.user_id,
         family_id: caller.family_id,
+        values_version: caller.values_version,
     };
     let task_state = state.clone();
     let slug = server.slug.clone();
     let tool_name = tool.to_owned();
     let headers = user_headers.to_vec();
+    let bound = bound.to_owned();
     let refresh = tokio::spawn(async move {
-        let found = refresh_list(&task_state, owner, &slug, server_id, &tool_name, &headers).await;
+        let found = refresh_list(
+            &task_state,
+            owner,
+            (&slug, server_id),
+            &tool_name,
+            (&headers, &bound),
+        )
+        .await;
         *last = Some(task_state.clock.now().unix_timestamp());
         found
     });
@@ -603,13 +633,12 @@ enum Refetch {
 async fn refresh_list(
     state: &AppState,
     owner: Owner,
-    slug: &str,
-    server_id: i64,
+    (slug, server_id): (&str, i64),
     tool: &str,
-    user_headers: &[(HeaderName, HeaderValue)],
+    (user_headers, bound): (&[(HeaderName, HeaderValue)], &str),
 ) -> Refetch {
     let deadline = Instant::now() + time_limit(state).min(LIST_LIMIT);
-    let fetched = match fetch(state, owner, server_id, deadline, user_headers).await {
+    let fetched = match fetch(state, owner, server_id, deadline, (user_headers, bound)).await {
         Ok(fetched) => fetched,
         Err(cause) => {
             refuse(state, slug, server_id, cause).await;
@@ -778,7 +807,7 @@ async fn list(
     if param(&message.value, "cursor").is_some_and(|cursor| !cursor.is_null()) {
         return answer::error(StatusCode::OK, Some(id), -32602, "Invalid params");
     }
-    let resolved = match resolutions(state, caller.user_id, headers, message.id.as_ref()).await {
+    let resolved = match resolutions(state, caller, headers, message.id.as_ref()).await {
         Ok(resolved) => resolved,
         Err(refusal) => return refusal,
     };
@@ -809,7 +838,7 @@ async fn collect(
     state: &AppState,
     caller: &Caller,
     deadline: Instant,
-    resolved: &HashMap<i64, Resolved>,
+    resolved: &HashMap<i64, Reached>,
 ) -> Result<(Vec<Value>, Vec<Reservation>), Response> {
     let user = caller.user_id;
     let assigned = match state.db.call(move |conn| assigned(conn, user)).await {
@@ -825,18 +854,31 @@ async fn collect(
     let owner = Owner {
         user_id: caller.user_id,
         family_id: caller.family_id,
+        values_version: caller.values_version,
     };
     let outcomes = join_all(assigned.iter().map(|server| async move {
         match resolved.get(&server.server_id) {
-            Some(Resolved::Ready(user_headers)) => {
-                Some(fetch(state, owner, server.server_id, deadline, user_headers).await)
-            }
+            Some(Reached {
+                resolved: Resolved::Ready(user_headers),
+                url,
+                ..
+            }) => Some(
+                fetch(
+                    state,
+                    owner,
+                    server.server_id,
+                    deadline,
+                    (user_headers, url),
+                )
+                .await,
+            ),
             _ => None,
         }
     }))
     .await;
     let mut fetched: Vec<(usize, Fetched)> = Vec::new();
     let mut only_budget = true;
+    let all_left_out = outcomes.iter().all(Option::is_none);
     for (position, outcome) in outcomes.into_iter().enumerate() {
         match outcome {
             None => only_budget = false,
@@ -861,6 +903,9 @@ async fn collect(
         }
     }
     if fetched.is_empty() {
+        if all_left_out {
+            return Ok((Vec::new(), Vec::new()));
+        }
         return Err(if only_budget {
             answer::busy()
         } else {
@@ -1088,9 +1133,9 @@ async fn fetch(
     owner: Owner,
     server_id: i64,
     deadline: Instant,
-    user_headers: &[(HeaderName, HeaderValue)],
+    carried: (&[(HeaderName, HeaderValue)], &str),
 ) -> Result<Fetched, Cause> {
-    match timeout_at(deadline, fetch_pages(state, owner, server_id, user_headers)).await {
+    match timeout_at(deadline, fetch_pages(state, owner, server_id, carried)).await {
         Ok(fetched) => fetched,
         Err(_) => Err(Cause::NoAnswerInTime),
     }
@@ -1102,7 +1147,7 @@ async fn fetch_pages(
     state: &AppState,
     owner: Owner,
     server_id: i64,
-    user_headers: &[(HeaderName, HeaderValue)],
+    (user_headers, bound): (&[(HeaderName, HeaderValue)], &str),
 ) -> Result<Fetched, Cause> {
     let target = match upstream::target(state, server_id).await {
         Ok(Some(target)) => target,
@@ -1113,6 +1158,9 @@ async fn fetch_pages(
             return Err(Cause::Written);
         }
     };
+    if target.url != bound {
+        return Err(Cause::NoConnection);
+    }
     let limit = state.config.limits.tools_list_bytes;
     let mut tools = Vec::new();
     let mut cursor: Option<String> = None;

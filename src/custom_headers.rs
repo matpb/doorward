@@ -53,6 +53,8 @@ pub enum Resolved {
     Missing {
         header: String,
     },
+    /// The caller's connection holds no openable key and a value is held or needed: nothing is sent.
+    Locked,
 }
 
 /// A header name a server may declare: a valid secret header name, not one the gateway refuses.

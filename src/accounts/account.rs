@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use maud::{Markup, html};
 
+use super::values::{self, Part, ServerView};
 use crate::app::AppState;
 use crate::oauth::connected::{self, Connected};
 use crate::web::ui::{self, Note};
@@ -13,9 +14,13 @@ pub async fn get_account(State(state): State<AppState>, viewer: Viewer) -> Respo
         return redirect("/login");
     };
     let now = state.clock.now().unix_timestamp();
-    match connected::list(&state.db, user.id, now).await {
-        Ok(clients) => account_page(&viewer, StatusCode::OK, None, &clients),
-        Err(err) => internal_error("connected clients", &err),
+    let clients = match connected::list(&state.db, user.id, now).await {
+        Ok(clients) => clients,
+        Err(err) => return internal_error("connected clients", &err),
+    };
+    match values::part_for(&state, &viewer).await {
+        Ok(part) => account_page_with(&viewer, StatusCode::OK, None, &clients, &part),
+        Err(err) => internal_error("stored values", &err),
     }
 }
 
@@ -26,6 +31,17 @@ pub fn account_page(
     status: StatusCode,
     error: Option<&str>,
     clients: &[Connected],
+) -> Response {
+    account_page_with(viewer, status, error, clients, &Part::default())
+}
+
+/// `account_page` with the credentials part.
+pub fn account_page_with(
+    viewer: &Viewer,
+    status: StatusCode,
+    error: Option<&str>,
+    clients: &[Connected],
+    part: &Part,
 ) -> Response {
     let Some(user) = viewer.user.as_ref() else {
         return redirect("/login");
@@ -43,11 +59,22 @@ pub fn account_page(
         ..MainData::default()
     };
     form_page_with(viewer, status, "account", "Your account", &data, |csrf| {
-        account_body(csrf, &user.email, error, clients)
+        account_body_with(csrf, &user.email, error, clients, part)
     })
 }
 
+#[cfg(test)]
 fn account_body(csrf: &str, email: &str, error: Option<&str>, clients: &[Connected]) -> Markup {
+    account_body_with(csrf, email, error, clients, &Part::default())
+}
+
+fn account_body_with(
+    csrf: &str,
+    email: &str,
+    error: Option<&str>,
+    clients: &[Connected],
+    part: &Part,
+) -> Markup {
     let new_note = Note::Hint("12 to 256 characters.");
     let new_described = new_note.describer("new_password");
     html! {
@@ -100,6 +127,9 @@ fn account_body(csrf: &str, email: &str, error: Option<&str>, clients: &[Connect
                 }
             }
         }
+        @if !part.servers.is_empty() {
+            (credentials_part(csrf, email, part))
+        }
         section.part aria-labelledby="password-title" {
             div.part-head {
                 h2 id="password-title" { "Change password" }
@@ -137,6 +167,107 @@ fn account_body(csrf: &str, email: &str, error: Option<&str>, clients: &[Connect
             }
         }
     }
+}
+
+/// The part that holds one form per server that takes stored values.
+fn credentials_part(csrf: &str, email: &str, part: &Part) -> Markup {
+    html! {
+        section.part aria-labelledby="values-title" {
+            div.part-head {
+                h2 id="values-title" { "Your credentials" }
+                p { "Stored for you, sent with your calls, and never shown again." }
+            }
+            div.part-body {
+                @for server in &part.servers {
+                    (server_values(csrf, email, server, part))
+                }
+            }
+        }
+    }
+}
+
+/// One server's credentials form, or the lock note when the session cannot open the key.
+fn server_values(csrf: &str, email: &str, server: &ServerView, part: &Part) -> Markup {
+    let needs = if server.needs_values() { "yes" } else { "no" };
+    let refusal = part
+        .refusal
+        .as_ref()
+        .filter(|refusal| refusal.slug == server.slug);
+    html! {
+        section data-values-server=(server.slug) data-needs-values=(needs) {
+            h3 { (server.name) }
+            p { "Sent to " (server.host) " with your calls, as " (ui::email(email)) "." }
+            @if server.plain_http {
+                (ui::notice("warning", html! {
+                    p { "This server is reached over plain http. Your credentials travel unencrypted." }
+                }))
+            }
+            @if part.locked {
+                p.muted data-values-locked { (values::LOCKED) }
+            } @else {
+                form.flow method="post" action=(format!("/account/values/{}", server.slug)) {
+                    input type="hidden" name="csrf" value=(csrf);
+                    @if let Some(refusal) = refusal {
+                        (ui::refused(Some("The credentials were not saved."), refusal.message, None))
+                    }
+                    div.fields {
+                        @for header in &server.headers {
+                            (header_field(&server.slug, header))
+                        }
+                    }
+                    div.form-actions {
+                        button type="submit" data-kind="secondary" { "Save credentials" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One declared header: a write-only field with what is known of it, and the remove box when stored.
+fn header_field(slug: &str, header: &values::HeaderView) -> Markup {
+    let id = format!("value-{slug}-{}", header.id);
+    let hint_id = format!("{id}-hint");
+    let remove_id = format!("remove-{slug}-{}", header.id);
+    let state = if header.set_at.is_some() {
+        "set"
+    } else {
+        "unset"
+    };
+    ui::field(
+        &id,
+        &header.name,
+        false,
+        html! {
+            input id=(id) name=(format!("value_{}", header.id)) type="password" autocomplete="off"
+                aria-describedby=(hint_id);
+        },
+        ui::Note::Below(
+            &hint_id,
+            html! {
+                p.hint id=(hint_id) data-value-state=(state) data-header=(header.lower) {
+                    @if let Some(at) = header.set_at {
+                        "Stored " (values::day(at))
+                    } @else {
+                        "Not set"
+                        @if header.required {
+                            " " span { "Required" }
+                        }
+                    }
+                }
+                @if header.set_at.is_some() {
+                    (ui::check(
+                        &remove_id,
+                        &format!("remove_{}", header.id),
+                        Some("1"),
+                        false,
+                        "Remove the stored credential",
+                        None,
+                    ))
+                }
+            },
+        ),
+    )
 }
 
 #[cfg(test)]

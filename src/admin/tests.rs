@@ -4343,6 +4343,9 @@ fn every_activity_kind_has_a_plain_label_and_a_tone_where_it_needs_one() {
         ("redirect_blocked", "", "", "Redirect blocked", Some("bad")),
         ("tool_appeared", "", "", "New tool listed", None),
         ("unlock", "", "", "Gateway unlocked", None),
+        ("value_set", "", "", "Credential stored", None),
+        ("value_removed", "", "", "Credential removed", None),
+        ("values_dropped", "", "", "Credentials deleted", None),
         ("made_up_kind", "", "", "Made up kind", None),
     ];
     for (kind, decision, outcome, label, tone) in cases {

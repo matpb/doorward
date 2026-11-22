@@ -224,6 +224,7 @@ async fn combined_caller(state: &AppState) -> Caller {
         client_name: "test client".to_owned(),
         token_hash: token_hash(&access),
         admitted: now,
+        values_version: 0,
     }
 }
 
@@ -237,6 +238,7 @@ fn same(caller: &Caller) -> Caller {
         client_name: caller.client_name.clone(),
         token_hash: caller.token_hash.clone(),
         admitted: caller.admitted,
+        values_version: caller.values_version,
     }
 }
 

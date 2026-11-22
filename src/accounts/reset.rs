@@ -106,9 +106,28 @@ async fn send_reset_mail(state: &AppState, email: String) {
     }
     let link = format!("{}/reset/{token}", state.config.public_url);
     let host = templates::host_and_port(&state.config.public_url);
-    let message = templates::reset(&link, host).to(recipient);
+    let lookup = recipient.clone();
+    let holds = state
+        .db
+        .call(move |conn| holds_values(conn, &lookup))
+        .await
+        .unwrap_or_else(|err| {
+            report::failure("password reset", &err);
+            false
+        });
+    let message = templates::reset_with(&link, host, holds).to(recipient);
     // mail::send has already recorded any failure in the activity log.
     let _ = mail::send(state, "reset", message).await;
+}
+
+/// True when the account with this address has at least one stored value.
+fn holds_values(conn: &Connection, email: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM user_header_values v JOIN users u ON u.id = v.user_id \
+         WHERE u.email = ?1)",
+        params![email],
+        |row| row.get(0),
+    )
 }
 
 /// One transaction: the user must exist and be enabled, no reset in the last five minutes, and
@@ -319,6 +338,7 @@ fn reset_form(csrf: &str, error: Option<&str>) -> Markup {
     let described = note.describer("password");
     html! {
         h1 { "Choose a new password" }
+        p.muted data-reset-drops { "Resetting your password deletes the credentials you stored for servers." }
         @if error.is_some() {
             (ui::refused(Some("The password was not changed."), None, None))
         }

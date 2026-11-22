@@ -2555,7 +2555,7 @@ Rewritten tests (the old markup or sentence they pinned):
 
 ## Key layer of stored values (statements 84 and 85)
 
-Unit tests; `tests/s84_stored_values.rs` stays red until the account page route and the proxy land.
+Unit tests, then the route and the proxy tests below.
 
 1. `vault::tests` (statement 84): a wrap round trips with a token and with a password; a wrong
    token, password, salt, table, row, user, generation, server key or one flipped byte opens
@@ -2579,3 +2579,54 @@ Unit tests; `tests/s84_stored_values.rs` stays red until the account page route 
    `a_code_that_fails_pkce_keeps_its_wrap_and_a_wrong_verifier_issues_nothing`,
    `the_sweep_nulls_the_wrap_of_every_expired_or_used_row_and_keeps_live_ones` and
    `a_disconnect_and_a_revoke_all_leave_no_wrap_behind`.
+
+## s84_stored_values.rs and s87_value_leaks.rs (statements 82 to 87)
+
+Each test builds its own world: bob is assigned to the demo server, the header `X-Trace-Id` is
+declared and the store switch is on. The value is the canary `canary-7f3a9c51e2d44b06`.
+
+1. Statement 82: `a_stored_value_reaches_the_upstream_on_session_stateless_and_combined_calls`,
+   `a_value_stored_after_a_token_was_issued_is_used_by_its_next_call`,
+   `the_client_header_wins_with_pass_through_on_and_is_ignored_with_it_off`,
+   `two_servers_with_one_header_name_each_get_their_own_value`,
+   `a_second_users_calls_never_carry_the_first_users_value`,
+   `bad_values_are_refused_with_400_and_never_sent_back`,
+   `an_unassigned_server_and_a_server_with_the_switch_off_answer_404_on_the_values_route` and
+   `the_admin_server_page_shows_how_many_users_stored_a_value_and_never_the_value`; in
+   `s87_value_leaks.rs` `a_stored_value_of_4096_bytes_reaches_the_upstream_whole` and
+   `a_value_posted_with_its_remove_box_is_refused_and_changes_nothing`.
+2. Statement 83: `a_missing_or_partial_set_of_required_values_reaches_no_upstream_and_names_the_account_page`
+   (403 naming the account page, the server left out of `/mcp`, the consent page naming the server,
+   `data-needs-values` on the account page) and
+   `with_every_wrap_damaged_sign_in_consent_exchange_and_refresh_still_work_and_values_say_reconnect`.
+3. Statement 84: `a_copy_of_the_database_log_and_key_holds_no_value_and_opens_only_through_the_real_token`,
+   `a_wrap_or_value_moved_to_another_row_user_generation_server_header_or_address_does_not_open`,
+   `swapping_two_users_sealed_rows_in_the_live_database_gives_neither_the_others_value`,
+   `a_password_wrap_copied_before_a_change_does_not_open_values_stored_after_it` and
+   `two_sign_ins_of_a_user_without_a_key_at_the_same_moment_leave_one_key_and_two_sessions`.
+4. Statement 85: `no_copy_taken_afterwards_opens_a_redeemed_code_a_rotated_token_a_signed_out_session_or_a_disconnected_app`,
+   `after_a_password_change_old_tokens_open_nothing_and_new_connections_get_the_values`,
+   `after_a_reset_by_mail_the_values_are_gone_and_the_old_password_opens_nothing` (the reset page
+   says so too), `after_disable_and_enable_old_tokens_carry_no_wrap_and_values_work_after_sign_in`,
+   `parallel_refreshes_return_one_pair_and_a_replay_after_the_window_leaves_no_wrap` and
+   `disconnecting_one_app_leaves_another_app_of_the_same_user_working_with_the_values`; the
+   conditional reset mail line is `mail::templates::tests::the_reset_mail_names_the_deleted_credentials_only_when_asked`.
+5. Statement 86: `changing_the_upstream_address_in_the_panel_deletes_every_users_values`,
+   `editing_the_upstream_address_in_the_database_keeps_the_canary_from_the_new_upstream`,
+   `removing_a_declared_header_deletes_its_stored_values`,
+   `unassigning_a_user_deletes_that_users_values_for_the_server_and_nobody_elses` and
+   `deleting_the_server_deletes_every_stored_value`.
+6. Statement 87: `an_upstream_that_echoes_the_header_puts_the_canary_in_no_activity_row_or_admin_or_account_page`,
+   `storing_replacing_and_removing_a_value_each_write_an_activity_row_without_the_value`,
+   `the_lock_down_check_and_refresh_by_an_admin_with_no_value_carry_no_user_header_and_with_a_value_carry_it`,
+   `an_upstream_redirect_is_not_followed_and_the_redirect_target_sees_no_request` and
+   `after_a_replace_the_next_call_carries_the_new_value_and_an_old_session_is_refused_404`;
+   in `s87_value_leaks.rs` `storing_a_value_and_a_failed_call_write_no_line_holding_the_value`
+   (the real binary: its standard error holds no line with the value after a store, a refused
+   store, a call and a failed call).
+7. Units for the ends of streams and links (statement 87): `proxy::tests_stream`
+   `a_change_of_the_users_stored_values_ends_an_open_stream` and
+   `a_change_of_stored_values_does_not_end_another_users_stream`; `proxy::tests_links`
+   `a_link_made_under_other_stored_values_is_not_reused`; `proxy::values::tests` (an opened value is
+   marked sensitive, a secret that opens no wrap locks a held value, a value sealed for another
+   address is absent, no held value and no need means no key work).

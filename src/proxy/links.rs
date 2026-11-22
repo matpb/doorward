@@ -60,6 +60,8 @@ pub enum Form {
 pub struct Owner {
     pub user_id: i64,
     pub family_id: i64,
+    /// The user's `values_version` when the request was admitted; a link made under another number is not reused.
+    pub values_version: i64,
 }
 
 /// What the gateway asks an upstream. Nothing else of a client's request is ever sent.
@@ -255,7 +257,7 @@ impl Links {
         target: &Target,
         user_headers: &[(HeaderName, HeaderValue)],
     ) -> Result<Arc<Link>, Fault> {
-        match self.inner.usable(key, target) {
+        match self.inner.usable(key, target, owner.values_version) {
             Some(link) => Ok(link),
             None => self
                 .make(state, owner, key, target, user_headers)
@@ -295,7 +297,7 @@ impl Links {
         let user_headers = user_headers.to_vec();
         let task = tokio::spawn(async move {
             let _turn = gate.lock_owned().await;
-            if let Some(link) = inner.usable(key, &target) {
+            if let Some(link) = inner.usable(key, &target, owner.values_version) {
                 return Ok(link);
             }
             let form = match timeout(
@@ -340,6 +342,7 @@ impl Links {
 /// One link, as made. It keeps the target's URL and a digest of its secret, never the target.
 struct Link {
     generation: u64,
+    values_version: i64,
     url: String,
     secret: Option<Vec<u8>>,
     form: Form,
@@ -400,13 +403,13 @@ impl Inner {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The link for `key` when it serves `target`; a link for another target is dropped unused.
-    fn usable(&self, key: (i64, i64), target: &Target) -> Option<Arc<Link>> {
+    /// The link for `key` when it serves `target` under the user's values `version`; any other link is dropped unused.
+    fn usable(&self, key: (i64, i64), target: &Target, version: i64) -> Option<Arc<Link>> {
         let mut table = self.lock();
         let tick = table.tick();
         let entry = table.entries.get_mut(&key)?;
         let held = entry.link.as_ref()?;
-        if held.serves(target) {
+        if held.serves(target) && held.values_version == version {
             let held = Arc::clone(held);
             entry.used = tick;
             return Some(held);
@@ -464,6 +467,7 @@ impl Inner {
         let generation = self.generations.fetch_add(1, Ordering::Relaxed) + 1;
         let link = Arc::new(Link {
             generation,
+            values_version: owner.values_version,
             url: target.url.clone(),
             secret: digest(target.secret.as_ref()),
             form,

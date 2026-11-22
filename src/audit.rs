@@ -167,6 +167,28 @@ pub async fn record_refused_now(state: &AppState, event: OwnedEvent) -> Result<(
         .await
 }
 
+/// Writes a `values_dropped` row for one server: the user lost `count` stored values of it. Holds no value.
+pub fn values_dropped_on(
+    conn: &Connection,
+    at: i64,
+    user_id: i64,
+    email: &str,
+    server: (i64, &str),
+    count: usize,
+) -> rusqlite::Result<()> {
+    let detail = format!("{count} stored header values were deleted");
+    let event = Event {
+        kind: "values_dropped",
+        user_id: Some(user_id),
+        user_email: email,
+        server_id: Some(server.0),
+        server_slug: server.1,
+        detail: &detail,
+        ..Default::default()
+    };
+    record(conn, at, &event)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

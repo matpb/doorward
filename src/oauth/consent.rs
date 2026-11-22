@@ -93,6 +93,29 @@ struct ConsentPage {
     client: Shown,
     server: String,
     email: String,
+    /// Names of the servers being approved that still need a stored value of this user.
+    needs_values: Vec<String>,
+    /// The account page's address.
+    account: String,
+}
+
+/// Names of the servers `user` is approving that take stored values and lack one for a required header.
+/// `slug` is the one server, or None for every assigned server. No key work: rows are only counted.
+fn needing_values(
+    conn: &Connection,
+    user: i64,
+    slug: Option<&str>,
+) -> rusqlite::Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT s.name FROM servers s JOIN user_servers us ON us.server_id = s.id AND us.user_id = ?1 \
+         WHERE s.store_headers = 1 AND (?2 IS NULL OR s.slug = ?2) AND EXISTS ( \
+           SELECT 1 FROM server_headers h WHERE h.server_id = s.id AND h.required = 1 AND NOT EXISTS ( \
+             SELECT 1 FROM user_header_values v WHERE v.header_id = h.id AND v.user_id = ?1)) \
+         ORDER BY s.name, s.id",
+    )?;
+    statement
+        .query_map(params![user, slug], |row| row.get(0))?
+        .collect()
 }
 
 /// The one `req` of a query string; a missing or repeated one is None.
@@ -152,6 +175,15 @@ pub async fn get_consent(
         .clone()
         .unwrap_or_else(|| ALL_SERVERS.to_owned());
     let name = client.name.clone();
+    let wanted = pending.stored.target_slug.clone();
+    let needs_values = match state
+        .db
+        .call(move |conn| needing_values(conn, user_id, wanted.as_deref()))
+        .await
+    {
+        Ok(names) => names,
+        Err(err) => return internal_error("consent page", &err),
+    };
     let shown = state
         .db
         .call(move |conn| mark_shown_in(conn, &id_hash, &session_hash, &name, now))
@@ -169,6 +201,8 @@ pub async fn get_consent(
         client,
         server,
         email,
+        needs_values,
+        account: format!("{}/account", state.config.public_url),
     };
     render(&viewer, &req, &consent)
 }
@@ -429,6 +463,14 @@ fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
             dd class=(if consent.server == ALL_SERVERS { "grant" } else { "grant id" }) { (consent.server) }
             dt { "Signed in as" }
             dd { (ui::email(&consent.email)) }
+        }
+        @if !consent.needs_values.is_empty() {
+            p data-needs-values {
+                (consent.needs_values.join(", "))
+                (if consent.needs_values.len() == 1 { " needs" } else { " need" })
+                " credentials you have not stored yet. After you approve, add them on your account page: "
+                (consent.account)
+            }
         }
         p.strong data-consent-notice { "Approve only if you started this " span.nowrap { "sign-in" } " yourself." }
         div.actions {
@@ -761,6 +803,8 @@ mod tests {
             },
             server: "demo".to_owned(),
             email: "bob@example.com".to_owned(),
+            needs_values: Vec::new(),
+            account: "https://gateway.example.com/account".to_owned(),
         }
     }
 
