@@ -2798,7 +2798,7 @@ async fn a_verdict_is_stored_only_for_the_address_that_was_probed() {
 async fn the_lockdown_note_says_what_the_stored_result_means() {
     let dir = tempfile::tempdir().expect("dir");
     let (_base, mut owner) = owner_gateway(dir.path()).await;
-    add(&mut owner, "demo", SERVER_URL, None).await;
+    add(&mut owner, "demo", SERVER_URL, Some(("X-Secret", "s3cret"))).await;
     let id = server_id_of(dir.path(), "demo");
     let path = format!("/admin/servers/{id}");
     let cases = [

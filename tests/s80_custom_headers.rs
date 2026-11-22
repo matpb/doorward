@@ -1201,3 +1201,74 @@ async fn the_direct_warning_links_to_the_secret_header_field() {
         Some("Go to secret header")
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lockdown_note_of_a_server_without_a_secret_does_not_describe_a_passed_check() {
+    let w = World::start().await;
+    let options = UpstreamOptions {
+        require_header: Some(("x-gate".into(), "open-sesame".into())),
+        ..Default::default()
+    };
+    let upstream = FakeUpstream::start(options).await;
+    let url = upstream.url();
+    let id = admin::add_server(
+        &w.owner,
+        &ServerSpec {
+            name: "Elsewhere",
+            slug: "elsewhere",
+            upstream_url: &url,
+            secret: None,
+            pass_resources: false,
+            pass_prompts: false,
+        },
+    )
+    .await;
+    let checked = admin::check_lockdown(&w.owner, &id).await;
+    assert_eq!(checked.status, 303, "the lock-down check must be accepted");
+    let page = server_page(&w.owner, &id).await;
+    let note = page.text("p[data-lockdown-note]").unwrap_or_default();
+    assert!(
+        note.contains("no secret header"),
+        "the note must be the no-secret text, got {note:?}"
+    );
+    assert!(
+        !note.contains("refused a request without the secret"),
+        "the note must not describe a passed check, got {note:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_servers_declaring_one_header_with_pass_through_on_both_receive_a_clients_value_on_mcp()
+{
+    let w = World::start().await;
+    let (a, a_id) = w.upstream("a", UpstreamOptions::default()).await;
+    let b_options = UpstreamOptions {
+        tools: vec!["alpha".into()],
+        ..Default::default()
+    };
+    let (b, b_id) = w.upstream("b", b_options).await;
+    let bob = grant_bob(&w, &[&a_id, &b_id]).await;
+    for id in [&a_id, &b_id] {
+        declare_ok(&w.owner, id, HEADER, false).await;
+        switches_ok(&w.owner, id, true, false).await;
+    }
+    let tokens = w.token(&bob, "mcp").await;
+    let client = session_on(&w, "mcp", &tokens).await;
+    a.clear();
+    b.clear();
+
+    let echo = session_call(&client, "a__echo", &[(HEADER, VALUE)]).await;
+    assert_eq!(echo.text().as_deref(), Some("called: echo"));
+    let alpha = session_call(&client, "b__alpha", &[(HEADER, VALUE)]).await;
+    assert_eq!(alpha.text().as_deref(), Some("called: alpha"));
+    assert_eq!(
+        received_calls(&a, "echo")[0].header(LOWER),
+        Some(VALUE),
+        "a declares the name and passes headers through, so it receives the client's value"
+    );
+    assert_eq!(
+        received_calls(&b, "alpha")[0].header(LOWER),
+        Some(VALUE),
+        "b declares the same name, so the same client value goes to it too"
+    );
+}

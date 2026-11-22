@@ -2657,4 +2657,20 @@ declared and the store switch is on. The value is the canary `canary-7f3a9c51e2d
    `a_change_of_stored_values_does_not_end_another_users_stream`; `proxy::tests_links`
    `a_link_made_under_other_stored_values_is_not_reused`; `proxy::values::tests` (an opened value is
    marked sensitive, a secret that opens no wrap locks a held value, a value sealed for another
-   address is absent, no held value and no need means no key work).
+   address is named as unopened, a held optional value that does not open refuses the request unless
+   the client supplies that header, no held value and no need means no key work).
+8. Review fixes (S2 to S6, N1 to N8): in `s84_stored_values.rs`
+   `a_combined_call_to_a_left_out_server_says_why_and_is_not_a_connection_failure` (isError tool result with
+   the server path's text, a `credentials missing` or `reconnect needed` row, no `no connection` detail, the
+   upstream not contacted), `a_locked_connection_whose_client_passes_the_header_itself_is_served`,
+   `a_damaged_password_wrap_heals_at_the_next_sign_in_and_values_can_be_stored_again`,
+   `a_password_change_with_a_damaged_password_wrap_but_a_good_session_wrap_keeps_the_values`,
+   `the_first_store_ends_the_upstream_sessions_of_that_user_on_that_server`,
+   `a_refresh_without_the_admins_openable_key_says_the_stored_credentials_were_not_sent`,
+   `with_the_store_switch_off_no_value_is_attached_and_the_user_can_delete_what_was_stored` (the `forget=1`
+   field) and `a_client_delete_while_the_values_are_locked_is_answered_and_the_session_is_forgotten`; in
+   `s80_custom_headers.rs` `the_lockdown_note_of_a_server_without_a_secret_does_not_describe_a_passed_check`
+   and `two_servers_declaring_one_header_with_pass_through_on_both_receive_a_clients_value_on_mcp`; units
+   `crypto::tests::the_vault_key_derivation_has_a_known_answer`,
+   `crypto::tests::the_hash_job_still_returns_a_hash_when_the_vault_derivation_fails` and
+   `db::tests::a_schema_14_database_upgrades_and_keeps_its_users_sessions_and_tokens` (migration 17).

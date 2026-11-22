@@ -121,7 +121,7 @@ pub async fn post_invite(
         now,
         lifetime: session::lifetime_seconds(state.config.lifetimes.session_hours),
         presented: form.viewer.presented_session().map(str::to_owned),
-        vault: Some(Unlocked {
+        vault: unlock.map(|unlock| Unlocked {
             keys: Arc::clone(&state.keys),
             unlock,
         }),

@@ -19,7 +19,10 @@ use tokio::time::{Instant, timeout, timeout_at};
 use super::budget::Reservation;
 use super::catalog::{self, RefreshError, SESSION, STATELESS};
 use super::combined_stream::{self, Call};
-use super::handle::{INVALID, NOT_LISTED, Owed, TOOL_LIMIT, answer_for, bare, cut, not_allowed};
+use super::handle::{
+    INVALID, NOT_LISTED, Owed, TOOL_LIMIT, answer_for, bare, cut, missing_text, not_allowed,
+    reconnect_text, unopenable_text,
+};
 use super::intake::{Intake, intake};
 use super::links::{self, Answer, Ask, Owner};
 use super::stream::{ACCESS_LOST, CHECK_FAILED, Owned, detail_of};
@@ -366,6 +369,14 @@ async fn call(
             url,
             ..
         }) => (user_headers.as_slice(), url.as_str()),
+        Some(reached) if withheld_reason(&reached.resolved).is_some() && reached.name.is_some() => {
+            let held = Withheld {
+                slug,
+                tool,
+                server_id,
+            };
+            return withheld_call(state, caller, started, message, &held, reached).await;
+        }
         _ => {
             let owed = Owed::of(owned_of(state, caller, started, slug, server_id), tool);
             return unavailable(owed, slug, Cause::NoConnection).await;
@@ -716,6 +727,57 @@ async fn check_failed(owed: Owed) -> Response {
     answer::unavailable(LABEL)
 }
 
+/// The activity detail of a server left out for this caller, or None when its headers resolved.
+fn withheld_reason(resolved: &Resolved) -> Option<&'static str> {
+    match resolved {
+        Resolved::Missing { .. } | Resolved::Unopenable => Some("credentials missing"),
+        Resolved::Locked => Some("reconnect needed"),
+        Resolved::Ready(_) | Resolved::Bad => None,
+    }
+}
+
+/// The server and tool of a call that is refused for want of the caller's values.
+struct Withheld<'a> {
+    slug: &'a str,
+    tool: &'a str,
+    server_id: i64,
+}
+
+/// A tools/call to a server left out for this caller: a tool error with the server path's text, and a
+/// deny row. Nothing is sent upstream.
+async fn withheld_call(
+    state: &AppState,
+    caller: &Caller,
+    started: std::time::Instant,
+    message: &Message,
+    held: &Withheld<'_>,
+    reached: &Reached,
+) -> Response {
+    let name = reached.name.as_deref().unwrap_or(held.slug);
+    let text = match &reached.resolved {
+        Resolved::Missing { header } => missing_text(state, name, reached.store, header),
+        Resolved::Unopenable => unopenable_text(state, name),
+        _ => reconnect_text(name),
+    };
+    let detail = withheld_reason(&reached.resolved).unwrap_or_default();
+    record_denial(
+        state,
+        caller,
+        started,
+        Some((held.server_id, held.slug, held.tool)),
+        held.tool,
+        detail,
+    )
+    .await;
+    let null = Value::Null;
+    let id = message.id.as_ref().unwrap_or(&null);
+    let mut body = json!({"content": [{"type": "text", "text": text}], "isError": true});
+    if message.generation == Generation::Stateless {
+        body["resultType"] = json!("complete");
+    }
+    result(id, body)
+}
+
 /// A refused tools/call: one deny row with its detail, and the one answer every refusal gets. A name
 /// that names no server has no server in its row, under the label `mcp`, and the name as sent.
 async fn deny_call(
@@ -727,6 +789,19 @@ async fn deny_call(
     server: Option<(i64, &str, &str)>,
     detail: &str,
 ) -> Response {
+    record_denial(state, caller, started, server, name, detail).await;
+    answer::unknown_tool(id, name)
+}
+
+/// Writes the deny row of a refused tools/call.
+async fn record_denial(
+    state: &AppState,
+    caller: &Caller,
+    started: std::time::Instant,
+    server: Option<(i64, &str, &str)>,
+    name: &str,
+    detail: &str,
+) {
     let (server_id, slug, tool) = match server {
         Some((server_id, slug, tool)) => (Some(server_id), slug, tool),
         None => (None, LABEL, name),
@@ -747,7 +822,6 @@ async fn deny_call(
     if let Err(err) = audit::record_refused_now(state, event).await {
         report::failure("activity row", &err);
     }
-    answer::unknown_tool(id, name)
 }
 
 /// The upstream's answer under the client's id, and the outcome of its row. A result that asks for
@@ -881,7 +955,18 @@ async fn collect(
     let all_left_out = outcomes.iter().all(Option::is_none);
     for (position, outcome) in outcomes.into_iter().enumerate() {
         match outcome {
-            None => only_budget = false,
+            None => {
+                only_budget = false;
+                if let Some(reason) = resolved
+                    .get(&assigned[position].server_id)
+                    .and_then(|reached| withheld_reason(&reached.resolved))
+                {
+                    note(format!(
+                        "tools/list: {} left out, {reason}",
+                        assigned[position].slug
+                    ));
+                }
+            }
             Some(Ok(list)) => fetched.push((position, list)),
             Some(Err(cause)) => {
                 if budget_refused(cause) {

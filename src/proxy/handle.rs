@@ -148,7 +148,7 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
     };
     let user_headers = match declared_headers(ctx, headers, message.id.as_ref(), &target).await {
         Ok(user_headers) => user_headers,
-        Err(refusal) => return refusal,
+        Err(refused) => return refused.response,
     };
     if let Some(name) = call.as_deref() {
         match refusal_of(ctx, &target, name, &user_headers).await {
@@ -202,7 +202,11 @@ pub(super) async fn get_or_delete(ctx: &Ctx<'_>, method: &Method, headers: &Head
     };
     let user_headers = match declared_headers(ctx, headers, None, &target).await {
         Ok(user_headers) => user_headers,
-        Err(refusal) => return refusal,
+        Err(refused) if refused.withheld && *method == Method::DELETE => {
+            forget(ctx, session.id).await;
+            return relayed(StatusCode::NO_CONTENT, None, Body::empty(), None);
+        }
+        Err(refused) => return refused.response,
     };
     let outgoing = Outgoing {
         method: method.clone(),
@@ -385,14 +389,36 @@ async fn target(ctx: &Ctx<'_>, call: Option<&str>) -> Result<Target, Response> {
     }
 }
 
-/// The custom headers this request carries to the server, or the answer that stops it before any upstream.
-/// Stored values are opened for the address of `target`, which is where the request goes.
+/// The answer that stops a request before any upstream; `withheld` when the caller's values are missing,
+/// locked or unopenable.
+struct Refused {
+    response: Response,
+    withheld: bool,
+}
+
+impl Refused {
+    fn other(response: Response) -> Refused {
+        Refused {
+            response,
+            withheld: false,
+        }
+    }
+
+    fn withheld(response: Response) -> Refused {
+        Refused {
+            response,
+            withheld: true,
+        }
+    }
+}
+
+/// The custom headers this request carries to the server, opened for the address of `target`.
 async fn declared_headers(
     ctx: &Ctx<'_>,
     client: &HeaderMap,
     id: Option<&Value>,
     target: &Target,
-) -> Result<Vec<(HeaderName, HeaderValue)>, Response> {
+) -> Result<Vec<(HeaderName, HeaderValue)>, Refused> {
     let reached = values::resolve(
         ctx.state,
         &ctx.caller,
@@ -405,46 +431,78 @@ async fn declared_headers(
         Ok(reached) => reached,
         Err(err) => {
             report::failure("custom headers", &err);
-            return Err(bare(StatusCode::INTERNAL_SERVER_ERROR));
+            return Err(Refused::other(bare(StatusCode::INTERNAL_SERVER_ERROR)));
         }
     };
     match (reached.resolved, reached.name) {
         (Resolved::Ready(headers), _) => Ok(headers),
-        (Resolved::Bad, _) => Err(answer::error(StatusCode::BAD_REQUEST, id, -32600, INVALID)),
-        (Resolved::Missing { header }, Some(name)) => {
-            Err(missing_header(ctx.state, &name, reached.store, &header))
+        (Resolved::Bad, _) => Err(Refused::other(answer::error(
+            StatusCode::BAD_REQUEST,
+            id,
+            -32600,
+            INVALID,
+        ))),
+        (Resolved::Missing { header }, Some(name)) => Err(Refused::withheld(missing_header(
+            ctx.state,
+            &name,
+            reached.store,
+            &header,
+        ))),
+        (Resolved::Locked, Some(name)) => Err(Refused::withheld(reconnect(&name))),
+        (Resolved::Unopenable, Some(name)) => Err(Refused::withheld(unopenable(ctx.state, &name))),
+        (Resolved::Missing { .. } | Resolved::Locked | Resolved::Unopenable, None) => {
+            Err(Refused::other(answer::unavailable(ctx.slug)))
         }
-        (Resolved::Locked, Some(name)) => Err(reconnect(&name)),
-        (Resolved::Missing { .. } | Resolved::Locked, None) => Err(answer::unavailable(ctx.slug)),
     }
 }
 
-/// The 403 of a request whose connection cannot open the user's key.
-fn reconnect(server: &str) -> Response {
-    let message = format!("Reconnect this app to use {server}");
-    let mut response = answer::error(StatusCode::FORBIDDEN, None, -32000, &message);
-    response
-        .headers_mut()
-        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+/// The text of a request whose connection cannot open the user's key.
+pub(super) fn reconnect_text(server: &str) -> String {
+    format!("Reconnect this app to use {server}")
 }
 
-/// The 403 of a request whose required header has no value: the account page's address when values can
-/// be stored there, else the header's name.
-fn missing_header(state: &AppState, server: &str, store: bool, header: &str) -> Response {
-    let message = if store {
+/// The text of a request whose stored value is held but does not open.
+pub(super) fn unopenable_text(state: &AppState, server: &str) -> String {
+    format!(
+        "Your stored credentials for {server} cannot be opened. Store them again at {}/account",
+        state.config.public_url
+    )
+}
+
+/// The text of a request whose required header has no value.
+pub(super) fn missing_text(state: &AppState, server: &str, store: bool, header: &str) -> String {
+    if store {
         format!(
             "{server} needs your credentials. Add them at {}/account",
             state.config.public_url
         )
     } else {
         format!("{server} needs the header {header} from this app")
-    };
-    let mut response = answer::error(StatusCode::FORBIDDEN, None, -32000, &message);
+    }
+}
+
+fn refusal_403(message: &str) -> Response {
+    let mut response = answer::error(StatusCode::FORBIDDEN, None, -32000, message);
     response
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
+}
+
+/// The 403 of a request whose connection cannot open the user's key.
+fn reconnect(server: &str) -> Response {
+    refusal_403(&reconnect_text(server))
+}
+
+/// The 403 of a request whose stored value does not open.
+fn unopenable(state: &AppState, server: &str) -> Response {
+    refusal_403(&unopenable_text(state, server))
+}
+
+/// The 403 of a request whose required header has no value: the account page's address when values can
+/// be stored there, else the header's name.
+fn missing_header(state: &AppState, server: &str, store: bool, header: &str) -> Response {
+    refusal_403(&missing_text(state, server, store, header))
 }
 
 /// True when `name` is in the server's catalog. A miss refreshes it unless a miss refresh of the server

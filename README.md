@@ -193,6 +193,18 @@ The gateway deletes stored credentials when:
 
 A password change keeps them. The gateway seals them again, so they stay.
 
+Turning off "Let each person store their own values" for a server stops the gateway from
+attaching stored values to calls to it. It does not delete them. What people stored stays until
+they delete it with Delete my stored credentials on their account page, or until the server's
+address changes or one of its headers is removed.
+
+Two limits of sharing a server between people:
+
+- On the combined endpoint `/mcp`, a header a client passes goes to every server that declares
+  that name and passes headers through, not only to the one being called.
+- The gateway keeps one cached tool list for each server, shared by all its users. A server
+  whose list depends on the caller's credentials shows the list of whoever fetched it last.
+
 ### What the encryption covers
 
 Each person's values are sealed under a data key. Only that person's password opens the key,
@@ -214,6 +226,11 @@ Not covered:
   new address.
 - An upstream that echoes a credential back in its answer. The gateway does not check what an
   upstream answers.
+- The refresh replay window. Inside it (`lifetimes.refresh_replay_seconds`, 30 seconds by
+  default) a rotated refresh token together with a copy of the database still opens that
+  person's key.
+- Values held in memory. The gateway clears them on a best effort basis, and a value lives in
+  memory for the length of a request.
 
 If you suspect that a stored credential was stolen, rotate the upstream credential at the
 upstream server, then have each person store the new value. The gateway cannot tell that a

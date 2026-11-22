@@ -133,10 +133,10 @@ pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) ->
         new_phc,
         now,
         lifetime: session::lifetime_seconds(state.config.lifetimes.session_hours),
-        vault: Some(ChangeVault {
+        vault: new_unlock.map(|new| ChangeVault {
             keys: Arc::clone(&state.keys),
             old: old_unlock,
-            new: new_unlock,
+            new,
         }),
     };
     match state.db.call(move |conn| change_in(conn, &change)).await {
@@ -167,10 +167,21 @@ pub(super) fn change_in(
     }
     let new_key = match &change.vault {
         Some(vault) => {
-            let old = match &vault.old {
+            let mut old = match &vault.old {
                 Some(unlock) => keys::open_password(&tx, &vault.keys, change.user_id, unlock)?,
                 None => None,
             };
+            if let (None, Some(token)) = (&old, change.session.as_deref()) {
+                let row = token_hash(token);
+                old = keys::open_row(
+                    &tx,
+                    &vault.keys,
+                    change.user_id,
+                    Table::Sessions,
+                    &row,
+                    token,
+                )?;
+            }
             let rekeyed = keys::rekey(
                 &tx,
                 &vault.keys,

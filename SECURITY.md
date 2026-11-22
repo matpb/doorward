@@ -112,6 +112,17 @@ Not covered:
   again. Changing the address deletes what was stored, and the next values go to the new
   address.
 - An upstream that echoes a credential back in its answer.
+- The refresh replay window. Inside it (`lifetimes.refresh_replay_seconds`, 30 seconds by
+  default) a rotated refresh token together with a copy of the database still opens that
+  person's key.
+- Values held in memory. The gateway clears them on a best effort basis, and a value lives in
+  memory for the length of a request.
+
+Sharing limits. On the combined endpoint a header a client passes goes to every server that
+declares that name and passes headers through. One cached tool list for each server is shared
+by its users, so a server whose list depends on the caller's credentials shows the list of
+whoever fetched it last. Turning "store credentials" off for a server keeps what people
+stored until they delete it on their account page or the server changes.
 
 After a suspected theft, rotate the upstream credential at the upstream server. Keep the key
 file out of backups of the data directory.

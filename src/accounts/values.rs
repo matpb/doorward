@@ -70,6 +70,8 @@ pub struct Part {
     pub locked: bool,
     pub refusal: Option<Refusal>,
     pub saved: Option<String>,
+    /// Servers whose store switch is off while the user still holds stored values: slug and name.
+    pub retired: Vec<(String, String)>,
 }
 
 impl ServerView {
@@ -177,11 +179,20 @@ pub fn part_in(
         });
     }
     let locked = !servers.is_empty() && !opens_key(conn, keys, user, session)?;
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT s.slug, s.name FROM user_header_values v \
+         JOIN server_headers h ON h.id = v.header_id JOIN servers s ON s.id = h.server_id \
+         WHERE v.user_id = ?1 AND s.store_headers = 0 ORDER BY s.name, s.id",
+    )?;
+    let retired = statement
+        .query_map(params![user], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<(String, String)>>>()?;
     Ok(Part {
         servers,
         locked,
         refusal: None,
         saved: None,
+        retired,
     })
 }
 
@@ -294,6 +305,18 @@ pub async fn post_values(
             .collect()
     };
     let now = state.clock.now().unix_timestamp();
+    if fields.get("forget") == "1" {
+        let (user_id, email, lookup) = (user.id, user.email.clone(), slug.clone());
+        let forgotten = state
+            .db
+            .call(move |conn| forget_in(conn, (user_id, &email), &lookup, now))
+            .await;
+        match forgotten {
+            Ok(true) => return redirect("/account"),
+            Ok(false) => {}
+            Err(err) => return internal_error("stored values", &err),
+        }
+    }
     let keys = state.keys.clone();
     let (user_id, email, lookup) = (user.id, user.email.clone(), slug.clone());
     let outcome = state
@@ -318,6 +341,67 @@ pub async fn post_values(
         Ok(Outcome::Refused(message)) => refused(&state, &form.viewer, &slug, message).await,
         Err(err) => internal_error("stored values", &err),
     }
+}
+
+/// Deletes the user's values for a server whose store switch is off, with one `value_removed` row each.
+/// False when the switch is on or the user holds none. No key is needed.
+fn forget_in(
+    conn: &mut Connection,
+    (user, email): (i64, &str),
+    slug: &str,
+    now: i64,
+) -> rusqlite::Result<bool> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let server: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM servers WHERE slug = ?1 AND store_headers = 0",
+            params![slug],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(server) = server else {
+        return Ok(false);
+    };
+    let names: Vec<String> = {
+        let mut statement = tx.prepare(
+            "SELECT h.name FROM user_header_values v JOIN server_headers h ON h.id = v.header_id \
+             WHERE v.user_id = ?1 AND h.server_id = ?2 ORDER BY h.id",
+        )?;
+        statement
+            .query_map(params![user, server], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    if names.is_empty() {
+        return Ok(false);
+    }
+    tx.execute(
+        "DELETE FROM user_header_values WHERE user_id = ?1 AND header_id IN \
+         (SELECT id FROM server_headers WHERE server_id = ?2)",
+        params![user, server],
+    )?;
+    for name in &names {
+        let detail = format!("removed header {name}");
+        let event = Event {
+            kind: "value_removed",
+            user_id: Some(user),
+            user_email: email,
+            server_id: Some(server),
+            server_slug: slug,
+            detail: &detail,
+            ..Default::default()
+        };
+        audit::record(&tx, now, &event)?;
+    }
+    tx.execute(
+        "UPDATE users SET values_version = values_version + 1 WHERE id = ?1",
+        params![user],
+    )?;
+    tx.execute(
+        "DELETE FROM upstream_sessions WHERE server_id = ?1 AND user_id = ?2",
+        params![server, user],
+    )?;
+    tx.commit()?;
+    Ok(true)
 }
 
 /// One transaction: checks the post, seals each new value under the session's data key and writes it,
@@ -384,7 +468,6 @@ fn save_in(
         |row| row.get(0),
     )?;
     let mut changed = false;
-    let mut replaced = false;
     for change in &changes {
         let (kind, verb) = if change.remove {
             let removed = tx.execute(
@@ -394,14 +477,8 @@ fn save_in(
             if removed == 0 {
                 continue;
             }
-            replaced = true;
             ("value_removed", "removed")
         } else {
-            replaced |= tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM user_header_values WHERE user_id = ?1 AND header_id = ?2)",
-                params![user, change.header],
-                |row| row.get::<_, bool>(0),
-            )?;
             let place = ValuePlace {
                 user,
                 server,
@@ -439,7 +516,7 @@ fn save_in(
             params![user],
         )?;
     }
-    if replaced {
+    if changed {
         tx.execute(
             "DELETE FROM upstream_sessions WHERE server_id = ?1 AND user_id = ?2",
             params![server, user],

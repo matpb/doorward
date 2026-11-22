@@ -182,7 +182,10 @@ pub async fn get_consent(
         .await
     {
         Ok(names) => names,
-        Err(err) => return internal_error("consent page", &err),
+        Err(err) => {
+            report::failure("credentials note", &err);
+            Vec::new()
+        }
     };
     let shown = state
         .db

@@ -55,6 +55,8 @@ pub enum Resolved {
     },
     /// The caller's connection holds no openable key and a value is held or needed: nothing is sent.
     Locked,
+    /// A stored value is held but does not open, and the client did not supply that header: nothing is sent.
+    Unopenable,
 }
 
 /// A header name a server may declare: a valid secret header name, not one the gateway refuses.

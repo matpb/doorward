@@ -60,7 +60,25 @@ pub async fn reserve(db: &Db, input: Reserve) -> Result<Attempt, DbError> {
 /// Transaction T2: clears the account and the reservation, and signs the browser in. None, with
 /// nothing changed, when the user no longer matches the verified hash and epoch, or is disabled.
 pub async fn succeed(db: &Db, success: Success) -> Result<Option<String>, DbError> {
-    db.call(move |conn| succeed_in(conn, &success)).await
+    db.call(move |conn| {
+        let token = succeed_in(conn, &success)?;
+        if let (Some(token), Some(vault)) = (&token, &success.vault)
+            && let Err(err) = keys::heal(
+                conn,
+                vault,
+                (success.user_id, &success.email),
+                token,
+                success.now,
+            )
+        {
+            crate::report::failure(
+                "password wrap repair",
+                &format!("user {}: {err}", success.user_id),
+            );
+        }
+        Ok(token)
+    })
+    .await
 }
 
 /// Deletes every counted failure of an account (the hash of its normalised email).

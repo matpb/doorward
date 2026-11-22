@@ -226,6 +226,8 @@ snapshot email, slug, tool and client and do not cascade. Ciphertexts carry a ke
 bound to their table, column and row. The database and key files are created with owner-only
 permissions.
 
+Migration 17 adds the index `user_header_values_header` on `user_header_values(header_id)`. At a sign-in whose accepted password cannot open the user's password wrap, one log line (`doorward: password wrap failed: does not open for user {id}, a new data key is made`) is written and a new data key one generation up replaces it; the unreadable values are deleted with a `values_dropped` row and the key is wrapped for the new session. If the vault derivation fails during setup, an invitation or a password change, the password hash is still stored and the next sign-in makes the data key.
+
 Stored header values (migration 16). `users` holds `dek_gen` (the data key generation),
 `dek_wrap` (the password wrap), `dek_salt` (16 bytes, base64url without padding) and
 `values_version`. `sessions`, `auth_codes`, `access_tokens` and `refresh_tokens` each hold a
@@ -243,7 +245,7 @@ follows; `session::revoke_all` and the sweep null the wraps of codes and tokens.
 
 Where a value is used. `POST /account/values/{slug}` (`accounts::values`) seals each value under the
 data key that the browser session's wrap opens, and writes the row, the activity row, the
-`values_version` bump and (for a replaced or removed value) the deletion of the user's
+`values_version` bump and (for every change of the values) the deletion of the user's
 `upstream_sessions` rows on that server in one transaction. On a call, `proxy::values` opens the key
 from the access token's wrap and each of the user's rows for that server under the upstream address
 the request goes to, in the request's own database call; the values reach `custom_headers::resolve`
@@ -258,8 +260,8 @@ What ends a session or stream. `Caller.values_version` is the user's number when
 admitted; `still_valid_at` and `combined_still_valid_at` compare it with the stored one, so an open
 stream or a buffered answer of a user whose values changed ends as a lost access does. A link
 (`proxy::links`) records the number in its `Owner` and is dropped unused when a request comes with
-another number. An upstream session id of the user on that server is forgotten when a value is
-replaced or removed, so the client's old session id answers `404`.
+another number. An upstream session id of the user on that server is forgotten on every change of the
+user's values for it, so the client's old session id answers `404`.
 
 ## Tests
 

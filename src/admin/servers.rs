@@ -77,6 +77,8 @@ enum Done {
     HeaderRemoved(String),
     /// The headers were saved: the ids of the headers the save made required.
     HeadersSaved(Vec<i64>),
+    /// The tool list was refreshed without the admin's stored values, which the session cannot open.
+    RefreshedWithoutValues,
 }
 
 /// The add-header form as the page shows it: the name as sent back, whether it is required, and its refusal.
@@ -519,6 +521,7 @@ fn done_of(raw: Option<&str>) -> Option<Done> {
             .filter(|name| custom_headers::valid_name(name))
             .map(Done::HeaderRemoved),
         Some("headers-saved") => Some(Done::HeadersSaved(required)),
+        Some("tools-refreshed-without-values") => Some(Done::RefreshedWithoutValues),
         _ => None,
     }
 }
@@ -533,6 +536,10 @@ fn done_notice(conn: &Connection, server: i64, done: &Done) -> rusqlite::Result<
             .find(|header| header.id == *id)
             .map(|header| ui::notice("ok", html! { p { (header.name) " added." } })),
         Done::HeaderRemoved(name) => Some(ui::notice("ok", html! { p { (name) " removed." } })),
+        Done::RefreshedWithoutValues => Some(ui::notice(
+            "warning",
+            html! { p { (REFRESHED_WITHOUT_VALUES) } },
+        )),
         Done::HeadersSaved(ids) => {
             let assigned = assigned_count(conn, server)?;
             let stored = stored_counts(conn, server)?;
@@ -998,6 +1005,10 @@ fn effective_lockdown(server: &Server) -> &str {
     }
 }
 
+/// The notice of a refresh sent without the admin's stored values.
+const REFRESHED_WITHOUT_VALUES: &str =
+    "Tools refreshed without your stored credentials. Sign out and sign in again to send them.";
+
 /// The tool list's notice while the answer memory budget is used up.
 const BUSY_NOTICE: &str = "The gateway is busy. Try again in a moment.";
 
@@ -1018,13 +1029,15 @@ pub async fn post_refresh_tools(
         Ok(None) => return not_found(),
         Err(err) => return internal_error("tool refresh", &err),
     };
+    let mut without_values = false;
     let outcome = match upstream::target(&state, id).await {
         Ok(Some(target)) => {
             let session = form.viewer.presented_session().map(str::to_owned);
-            let own = match own_values(&state, actor.id, id, &target.url, session).await {
+            let (own, locked) = match own_values(&state, actor.id, id, &target.url, session).await {
                 Ok(own) => own,
                 Err(err) => return internal_error("tool refresh", &err),
             };
+            without_values = locked;
             let limit = upstream::time_limit(&state);
             catalog::refresh_within(&state, &target, limit, None, &own)
                 .await
@@ -1040,6 +1053,7 @@ pub async fn post_refresh_tools(
         Err(TargetError::Db(err)) => return internal_error("tool refresh", &err),
     };
     let busy = matches!(outcome, Err(RefreshError::Busy));
+    let refreshed = outcome.is_ok();
     let detail = match outcome {
         Ok(()) => "tools refreshed",
         Err(RefreshError::Db) => {
@@ -1049,20 +1063,23 @@ pub async fn post_refresh_tools(
     };
     match record_change(&state, &actor, id, &server.slug, detail).await {
         Ok(()) if busy => busy_page(&state, &form.viewer, id).await,
+        Ok(()) if refreshed && without_values => redirect(&format!(
+            "/admin/servers/{id}?done=tools-refreshed-without-values"
+        )),
         Ok(()) => redirect(&format!("/admin/servers/{id}")),
         Err(err) => internal_error("tool refresh record", &err),
     }
 }
 
 /// The pressing admin's own stored values for the server's declared headers, opened for `url` with the
-/// admin's browser session. None when the switch is off, the admin has none or the session holds no key.
+/// admin's browser session, and whether the admin holds values the session cannot open the key for.
 async fn own_values(
     state: &AppState,
     user: i64,
     server: i64,
     url: &str,
     session: Option<String>,
-) -> Result<Vec<(HeaderName, HeaderValue)>, DbError> {
+) -> Result<(Vec<(HeaderName, HeaderValue)>, bool), DbError> {
     let keys = Arc::clone(&state.keys);
     let url = url.to_owned();
     state
@@ -1070,11 +1087,12 @@ async fn own_values(
         .call(move |conn| {
             let config = custom_headers::load(conn, server)?;
             if !config.store || config.declared.is_empty() {
-                return Ok(Vec::new());
+                return Ok((Vec::new(), false));
             }
             let via = session.as_deref().map(Via::Session);
             let opened = values::open_for(conn, &keys, user, server, &url, via, false)?;
-            Ok(opened
+            let locked = opened.locked && !opened.held.is_empty();
+            let own = opened
                 .stored
                 .into_iter()
                 .filter_map(|(name, value)| {
@@ -1082,7 +1100,8 @@ async fn own_values(
                         .ok()
                         .map(|name| (name, value))
                 })
-                .collect())
+                .collect();
+            Ok((own, locked))
         })
         .await
 }
@@ -1192,6 +1211,9 @@ pub(super) fn store_lockdown(
 fn lockdown_note(verdict: &str) -> &'static str {
     match verdict {
         "ok" => "The upstream refused a request without the secret.",
+        "nosecret" => {
+            "This server has no secret header, so the gateway has no secret to check the upstream with."
+        }
         "open" => {
             "The upstream answered a request without the secret: anyone who can reach its address can use it."
         }
@@ -1556,7 +1578,7 @@ fn server_body(
     (headers, stored): (&ServerHeaders, &[(i64, i64)]),
 ) -> Markup {
     let path = format!("/admin/servers/{}", server.id);
-    let note = lockdown_note(&server.lockdown);
+    let note = lockdown_note(effective_lockdown(server));
     let assigned = users.iter().filter(|user| user.assigned).count();
     let (draft, refusal, secret_sent) = (shown.draft, shown.refusal, shown.secret_sent);
     html! {

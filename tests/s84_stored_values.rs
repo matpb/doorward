@@ -240,7 +240,15 @@ async fn a_value_stored_after_a_token_was_issued_is_used_by_its_next_call() {
 
     store_ok(&bob, SLUG, &hid, CANARY).await;
     upstream.clear();
-    let reply = session_call(&session, "echo", &[]).await;
+    let ended = session_call(&session, "echo", &[]).await;
+    assert_eq!(
+        ended.status, 404,
+        "a session issued before the first store must be refused with 404"
+    );
+    assert!(upstream.requests().is_empty());
+    let fresh = session_on(&w, SLUG, &tokens).await;
+    upstream.clear();
+    let reply = session_call(&fresh, "echo", &[]).await;
     assert_eq!(
         reply.text().as_deref(),
         Some("called: echo"),
@@ -1413,6 +1421,7 @@ async fn with_every_wrap_damaged_sign_in_consent_exchange_and_refresh_still_work
         signed_in.status, 303,
         "a damaged wrap must not fail sign-in"
     );
+    store_ok(&bob, SLUG, &hid, CANARY).await;
     let fresh = bob.connect(&w.app(), &w.resource(SLUG)).await;
     let refreshed_reply = bob
         .token_refresh(&w.app(), &issued.refresh_token, Some(&w.resource(SLUG)))
@@ -1424,9 +1433,14 @@ async fn with_every_wrap_damaged_sign_in_consent_exchange_and_refresh_still_work
     let refreshed = client::tokens(&refreshed_reply).expect("the refresh issues a pair");
 
     upstream.clear();
+    let healed = stateless_call(&w.stateless_mcp(SLUG, &fresh), "echo", &[]).await;
+    assert_eq!(
+        healed.text().as_deref(),
+        Some("called: echo"),
+        "the sign-in healed the key, so the new connection carries the stored value again"
+    );
     for (what, token) in [
         ("the old token", &issued),
-        ("the new connection", &fresh),
         ("the refreshed pair", &refreshed),
     ] {
         let refused = stateless_call(&w.stateless_mcp(SLUG, token), "echo", &[]).await;
@@ -1440,9 +1454,10 @@ async fn with_every_wrap_damaged_sign_in_consent_exchange_and_refresh_still_work
             "{what} must say Reconnect this app, got {message:?}"
         );
     }
-    assert!(
-        upstream.requests().is_empty(),
-        "no refused connection may reach the upstream"
+    assert_eq!(
+        upstream.calls_to("echo"),
+        1,
+        "only the healed connection may reach the upstream"
     );
 }
 
@@ -1559,10 +1574,17 @@ async fn editing_the_upstream_address_in_the_database_keeps_the_canary_from_the_
 
     let fresh = w.token(&bob, SLUG).await;
     moved.clear();
-    stateless_call(&w.stateless_mcp(SLUG, &fresh), "echo", &[]).await;
+    let refused = stateless_call(&w.stateless_mcp(SLUG, &fresh), "echo", &[]).await;
+    assert_eq!(
+        refused.status, 403,
+        "a value sealed for the old address does not open, so the call is refused"
+    );
     assert!(
-        !moved.requests().is_empty(),
-        "the new address must be contacted"
+        refused
+            .error_message()
+            .unwrap_or_default()
+            .contains("cannot be opened"),
+        "the refusal must say the stored credentials cannot be opened"
     );
     assert!(
         !any_request_carries(&moved, CANARY),
@@ -1958,5 +1980,379 @@ async fn a_session_whose_key_does_not_open_shows_the_locked_credentials_part() {
             .as_deref(),
         Some("Sign out and sign in again"),
         "the locked part must offer the sign-out button"
+    );
+}
+
+/// The detail of every tool_call row of the live database, oldest first.
+fn tool_call_details(w: &World) -> Vec<String> {
+    let live = live_db(w);
+    let mut statement = live
+        .prepare("SELECT detail FROM activity WHERE kind = 'tool_call' ORDER BY id")
+        .expect("the activity query prepares");
+    statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("the activity query runs")
+        .map(|row| row.expect("a row reads"))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_combined_call_to_a_left_out_server_says_why_and_is_not_a_connection_failure() {
+    let w = World::start().await;
+    let (upstream, _id, hid, bob) = demo_for_bob(&w, true).await;
+    let combined = session_on(&w, "mcp", &w.token(&bob, "mcp").await).await;
+    upstream.clear();
+
+    let missing = session_call(&combined, "demo__echo", &[]).await;
+    assert_eq!(missing.status, 200, "a tool error is a 200 answer");
+    assert_eq!(
+        missing.result().and_then(|result| result.get("isError")),
+        Some(&serde_json::json!(true)),
+        "the answer must be a tool result with isError true"
+    );
+    let text = missing.text().unwrap_or_default();
+    assert!(
+        text.contains("needs your credentials") && text.contains(&format!("{}/account", w.base())),
+        "the answer must name the account page, got {text:?}"
+    );
+    assert!(
+        upstream.requests().is_empty(),
+        "no request may reach the upstream"
+    );
+    let details = tool_call_details(&w);
+    assert!(
+        details.iter().any(|detail| detail == "credentials missing"),
+        "the row must say credentials missing, got {details:?}"
+    );
+    assert!(
+        !details
+            .iter()
+            .any(|detail| detail.contains("no connection")),
+        "no row may report a connection failure, got {details:?}"
+    );
+
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    let tokens = w.token(&bob, "mcp").await;
+    live_db(&w)
+        .execute(
+            "UPDATE access_tokens SET dek_wrap = 'garbage' WHERE dek_wrap IS NOT NULL",
+            [],
+        )
+        .expect("the wrap is replaced by garbage");
+    let locked_client = session_on(&w, "mcp", &tokens).await;
+    upstream.clear();
+    let locked = session_call(&locked_client, "demo__echo", &[]).await;
+    assert_eq!(
+        locked.result().and_then(|result| result.get("isError")),
+        Some(&serde_json::json!(true))
+    );
+    assert!(
+        locked
+            .text()
+            .unwrap_or_default()
+            .contains("Reconnect this app to use demo"),
+        "a locked connection must say to reconnect"
+    );
+    assert!(upstream.requests().is_empty());
+    assert!(
+        tool_call_details(&w)
+            .iter()
+            .any(|detail| detail == "reconnect needed"),
+        "the row must say reconnect needed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_locked_connection_whose_client_passes_the_header_itself_is_served() {
+    let w = World::start().await;
+    let (upstream, id, hid, bob) = demo_for_bob(&w, false).await;
+    switches_ok(&w.owner, &id, true, true).await;
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    let tokens = w.token(&bob, SLUG).await;
+    live_db(&w)
+        .execute(
+            "UPDATE access_tokens SET dek_wrap = 'garbage' WHERE dek_wrap IS NOT NULL",
+            [],
+        )
+        .expect("the wrap is replaced by garbage");
+    let stateless = w.stateless_mcp(SLUG, &tokens);
+    upstream.clear();
+    let refused = stateless_call(&stateless, "echo", &[]).await;
+    assert_eq!(refused.status, 403, "without the header the call is locked");
+    let served = stateless_call(&stateless, "echo", &[(HEADER, CLIENT_VALUE)]).await;
+    assert_eq!(
+        served.text().as_deref(),
+        Some("called: echo"),
+        "the client's own header serves the call"
+    );
+    assert_eq!(
+        carried(&upstream, "echo"),
+        vec![Some(CLIENT_VALUE.to_string())]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_damaged_password_wrap_heals_at_the_next_sign_in_and_values_can_be_stored_again() {
+    let w = World::start().await;
+    let (upstream, _id, hid, bob) = demo_for_bob(&w, false).await;
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    let live = live_db(&w);
+    let generation = |conn: &Connection| -> i64 {
+        conn.query_row("SELECT dek_gen FROM users WHERE email = ?1", [BOB], |row| {
+            row.get(0)
+        })
+        .expect("the generation reads")
+    };
+    let before = generation(&live);
+    live.execute(
+        "UPDATE users SET dek_wrap = 'garbage' WHERE email = ?1",
+        [BOB],
+    )
+    .expect("the password wrap is replaced by garbage");
+
+    let signed_in = bob.login(BOB, PASSWORD).await;
+    assert_eq!(signed_in.status, 303, "the sign-in must still succeed");
+    assert_eq!(
+        generation(&live),
+        before + 1,
+        "a new key is one generation up"
+    );
+    let held: i64 = live
+        .query_row("SELECT COUNT(*) FROM user_header_values", [], |row| {
+            row.get(0)
+        })
+        .expect("the count reads");
+    assert_eq!(held, 0, "the unreadable values are deleted");
+    let dropped: i64 = live
+        .query_row(
+            "SELECT COUNT(*) FROM activity WHERE kind = 'values_dropped'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the count reads");
+    assert_eq!(dropped, 1, "a values_dropped row names the loss");
+    assert_eq!(
+        needs_values(&bob, SLUG).await.as_deref(),
+        Some("no"),
+        "the account page opens the form again"
+    );
+    store_ok(&bob, SLUG, &hid, OTHER).await;
+    let tokens = w.token(&bob, SLUG).await;
+    upstream.clear();
+    let reply = stateless_call(&w.stateless_mcp(SLUG, &tokens), "echo", &[]).await;
+    assert_eq!(reply.text().as_deref(), Some("called: echo"));
+    assert_eq!(carried(&upstream, "echo"), vec![Some(OTHER.to_string())]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_password_change_with_a_damaged_password_wrap_but_a_good_session_wrap_keeps_the_values() {
+    let w = World::start().await;
+    let (upstream, _id, hid, bob) = demo_for_bob(&w, false).await;
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    live_db(&w)
+        .execute(
+            "UPDATE users SET dek_wrap = 'garbage' WHERE email = ?1",
+            [BOB],
+        )
+        .expect("the password wrap is replaced by garbage");
+
+    let changed = bob.change_password(PASSWORD, NEW_PASSWORD).await;
+    assert_eq!(changed.status, 303, "the password change must redirect");
+    let dropped: i64 = live_db(&w)
+        .query_row(
+            "SELECT COUNT(*) FROM activity WHERE kind = 'values_dropped'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the count reads");
+    assert_eq!(
+        dropped, 0,
+        "the session's wrap opened the key, so nothing is dropped"
+    );
+    let tokens = w.token(&bob, SLUG).await;
+    upstream.clear();
+    let reply = stateless_call(&w.stateless_mcp(SLUG, &tokens), "echo", &[]).await;
+    assert_eq!(reply.text().as_deref(), Some("called: echo"));
+    assert_eq!(carried(&upstream, "echo"), vec![Some(CANARY.to_string())]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_the_store_switch_off_no_value_is_attached_and_the_user_can_delete_what_was_stored() {
+    let w = World::start().await;
+    let (upstream, id, hid, bob) = demo_for_bob(&w, false).await;
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    let tokens = w.token(&bob, SLUG).await;
+    let live = live_db(&w);
+    let stored = |conn: &Connection| -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM user_header_values", [], |row| {
+            row.get(0)
+        })
+        .expect("the count reads")
+    };
+
+    let csrf = common::values::account_csrf(&bob).await;
+    let ignored = bob
+        .post(
+            &format!("/account/values/{SLUG}"),
+            &[("csrf", csrf.as_str()), ("forget", "1")],
+        )
+        .await;
+    assert_eq!(ignored.status, 303);
+    assert_eq!(stored(&live), 1, "with the switch on, forget=1 is ignored");
+
+    switches_ok(&w.owner, &id, false, false).await;
+    upstream.clear();
+    let reply = stateless_call(&w.stateless_mcp(SLUG, &tokens), "echo", &[]).await;
+    assert_eq!(reply.text().as_deref(), Some("called: echo"));
+    assert_eq!(
+        carried(&upstream, "echo"),
+        vec![None],
+        "with the switch off no stored value is attached"
+    );
+
+    let account = bob.get("/account").await;
+    assert_eq!(
+        account
+            .text(r#"section[data-values-retired="demo"] p.muted"#)
+            .as_deref(),
+        Some("This server no longer uses stored credentials.")
+    );
+    assert_eq!(
+        account
+            .text(r#"section[data-values-retired="demo"] button[data-kind="danger"]"#)
+            .as_deref(),
+        Some("Delete my stored credentials")
+    );
+    let csrf = account.csrf().expect("the page carries a csrf field");
+    let forgotten = bob
+        .post(
+            &format!("/account/values/{SLUG}"),
+            &[("csrf", csrf.as_str()), ("forget", "1")],
+        )
+        .await;
+    assert_eq!(forgotten.status, 303, "the deletion must redirect");
+    assert_eq!(forgotten.location().as_deref(), Some("/account"));
+    assert_eq!(stored(&live), 0, "the user's values are gone");
+    let removed: i64 = live
+        .query_row(
+            "SELECT COUNT(*) FROM activity WHERE kind = 'value_removed'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the count reads");
+    assert_eq!(removed, 1, "one value_removed row per value");
+    assert_eq!(
+        bob.get("/account")
+            .await
+            .count(r#"section[data-values-retired="demo"]"#),
+        0,
+        "the block is gone once nothing is held"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_delete_while_the_values_are_locked_is_answered_and_the_session_is_forgotten() {
+    let w = World::start().await;
+    let (upstream, _id, hid, bob) = demo_for_bob(&w, false).await;
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    let tokens = w.token(&bob, SLUG).await;
+    let session = session_on(&w, SLUG, &tokens).await;
+    let live = live_db(&w);
+    let sessions = |conn: &Connection| -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM upstream_sessions", [], |row| {
+            row.get(0)
+        })
+        .expect("the count reads")
+    };
+    assert_eq!(sessions(&live), 1, "the gateway holds the session");
+    live.execute(
+        "UPDATE access_tokens SET dek_wrap = 'garbage' WHERE dek_wrap IS NOT NULL",
+        [],
+    )
+    .expect("the wrap is replaced by garbage");
+    upstream.clear();
+
+    let closed = session.delete().await;
+    assert!(
+        closed.status == 204 || closed.status == 200,
+        "the close must be answered as a success, got {}",
+        closed.status
+    );
+    assert!(
+        upstream.requests().is_empty(),
+        "the close must not reach the upstream"
+    );
+    assert_eq!(sessions(&live), 0, "the session id is forgotten");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_first_store_ends_the_upstream_sessions_of_that_user_on_that_server() {
+    let w = World::start().await;
+    let (_upstream, id, hid, bob) = demo_for_bob(&w, false).await;
+    let (_other_up, other_id) = w.upstream("other", UpstreamOptions::default()).await;
+    let alice = w.user(ALICE).await;
+    w.grant(ALICE, &[&id]).await;
+    w.grant(BOB, &[&id, &other_id]).await;
+    let bob_demo = session_on(&w, SLUG, &w.token(&bob, SLUG).await).await;
+    let bob_other = session_on(&w, "other", &w.token(&bob, "other").await).await;
+    let alice_demo = session_on(&w, SLUG, &w.token(&alice, SLUG).await).await;
+    assert_eq!(
+        session_call(&bob_demo, "echo", &[]).await.text().as_deref(),
+        Some("called: echo")
+    );
+
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+
+    assert_eq!(
+        session_call(&bob_demo, "echo", &[]).await.status,
+        404,
+        "the user's session on that server is ended"
+    );
+    assert_eq!(
+        session_call(&bob_other, "echo", &[])
+            .await
+            .text()
+            .as_deref(),
+        Some("called: echo"),
+        "the same user's session on another server stays"
+    );
+    assert_eq!(
+        session_call(&alice_demo, "echo", &[])
+            .await
+            .text()
+            .as_deref(),
+        Some("called: echo"),
+        "another user's session on the same server stays"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refresh_without_the_admins_openable_key_says_the_stored_credentials_were_not_sent() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream(SLUG, UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    switches_ok(&w.owner, &id, false, true).await;
+    w.grant(OWNER_EMAIL, &[&id]).await;
+    let hid = header_of(&w.owner, &id, HEADER).await;
+    store_ok(&w.owner, SLUG, &hid, CANARY).await;
+    live_db(&w)
+        .execute(
+            "UPDATE sessions SET dek_wrap = 'garbage' WHERE dek_wrap IS NOT NULL",
+            [],
+        )
+        .expect("the wrap is replaced by garbage");
+    let path = server_path(&id);
+    let done = w
+        .owner
+        .submit(&path, &format!("{path}/refresh-tools"), &[])
+        .await;
+    assert_eq!(done.status, 303);
+    let page = w.owner.follow(&done).await;
+    let notice = page
+        .text(r#"div.notice[data-notice="warning"]"#)
+        .unwrap_or_default();
+    assert_eq!(
+        notice,
+        "Tools refreshed without your stored credentials. Sign out and sign in again to send them."
     );
 }

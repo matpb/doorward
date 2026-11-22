@@ -7,7 +7,7 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-const MIGRATIONS: [(i64, &str); 16] = [
+const MIGRATIONS: [(i64, &str); 17] = [
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_accounts.sql")),
     (3, include_str!("../migrations/0003_activity.sql")),
@@ -27,6 +27,7 @@ const MIGRATIONS: [(i64, &str); 16] = [
     (14, include_str!("../migrations/0014_activity_user_at.sql")),
     (15, include_str!("../migrations/0015_custom_headers.sql")),
     (16, include_str!("../migrations/0016_stored_values.sql")),
+    (17, include_str!("../migrations/0017_value_index.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -187,6 +188,61 @@ mod tests {
         assert_eq!(
             db.schema_version().expect("the version"),
             MIGRATIONS.len() as i64
+        );
+    }
+
+    #[test]
+    fn a_schema_14_database_upgrades_and_keeps_its_users_sessions_and_tokens() {
+        let mut conn = Connection::open_in_memory().expect("memory database");
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);",
+        )
+        .expect("table");
+        for (version, sql) in MIGRATIONS.iter().take(14) {
+            conn.execute_batch(sql).expect("old migration");
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, 'then')",
+                params![version],
+            )
+            .expect("recorded");
+        }
+        conn.execute_batch(
+            "INSERT INTO users (email, password_hash, role, created_at) VALUES ('bob@example.com', 'h', 'user', 0); \
+             INSERT INTO sessions (id_hash, user_id, auth_epoch, created_at, expires_at) VALUES ('s1', 1, 0, 0, 100); \
+             INSERT INTO token_families (public_id, user_id, client_id, client_name, auth_epoch, created_at, expires_at) \
+               VALUES ('f1', 1, 'c', 'Client', 0, 0, 100); \
+             INSERT INTO access_tokens (token_hash, family_id, expires_at) VALUES ('a1', 1, 100); \
+             INSERT INTO refresh_tokens (token_hash, family_id, created_at, expires_at) VALUES ('r1', 1, 0, 100);",
+        )
+        .expect("old rows");
+        migrate(&mut conn).expect("upgrade");
+        let count =
+            |sql: &str| -> i64 { conn.query_row(sql, [], |row| row.get(0)).expect("count") };
+        assert_eq!(
+            count("SELECT MAX(version) FROM schema_migrations"),
+            MIGRATIONS.len() as i64
+        );
+        assert_eq!(
+            count(
+                "SELECT COUNT(*) FROM users WHERE email = 'bob@example.com' AND dek_wrap IS NULL AND dek_salt IS NULL AND dek_gen = 0 AND values_version = 0"
+            ),
+            1
+        );
+        for table in ["sessions", "access_tokens", "refresh_tokens"] {
+            assert_eq!(
+                count(&format!(
+                    "SELECT COUNT(*) FROM {table} WHERE dek_wrap IS NULL"
+                )),
+                1,
+                "{table} keeps its row with no wrap"
+            );
+        }
+        assert_eq!(count("SELECT COUNT(*) FROM token_families"), 1);
+        assert_eq!(
+            count(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'user_header_values_header'"
+            ),
+            1
         );
     }
 }

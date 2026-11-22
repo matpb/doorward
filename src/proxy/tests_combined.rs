@@ -2812,8 +2812,13 @@ async fn a_missing_required_header_leaves_its_server_out_and_its_call_unavailabl
     )
     .await;
     assert_eq!(
-        call.status, 502,
-        "a call to the left out server must be answered as unavailable"
+        call.status, 200,
+        "a call to the left out server is a tool error"
+    );
+    let result = call.json.as_ref().and_then(|body| body.get("result"));
+    assert_eq!(
+        result.and_then(|result| result.get("isError")),
+        Some(&json!(true))
     );
     assert!(one.seen().is_empty(), "the call must not reach that server");
 }

@@ -127,7 +127,7 @@ fn account_body_with(
                 }
             }
         }
-        @if !part.servers.is_empty() {
+        @if !part.servers.is_empty() || !part.retired.is_empty() {
             (credentials_part(csrf, email, part))
         }
         section.part aria-labelledby="password-title" {
@@ -189,11 +189,36 @@ fn credentials_part(csrf: &str, email: &str, part: &Part) -> Markup {
                         button type="submit" data-kind="secondary" { "Sign out and sign in again" }
                     }
                 }
-            } @else {
+            } @else if !part.servers.is_empty() {
                 div.part-body {
                     @for server in &part.servers {
                         (server_values(csrf, email, server, part))
                     }
+                }
+            }
+            @if !part.retired.is_empty() {
+                div.part-body {
+                    @for (slug, name) in &part.retired {
+                        (retired_values(csrf, slug, name))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A server that no longer uses stored credentials while the user still holds some: one button deletes them.
+fn retired_values(csrf: &str, slug: &str, name: &str) -> Markup {
+    let name_id = format!("values-{slug}-title");
+    html! {
+        section.flow.narrow data-values-retired=(slug) aria-labelledby=(name_id) {
+            h3 id=(name_id) { span.block-name { (name) } }
+            p.muted { "This server no longer uses stored credentials." }
+            form method="post" action=(format!("/account/values/{slug}")) {
+                input type="hidden" name="csrf" value=(csrf);
+                input type="hidden" name="forget" value="1";
+                div.form-actions {
+                    button type="submit" data-kind="danger" { "Delete my stored credentials" }
                 }
             }
         }

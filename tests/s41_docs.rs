@@ -275,7 +275,14 @@ fn the_readme_and_security_name_the_limits_of_stored_credentials() {
         readme.contains("pass-through") || readme.contains("pass through"),
         "README.md must name pass-through"
     );
-    const LIMITS: [&str; 4] = ["live gateway", "guessed offline", "rotate", "key file"];
+    const LIMITS: [&str; 6] = [
+        "live gateway",
+        "guessed offline",
+        "rotate",
+        "key file",
+        "refresh replay window",
+        "best effort",
+    ];
     let encryption = section(&readme, "What the encryption covers");
     let security = section(&repo_file("SECURITY.md"), "Stored credentials");
     for (file, text) in [("README.md", encryption), ("SECURITY.md", security)] {

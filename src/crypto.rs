@@ -41,6 +41,10 @@ const QUEUE_PERMITS: usize = 64;
 const ARGON2_MEMORY_KIB: u32 = 19456;
 const ARGON2_ITERATIONS: u32 = 2;
 const ARGON2_LANES: u32 = 1;
+/// The vault key derivation's own cost; a change breaks every stored wrap, so it is pinned by a known answer.
+const VAULT_ARGON2_MEMORY_KIB: u32 = 19456;
+const VAULT_ARGON2_ITERATIONS: u32 = 2;
+const VAULT_ARGON2_LANES: u32 = 1;
 const DUMMY_PASSWORD: &str = "doorward dummy password";
 
 /// What a request used to prove itself: a session cookie value or a pre-session cookie value.
@@ -334,13 +338,20 @@ pub(crate) fn vault_token_key(token: &str) -> Option<Zeroizing<[u8; 32]>> {
     Some(out)
 }
 
-/// Argon2id with the password verifier's cost over `password` and `salt`, 32 bytes out.
+/// Argon2id with the vault's own cost over `password` and `salt`, 32 bytes out.
 pub(crate) fn argon_key(
     password: &str,
     salt: &[u8; 16],
 ) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
     let mut out = Zeroizing::new([0u8; 32]);
-    hashing_context()?
+    let params = Params::new(
+        VAULT_ARGON2_MEMORY_KIB,
+        VAULT_ARGON2_ITERATIONS,
+        VAULT_ARGON2_LANES,
+        None,
+    )
+    .map_err(|_| CryptoError::Hash)?;
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
         .hash_password_into(password.as_bytes(), salt, &mut out[..])
         .map_err(|_| CryptoError::Hash)?;
     Ok(out)
@@ -365,6 +376,9 @@ fn token_associated_data(context: &str) -> Vec<u8> {
 
 /// An owned permit of the waiting queue; dropped only when its hashing has finished.
 pub struct HashSlot(#[allow(dead_code)] OwnedSemaphorePermit);
+
+/// The vault key derivation, a seam for the test that makes it fail.
+type VaultDerive = fn(&str, &[u8; 16]) -> Result<Zeroizing<[u8; 32]>, CryptoError>;
 
 pub struct PasswordHasher {
     queue: Arc<Semaphore>,
@@ -412,12 +426,22 @@ impl PasswordHasher {
         self.runs.load(Ordering::Relaxed)
     }
 
-    /// `hash`, then the vault key of the same password under a fresh salt, in one job.
+    /// `hash`, then the vault key of the same password under a fresh salt, in one job. A failed vault
+    /// derivation leaves the hash with no unlock: the next sign-in makes the data key.
     pub async fn hash_unlock(
         &self,
         slot: HashSlot,
         password: String,
-    ) -> Result<(String, Unlock), CryptoError> {
+    ) -> Result<(String, Option<Unlock>), CryptoError> {
+        self.hash_unlock_with(slot, password, argon_key).await
+    }
+
+    async fn hash_unlock_with(
+        &self,
+        slot: HashSlot,
+        password: String,
+        derive: VaultDerive,
+    ) -> Result<(String, Option<Unlock>), CryptoError> {
         let runs = Arc::clone(&self.runs);
         self.run_blocking(slot, move || {
             runs.fetch_add(1, Ordering::Relaxed);
@@ -425,15 +449,12 @@ impl PasswordHasher {
             let mut salt = [0u8; SALT_LEN];
             fill_random(&mut salt);
             runs.fetch_add(1, Ordering::Relaxed);
-            let key = argon_key(&password, &salt)?;
-            Ok((
-                phc,
-                Unlock {
-                    salt,
-                    key: PasswordKey::from_bytes(key),
-                    fresh: true,
-                },
-            ))
+            let unlock = derive(&password, &salt).ok().map(|key| Unlock {
+                salt,
+                key: PasswordKey::from_bytes(key),
+                fresh: true,
+            });
+            Ok((phc, unlock))
         })
         .await?
     }
@@ -991,6 +1012,7 @@ mod tests {
             .hash_unlock(slot, "correct horse battery".to_owned())
             .await
             .expect("hash");
+        let made = made.expect("an unlock");
         assert_eq!(
             hasher.argon_runs(),
             3,
@@ -1042,6 +1064,31 @@ mod tests {
         let unlock = unlock.expect("an unlock");
         assert!(matched && !unlock.fresh);
         assert_eq!(unlock.salt, made.salt);
+    }
+
+    #[test]
+    fn the_vault_key_derivation_has_a_known_answer() {
+        let key = argon_key("pw", &[0u8; 16]).expect("derives");
+        let hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(
+            hex,
+            "aaeed868d05455d03b5bdd2cd280d5dd0fc1198cbf615871f8195662217c919f"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_hash_job_still_returns_a_hash_when_the_vault_derivation_fails() {
+        fn failing(_: &str, _: &[u8; 16]) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
+            Err(CryptoError::Hash)
+        }
+        let hasher = PasswordHasher::new().await.expect("hasher");
+        let slot = hasher.try_slot().expect("slot");
+        let (phc, unlock) = hasher
+            .hash_unlock_with(slot, "correct horse battery".to_owned(), failing)
+            .await
+            .expect("the hash survives");
+        assert!(phc.starts_with("$argon2id$"));
+        assert!(unlock.is_none(), "no unlock without a derived key");
     }
 
     #[tokio::test(flavor = "multi_thread")]

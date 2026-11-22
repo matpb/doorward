@@ -79,10 +79,10 @@ pub async fn post_setup(State(state): State<AppState>, form: VerifiedForm) -> Re
         Ok(hashed) => hashed,
         Err(err) => return internal_error("setup", &err),
     };
-    let vault = Unlocked {
+    let vault = unlock.map(|unlock| Unlocked {
         keys: Arc::clone(&state.keys),
         unlock,
-    };
+    });
     let now = state.clock.now().unix_timestamp();
     let lifetime = session::lifetime_seconds(state.config.lifetimes.session_hours);
     let previous = form.viewer.presented_session().map(str::to_owned);
@@ -96,7 +96,7 @@ pub async fn post_setup(State(state): State<AppState>, form: VerifiedForm) -> Re
                 now,
                 lifetime,
                 previous.as_deref(),
-                Some(&vault),
+                vault.as_ref(),
             )
         })
         .await;

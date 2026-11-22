@@ -25,12 +25,14 @@ pub struct Opened {
     pub stored: Vec<(String, HeaderValue)>,
     /// The lower-cased names that have a stored row, opened or not.
     pub held: Vec<String>,
+    /// The lower-cased names whose row did not open with the key.
+    pub unopened: Vec<String>,
     /// The key could not be opened although a value is held or needed.
     pub locked: bool,
 }
 
 /// Opens `user`'s stored values for `server`, bound to the address `url`. The key is worked only when a
-/// value is held or `need_key` is true; a row that does not open counts as absent.
+/// value is held or `need_key` is true; a row that does not open is listed in `unopened`.
 pub fn open_for(
     conn: &Connection,
     keys: &Keys,
@@ -55,6 +57,7 @@ pub fn open_for(
         return Ok(Opened {
             stored: Vec::new(),
             held,
+            unopened: Vec::new(),
             locked: false,
         });
     }
@@ -76,6 +79,7 @@ pub fn open_for(
         return Ok(Opened {
             stored: Vec::new(),
             held,
+            unopened: Vec::new(),
             locked: true,
         });
     };
@@ -88,6 +92,7 @@ pub fn open_for(
         .optional()?
         .unwrap_or(0);
     let mut stored = Vec::new();
+    let mut unopened = Vec::new();
     for (name, sealed) in &rows {
         let place = ValuePlace {
             user,
@@ -96,17 +101,21 @@ pub fn open_for(
             generation,
             upstream_url: url,
         };
-        let Ok(plain) = open_value(&key, &place, sealed) else {
-            continue;
-        };
-        if let Ok(mut value) = HeaderValue::from_bytes(&plain) {
-            value.set_sensitive(true);
-            stored.push((name.clone(), value));
+        let value = open_value(&key, &place, sealed)
+            .ok()
+            .and_then(|plain| HeaderValue::from_bytes(&plain).ok());
+        match value {
+            Some(mut value) => {
+                value.set_sensitive(true);
+                stored.push((name.clone(), value));
+            }
+            None => unopened.push(name.clone()),
         }
     }
     Ok(Opened {
         stored,
         held,
+        unopened,
         locked: false,
     })
 }
@@ -167,21 +176,28 @@ pub async fn resolve(
         .await
 }
 
-/// A held value that cannot be opened makes the connection locked, unless the client supplies that header itself.
+/// A held value that cannot be opened makes the connection locked, and one that opens to nothing makes it
+/// unopenable, unless the client supplies that header itself.
 fn lock_check(
     config: &ServerHeaders,
     client: &HeaderMap,
     opened: &Opened,
     resolved: Resolved,
 ) -> Resolved {
-    if !opened.locked {
-        return resolved;
+    let supplied = |name: &String| {
+        config.pass && name != "authorization" && client.contains_key(name.as_str())
+    };
+    if opened.locked {
+        let uncovered = opened.held.iter().any(|name| !supplied(name));
+        return match resolved {
+            Resolved::Missing { .. } => Resolved::Locked,
+            Resolved::Ready(_) if uncovered => Resolved::Locked,
+            other => other,
+        };
     }
-    let supplied = |name: &str| config.pass && name != "authorization" && client.contains_key(name);
-    let uncovered = opened.held.iter().any(|name| !supplied(name));
+    let uncovered = opened.unopened.iter().any(|name| !supplied(name));
     match resolved {
-        Resolved::Missing { .. } => Resolved::Locked,
-        Resolved::Ready(_) if uncovered => Resolved::Locked,
+        Resolved::Missing { .. } | Resolved::Ready(_) if uncovered => Resolved::Unopenable,
         other => other,
     }
 }
@@ -283,10 +299,52 @@ mod tests {
         let opened =
             open_for(&conn, &keys, 1, 1, URL, Some(Via::Session(SESSION)), false).expect("reads");
         assert!(!opened.locked);
-        assert!(
-            opened.stored.is_empty(),
-            "a row that does not open is absent"
+        assert!(opened.stored.is_empty());
+        assert_eq!(
+            opened.unopened,
+            ["x-key"],
+            "a row that does not open is named, not treated as absent"
         );
+    }
+
+    fn optional_config(pass: bool) -> ServerHeaders {
+        ServerHeaders {
+            declared: vec![crate::custom_headers::Declared {
+                id: 1,
+                name: "X-Key".to_owned(),
+                lower: "x-key".to_owned(),
+                required: false,
+            }],
+            pass,
+            store: true,
+        }
+    }
+
+    #[test]
+    fn a_held_optional_value_that_does_not_open_refuses_unless_the_client_supplies_the_header() {
+        let (_dir, conn, keys) = fixture("https://other.example.com/mcp");
+        let opened =
+            open_for(&conn, &keys, 1, 1, URL, Some(Via::Session(SESSION)), false).expect("reads");
+        let config = optional_config(true);
+        let bare = HeaderMap::new();
+        let resolved = custom_headers::resolve(&config, &bare, &opened.stored);
+        assert!(matches!(
+            lock_check(&config, &bare, &opened, resolved),
+            Resolved::Unopenable
+        ));
+        let mut sent = HeaderMap::new();
+        sent.insert("x-key", HeaderValue::from_static("mine"));
+        let resolved = custom_headers::resolve(&config, &sent, &opened.stored);
+        assert!(matches!(
+            lock_check(&config, &sent, &opened, resolved),
+            Resolved::Ready(_)
+        ));
+        let off = optional_config(false);
+        let resolved = custom_headers::resolve(&off, &sent, &opened.stored);
+        assert!(matches!(
+            lock_check(&off, &sent, &opened, resolved),
+            Resolved::Unopenable
+        ));
     }
 
     #[test]

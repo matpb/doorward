@@ -387,6 +387,7 @@ async fn a_password_change_with_a_damaged_old_wrap_still_changes_drops_the_value
             "UPDATE users SET dek_wrap = 'garbage' WHERE id = ?1",
             params![user],
         )?;
+        conn.execute("UPDATE sessions SET dek_wrap = NULL", [])?;
         let change = change_with(
             user,
             old_session,

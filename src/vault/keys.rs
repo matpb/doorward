@@ -10,6 +10,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::audit;
 use crate::crypto::{Keys, token_hash};
+use crate::report;
 
 use super::{
     DataKey, PasswordKey, Place, ValuePlace, open_value, seal_value, unwrap_with_password,
@@ -416,6 +417,61 @@ pub fn release(
             audit::values_dropped_on(tx, now, *holder, email, (server, &slug), count)?;
         }
     }
+    Ok(())
+}
+
+/// After a sign-in whose accepted password cannot open the user's own password wrap: makes a new data key
+/// one generation up, deletes the values (they are unreadable), and wraps the key onto the new session.
+pub fn heal(
+    conn: &mut Connection,
+    unlocked: &Unlocked,
+    (user, email): (i64, &str),
+    session_token: &str,
+    now: i64,
+) -> rusqlite::Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let Some((generation, Some(wrap), Some(salt))) = stored(&tx, user)? else {
+        return Ok(());
+    };
+    let unlock = &unlocked.unlock;
+    if salt != URL_SAFE_NO_PAD.encode(unlock.salt)
+        || open_password_wrap(&unlocked.keys, user, generation, unlock, &wrap).is_some()
+    {
+        return Ok(());
+    }
+    report::failure(
+        "password wrap",
+        &format!("does not open for user {user}, a new data key is made"),
+    );
+    let generation = generation.saturating_add(1);
+    let deleted = tx.execute(
+        "DELETE FROM user_header_values WHERE user_id = ?1",
+        params![user],
+    )?;
+    tx.execute(
+        "UPDATE users SET dek_gen = ?1, values_version = values_version + ?2 WHERE id = ?3",
+        params![generation, i64::from(deleted > 0), user],
+    )?;
+    let key = DataKey::random();
+    store_password_wrap(&tx, &unlocked.keys, user, generation, unlock, &key)?;
+    if deleted > 0 {
+        tx.execute(
+            "DELETE FROM upstream_sessions WHERE user_id = ?1",
+            params![user],
+        )?;
+        audit::values_dropped(&tx, now, user, email, deleted)?;
+    }
+    let row = token_hash(session_token);
+    wrap_row(
+        &tx,
+        &unlocked.keys,
+        user,
+        Table::Sessions,
+        &row,
+        session_token,
+        &key,
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
