@@ -132,7 +132,7 @@ class Client:
 
     def __init__(self, port):
         self.port = port
-        self.base = f"http://127.0.0.1:{port}"
+        self.base = os.environ.get("PROVE_CLIENTS_PUBLIC_URL") or f"http://127.0.0.1:{port}"
         self.jar = {}
 
     def send(self, method, path, body=None, headers=None, cookies=True):

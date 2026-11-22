@@ -205,12 +205,15 @@ def run_upstream(port):
     return 0
 
 
+# Behind a tunnel, for a client on the internet: PROVE_CLIENTS_PUBLIC_URL is its https address, PROVE_CLIENTS_GW_PORT the port it forwards to.
 def write_config(gw_port, run=RUN):
     text = (
-        f'public_url = "http://127.0.0.1:{gw_port}"\n'
+        f'public_url = "{os.environ.get("PROVE_CLIENTS_PUBLIC_URL") or f"http://127.0.0.1:{gw_port}"}"\n'
         f'listen = "127.0.0.1:{gw_port}"\n'
         f'database = "{os.path.join(run, "doorward.db")}"\n'
     )
+    if os.environ.get("PROVE_CLIENTS_PUBLIC_URL"):
+        text += 'trusted_proxies = ["127.0.0.1", "::1"]\n'
     write_private(os.path.join(run, "doorward.toml"), text)
 
 
@@ -311,7 +314,7 @@ def command_up(binary):
     marker = f"prove-clients-{os.getpid()}-{secrets.token_hex(8)}"
     write_private(MARKER_FILE, marker + "\n")
     secret = secrets.token_urlsafe(32)
-    gw_port, up_port = free_port(), free_port()
+    gw_port, up_port = int(os.environ.get("PROVE_CLIENTS_GW_PORT") or free_port()), free_port()
     write_config(gw_port)
     up_env = {**os.environ, MARK_KEY: marker, SECRET_KEY: secret}
     up_pid = launch(
