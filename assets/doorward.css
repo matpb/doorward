@@ -231,9 +231,15 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+/* The second line of a title: the name of a header and its question mark, on a line of their own
+   under the word Remove. */
+h1 > .title-line {
+  display: block;
+}
+
 /* The name of a header in a title: an inline box, so the question mark after it can follow on its line,
    in the mono face at 30 px, breaking only at its hyphens. */
-h1 > .title-name {
+h1 > .title-line > .title-name {
   display: inline;
   font-family: var(--mono);
   font-size: 30px;
@@ -709,6 +715,12 @@ body[data-layout="page"] main > .notice > p {
 .part-body.flow > * + form.flow,
 .part-body.flow > [data-headers-full] {
   margin-block-start: var(--s6);
+}
+
+/* The add form is a second form under the switches form, so it starts further down: 64 px, the
+   nearest token above 56 px. */
+.part-body.flow > form.flow[action$="/headers"] {
+  margin-block-start: var(--s8);
 }
 
 .part-body > section + * {
@@ -2834,7 +2846,7 @@ body[data-layout="card"] main > .lede + .actions {
     line-height: 32px;
   }
 
-  h1 > .title-name {
+  h1 > .title-line > .title-name {
     font-size: 26px;
   }
 

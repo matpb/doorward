@@ -905,9 +905,15 @@ async fn the_remove_link_opens_a_confirm_page_that_names_the_header_the_server_a
         "the title must name the header"
     );
     assert_eq!(
-        page.text("main > h1 > span").as_deref(),
+        page.text("main > h1 > span.title-line").as_deref(),
+        Some("X-Trace-Id\u{2060}?"),
+        "the second line of the title must be the whole name with its question mark"
+    );
+    assert_eq!(
+        page.text("main > h1 > span.title-line > span.title-name")
+            .as_deref(),
         Some(HEADER),
-        "the header name must sit in its own span"
+        "the header name must sit in its own span on that line"
     );
     assert_eq!(
         page.text("main > p.lede").as_deref(),
@@ -951,12 +957,12 @@ async fn the_remove_title_breaks_only_at_hyphens_and_the_question_mark_is_glued_
     let page = w.owner.get(&remove_path(&id, &hid)).await;
     assert!(
         page.body.contains(
-            "<h1>Remove <span class=\"title-name\">X-<wbr>Trace-<wbr>Id</span>\u{2060}?</h1>"
+            "<h1>Remove <span class=\"title-line\"><span class=\"title-name\">X-<wbr>Trace-<wbr>Id</span>\u{2060}?</span></h1>"
         ),
         "the name breaks only after a hyphen, and a word joiner sits between the name and the question mark"
     );
     assert_eq!(
-        page.count("main > h1 > span.title-name > wbr"),
+        page.count("main > h1 > span.title-line > span.title-name > wbr"),
         2,
         "the name has a break opportunity after each of its two hyphens and none elsewhere"
     );

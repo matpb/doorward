@@ -2011,12 +2011,17 @@ Added in the notices round (statements 65 and 66): `the_hints_under_the_two_swit
 reads the served stylesheet and checks that it caps `[data-switches] > .check > .hint` at `60ch`.
 `a_notice_inside_a_part_is_capped_at_the_width_of_a_page_notice` (the notice layout of the copy round): a notice inside a
 part body is capped at `640px` with a page notice. `the_header_name_in_the_remove_title_is_set_in_the_mono_face`:
-`h1 > .title-name` is set in `var(--mono)`, the face of the consent destination.
+`h1 > .title-line > .title-name` is set in `var(--mono)`, the face of the consent destination.
 
 Changed in the title and list round (statements 65 and 66): `the_remove_title_name_is_inline_breaks_at_hyphens_and_is_30_px_then_26_px_on_a_phone`
 reads the served stylesheet: `h1 > .title-name` is `display: inline`, `overflow-wrap: normal`, 30 px, and 26 px inside the
 640 px query. `the_locked_list_is_one_grid_of_a_max_content_name_column_and_a_16_px_gap` reads that `.locked-list` is one grid
 of `max-content minmax(0, 1fr)` with `column-gap: var(--s4)` and `--s4` is 16 px.
+
+Changed in the fourth round (statement 65 and 80): `the_title_line_is_a_block_so_remove_stands_alone_on_the_first_line` (new)
+reads the served stylesheet for `h1 > .title-line` with `display: block`. `the_remove_title_name_is_inline_breaks_at_hyphens_and_is_30_px_then_26_px_on_a_phone`
+now targets `h1 > .title-line > .title-name`, the selector the title's name has under the second line. `the_add_a_header_form_starts_64_px_below_the_switches_form`
+(new) reads that `form.flow[action$="/headers"]` has `margin-block-start: var(--s8)` and that `--s8` is 64 px, the nearest token above 56 px.
 
 ## s68_exposed.rs (statement 68)
 
@@ -2512,7 +2517,7 @@ switch is saved the same way, and bob (assigned to the server) makes the calls.
     `the_confirm_page_says_nobody_stored_a_credential_when_none_is_stored`,
     `the_confirm_page_counts_every_person_who_stored_a_credential` and
     `the_confirm_page_is_not_found_for_another_servers_header_or_an_unknown_one` (statement 80, the
-    removal page): the title and the header name in its span, the sentence for none, one and two
+    removal page): the title with its second line `span.title-line` and the header name in its span inside it, the sentence for none, one and two
     users, the danger "Remove header" and the secondary "Keep header", and 404 for a header that is
     not the server's.
 13. `a_plain_user_cannot_open_the_confirm_page` and
@@ -2760,6 +2765,11 @@ Changed in the title and list round (statements 82 and 90): `the_locked_list_hol
 (new, a guard for the focus report): the redirect lands on `#values-title`, the heading, and the saved page holds no `[autofocus]`.
 `a_session_whose_key_does_not_open_shows_the_locked_credentials_part` now reads the locked sentence
 `This session cannot open your stored credentials. Sign in again to store or change them.` (updated).
+
+Changed in the fourth round (statement 82): `the_kept_encrypted_hint_shows_only_while_no_field_of_the_server_is_stored` (new):
+with nothing stored the form holds the `p.hint` `Kept encrypted and never shown again.` directly between the last field and the
+Save credentials button, and once a field is stored it is gone. `the_kept_encrypted_hint_is_absent_in_the_locked_and_retired_states`
+(new): the locked state (garbled session wrap, nothing stored) and the retired state (stored, switch off) hold no such hint.
 
 ## s90_withheld.rs (statement 90)
 

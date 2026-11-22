@@ -2080,6 +2080,73 @@ async fn the_write_only_hint_shows_only_when_a_field_of_the_form_is_stored() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_kept_encrypted_hint_shows_only_while_no_field_of_the_server_is_stored() {
+    let w = World::start().await;
+    let (_upstream, _id, hid, bob) = demo_for_bob(&w, false).await;
+    let hint = "Kept encrypted and never shown again.";
+    let form = format!(r#"form[action="/account/values/{SLUG}"]"#);
+    let page = bob.get("/account").await;
+    assert!(
+        page.texts(&format!("{form} p.hint"))
+            .iter()
+            .any(|text| text == hint),
+        "with nothing stored the form must carry the kept-encrypted hint"
+    );
+    assert_eq!(
+        page.count(&format!("{form} div.fields ~ p.hint + div.form-actions")),
+        1,
+        "the hint sits between the last field and the Save credentials button"
+    );
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    let page = bob.get("/account").await;
+    assert!(
+        !page
+            .texts(&format!("{form} p.hint"))
+            .iter()
+            .any(|text| text == hint),
+        "once a field is stored the form must not carry the kept-encrypted hint"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_kept_encrypted_hint_is_absent_in_the_locked_and_retired_states() {
+    let hint = "Kept encrypted and never shown again.";
+    let w = World::start().await;
+    let (_upstream, _id, _hid, bob) = demo_for_bob(&w, false).await;
+    let live = live_db(&w);
+    live.execute(
+        "UPDATE sessions SET dek_wrap = 'garbage' WHERE dek_wrap IS NOT NULL",
+        [],
+    )
+    .expect("the session's wrap is replaced by garbage");
+    let page = bob.get("/account").await;
+    assert_eq!(
+        page.count("[data-values-locked]"),
+        1,
+        "the locked state must be the one shown"
+    );
+    assert!(
+        !page.texts("p.hint").iter().any(|text| text == hint),
+        "the locked state must not carry the kept-encrypted hint"
+    );
+
+    let w = World::start().await;
+    let (_upstream, id, hid, bob) = demo_for_bob(&w, false).await;
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    switches_ok(&w.owner, &id, false, false).await;
+    let page = bob.get("/account").await;
+    assert_eq!(
+        page.count(r#"section[data-values-retired="demo"]"#),
+        1,
+        "the retired state must be the one shown"
+    );
+    assert!(
+        !page.texts("p.hint").iter().any(|text| text == hint),
+        "the retired state must not carry the kept-encrypted hint"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_retired_block_says_its_credentials_are_still_stored_but_no_longer_sent() {
     let w = World::start().await;
     let (_upstream, id, hid, bob) = demo_for_bob(&w, false).await;

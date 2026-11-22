@@ -423,7 +423,7 @@ fn remove_body(
 ) -> Markup {
     let path = format!("/admin/servers/{}", server.id);
     html! {
-        h1 { "Remove " span.title-name { (ui::hyphenated(&declared.name)) } "\u{2060}?" }
+        h1 { "Remove " span.title-line { span.title-name { (ui::hyphenated(&declared.name)) } "\u{2060}?" } }
         p.lede data-stored-by=(stored) {
             @if stored == 0 {
                 "No user stored a credential for it on " (server.name) "."

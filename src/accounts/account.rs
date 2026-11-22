@@ -326,6 +326,8 @@ fn server_values(csrf: &str, email: &str, server: &ServerView, part: &Part) -> M
                 }
                 @if stored {
                     p.muted { "A stored credential is never shown again. Leave a field empty to keep it." }
+                } @else {
+                    p.hint { "Kept encrypted and never shown again." }
                 }
                 div.form-actions {
                     button type="submit" data-kind=(save_kind) { "Save credentials" }

@@ -816,11 +816,11 @@ async fn the_header_name_in_the_remove_title_is_set_in_the_mono_face() {
                 && value == "var(--mono)"
                 && selector
                     .split(',')
-                    .any(|part| part.trim() == "h1 > .title-name")
+                    .any(|part| part.trim() == "h1 > .title-line > .title-name")
         });
     assert!(
         mono,
-        "the stylesheet must set h1 > .title-name in the mono face, as the consent destination is"
+        "the stylesheet must set h1 > .title-line > .title-name in the mono face, as the consent destination is"
     );
 }
 
@@ -837,7 +837,7 @@ async fn the_remove_title_name_is_inline_breaks_at_hyphens_and_is_30_px_then_26_
     let on_name = |selector: &str| {
         selector
             .split(',')
-            .any(|part| part.trim() == "h1 > .title-name")
+            .any(|part| part.trim() == "h1 > .title-line > .title-name")
     };
     let value_of = |name: &str, phone: bool| {
         rules
@@ -868,6 +868,56 @@ async fn the_remove_title_name_is_inline_breaks_at_hyphens_and_is_30_px_then_26_
         value_of("font-size", true).as_deref(),
         Some("26px"),
         "the name is 26 px at the phone breakpoint"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_title_line_is_a_block_so_remove_stands_alone_on_the_first_line() {
+    let w = TestGateway::start().await;
+    let c = w.client();
+    let page = c.get("/login").await;
+    let href = page
+        .attr(r#"link[rel="stylesheet"]"#, "href")
+        .expect("the sign-in page must link a stylesheet");
+    let css = c.get(&href).await.body;
+    let block = declarations(&css)
+        .into_iter()
+        .any(|(ancestors, selector, name, value)| {
+            ancestors.is_empty()
+                && name == "display"
+                && value == "block"
+                && selector
+                    .split(',')
+                    .any(|part| part.trim() == "h1 > .title-line")
+        });
+    assert!(
+        block,
+        "the stylesheet must set h1 > .title-line to display: block, so the name and its question mark start a line of their own"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_add_a_header_form_starts_64_px_below_the_switches_form() {
+    let w = TestGateway::start().await;
+    let c = w.client();
+    let page = c.get("/login").await;
+    let href = page
+        .attr(r#"link[rel="stylesheet"]"#, "href")
+        .expect("the sign-in page must link a stylesheet");
+    let css = c.get(&href).await.body;
+    let token_is_64 = css.contains("--s8: 64px;");
+    let spaced = declarations(&css)
+        .into_iter()
+        .any(|(_, selector, name, value)| {
+            name == "margin-block-start"
+                && value == "var(--s8)"
+                && selector
+                    .split(',')
+                    .any(|part| part.trim().ends_with(r#"form.flow[action$="/headers"]"#))
+        });
+    assert!(
+        token_is_64 && spaced,
+        "the Add a header form must start at --s8, 64 px, the nearest token above 56 px"
     );
 }
 
