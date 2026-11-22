@@ -384,6 +384,84 @@ L. Added after the owner's auth review
     finds no address to turn into a link, and the text reads the same. On the consent
     page the sentence about a local app sits inside the one warning box.
 
+M. Added for custom headers and per-user credentials
+
+80. An admin declares up to 8 custom headers per server, each with a name and whether it is
+    required, and sets two switches per server: pass the declared headers through from the
+    client, and let each user store their own values. A name must be a valid header name of
+    at most 64 characters and unique on the server whatever its case. Refused names: the
+    ones refused for the secret header, `Cookie`, `User-Agent`, `Origin`, `Referer`,
+    `Last-Event-ID`, `Forwarded`, `Via`, `X-Real-IP`, every `X-Forwarded-` name, every
+    `Mcp-` and `Proxy-` name, and the server's own secret header name; the secret header
+    cannot take a declared name either. `Authorization` may be declared: it is never passed
+    through from a client and can only be stored.
+81. With pass-through on, a declared header that the client sends reaches that server with
+    the client's value, on the server's path and on the combined endpoint (there it goes to
+    every server that declares the name and passes it through). With pass-through off, or
+    for a name that is not declared, the header does not reach the upstream. A declared
+    header sent more than once, or with a value that is empty, longer than 4096 bytes or not
+    visible ASCII, is refused with HTTP 400 before any upstream is contacted.
+82. With stored values on, a user assigned to the server stores one value per declared
+    header on the account page. The page never shows a stored value again: it shows the date
+    it was set, the account's email and the host the value is sent to, and it warns when
+    that upstream is plain `http` on an address that is not loopback. A value is visible
+    ASCII of 1 to 4096 bytes. The gateway attaches the caller's stored values to that
+    caller's requests to that server and to no other request. When the client sends the
+    header and pass-through is on, the client's value is used for that request. Admins see
+    only whether a user has a value.
+83. When a required header has no value for a caller, stored or passed through, nothing is
+    sent to that server for that caller. The server's path answers HTTP 403 with a JSON-RPC
+    error whose message names the server and what is missing: the account page's address
+    when values can be stored there, else the header's name; the combined endpoint leaves
+    that server out for that caller and keeps serving the others. The
+    account page marks each server that still needs values, and the consent page names
+    them. A connection made before the user had a key gets the same refusal with the words
+    `Reconnect this app`.
+84. Stored values are encrypted so that the database and the key file together do not open
+    them. Each user has one random 256-bit data key, made the first time a password is in
+    hand (setup, invitation, sign-in), before any value exists. A value is sealed under the
+    data key with a context of user, server, lower-cased header name, key generation and
+    the server's upstream address. The data key exists only as wraps: one under a key from
+    Argon2id over the password with its own salt, and one on each live browser session,
+    authorization code, access token and refresh token, under a key derived from that
+    secret, of which the database holds only a hash; every wrap is sealed again with the
+    server key. A wrap's context names the user, the key generation, the table and the
+    row. The password wrap key is derived only after the password was accepted; a failed
+    sign-in runs no second derivation, and no password derivation runs on an MCP request.
+85. The data key follows the user's secrets and dies with them. Sign-in wraps it for the
+    session, consent for the code, the code exchange for the token pair, and a refresh for
+    the new pair, each in the same transaction as the row change. A redeemed code, a
+    rotated refresh token, an expired row at the sweep, a sign-out and a disconnected app
+    lose their wrap. A password change, a reset and a disable remove every wrap on the
+    user's codes and tokens. A password change makes a new data key and seals the values
+    again; a reset deletes the user's stored values and says so on the reset page and in
+    the reset mail. A missing or damaged wrap never changes whether a sign-in, a consent, a
+    code exchange or a refresh succeeds: it only makes servers with stored values
+    unavailable to that connection.
+86. Stored values are deleted when their destination changes: every user's values for a
+    server when the server is deleted, its upstream address changes, or a declared header
+    is removed (a rename is a removal); one user's values for a server when that user is
+    unassigned from it. A value copied to another user, server, header or upstream address
+    in the database does not open.
+87. A user's values never appear in the database in clear, in an activity row, in a log
+    line, in any page or in an error the gateway writes. Storing, replacing and removing a
+    value write an activity row with the header's name. Values are sent only inside a
+    request that carries the caller's token, or the pressing admin's session for Refresh
+    tools; the lock-down check, the gateway's own session closes and a redirect answer from
+    the upstream carry none. They are marked sensitive on the outgoing request and are not
+    kept in memory between requests. An open stream or upstream session of a user on a
+    server ends when that user's values for it change.
+88. A server without a stored secret header is never reported as locked down. While it
+    declares custom headers its page says that anyone who reaches the upstream directly
+    passes the gateway's rules and its activity log.
+89. The README says how to set up custom headers, pass-through and stored values, and with
+    `SECURITY.md` states what the encryption does not cover: an attacker running code in
+    the live gateway, a password guessed offline from a stolen database, a stolen live
+    token together with the database, an admin who points the server at another address
+    before users store values again, and a server that echoes a credential back. It tells
+    the reader to rotate the upstream credential after a suspected theft and to keep the
+    key file out of backups of the data directory.
+
 ### Proof
 
 Each statement is proven by an automated test that `./check.sh` runs, named after its number
@@ -447,6 +525,20 @@ into the test harness. In addition:
   invitation send; the byte for byte, host rule, address rule, border and unlinked text tests in
   `src/mail/templates.rs` against `src/mail/fixtures/`; the destination and time tests in
   `src/oauth/token.rs`; and the notice test in `src/oauth/consent.rs`.
+- 80, 81, 88 and the pass-through half of 83: `tests/s80_custom_headers.rs`, with a fake
+  upstream that records the headers of every request, on the server's path and the combined
+  endpoint under both protocol generations; the new sections are in the page lists of
+  `tests/s52_interface.rs`, `tests/s62_shell.rs`, `tests/s65_forms_tables.rs` and
+  `tests/s71_refused_forms.rs`.
+- 82, 84 to 87 and the stored half of 83: `tests/s84_stored_values.rs`, which copies the
+  database, its write-ahead log and
+  the key file while the gateway runs and tries every stored string as a key, replays used
+  and revoked secrets against that copy, moves rows between users, servers and headers,
+  and reads the activity log, the pages and the gateway's standard error for a canary
+  value; the unit tests in `src/crypto.rs` and `src/vault.rs`. Also one run per real
+  client of statement 49 against a server that demands a per-user header, once passed
+  through and once stored.
+- 89: `tests/s41_docs.rs`.
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
   a walk-through of every page in a real browser at 390 px and desktop width in both
   themes, which also measures control heights and sideways scroll; screenshots kept under
@@ -476,7 +568,8 @@ into the test harness. In addition:
 ### Not in v1
 
 Sign-in through an external identity provider, a second factor, tokens for callers with no
-browser, stored per-user upstream credentials, hosting or launching MCP servers, upstreams
+browser, a tool list per user (the cached list of a server is shared by its users), hosting
+or launching MCP servers, upstreams
 that are local commands, more than one gateway instance on a database, databases other than
 SQLite, languages other than English.
 

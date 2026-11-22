@@ -4,6 +4,7 @@ pub mod admin;
 pub mod binary;
 pub mod cimd;
 pub mod client;
+pub mod headers;
 pub mod mail;
 pub mod mcp;
 pub mod upstream;
