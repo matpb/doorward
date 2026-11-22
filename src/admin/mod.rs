@@ -69,7 +69,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/servers/{id}/headers", post(servers::post_header))
         .route(
             "/servers/{id}/headers/{header_id}/remove",
-            post(servers::post_remove_header),
+            get(servers::get_remove_header).post(servers::post_remove_header),
         )
         .route(
             "/servers/{id}/header-switches",

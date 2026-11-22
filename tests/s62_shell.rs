@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use common::TestGateway;
 use common::client::{self, OAuthApp, Page, TestClient};
+use common::headers::{declare_header, header_id, set_switches};
 use common::mail::link_with_prefix;
 use common::upstream::{FakeUpstream, UpstreamOptions};
 use common::world::{APP_ID, APP_NAME, World};
@@ -159,6 +160,9 @@ async fn seeded() -> Seeded {
     let (upstream, demo) = w.upstream("demo", UpstreamOptions::default()).await;
     w.grant(BOB, &[demo.as_str()]).await;
     let bob_id = w.user_id(BOB).await;
+    declare_header(&w.owner, &demo, "X-Trace-Id", false).await;
+    let page = set_switches(&w.owner, &demo, true, true).await;
+    assert_eq!(page.status, 303, "the switches must be saved");
     let dave_link = w.invite_link(DAVE, "user").await;
     Seeded {
         w,
@@ -254,6 +258,17 @@ async fn covered(s: &Seeded) -> Vec<Shot> {
         shots.push(shot(&path, page, 200, PANEL, current));
     }
 
+    let trace = header_id(&w.owner, &s.demo, "X-Trace-Id")
+        .await
+        .expect("the header must have a remove link");
+    let confirm = format!("/admin/servers/{}/headers/{trace}/remove", s.demo);
+    shots.push(shot(
+        "remove a header (confirm)",
+        w.owner.get(&confirm).await,
+        200,
+        CARD,
+        "",
+    ));
     let local = consent_page(&s.bob, &w.app(), &w.resource("demo")).await;
     shots.push(shot("consent (local client)", local, 200, CARD, ""));
     w.gw.cimd().put(APP_ID, APP_NAME, &[CLAUDE_CALLBACK]);

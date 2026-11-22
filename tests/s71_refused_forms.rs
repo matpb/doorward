@@ -5,6 +5,7 @@ use std::time::Duration;
 use common::TestGateway;
 use common::admin;
 use common::client::Page;
+use common::headers::{declare_header, set_switches};
 use common::mail::link_with_prefix;
 use common::upstream::UpstreamOptions;
 use common::world::{FROM, OWNER_EMAIL, PASSWORD, World};
@@ -842,4 +843,84 @@ async fn a_limited_sign_in_sends_no_address_back() {
     let limited = browser.login(OWNER_EMAIL, "zq-limit-7").await;
     assert_eq!(limited.status, 429, "the sixth guess must be limited");
     assert_no_value(&limited, "input#email");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_header_form_sends_back_its_name_and_its_required_box() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    let path = format!("/admin/servers/{id}");
+    let page = w
+        .owner
+        .submit(
+            &path,
+            &format!("{path}/headers"),
+            &[("name", "Cookie"), ("required", "1")],
+        )
+        .await;
+    assert_eq!(page.status, 400, "a refused header name must answer 400");
+    assert_eq!(
+        page.text(r#"div.notice[data-notice="error"] > p"#)
+            .as_deref(),
+        Some("The header was not added. Go to the header name field"),
+        "the notice names the outcome and links to the field"
+    );
+    assert_eq!(
+        value(&page, "input#header-name").as_deref(),
+        Some("Cookie"),
+        "the refused name comes back in its field"
+    );
+    assert_eq!(
+        page.attr("input#header-name", "aria-invalid").as_deref(),
+        Some("true")
+    );
+    assert_eq!(
+        page.text("p.field-error#header-name-error").as_deref(),
+        Some("Cookie cannot be used as a custom header. Choose another name."),
+        "the reason sits under the field"
+    );
+    assert_eq!(
+        page.count("input#header-required[checked]"),
+        1,
+        "the Required box comes back as it was sent"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_password_change_still_holds_the_credentials_part() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    let bob = w.user(BOB).await;
+    w.grant(BOB, &[&id]).await;
+    let declared = declare_header(&w.owner, &id, "X-Trace-Id", false).await;
+    assert_eq!(
+        declared.status, 303,
+        "declaring the header must be accepted"
+    );
+    let switched = set_switches(&w.owner, &id, false, true).await;
+    assert_eq!(switched.status, 303, "the store switch must be saved");
+    let page = bob
+        .submit(
+            "/account",
+            "/account/password",
+            &[
+                ("current_password", PASSWORD),
+                ("new_password", "zq-acct-7"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        page.status, 400,
+        "a short new password must be refused with 400"
+    );
+    assert_eq!(
+        page.count(r#"section[data-values-server="demo"]"#),
+        1,
+        "the refused account page must still hold the credentials part"
+    );
+    assert_eq!(
+        page.count("[data-values-locked]"),
+        0,
+        "a session whose key opens must not show the locked part"
+    );
 }

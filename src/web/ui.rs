@@ -65,6 +65,40 @@ pub fn web_address(text: &str) -> Markup {
     }
 }
 
+/// A host or web address in pieces: a `code.address` of one span per piece, with a `wbr` between two
+/// pieces. Cuts fall before each `.` and after each `/` that ends a piece, never inside `://`.
+pub fn address(text: &str) -> Markup {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut pieces: Vec<&str> = Vec::new();
+    let mut start = 0;
+    for (position, &(index, ch)) in chars.iter().enumerate() {
+        let previous = position.checked_sub(1).map(|before| chars[before].1);
+        let next = chars.get(position + 1).map(|&(_, after)| after);
+        if ch == '.' && index > start {
+            pieces.push(&text[start..index]);
+            start = index;
+        }
+        if ch == '/' && next.is_some_and(|after| after != '/') && previous != Some('/') {
+            let end = index + ch.len_utf8();
+            pieces.push(&text[start..end]);
+            start = end;
+        }
+    }
+    if start < text.len() {
+        pieces.push(&text[start..]);
+    }
+    html! {
+        code.address {
+            @for (position, piece) in pieces.iter().enumerate() {
+                @if position > 0 {
+                    wbr;
+                }
+                span { (piece) }
+            }
+        }
+    }
+}
+
 /// The notice above a refused form: its lead-in when it has one, the refusal when it has a message,
 /// and a link to the field it is about, given as (id, label), when it is about one field.
 pub fn refused<'a>(
@@ -317,6 +351,30 @@ mod tests {
         assert_eq!(
             breakable("\"<a>\"_\"<\"").into_string(),
             "&quot;&lt;a&gt;&quot;_<wbr>&quot;&lt;&quot;"
+        );
+    }
+
+    #[test]
+    fn an_address_breaks_before_each_dot_and_after_each_path_slash() {
+        assert_eq!(
+            address("atlassian.example.com").into_string(),
+            r#"<code class="address"><span>atlassian</span><wbr><span>.example</span><wbr><span>.com</span></code>"#
+        );
+        assert_eq!(
+            address("https://gateway.example.com/account").into_string(),
+            r#"<code class="address"><span>https://gateway</span><wbr><span>.example</span><wbr><span>.com/</span><wbr><span>account</span></code>"#
+        );
+    }
+
+    #[test]
+    fn an_address_keeps_its_text_and_escapes_it() {
+        assert_eq!(
+            address("a<b.example").into_string(),
+            r#"<code class="address"><span>a&lt;b</span><wbr><span>.example</span></code>"#
+        );
+        assert_eq!(
+            address("").into_string(),
+            r#"<code class="address"></code>"#
         );
     }
 

@@ -2,16 +2,17 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
+use form_urlencoded::Serializer;
 use maud::{Markup, html};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::crypto::{CryptoError, Keys};
-use crate::custom_headers::{self, AddRefusal, Declared, ServerHeaders};
+use crate::custom_headers::{self, AddRefusal, Declared, MAX_PER_SERVER, ServerHeaders};
 use crate::db::DbError;
 use crate::oauth::families;
 use crate::proxy::catalog::{self, RefreshError};
@@ -49,9 +50,33 @@ enum Deleted {
 
 /// The outcome of a header change, decided inside its transaction.
 enum HeaderChange {
-    Saved,
+    /// The new header's id.
+    Saved(i64),
     Refused(AddRefusal),
     Missing,
+}
+
+/// The outcome of a removal: the removed header's name as declared.
+enum Removed {
+    Done(String),
+    Missing,
+}
+
+/// The outcome of saving the switches: the headers that the save made required.
+enum Switched {
+    Saved(Vec<i64>),
+    Missing,
+}
+
+/// A step a redirect says was done, as the query of the server page names it.
+#[derive(Debug, PartialEq)]
+enum Done {
+    /// A header was added: its id.
+    HeaderAdded(i64),
+    /// A header was removed: its name as declared.
+    HeaderRemoved(String),
+    /// The headers were saved: the ids of the headers the save made required.
+    HeadersSaved(Vec<i64>),
 }
 
 /// The add-header form as the page shows it: the name as sent back, whether it is required, and its refusal.
@@ -62,12 +87,14 @@ struct HeaderForm {
     refusal: Option<AddRefusal>,
 }
 
-/// What a server page shows besides the server: the settings draft, its refusal, and the header form.
+/// What a server page shows besides the server: the settings draft, its refusal, the header form,
+/// and the notice of a step the redirect says was done.
 struct Shown<'a> {
     draft: &'a Draft,
     refusal: Option<Refusal>,
     secret_sent: bool,
     header: HeaderForm,
+    done: Option<Markup>,
 }
 
 impl<'a> Shown<'a> {
@@ -77,6 +104,7 @@ impl<'a> Shown<'a> {
             refusal: None,
             secret_sent: false,
             header: HeaderForm::default(),
+            done: None,
         }
     }
 }
@@ -147,6 +175,7 @@ pub async fn get_server(
     viewer: Viewer,
     State(state): State<AppState>,
     Path(id): Path<String>,
+    RawQuery(raw): RawQuery,
 ) -> Response {
     let Some(id) = parse_id(&id) else {
         return not_found();
@@ -154,14 +183,15 @@ pub async fn get_server(
     match load(&state, id).await {
         Ok(Some(server)) => {
             let draft = draft_of(&server);
-            server_page(
-                &state,
-                &viewer,
-                StatusCode::OK,
-                &server,
-                &Shown::plain(&draft),
-            )
-            .await
+            let done = match done_for(&state, id, raw.as_deref()).await {
+                Ok(done) => done,
+                Err(err) => return internal_error("server page", &err),
+            };
+            let shown = Shown {
+                done,
+                ..Shown::plain(&draft)
+            };
+            server_page(&state, &viewer, StatusCode::OK, &server, &shown).await
         }
         Ok(None) => not_found(),
         Err(err) => internal_error("server page", &err),
@@ -282,7 +312,13 @@ pub async fn post_header(
         .call(move |conn| add_header_in(conn, id, &posted, required, &actor, at))
         .await
     {
-        Ok(HeaderChange::Saved) => redirect(&format!("/admin/servers/{id}")),
+        Ok(HeaderChange::Saved(header)) => done_redirect(
+            id,
+            vec![
+                ("done", "header-added".to_owned()),
+                ("header", header.to_string()),
+            ],
+        ),
         Ok(HeaderChange::Refused(refusal)) => {
             let header = HeaderForm {
                 name: ui::sent_back(&name, ui::SENT_BACK_LIMIT),
@@ -314,13 +350,96 @@ pub async fn post_remove_header(
         .call(move |conn| remove_header_in(conn, id, header_id, &actor, at))
         .await
     {
-        Ok(Deleted::Done) => redirect(&format!("/admin/servers/{id}")),
-        Ok(Deleted::Missing) => not_found(),
+        Ok(Removed::Done(name)) => done_redirect(
+            id,
+            vec![("done", "header-removed".to_owned()), ("name", name)],
+        ),
+        Ok(Removed::Missing) => not_found(),
         Err(err) => internal_error("header removal", &err),
     }
 }
 
-/// Saves the server's two header switches; a checkbox is on only when posted as "1".
+/// The confirm page of a removal: the header's name, the server and how many people stored a credential for it.
+pub async fn get_remove_header(
+    viewer: Viewer,
+    State(state): State<AppState>,
+    Path((id, header_id)): Path<(String, String)>,
+) -> Response {
+    let (Some(id), Some(header_id)) = (parse_id(&id), parse_id(&header_id)) else {
+        return not_found();
+    };
+    let loaded = state
+        .db
+        .call(move |conn| {
+            let Some(server) = servers::load(conn, id)? else {
+                return Ok(None);
+            };
+            let headers = custom_headers::load(conn, id)?;
+            let Some(declared) = headers
+                .declared
+                .into_iter()
+                .find(|declared| declared.id == header_id)
+            else {
+                return Ok(None);
+            };
+            let stored = stored_for(&stored_counts(conn, id)?, header_id);
+            let assigned = assigned_count(conn, id)?;
+            Ok(Some((server, declared, stored, assigned)))
+        })
+        .await;
+    match loaded {
+        Ok(Some((server, declared, stored, assigned))) => {
+            let title = format!("Remove {}?", declared.name);
+            form_page_with(
+                &viewer,
+                StatusCode::OK,
+                "remove-header",
+                &title,
+                &MainData::default(),
+                |csrf| remove_body(csrf, &server, &declared, stored, assigned),
+            )
+        }
+        Ok(None) => not_found(),
+        Err(err) => internal_error("header removal page", &err),
+    }
+}
+
+/// The confirm page's card: the title with the header's name, the sentence of who stored one, and the two buttons.
+fn remove_body(
+    csrf: &str,
+    server: &Server,
+    declared: &Declared,
+    stored: i64,
+    assigned: i64,
+) -> Markup {
+    let path = format!("/admin/servers/{}", server.id);
+    html! {
+        h1 { "Remove " span.title-name { (ui::breakable(&declared.name)) } "?" }
+        p.lede data-stored-by=(stored) {
+            @if stored == 0 {
+                "Nobody stored a credential for it on " (server.name) "."
+            } @else {
+                span.nowrap { (stored) " of " (assigned) " people" }
+                " stored a credential for it on " (server.name) "."
+                @if stored == 1 {
+                    " That credential is deleted and cannot be recovered."
+                } @else {
+                    " Those credentials are deleted and cannot be recovered."
+                }
+            }
+        }
+        div.actions {
+            form method="post" {
+                input type="hidden" name="csrf" value=(csrf);
+                button type="submit" data-kind="danger" { "Remove header" }
+            }
+            a.button data-kind="secondary" href=(format!("{path}#headers-title")) { "Keep header" }
+        }
+    }
+}
+
+/// Saves the server's two header switches and the Required boxes the form lists; a checkbox is on only
+/// when posted as "1", and a header is changed only when its `listed_` field arrives.
 pub async fn post_header_switches(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -334,16 +453,124 @@ pub async fn post_header_switches(
     };
     let pass = form.fields.get("pass_headers") == "1";
     let store = form.fields.get("store_headers") == "1";
+    let mut listed: Vec<i64> = form
+        .fields
+        .pairs()
+        .filter_map(|(name, _)| name.strip_prefix("listed_").and_then(parse_id))
+        .collect();
+    listed.sort_unstable();
+    listed.dedup();
+    let required: Vec<(i64, bool)> = listed
+        .into_iter()
+        .map(|header| {
+            (
+                header,
+                form.fields.get(&format!("required_{header}")) == "1",
+            )
+        })
+        .collect();
     let at = state.clock.now().unix_timestamp();
     match state
         .db
-        .call(move |conn| switches_in(conn, id, pass, store, &actor, at))
+        .call(move |conn| switches_in(conn, id, pass, store, &required, &actor, at))
         .await
     {
-        Ok(Deleted::Done) => redirect(&format!("/admin/servers/{id}")),
-        Ok(Deleted::Missing) => not_found(),
+        Ok(Switched::Saved(made_required)) => {
+            let mut pairs = vec![("done", "headers-saved".to_owned())];
+            pairs.extend(
+                made_required
+                    .iter()
+                    .map(|header| ("required", header.to_string())),
+            );
+            done_redirect(id, pairs)
+        }
+        Ok(Switched::Missing) => not_found(),
         Err(err) => internal_error("header switches", &err),
     }
+}
+
+/// The server page's address with a query that says which step was done, landing on the headers part.
+fn done_redirect(id: i64, pairs: Vec<(&str, String)>) -> Response {
+    let query = Serializer::new(String::new()).extend_pairs(pairs).finish();
+    redirect(&format!("/admin/servers/{id}?{query}#headers-title"))
+}
+
+/// The step a server page's query says was done, with its values as the redirect wrote them. None when
+/// the query names none. Only the header ids and the names are read; anything else is ignored.
+fn done_of(raw: Option<&str>) -> Option<Done> {
+    let mut kind = None;
+    let mut header = None;
+    let mut name = None;
+    let mut required = Vec::new();
+    for (key, value) in form_urlencoded::parse(raw.unwrap_or("").as_bytes()) {
+        match key.as_ref() {
+            "done" => kind = Some(value.into_owned()),
+            "header" => header = parse_id(&value),
+            "name" => name = Some(value.into_owned()),
+            "required" if required.len() < MAX_PER_SERVER => {
+                required.extend(parse_id(&value));
+            }
+            _ => {}
+        }
+    }
+    match kind.as_deref() {
+        Some("header-added") => header.map(Done::HeaderAdded),
+        Some("header-removed") => name
+            .filter(|name| custom_headers::valid_name(name))
+            .map(Done::HeaderRemoved),
+        Some("headers-saved") => Some(Done::HeadersSaved(required)),
+        _ => None,
+    }
+}
+
+/// The notice of a step, from the server's own rows. A step whose header is gone shows no notice,
+/// except a removal, which names the header it was given.
+fn done_notice(conn: &Connection, server: i64, done: &Done) -> rusqlite::Result<Option<Markup>> {
+    let declared = custom_headers::load(conn, server)?.declared;
+    Ok(match done {
+        Done::HeaderAdded(id) => declared
+            .iter()
+            .find(|header| header.id == *id)
+            .map(|header| ui::notice("ok", html! { p { (header.name) " added." } })),
+        Done::HeaderRemoved(name) => Some(ui::notice("ok", html! { p { (name) " removed." } })),
+        Done::HeadersSaved(ids) => {
+            let assigned = assigned_count(conn, server)?;
+            let stored = stored_counts(conn, server)?;
+            let mut sentences = Vec::new();
+            for header in declared.iter().filter(|header| ids.contains(&header.id)) {
+                if header.required {
+                    let unstored = assigned.saturating_sub(stored_for(&stored, header.id));
+                    sentences.push((header.name.clone(), unstored, assigned));
+                }
+            }
+            Some(ui::notice(
+                "ok",
+                html! {
+                    p {
+                        "Headers saved."
+                        @for (name, unstored, total) in &sentences {
+                            " " (name) " is now required. " (unstored) " of " (total) " users have not stored it."
+                        }
+                    }
+                },
+            ))
+        }
+    })
+}
+
+/// The notice a server page's query names, or None.
+async fn done_for(
+    state: &AppState,
+    server: i64,
+    raw: Option<&str>,
+) -> Result<Option<Markup>, DbError> {
+    let Some(done) = done_of(raw) else {
+        return Ok(None);
+    };
+    state
+        .db
+        .call(move |conn| done_notice(conn, server, &done))
+        .await
 }
 
 /// The ids of a repeated field, or None when one of them is not an id.
@@ -538,13 +765,14 @@ fn add_header_in(
     let Some(server) = servers::load(&tx, id)? else {
         return Ok(HeaderChange::Missing);
     };
-    if let Err(refusal) = custom_headers::add(&tx, id, name, required, at)? {
-        return Ok(HeaderChange::Refused(refusal));
-    }
+    let added = match custom_headers::add(&tx, id, name, required, at)? {
+        Ok(header) => header,
+        Err(refusal) => return Ok(HeaderChange::Refused(refusal)),
+    };
     let detail = format!("declared header {}", name.to_ascii_lowercase());
     record(&tx, at, actor, Some(id), &server.slug, &detail)?;
     tx.commit()?;
-    Ok(HeaderChange::Saved)
+    Ok(HeaderChange::Saved(added))
 }
 
 /// One transaction: the header goes and its removal is recorded; an id of another server is missing.
@@ -554,39 +782,62 @@ fn remove_header_in(
     header_id: i64,
     actor: &SessionUser,
     at: i64,
-) -> rusqlite::Result<Deleted> {
+) -> rusqlite::Result<Removed> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(server) = servers::load(&tx, id)? else {
-        return Ok(Deleted::Missing);
+        return Ok(Removed::Missing);
     };
     let declared = custom_headers::load(&tx, id)?
         .declared
         .into_iter()
         .find(|declared| declared.id == header_id);
     let Some(declared) = declared else {
-        return Ok(Deleted::Missing);
+        return Ok(Removed::Missing);
     };
     keys::release(&tx, id, None, Some(header_id), at, false)?;
     custom_headers::remove(&tx, id, header_id)?;
     let detail = format!("removed header {}", declared.lower);
     record(&tx, at, actor, Some(id), &server.slug, &detail)?;
     tx.commit()?;
-    Ok(Deleted::Done)
+    Ok(Removed::Done(declared.name))
 }
 
-/// One transaction: the two switches are saved and recorded.
+/// One transaction: the two switches and the listed Required boxes are saved and recorded; each
+/// Required change writes its own row. Returns the headers the save made required.
 fn switches_in(
     conn: &mut Connection,
     id: i64,
     pass: bool,
     store: bool,
+    required: &[(i64, bool)],
     actor: &SessionUser,
     at: i64,
-) -> rusqlite::Result<Deleted> {
+) -> rusqlite::Result<Switched> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(server) = servers::load(&tx, id)? else {
-        return Ok(Deleted::Missing);
+        return Ok(Switched::Missing);
     };
+    let declared = custom_headers::load(&tx, id)?.declared;
+    let mut made_required = Vec::new();
+    for (header, wanted) in required {
+        let Some(declared) = declared.iter().find(|declared| declared.id == *header) else {
+            continue;
+        };
+        if declared.required == *wanted {
+            continue;
+        }
+        custom_headers::set_required(&tx, id, *header, *wanted)?;
+        let change = if *wanted {
+            "made required"
+        } else {
+            "made optional"
+        };
+        let detail = format!("header {} {change}", declared.name);
+        record(&tx, at, actor, Some(id), &server.slug, &detail)?;
+        if *wanted {
+            made_required.push(*header);
+        }
+    }
     custom_headers::set_switches(&tx, id, pass, store)?;
     let word = |on: bool| if on { "on" } else { "off" };
     let detail = format!(
@@ -596,7 +847,7 @@ fn switches_in(
     );
     record(&tx, at, actor, Some(id), &server.slug, &detail)?;
     tx.commit()?;
-    Ok(Deleted::Done)
+    Ok(Switched::Saved(made_required))
 }
 
 /// Writes one admin_change row for a server inside the caller's transaction.
@@ -650,6 +901,7 @@ async fn refused_settings(
         refusal: Some(refusal),
         secret_sent: secret_sent(draft),
         header: HeaderForm::default(),
+        done: None,
     };
     server_page(state, viewer, StatusCode::BAD_REQUEST, stored, &shown).await
 }
@@ -1001,16 +1253,21 @@ fn list_in(conn: &Connection) -> rusqlite::Result<Vec<ServerRow>> {
     rows.collect()
 }
 
-/// The text a refused header name shows under its field.
-fn header_refusal_text(refusal: AddRefusal) -> &'static str {
+/// The text a refused header name shows under its field, with the name as it was typed.
+fn header_refusal_text(refusal: AddRefusal, name: &str) -> String {
     match refusal {
-        AddRefusal::Invalid | AddRefusal::SecretName => "This header name cannot be used.",
-        AddRefusal::Duplicate => "This server already declares that header.",
-        AddRefusal::Full => "A server takes at most 8 custom headers.",
+        AddRefusal::Invalid | AddRefusal::SecretName if name.is_empty() => {
+            "This header name cannot be used. Choose another name.".to_owned()
+        }
+        AddRefusal::Invalid | AddRefusal::SecretName => {
+            format!("{name} cannot be used as a custom header. Choose another name.")
+        }
+        AddRefusal::Duplicate => "This server already declares that header.".to_owned(),
+        AddRefusal::Full => "A server takes at most 8 custom headers.".to_owned(),
     }
 }
 
-/// The custom headers part: the declared headers, the add form and the two switches.
+/// The custom headers part: the declared headers with their Required boxes and switches, then the add form.
 fn headers_section(
     csrf: &str,
     server: &Server,
@@ -1018,125 +1275,146 @@ fn headers_section(
     header: &HeaderForm,
 ) -> Markup {
     let path = format!("/admin/servers/{}", server.id);
-    let error = header.refusal.map(header_refusal_text);
-    let name_note = ui::note_under(error, Some("For example X-Api-Key. Up to 8 per server."));
+    let error = header
+        .refusal
+        .map(|refusal| header_refusal_text(refusal, &header.name));
+    let name_note = ui::note_under(
+        error.as_deref(),
+        Some("For example X-Api-Key. Up to 8 per server."),
+    );
     let name_described = name_note.describer("header-name");
+    let count = headers.declared.len();
     html! {
         section.part aria-labelledby="headers-title" {
             div.part-head {
-                h2 id="headers-title" { "Custom headers " span.count { (headers.declared.len()) } }
-                p { "Headers a client may send to this server, which Doorward passes on when pass-through is on." }
+                h2 id="headers-title" { "Custom headers " span.count { (count) " of " (MAX_PER_SERVER) } }
+                p { "Headers this server needs from each person, such as an API token." }
             }
             div.part-body.flow {
-                @if let Some(refusal) = header.refusal {
-                    (ui::refused(Some("The header was not added."), header_refusal_text(refusal), Some(("header-name", "header name"))))
-                }
                 @if headers.declared.is_empty() {
-                    p.muted { "No custom headers. The gateway sends nothing from a client to this server except the MCP protocol headers." }
+                    p.muted.narrow { "No custom headers. The gateway sends nothing from a client to this server except the MCP protocol headers." }
                 } @else {
-                    table.list.headers {
-                        thead {
-                            tr {
-                                th scope="col" { "Header" }
-                                th scope="col" { "Required" }
-                                th scope="col" { "Stored by" }
-                                th scope="col" { "Action" }
+                    form.flow method="post" action=(format!("{path}/header-switches")) {
+                        input type="hidden" name="csrf" value=(csrf);
+                        @for declared in &headers.declared {
+                            input type="hidden" name=(format!("listed_{}", declared.id)) value="1";
+                        }
+                        table.list.headers {
+                            thead {
+                                tr {
+                                    th scope="col" { "Header" }
+                                    th scope="col" class="c-required" { "Required" }
+                                    th scope="col" class="c-stored" { "Stored by" }
+                                    th scope="col" class="c-act" aria-label="Actions" {}
+                                }
+                            }
+                            tbody {
+                                @for declared in &headers.declared {
+                                    (header_row(
+                                        &path,
+                                        declared,
+                                        (headers.store, stored_for(stored, declared.id), assigned),
+                                    ))
+                                }
                             }
                         }
-                        tbody {
-                            @for declared in &headers.declared {
-                                (header_row(
-                                    csrf,
-                                    &path,
-                                    declared,
-                                    (headers.store, stored_for(stored, declared.id), assigned),
+                        p.muted { "Required: without a value, nothing is sent to this server for that person." }
+                        fieldset.flow {
+                            legend { "Where the credentials come from" }
+                            div.checks {
+                                (ui::check(
+                                    "pass-headers",
+                                    "pass_headers",
+                                    Some("1"),
+                                    headers.pass,
+                                    "Pass these headers through from the client",
+                                    Some("An app that sends one of these headers reaches the server with its own value. Authorization is never passed through."),
+                                ))
+                                (ui::check(
+                                    "store-headers",
+                                    "store_headers",
+                                    Some("1"),
+                                    headers.store,
+                                    "Let each person store their own credentials",
+                                    Some("Each person saves their credentials on their account page. They are encrypted so that the database and its key cannot open them without that person's password or connected app."),
                                 ))
                             }
                         }
-                    }
-                    p.muted { "Removing a header deletes the values people stored for it." }
-                }
-                form.flow method="post" action=(format!("{path}/headers")) {
-                    input type="hidden" name="csrf" value=(csrf);
-                    div.fields {
-                        (ui::field(
-                            "header-name",
-                            "Header name",
-                            false,
-                            html! {
-                                input.mono id="header-name" name="name" type="text" value=(header.name)
-                                    aria-invalid=[ui::invalid(error)] aria-describedby=[name_described.as_deref()];
-                            },
-                            name_note,
-                        ))
-                    }
-                    div.checks {
-                        (ui::check(
-                            "header-required",
-                            "required",
-                            Some("1"),
-                            header.required,
-                            "Required",
-                            Some("Without a value, nothing is sent to this server for that person."),
-                        ))
-                    }
-                    div.form-actions {
-                        button type="submit" data-kind="secondary" { "Add header" }
+                        div.form-actions {
+                            button type="submit" data-kind="secondary" { "Save headers" }
+                        }
                     }
                 }
-                form.flow method="post" action=(format!("{path}/header-switches")) {
-                    input type="hidden" name="csrf" value=(csrf);
-                    div.checks {
-                        (ui::check(
-                            "pass-headers",
-                            "pass_headers",
-                            Some("1"),
-                            headers.pass,
-                            "Pass these headers through from the client",
-                            Some("An app that sends one of these headers reaches the server with its own value. Authorization is never passed through."),
-                        ))
-                        (ui::check(
-                            "store-headers",
-                            "store_headers",
-                            Some("1"),
-                            headers.store,
-                            "Let each person store their own values",
-                            Some("Each person saves their values on their account page."),
-                        ))
+                @if count < MAX_PER_SERVER {
+                    form.flow method="post" action=(format!("{path}/headers")) {
+                        input type="hidden" name="csrf" value=(csrf);
+                        fieldset.flow {
+                            legend { "Add a header" }
+                            div.fields data-cols="2" {
+                                (ui::field(
+                                    "header-name",
+                                    "Header name",
+                                    false,
+                                    html! {
+                                        input.mono id="header-name" name="name" type="text" value=(header.name)
+                                            aria-invalid=[ui::invalid(error.as_deref())] aria-describedby=[name_described.as_deref()];
+                                    },
+                                    name_note,
+                                ))
+                            }
+                            div.checks {
+                                (ui::check(
+                                    "header-required",
+                                    "required",
+                                    Some("1"),
+                                    header.required,
+                                    "Required",
+                                    Some("Without a value, nothing is sent to this server for that person."),
+                                ))
+                            }
+                        }
+                        div.form-actions {
+                            button type="submit" data-kind="secondary" { "Add header" }
+                        }
                     }
-                    div.form-actions {
-                        button type="submit" data-kind="secondary" { "Save" }
-                    }
+                } @else {
+                    p.muted.narrow data-headers-full { "This server has its " (MAX_PER_SERVER) " headers. Remove one to add another." }
                 }
             }
         }
     }
 }
 
-/// One declared header as a row: its name, whether it is required, and its remove form.
+/// One declared header as a row: its name, its Required box, how many people stored a credential, and its Remove link.
 fn header_row(
-    csrf: &str,
     path: &str,
     declared: &Declared,
     (store, stored, assigned): (bool, i64, usize),
 ) -> Markup {
     let required = if declared.required { "yes" } else { "no" };
+    let box_id = format!("required-{}", declared.id);
+    let box_label = format!("Required, {}", declared.name);
     html! {
         tr data-header=(declared.lower) data-required=(required) data-stored=(stored) {
-            td { code { (declared.name) } }
-            td { (if declared.required { "Yes" } else { "No" }) }
-            td {
+            td.lead { code { (ui::breakable(&declared.name)) } }
+            td.half.c-required {
+                div.check {
+                    input type="checkbox" id=(box_id) name=(format!("required_{}", declared.id)) value="1"
+                        checked[declared.required] aria-label=(box_label);
+                    label for=(box_id) { "Required" }
+                }
+            }
+            td.half data-stored-by {
                 @if store {
-                    (stored) " of " (assigned) " " (if assigned == 1 { "user" } else { "users" })
+                    span.unit { "Stored by " }
+                    span.nowrap { (stored) " of " (assigned) " " (if assigned == 1 { "user" } else { "users" }) }
                 } @else {
                     "Not stored"
                 }
             }
-            td {
-                form method="post" action=(format!("{path}/headers/{}/remove", declared.id)) {
-                    input type="hidden" name="csrf" value=(csrf);
-                    button type="submit" data-kind="danger" { "Remove" }
-                }
+            td.act {
+                a.button.row-action data-kind="danger" href=(format!("{path}/headers/{}/remove", declared.id))
+                    aria-label=(format!("Remove {}", declared.name)) { "Remove" }
             }
         }
     }
@@ -1152,6 +1430,15 @@ fn stored_counts(conn: &Connection, server: i64) -> rusqlite::Result<Vec<(i64, i
     statement
         .query_map(params![server], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect()
+}
+
+/// How many users are assigned to the server.
+fn assigned_count(conn: &Connection, server: i64) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM user_servers WHERE server_id = ?1",
+        params![server],
+        |row| row.get(0),
+    )
 }
 
 fn stored_for(counts: &[(i64, i64)], header: i64) -> i64 {
@@ -1287,6 +1574,12 @@ fn server_body(
         @if let Some(refusal) = refusal {
             (ui::refused(Some("The server was not saved."), refusal.to_string().as_str(), refused_field(refusal)))
         }
+        @if shown.header.refusal.is_some() {
+            (ui::refused(Some("The header was not added."), None::<&str>, Some(("header-name", "header name"))))
+        }
+        @if let Some(done) = &shown.done {
+            (done)
+        }
         @if server.lockdown == "open" {
             div.notice data-notice="error" data-lockdown-alert {
                 p {
@@ -1346,7 +1639,8 @@ fn server_body(
                 p.narrow data-lockdown-note=(note) { (note) }
                 @if !headers.declared.is_empty() && !server.has_secret {
                     p.narrow data-direct-warning {
-                        "Without a secret header, anyone who reaches the upstream directly passes the gateway's rules and its activity log. Add a secret header the server checks, or restrict its network."
+                        "Without a secret header, anyone who reaches the upstream directly bypasses the gateway's rules and its activity log. Add a secret header the server checks, or restrict its network. "
+                        a href="#secret-name" { "Go to secret header" }
                     }
                 }
                 form.form-actions method="post" action=(format!("{path}/check-lockdown")) {

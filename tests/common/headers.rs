@@ -51,12 +51,46 @@ pub async fn set_switches(owner: &TestClient, server_id: &str, pass: bool, store
         .await
 }
 
-/// The id of the declared header `name` read from its remove form; None when no row holds it.
+/// "Save headers" as the browser posts it: a `listed_` field for each row on the page, a Required
+/// box for each id in `required` (the ones ticked), and the two switches.
+pub async fn save_headers(
+    owner: &TestClient,
+    server_id: &str,
+    listed: &[&str],
+    required: &[&str],
+    pass: bool,
+    store: bool,
+) -> Page {
+    let path = server_path(server_id);
+    let listed_names: Vec<String> = listed.iter().map(|id| format!("listed_{id}")).collect();
+    let required_names: Vec<String> = required.iter().map(|id| format!("required_{id}")).collect();
+    let mut fields: Vec<(&str, &str)> = Vec::new();
+    for name in &listed_names {
+        fields.push((name.as_str(), "1"));
+    }
+    for name in &required_names {
+        fields.push((name.as_str(), "1"));
+    }
+    if pass {
+        fields.push(("pass_headers", "1"));
+    }
+    if store {
+        fields.push(("store_headers", "1"));
+    }
+    owner
+        .submit(&path, &format!("{path}/header-switches"), &fields)
+        .await
+}
+
+/// The id of the declared header `name`, read from the Remove link of its row; None when no row holds it.
 pub async fn header_id(owner: &TestClient, server_id: &str, name: &str) -> Option<String> {
     let page = owner.get(&server_path(server_id)).await;
-    let selector = format!(r#"tr[data-header="{}"] form"#, name.to_ascii_lowercase());
-    let action = page.attr(&selector, "action")?;
-    let prefix = action.strip_suffix("/remove")?;
+    let selector = format!(
+        r#"tr[data-header="{}"] a[href$="/remove"]"#,
+        name.to_ascii_lowercase()
+    );
+    let href = page.attr(&selector, "href")?;
+    let prefix = href.strip_suffix("/remove")?;
     prefix.rsplit('/').next().map(str::to_string)
 }
 

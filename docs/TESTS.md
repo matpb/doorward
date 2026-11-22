@@ -2029,6 +2029,9 @@ refuses without the gateway's secret, so its state is `ok`.
 
 Each test posts a refused form with distinctive typed values and reads the controls back.
 Each test builds its own world: `W` for the admin and sign-in pages, a plain gateway for setup.
+
+- `a_refused_header_form_sends_back_its_name_and_its_required_box`: a refused name `Cookie` comes back
+  in `input#header-name`, with the notice, the field error and the Required box as it was sent.
 The owner's rule and redirect forms use `W.upstream("demo", ..)` and `W.user(bob)`.
 
 1. `a_refused_setup_sends_back_the_email`: a short password with the right setup code answers
@@ -2485,6 +2488,27 @@ switch is saved the same way, and bob (assigned to the server) makes the calls.
     the upstream refuses leaves the server `nosecret`, never `ok`.
 11. `a_server_without_a_secret_that_declares_a_header_warns_on_its_page` (statement 88): the direct
     warning appears on the server without a secret that declares a header, and not on one with a secret.
+12. `the_remove_link_opens_a_confirm_page_that_names_the_header_the_server_and_the_count`,
+    `the_confirm_page_says_nobody_stored_a_credential_when_none_is_stored`,
+    `the_confirm_page_counts_every_person_who_stored_a_credential` and
+    `the_confirm_page_is_not_found_for_another_servers_header_or_an_unknown_one` (statement 80, the
+    removal page): the title and the header name in its span, the sentence for none, one and two
+    people, the danger "Remove header" and the secondary "Keep header", and 404 for a header that is
+    not the server's.
+13. `a_plain_user_cannot_open_the_confirm_page` and
+    `the_remove_link_is_a_link_and_the_removal_answers_with_the_notice`: 403 for a plain user; the row's
+    Remove is a link to the confirm page, and the removal redirects to the headers part with
+    `done=header-removed` and shows `X-Trace-Id removed.`.
+14. `adding_a_header_redirects_to_the_part_with_its_name_in_the_notice` and
+    `saving_a_header_made_required_says_how_many_have_not_stored_it`: the notices name the header and
+    count the assigned users without a stored credential.
+15. `save_headers_changes_required_only_for_the_rows_it_lists` and
+    `a_switch_post_without_listed_fields_changes_no_required_flag` (statement 80): a listed row takes
+    its box, an unlisted row keeps its flag, and a post without `listed_` fields changes no flag.
+16. `the_switches_form_is_absent_until_a_header_exists` and
+    `at_eight_headers_the_add_form_gives_way_to_one_sentence`: with no header the switches form is not
+    rendered; at eight headers the add form is replaced by the sentence.
+17. `the_direct_warning_links_to_the_secret_header_field`: the warning's link goes to `#secret-name`.
 
 ## Round 5: tests added and rewritten for the design changes
 
@@ -2581,6 +2605,10 @@ Unit tests, then the route and the proxy tests below.
    `a_disconnect_and_a_revoke_all_leave_no_wrap_behind`.
 
 ## s84_stored_values.rs and s87_value_leaks.rs (statements 82 to 87)
+
+- `saving_credentials_lands_on_the_part_with_the_server_named_in_the_notice`: the save redirects to
+  `/account` with `done=credentials-saved` and `server=demo`, the part's fragment, and the account page
+  shows `Credentials saved for demo.` without the stored value.
 
 Each test builds its own world: bob is assigned to the demo server, the header `X-Trace-Id` is
 declared and the store switch is on. The value is the canary `canary-7f3a9c51e2d44b06`.

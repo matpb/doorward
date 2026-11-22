@@ -3,11 +3,12 @@ mod common;
 use common::admin::{self, ServerSpec};
 use common::client::{Page, TestClient, Tokens};
 use common::headers::{
-    add_server_named, declare_header, header_id, received_calls, remove_header, session_call,
-    set_switches, stateless_call,
+    add_server_named, declare_header, header_id, received_calls, remove_header, save_headers,
+    session_call, set_switches, stateless_call,
 };
 use common::mcp::McpClient;
 use common::upstream::{FakeUpstream, UpstreamOptions};
+use common::values::store_value;
 use common::world::World;
 
 const BOB: &str = "bob@example.com";
@@ -228,6 +229,21 @@ async fn removing_a_header_removes_its_row() {
 async fn the_two_switches_are_saved_and_shown_checked() {
     let w = World::start().await;
     let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    let (_bare_upstream, bare) = w.upstream("bare", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    switches_ok(&w.owner, &bare, true, false).await;
+    declare_ok(&w.owner, &bare, HEADER, false).await;
+    let page = server_page(&w.owner, &bare).await;
+    assert_eq!(
+        page.count(r#"input[name="pass_headers"][checked]"#),
+        1,
+        "a switch saved while the server had no header must be shown checked once a header is declared"
+    );
+    assert_eq!(
+        page.count(r#"input[name="store_headers"][checked]"#),
+        0,
+        "a switch saved off while the server had no header must stay unchecked"
+    );
     switches_ok(&w.owner, &id, true, true).await;
     let page = server_page(&w.owner, &id).await;
     assert_eq!(
@@ -788,7 +804,7 @@ async fn a_server_without_a_secret_that_declares_a_header_warns_on_its_page() {
     let warning = open.text(DIRECT).unwrap_or_default();
     assert!(
         warning.contains(
-            "anyone who reaches the upstream directly passes the gateway's rules and its activity log"
+            "anyone who reaches the upstream directly bypasses the gateway's rules and its activity log"
         ),
         "the direct warning must say who passes the gateway's rules, got {warning:?}"
     );
@@ -841,5 +857,347 @@ async fn a_value_of_4096_bytes_with_inner_space_and_tab_reaches_the_upstream_unc
         calls[0].header(LOWER),
         Some(value.as_str()),
         "a 4096 byte value with inner space and tab must reach the upstream unchanged"
+    );
+}
+
+/// The address of the confirm page of header `hid` on server `id`.
+fn remove_path(id: &str, hid: &str) -> String {
+    format!("{}/headers/{hid}/remove", server_path(id))
+}
+
+/// The id of the declared header `name` on server `id`, which the test expects to exist.
+async fn id_of(w: &World, id: &str, name: &str) -> String {
+    header_id(&w.owner, id, name)
+        .await
+        .unwrap_or_else(|| panic!("{name} must have a remove link"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_remove_link_opens_a_confirm_page_that_names_the_header_the_server_and_the_count() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    let bob = grant_bob(&w, &[&id]).await;
+    declare_ok(&w.owner, &id, HEADER, true).await;
+    switches_ok(&w.owner, &id, false, true).await;
+    let hid = id_of(&w, &id, HEADER).await;
+    let stored = store_value(&bob, "demo", &hid, VALUE).await;
+    assert_eq!(
+        stored.status, 303,
+        "storing the credential must be accepted"
+    );
+
+    let page = w.owner.get(&remove_path(&id, &hid)).await;
+    assert_eq!(page.status, 200, "the confirm page must answer 200");
+    assert_eq!(page.kind().as_deref(), Some("remove-header"));
+    assert_eq!(
+        page.text("main > h1").as_deref(),
+        Some("Remove X-Trace-Id?"),
+        "the title must name the header"
+    );
+    assert_eq!(
+        page.text("main > h1 > span").as_deref(),
+        Some(HEADER),
+        "the header name must sit in its own span"
+    );
+    assert_eq!(
+        page.text("main > p.lede").as_deref(),
+        Some(
+            "1 of 1 people stored a credential for it on demo. That credential is deleted and cannot be recovered."
+        ),
+        "the sentence must count the people who stored one, and name the server"
+    );
+    assert_eq!(
+        page.count(r#"main form input[name="csrf"]"#),
+        1,
+        "the removal form must carry the csrf field"
+    );
+    assert_eq!(
+        page.text(r#"main form button[data-kind="danger"]"#)
+            .as_deref(),
+        Some("Remove header"),
+        "the filled red button must remove the header"
+    );
+    assert_eq!(
+        page.text(r#"main a.button[data-kind="secondary"]"#)
+            .as_deref(),
+        Some("Keep header"),
+        "the keep link must be the secondary button"
+    );
+    let keep = format!("{}#headers-title", server_path(&id));
+    assert_eq!(
+        page.attr(r#"main a.button[data-kind="secondary"]"#, "href")
+            .as_deref(),
+        Some(keep.as_str()),
+        "keep must return to the headers part"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_confirm_page_says_nobody_stored_a_credential_when_none_is_stored() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    grant_bob(&w, &[&id]).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    let hid = id_of(&w, &id, HEADER).await;
+    let page = w.owner.get(&remove_path(&id, &hid)).await;
+    assert_eq!(
+        page.text("main > p.lede").as_deref(),
+        Some("Nobody stored a credential for it on demo."),
+        "the sentence for nobody must be the short one"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_confirm_page_counts_every_person_who_stored_a_credential() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    let bob = grant_bob(&w, &[&id]).await;
+    let alice = w.user("alice@example.com").await;
+    w.grant("alice@example.com", &[&id]).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    switches_ok(&w.owner, &id, false, true).await;
+    let hid = id_of(&w, &id, HEADER).await;
+    assert_eq!(store_value(&bob, "demo", &hid, VALUE).await.status, 303);
+    assert_eq!(
+        store_value(&alice, "demo", &hid, "other-value")
+            .await
+            .status,
+        303
+    );
+    let page = w.owner.get(&remove_path(&id, &hid)).await;
+    assert_eq!(
+        page.text("main > p.lede").as_deref(),
+        Some(
+            "2 of 2 people stored a credential for it on demo. Those credentials are deleted and cannot be recovered."
+        ),
+        "two people must read as 2 of 2 with the plural sentence"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_confirm_page_is_not_found_for_another_servers_header_or_an_unknown_one() {
+    let w = World::start().await;
+    let (_a, a_id) = w.upstream("a", UpstreamOptions::default()).await;
+    let (_b, b_id) = w.upstream("b", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &b_id, HEADER, false).await;
+    let b_hid = id_of(&w, &b_id, HEADER).await;
+    let other = w.owner.get(&remove_path(&a_id, &b_hid)).await;
+    assert_eq!(
+        other.status, 404,
+        "a header of another server must answer like an unknown page"
+    );
+    let unknown = w.owner.get(&remove_path(&b_id, "999999")).await;
+    assert_eq!(unknown.status, 404, "an unknown header must answer 404");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plain_user_cannot_open_the_confirm_page() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    let hid = id_of(&w, &id, HEADER).await;
+    let bob = w.user(BOB).await;
+    let page = bob.get(&remove_path(&id, &hid)).await;
+    assert_eq!(
+        page.status, 403,
+        "a plain user must be refused the confirm page"
+    );
+    assert_eq!(page.kind().as_deref(), Some("forbidden"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_remove_link_is_a_link_and_the_removal_answers_with_the_notice() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    let hid = id_of(&w, &id, HEADER).await;
+    let listing = server_page(&w.owner, &id).await;
+    assert_eq!(
+        listing.count(&format!(r#"tr[data-header="{LOWER}"] form"#)),
+        0,
+        "the row's Remove is a link, not a form"
+    );
+    assert_eq!(
+        listing.attr(
+            &format!(r#"tr[data-header="{LOWER}"] a[href$="/remove"]"#),
+            "href"
+        ),
+        Some(remove_path(&id, &hid)),
+        "the row's Remove link goes to the confirm page"
+    );
+
+    let page = remove_header(&w.owner, &id, &hid).await;
+    assert_eq!(page.status, 303, "removing a header must be accepted");
+    assert_eq!(page.query("done").as_deref(), Some("header-removed"));
+    let location = page.location().unwrap_or_default();
+    assert!(
+        location.starts_with(&server_path(&id)) && location.ends_with("#headers-title"),
+        "the removal must return to the headers part, got {location}"
+    );
+    let shown = w.owner.get(&server_path(&id)).await;
+    assert_eq!(
+        shown.count(&format!(r#"tr[data-header="{LOWER}"]"#)),
+        0,
+        "the removed row must be gone"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn adding_a_header_redirects_to_the_part_with_its_name_in_the_notice() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    let page = declare_header(&w.owner, &id, HEADER, false).await;
+    assert_eq!(page.status, 303, "declaring a header must be accepted");
+    assert_eq!(page.query("done").as_deref(), Some("header-added"));
+    assert!(
+        page.location()
+            .unwrap_or_default()
+            .ends_with("#headers-title"),
+        "the redirect must land on the headers part"
+    );
+    let shown = w.owner.follow(&page).await;
+    assert_eq!(
+        shown.text(r#"div.notice[data-notice="ok"] > p"#).as_deref(),
+        Some("X-Trace-Id added."),
+        "the notice must name the header"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn saving_a_header_made_required_says_how_many_have_not_stored_it() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    grant_bob(&w, &[&id]).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    let hid = id_of(&w, &id, HEADER).await;
+    let saved = save_headers(&w.owner, &id, &[&hid], &[&hid], false, false).await;
+    assert_eq!(saved.status, 303, "saving the headers must be accepted");
+    assert_eq!(saved.query("done").as_deref(), Some("headers-saved"));
+    let shown = w.owner.follow(&saved).await;
+    assert_eq!(
+        shown.text(r#"div.notice[data-notice="ok"] > p"#).as_deref(),
+        Some("Headers saved. X-Trace-Id is now required. 1 of 1 users have not stored it."),
+        "the notice must name the header made required and count the people without it"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn save_headers_changes_required_only_for_the_rows_it_lists() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, "X-Alpha", false).await;
+    declare_ok(&w.owner, &id, "X-Beta", false).await;
+    let alpha = id_of(&w, &id, "X-Alpha").await;
+    let beta = id_of(&w, &id, "X-Beta").await;
+    let flags = |page: &Page| {
+        (
+            page.attr(r#"tr[data-header="x-alpha"]"#, "data-required"),
+            page.attr(r#"tr[data-header="x-beta"]"#, "data-required"),
+        )
+    };
+
+    let saved = save_headers(&w.owner, &id, &[&alpha, &beta], &[&beta], false, false).await;
+    assert_eq!(saved.status, 303, "the save must be accepted");
+    assert_eq!(
+        flags(&server_page(&w.owner, &id).await),
+        (Some("no".into()), Some("yes".into())),
+        "a listed row takes the state of its box"
+    );
+
+    let saved = save_headers(&w.owner, &id, &[&alpha], &[], false, false).await;
+    assert_eq!(saved.status, 303, "the save must be accepted");
+    assert_eq!(
+        flags(&server_page(&w.owner, &id).await),
+        (Some("no".into()), Some("yes".into())),
+        "an unlisted row keeps its flag"
+    );
+
+    let saved = save_headers(&w.owner, &id, &[&alpha], &[&alpha], false, false).await;
+    assert_eq!(saved.status, 303, "the save must be accepted");
+    assert_eq!(
+        flags(&server_page(&w.owner, &id).await),
+        (Some("yes".into()), Some("yes".into())),
+        "a ticked box makes its listed row required and leaves the other row alone"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_switch_post_without_listed_fields_changes_no_required_flag() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    declare_ok(&w.owner, &id, HEADER, true).await;
+    switches_ok(&w.owner, &id, true, true).await;
+    let page = server_page(&w.owner, &id).await;
+    assert_eq!(
+        page.attr(&format!(r#"tr[data-header="{LOWER}"]"#), "data-required")
+            .as_deref(),
+        Some("yes"),
+        "the switch post must leave the required flag as it was"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_switches_form_is_absent_until_a_header_exists() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    let page = server_page(&w.owner, &id).await;
+    assert_eq!(
+        page.count(r#"form[action$="/header-switches"]"#),
+        0,
+        "with no header the switches form must not be rendered"
+    );
+    assert_eq!(
+        page.count(r#"input[name="pass_headers"]"#),
+        0,
+        "with no header the pass switch must not be rendered"
+    );
+    assert_eq!(
+        page.count(r#"form[action$="/headers"]"#),
+        1,
+        "the add form must follow the empty sentence"
+    );
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    let page = server_page(&w.owner, &id).await;
+    assert_eq!(
+        page.count(r#"form[action$="/header-switches"]"#),
+        1,
+        "with one header the switches form is rendered"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn at_eight_headers_the_add_form_gives_way_to_one_sentence() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    for i in 1..=8 {
+        declare_ok(&w.owner, &id, &format!("X-Custom-{i}"), false).await;
+    }
+    let page = server_page(&w.owner, &id).await;
+    assert_eq!(
+        page.count(r#"form[action$="/headers"]"#),
+        0,
+        "at 8 headers there is no add form"
+    );
+    assert_eq!(
+        page.text("p[data-headers-full]").as_deref(),
+        Some("This server has its 8 headers. Remove one to add another."),
+        "at 8 headers one sentence says so"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_direct_warning_links_to_the_secret_header_field() {
+    let w = World::start().await;
+    let (_open, id) = add_server_named(&w.owner, "Open Demo", "open-demo", false).await;
+    declare_ok(&w.owner, &id, HEADER, false).await;
+    let page = server_page(&w.owner, &id).await;
+    assert_eq!(
+        page.attr(&format!("{DIRECT} a"), "href").as_deref(),
+        Some("#secret-name"),
+        "the warning's link must go to the secret header name field"
+    );
+    assert_eq!(
+        page.text(&format!("{DIRECT} a")).as_deref(),
+        Some("Go to secret header")
     );
 }

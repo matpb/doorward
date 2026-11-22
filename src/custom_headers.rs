@@ -168,6 +168,20 @@ pub fn declares(conn: &Connection, server_id: i64, lower: &str) -> rusqlite::Res
     )
 }
 
+/// Sets whether a declared header of the server is required; false when no header of that server has the id.
+pub fn set_required(
+    tx: &Transaction<'_>,
+    server_id: i64,
+    header_id: i64,
+    required: bool,
+) -> rusqlite::Result<bool> {
+    let updated = tx.execute(
+        "UPDATE server_headers SET required = ?1 WHERE server_id = ?2 AND id = ?3",
+        params![required, server_id, header_id],
+    )?;
+    Ok(updated > 0)
+}
+
 /// Saves the two switches of the server.
 pub fn set_switches(
     tx: &Transaction<'_>,

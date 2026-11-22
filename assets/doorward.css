@@ -231,6 +231,10 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+h1 > .title-name {
+  display: inline-block;
+}
+
 h2 {
   font: 650 20px/28px var(--sans);
   text-wrap: balance;
@@ -282,6 +286,8 @@ time {
 .email,
 .email > span,
 .notice a,
+[data-direct-warning] a,
+p[data-needs-values] a,
 .back > a,
 .button {
   text-indent: 0;
@@ -637,6 +643,12 @@ body[data-layout="page"] main > .notice {
   margin-block-end: var(--s6);
 }
 
+/* There the box is the measure: its text runs to the padding. */
+body[data-layout="panel"] main > .notice > p,
+body[data-layout="page"] main > .notice > p {
+  max-inline-size: none;
+}
+
 /* A part: title and one sentence on the left, the thing itself on the right.
    The first line of the right column sits on the title's baseline, whatever it is. */
 .part {
@@ -680,9 +692,21 @@ body[data-layout="page"] main > .notice {
   margin-block-start: var(--s5);
 }
 
-.flow > legend + p {
+.flow > legend + p,
+.flow > h3 + p {
   margin-block-start: var(--s1);
   max-inline-size: 64ch;
+}
+
+/* In a part's body a form that follows something starts a new group, and so does whatever
+   follows a section: a server's block on the account page. */
+.part-body.flow > * + form.flow,
+.part-body.flow > [data-headers-full] {
+  margin-block-start: var(--s6);
+}
+
+.part-body > section + * {
+  margin-block-start: var(--s7);
 }
 
 .field > .below > .check {
@@ -773,6 +797,36 @@ body[data-layout="page"] main > .notice {
   font-variant-numeric: tabular-nums;
 }
 
+/* A server's block on the account page: its name leads it, at the size of a mail provider's,
+   and the state beside the name is said after it, in the size and weight of text. */
+[data-values-server] > h3 {
+  font-size: 16px;
+  line-height: 24px;
+}
+
+/* The gap trails the name, so a state that drops to the next line starts on the block's edge. */
+[data-values-server] > h3 > .block-name {
+  margin-inline-end: var(--s2);
+}
+
+h3 > .state {
+  font: 400 14px/20px var(--sans);
+}
+
+/* Without the key the blocks are a list of names, each with its state on the line under it,
+   so every mark stands on the list's edge: read, not filled in. */
+[data-values-locked] .block-name {
+  display: block;
+}
+
+[data-values-locked] > section + section {
+  margin-block-start: var(--s3);
+}
+
+[data-values-locked] > section + p {
+  margin-block-start: var(--s5);
+}
+
 /* ---------- Fields ---------- */
 
 /* One .fields per visual row. Each field is label, control, hint on shared tracks,
@@ -844,6 +898,23 @@ label,
 /* The ring hugs the link: it ends on the field's edge and stays clear of the control. */
 .field > .field-link:focus-visible {
   outline-offset: 0;
+}
+
+/* A label that is a header's name is in the identifier face and still a label. */
+label > code {
+  font-weight: inherit;
+}
+
+/* A header's name may run past its half-width field, to the form's edge, before it wraps.
+   The field keeps its column's width, so the name is never what sizes the control. */
+[data-values-server] .field {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+[data-values-server] .field > label {
+  justify-self: start;
+  inline-size: max-content;
+  max-inline-size: calc(200% + var(--s4));
 }
 
 .optional {
@@ -1271,7 +1342,9 @@ body[data-layout="card"] [data-kind="danger"] {
 
 /* A link goes to the next line whole; it breaks only when it is longer than a line.
    A 24 px target on the 20 px line. */
-.notice a {
+.notice a,
+[data-direct-warning] a,
+p[data-needs-values] a {
   display: inline-block;
   max-inline-size: 100%;
   margin-block: calc(var(--r1) * -1);
@@ -1430,6 +1503,40 @@ body[data-layout="card"] [data-kind="danger"] {
 .tools { max-inline-size: 640px; }
 .tools .c-effect { inline-size: 72px; }
 .tools .c-server { inline-size: 32%; }
+
+/* The three short columns hold their longest words and add up to 312 px, so in a 640 px
+   table the name has 328 px and "Required" starts on the edge every second field starts on.
+   In a narrower part body the name gives way first; it wraps, the short columns do not. */
+.headers { max-inline-size: 640px; }
+.headers .c-required { inline-size: 88px; }
+.headers .c-stored { inline-size: 152px; }
+.headers .c-act { inline-size: 72px; }
+
+/* Where a part body is narrower than a form, the room "Stored by" has to spare is the name's. */
+@media (max-width: 1279.98px) {
+  .headers .c-stored { inline-size: 112px; }
+}
+
+/* A box is 24 px on a 20 px line: like an action, it is never what makes its row tall. */
+.headers td.c-required {
+  padding-block: var(--s1);
+}
+
+/* As a table the column's head is the box's label: the label keeps its line, so the box stands
+   on the row's baseline, and is not seen. Stacked, with no head, it is read beside the box. */
+@media (min-width: 900px) {
+  .headers .check > label {
+    inline-size: 0;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+}
+
+/* The first line of a part's body stands on the title's baseline: the head offers its text's
+   baseline, not the bottom of its cells (4 px lower). */
+.headers th {
+  vertical-align: baseline;
+}
 
 /* Two tables size a column by what is in it. Tools: the tool column is as wide as its
    longest name, so the server sits beside it. */
@@ -1807,7 +1914,8 @@ body[data-layout="card"] [data-kind="danger"] {
 }
 
 /* A date inside a sentence: the mono face's word space, 8 px, is halved. */
-.count-state > time {
+.count-state > time,
+.hint time {
   word-spacing: calc(var(--s1) * -1);
 }
 
@@ -2077,14 +2185,17 @@ main[data-page="consent"] .facts dd + dt {
 
 /* The name and the "@domain" are each one piece: a line breaks between them first, and
    inside one (before a dot) only when the piece is wider than its line. */
-.email > span {
+.email > span,
+.address > span {
   display: inline-block;
   max-inline-size: 100%;
 }
 
 /* An underline does not reach into an inline block by itself. */
 a .email,
-a .email > span {
+a .email > span,
+a .address,
+a .address > span {
   text-decoration: inherit;
 }
 
@@ -2455,7 +2566,8 @@ body[data-layout="card"] main > .lede + .actions {
     padding-inline-start: var(--s3);
   }
 
-  .list:not(.activity) td.act button {
+  .list:not(.activity) td.act button,
+  .list:not(.activity) td.act .row-action {
     margin-block: calc((var(--first-line, 24px) - var(--control-sm)) / 2);
     /* The ring is drawn 3 px inside the hit area, clear of the hairline above. */
     outline-offset: -3px;
@@ -2724,6 +2836,12 @@ body[data-layout="card"] main > .lede + .actions {
 
   .fields[data-cols="2-1"] > .field + .field {
     max-inline-size: none;
+  }
+
+  /* One column: a header's name wraps at the field's edge. */
+  [data-values-server] .field > label {
+    inline-size: auto;
+    max-inline-size: 100%;
   }
 
   .checks[data-cols="2"] {

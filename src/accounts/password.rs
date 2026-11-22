@@ -18,11 +18,12 @@ use crate::web::{
     VerifiedForm, Viewer, busy, internal_error, redirect, session_cookie, throttle_key, with_cookie,
 };
 
-use super::account::account_page;
+use super::account::account_page_with;
 use super::input::valid_password;
 use super::login;
 use super::session;
 use super::throttle::{self, Attempt};
+use super::values;
 
 pub const PASSWORD_MESSAGE: &str = "The password must be 12 to 256 characters.";
 const WRONG_CURRENT: &str = "The current password is wrong.";
@@ -52,15 +53,19 @@ pub(super) struct ChangeVault {
     pub(super) new: Unlock,
 }
 
-/// The account page for a refused change, with the viewer's connected clients.
+/// The account page for a refused change, with the viewer's connected clients and credentials part.
 async fn refused(state: &AppState, viewer: &Viewer, status: StatusCode, message: &str) -> Response {
     let Some(user) = viewer.user.as_ref() else {
         return redirect("/login");
     };
     let now = state.clock.now().unix_timestamp();
-    match connected::list(&state.db, user.id, now).await {
-        Ok(clients) => account_page(viewer, status, Some(message), &clients),
-        Err(err) => internal_error("connected clients", &err),
+    let clients = match connected::list(&state.db, user.id, now).await {
+        Ok(clients) => clients,
+        Err(err) => return internal_error("connected clients", &err),
+    };
+    match values::part_for(state, viewer).await {
+        Ok(part) => account_page_with(viewer, status, Some(message), &clients, &part),
+        Err(err) => internal_error("stored values", &err),
     }
 }
 

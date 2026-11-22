@@ -76,10 +76,11 @@ async fn store_ok(browser: &TestClient, slug: &str, header: &str, value: &str) {
         page.status, 303,
         "storing a value on {slug} must be accepted"
     );
+    let location = page.location().unwrap_or_default();
+    let path = location.split(['?', '#']).next().unwrap_or_default();
     assert_eq!(
-        page.location().as_deref(),
-        Some("/account"),
-        "a saved value must redirect to the account page"
+        path, "/account",
+        "a saved value must redirect to the account page, with an optional query and fragment"
     );
 }
 
@@ -1881,5 +1882,81 @@ async fn after_a_replace_the_next_call_carries_the_new_value_and_an_old_session_
         carried(&upstream, "echo"),
         vec![Some(OTHER.to_string())],
         "the next call must carry the replaced value"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn saving_credentials_lands_on_the_part_with_the_server_named_in_the_notice() {
+    let w = World::start().await;
+    let (_upstream, _id, hid, bob) = demo_for_bob(&w, true).await;
+    let saved = store_value(&bob, SLUG, &hid, CANARY).await;
+    assert_eq!(saved.status, 303, "storing a value must be accepted");
+    assert_eq!(saved.query("done").as_deref(), Some("credentials-saved"));
+    assert_eq!(saved.query("server").as_deref(), Some(SLUG));
+    assert!(
+        saved
+            .location()
+            .unwrap_or_default()
+            .ends_with("#values-title"),
+        "the redirect must land on the credentials part"
+    );
+    let shown = bob.follow(&saved).await;
+    assert_eq!(
+        shown.text(r#"div.notice[data-notice="ok"] > p"#).as_deref(),
+        Some("Credentials saved for demo."),
+        "the notice must name the server by its name"
+    );
+    assert!(
+        !shown.body.contains(CANARY),
+        "the notice and the page must never show the stored value"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_whose_key_does_not_open_shows_the_locked_credentials_part() {
+    let w = World::start().await;
+    let (_upstream, _id, hid, bob) = demo_for_bob(&w, false).await;
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    let live = live_db(&w);
+    live.execute(
+        "UPDATE sessions SET dek_wrap = 'garbage' WHERE dek_wrap IS NOT NULL",
+        [],
+    )
+    .expect("the session's wrap is replaced by garbage");
+    let page = bob.get("/account").await;
+    assert_eq!(page.status, 200, "the account page must still answer 200");
+    assert_eq!(
+        page.count("[data-values-locked]"),
+        1,
+        "the locked part must replace the credentials form"
+    );
+    assert_eq!(
+        page.count(r#"input[name^="value_"]"#),
+        0,
+        "a locked part must hold no credential input"
+    );
+    let block = page
+        .text(r#"[data-values-locked] section[data-values-server="demo"] h3"#)
+        .unwrap_or_default();
+    assert!(
+        block.contains("demo") && block.contains("Credentials stored"),
+        "the locked part must name the server and its state, got {block:?}"
+    );
+    assert_eq!(
+        page.text(r#"[data-values-locked] p"#).as_deref(),
+        Some("Sign in again to store or change credentials."),
+        "the locked part must say to sign in again"
+    );
+    assert_eq!(
+        page.attr(r#"[data-values-locked] form[action="/logout"]"#, "method")
+            .as_deref(),
+        Some("post"),
+        "the sign-out form must post"
+    );
+    assert_eq!(
+        page.text(r#"[data-values-locked] form[action="/logout"] button"#)
+            .as_deref(),
+        Some("Sign out and sign in again"),
+        "the locked part must offer the sign-out button"
     );
 }

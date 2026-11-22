@@ -1,15 +1,19 @@
-use axum::extract::State;
+use axum::extract::{RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use maud::{Markup, html};
 
-use super::values::{self, Part, ServerView};
+use super::values::{self, Part, ServerView, ValueState};
 use crate::app::AppState;
 use crate::oauth::connected::{self, Connected};
 use crate::web::ui::{self, Note};
 use crate::web::{MainData, Nav, Viewer, form_page_with, internal_error, redirect};
 
-pub async fn get_account(State(state): State<AppState>, viewer: Viewer) -> Response {
+pub async fn get_account(
+    State(state): State<AppState>,
+    viewer: Viewer,
+    RawQuery(raw): RawQuery,
+) -> Response {
     let Some(user) = viewer.user.as_ref() else {
         return redirect("/login");
     };
@@ -19,23 +23,16 @@ pub async fn get_account(State(state): State<AppState>, viewer: Viewer) -> Respo
         Err(err) => return internal_error("connected clients", &err),
     };
     match values::part_for(&state, &viewer).await {
-        Ok(part) => account_page_with(&viewer, StatusCode::OK, None, &clients, &part),
+        Ok(mut part) => {
+            part.saved = values::saved_name(&part, raw.as_deref());
+            account_page_with(&viewer, StatusCode::OK, None, &clients, &part)
+        }
         Err(err) => internal_error("stored values", &err),
     }
 }
 
-/// The account page with the connected `clients`, and an error line when `error` is given.
-/// Anonymous viewers go to sign-in.
-pub fn account_page(
-    viewer: &Viewer,
-    status: StatusCode,
-    error: Option<&str>,
-    clients: &[Connected],
-) -> Response {
-    account_page_with(viewer, status, error, clients, &Part::default())
-}
-
-/// `account_page` with the credentials part.
+/// The account page with the connected `clients`, the credentials `part`, and an error line when
+/// `error` is given. Anonymous viewers go to sign-in.
 pub fn account_page_with(
     viewer: &Viewer,
     status: StatusCode,
@@ -87,6 +84,9 @@ fn account_body_with(
                     button type="submit" data-kind="secondary" { "Sign out" }
                 }
             }
+        }
+        @if let Some(name) = &part.saved {
+            (ui::notice("ok", html! { p { "Credentials saved for " (name) "." } }))
         }
         section.block aria-labelledby="clients-title" {
             div.block-head {
@@ -169,105 +169,151 @@ fn account_body_with(
     }
 }
 
-/// The part that holds one form per server that takes stored values.
+/// The credentials part: one block per server, each with its state; a form when the session opens the key.
 fn credentials_part(csrf: &str, email: &str, part: &Part) -> Markup {
     html! {
         section.part aria-labelledby="values-title" {
             div.part-head {
                 h2 id="values-title" { "Your credentials" }
-                p { "Stored for you, sent with your calls, and never shown again." }
+                p { "What a server needs from you, such as an API token." }
+                p.muted data-values-reset-note { "If you reset a forgotten password, these credentials are deleted and you enter them again." }
             }
-            div.part-body {
-                @for server in &part.servers {
-                    (server_values(csrf, email, server, part))
+            @if part.locked {
+                div.part-body.flow data-values-locked {
+                    @for server in &part.servers {
+                        (server_name(server))
+                    }
+                    p { (values::LOCKED) }
+                    form.form-actions method="post" action="/logout" {
+                        input type="hidden" name="csrf" value=(csrf);
+                        button type="submit" data-kind="secondary" { "Sign out and sign in again" }
+                    }
+                }
+            } @else {
+                div.part-body {
+                    @for server in &part.servers {
+                        (server_values(csrf, email, server, part))
+                    }
                 }
             }
         }
     }
 }
 
-/// One server's credentials form, or the lock note when the session cannot open the key.
+/// A server's name as the block's heading, with its state after it.
+fn server_name(server: &ServerView) -> Markup {
+    let needs = if server.needs_values() { "yes" } else { "no" };
+    let name_id = format!("values-{}-title", server.slug);
+    html! {
+        section data-values-server=(server.slug) data-needs-values=(needs) aria-labelledby=(name_id) {
+            h3 id=(name_id) {
+                span.block-name { (server.name) }
+                " "
+                (state_pill(server.state()))
+            }
+        }
+    }
+}
+
+/// The state of a block, as the word with its mark.
+fn state_pill(state: ValueState) -> Markup {
+    match state {
+        ValueState::Needed => ui::pill("warn", "Needs your credentials"),
+        ValueState::Stored => ui::pill("ok", "Credentials stored"),
+        ValueState::Nothing => ui::pill("muted", "Nothing stored"),
+    }
+}
+
+/// One server's block with its credentials form. The refusal of a post shows in the form.
 fn server_values(csrf: &str, email: &str, server: &ServerView, part: &Part) -> Markup {
     let needs = if server.needs_values() { "yes" } else { "no" };
+    let name_id = format!("values-{}-title", server.slug);
     let refusal = part
         .refusal
         .as_ref()
         .filter(|refusal| refusal.slug == server.slug);
     html! {
-        section data-values-server=(server.slug) data-needs-values=(needs) {
-            h3 { (server.name) }
-            p { "Sent to " (server.host) " with your calls, as " (ui::email(email)) "." }
+        section.flow.narrow data-values-server=(server.slug) data-needs-values=(needs) aria-labelledby=(name_id) {
+            h3 id=(name_id) {
+                span.block-name { (server.name) }
+                " "
+                (state_pill(server.state()))
+            }
+            p {
+                "Sent to "
+                span.whole { (ui::address(&server.host)) }
+                " with your calls, as "
+                span.whole { (ui::email(email)) "." }
+            }
             @if server.plain_http {
                 (ui::notice("warning", html! {
                     p { "This server is reached over plain http. Your credentials travel unencrypted." }
                 }))
             }
-            @if part.locked {
-                p.muted data-values-locked { (values::LOCKED) }
-            } @else {
-                form.flow method="post" action=(format!("/account/values/{}", server.slug)) {
-                    input type="hidden" name="csrf" value=(csrf);
-                    @if let Some(refusal) = refusal {
-                        (ui::refused(Some("The credentials were not saved."), refusal.message, None))
+            form.flow method="post" action=(format!("/account/values/{}", server.slug)) {
+                input type="hidden" name="csrf" value=(csrf);
+                @if let Some(refusal) = refusal {
+                    (ui::refused(Some("The credentials were not saved."), refusal.message, None))
+                }
+                @for header in &server.headers {
+                    div.fields data-cols="2" {
+                        (header_field(header))
                     }
-                    div.fields {
-                        @for header in &server.headers {
-                            (header_field(&server.slug, header))
-                        }
-                    }
-                    div.form-actions {
-                        button type="submit" data-kind="secondary" { "Save credentials" }
-                    }
+                }
+                p.muted { "A stored credential is never shown again. Leave a field empty to keep it." }
+                div.form-actions {
+                    button type="submit" data-kind="secondary" { "Save credentials" }
                 }
             }
         }
     }
 }
 
-/// One declared header: a write-only field with what is known of it, and the remove box when stored.
-fn header_field(slug: &str, header: &values::HeaderView) -> Markup {
-    let id = format!("value-{slug}-{}", header.id);
+/// One declared header: a write-only field, its state under it, and the remove box when stored.
+fn header_field(header: &values::HeaderView) -> Markup {
+    let id = format!("value-{}", header.id);
     let hint_id = format!("{id}-hint");
-    let remove_id = format!("remove-{slug}-{}", header.id);
+    let remove_id = format!("remove-{}", header.id);
+    let remove_name = format!("remove_{}", header.id);
+    let value_name = format!("value_{}", header.id);
     let state = if header.set_at.is_some() {
         "set"
     } else {
         "unset"
     };
-    ui::field(
-        &id,
-        &header.name,
-        false,
-        html! {
-            input id=(id) name=(format!("value_{}", header.id)) type="password" autocomplete="off"
+    html! {
+        div.field {
+            label for=(id) { code { (ui::breakable(&header.name)) } }
+            input id=(id) name=(value_name) type="password" autocomplete="new-password"
+                data-1p-ignore data-lpignore="true"
+                placeholder=[header.set_at.map(|_| "Stored. Type to replace.")]
                 aria-describedby=(hint_id);
-        },
-        ui::Note::Below(
-            &hint_id,
-            html! {
+            div.below {
                 p.hint id=(hint_id) data-value-state=(state) data-header=(header.lower) {
                     @if let Some(at) = header.set_at {
-                        "Stored " (values::day(at))
-                    } @else {
-                        "Not set"
-                        @if header.required {
-                            " " span { "Required" }
+                        span.state data-pill data-tone="ok" {
+                            "Stored "
+                            time datetime=(values::iso_day(at)) { (values::day(at)) }
                         }
+                    } @else if header.required {
+                        (ui::pill("warn", "Not set. Required."))
+                    } @else {
+                        (ui::pill("muted", "Not set."))
                     }
                 }
                 @if header.set_at.is_some() {
                     (ui::check(
                         &remove_id,
-                        &format!("remove_{}", header.id),
+                        &remove_name,
                         Some("1"),
                         false,
                         "Remove the stored credential",
                         None,
                     ))
                 }
-            },
-        ),
-    )
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -398,6 +444,52 @@ mod tests {
                 "div.field > input#new_password[aria-describedby=new_password-hint] + p.hint#new_password-hint"
             ),
             1
+        );
+    }
+
+    #[test]
+    fn a_credential_input_asks_no_password_manager_to_fill_it() {
+        let header = |id: i64, name: &str, set_at: Option<i64>| values::HeaderView {
+            id,
+            name: name.to_owned(),
+            lower: name.to_ascii_lowercase(),
+            required: set_at.is_none(),
+            set_at,
+        };
+        let part = Part {
+            servers: vec![ServerView {
+                slug: "demo".to_owned(),
+                name: "Demo".to_owned(),
+                host: "demo.example.com".to_owned(),
+                plain_http: false,
+                headers: vec![
+                    header(11, "X-Trace-Id", None),
+                    header(12, "X-Region", Some(1_700_000_000)),
+                ],
+            }],
+            ..Part::default()
+        };
+        let markup = account_body_with("token", "bob@example.com", None, &[], &part);
+        let doc = Html::parse_fragment(&markup.into_string());
+        assert_eq!(count(&doc, r#"input[name^="value_"]"#), 2);
+        assert_eq!(
+            count(
+                &doc,
+                r#"input[name^="value_"][type="password"][autocomplete="new-password"][data-1p-ignore][data-lpignore="true"]"#
+            ),
+            2,
+            "every credential input must carry the three attributes"
+        );
+        assert_eq!(
+            count(&doc, r#"input[name^="value_"][autocomplete="off"]"#),
+            0
+        );
+        assert_eq!(
+            count(
+                &doc,
+                r#"input[name^="value_"][autocomplete="current-password"]"#
+            ),
+            0
         );
     }
 

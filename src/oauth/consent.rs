@@ -465,11 +465,13 @@ fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
             dd { (ui::email(&consent.email)) }
         }
         @if !consent.needs_values.is_empty() {
-            p data-needs-values {
-                (consent.needs_values.join(", "))
+            p.muted data-needs-values {
+                (names_sentence(&consent.needs_values))
                 (if consent.needs_values.len() == 1 { " needs" } else { " need" })
                 " credentials you have not stored yet. After you approve, add them on your account page: "
-                (consent.account)
+                a href="/account" target="_blank" rel="noopener" {
+                    (ui::address(&consent.account))
+                }
             }
         }
         p.strong data-consent-notice { "Approve only if you started this " span.nowrap { "sign-in" } " yourself." }
@@ -487,6 +489,15 @@ fn consent_body(csrf: &str, req: &str, consent: &ConsentPage) -> Markup {
                 button type="submit" data-kind="secondary" { "Deny" }
             }
         }
+    }
+}
+
+/// The names of servers as a sentence reads them: "A", "A and B", "A, B and C".
+fn names_sentence(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [only] => only.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
     }
 }
 

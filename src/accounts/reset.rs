@@ -338,7 +338,7 @@ fn reset_form(csrf: &str, error: Option<&str>) -> Markup {
     let described = note.describer("password");
     html! {
         h1 { "Choose a new password" }
-        p.muted data-reset-drops { "Resetting your password deletes the credentials you stored for servers." }
+        p.lede data-reset-note { "Resetting your password deletes the credentials you stored for servers. You will enter them again." }
         @if error.is_some() {
             (ui::refused(Some("The password was not changed."), None, None))
         }

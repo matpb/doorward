@@ -6,8 +6,10 @@ use std::time::{Duration, Instant};
 use common::TestGateway;
 use common::admin;
 use common::client::{self, OAuthApp, Page, TestClient};
+use common::headers::{declare_header, header_id, set_switches};
 use common::mail::{Fail, link_with_prefix};
 use common::upstream::{Mode, UpstreamOptions};
+use common::values::store_value;
 use common::world::{APP_ID, APP_NAME, OWNER_EMAIL, PASSWORD, World};
 use scraper::{ElementRef, Html, Selector};
 use serde_json::json;
@@ -47,6 +49,7 @@ struct Seeded {
     w: World,
     bob: TestClient,
     demo: String,
+    refuser: String,
     bob_id: String,
     carol_id: String,
     dave_link: String,
@@ -130,6 +133,15 @@ async fn seeded() -> Seeded {
     let (_refuser_up, refuser) = w.upstream("refuser", refuser_options).await;
     w.grant(BOB, &[demo.as_str(), refuser.as_str()]).await;
     let bob_id = w.user_id(BOB).await;
+    declare_header(&w.owner, &demo, "X-Trace-Id", true).await;
+    declare_header(&w.owner, &demo, "X-Region", false).await;
+    let page = set_switches(&w.owner, &demo, false, true).await;
+    assert_eq!(page.status, 303, "the switches must be saved");
+    let trace = header_id(&w.owner, &demo, "X-Trace-Id")
+        .await
+        .expect("the required header must have a remove link");
+    let stored = store_value(&bob, "demo", &trace, "trace-7f3a").await;
+    assert_eq!(stored.status, 303, "the required credential must be stored");
 
     let page = admin::add_rule(&w.owner, "everyone", "allow", "server", Some(&demo), None).await;
     assert_eq!(page.status, 303, "the allow rule must be saved");
@@ -186,6 +198,7 @@ async fn seeded() -> Seeded {
         w,
         bob,
         demo,
+        refuser,
         bob_id,
         carol_id,
         dave_link,
@@ -261,6 +274,18 @@ async fn covered(s: &Seeded) -> Vec<Shot> {
         let page = w.owner.get(&path).await;
         shots.push(shot(&path, page, 200, PANEL));
     }
+    let bare = format!("/admin/servers/{}", s.refuser);
+    shots.push(shot(&bare, w.owner.get(&bare).await, 200, PANEL));
+    let trace = header_id(&w.owner, &s.demo, "X-Trace-Id")
+        .await
+        .expect("the required header must have a remove link");
+    let confirm = format!("/admin/servers/{}/headers/{trace}/remove", s.demo);
+    shots.push(shot(
+        "remove a header (confirm)",
+        w.owner.get(&confirm).await,
+        200,
+        CARD,
+    ));
 
     let local = consent_page(&s.bob, &w.app(), &w.resource("demo")).await;
     shots.push(shot("consent (local client)", local, 200, CARD));

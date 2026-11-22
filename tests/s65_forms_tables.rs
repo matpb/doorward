@@ -5,7 +5,9 @@ use std::collections::HashSet;
 use common::TestGateway;
 use common::admin;
 use common::client::{Page, TestClient};
+use common::headers::{declare_header, header_id, set_switches};
 use common::upstream::{FakeUpstream, UpstreamOptions};
+use common::values::store_value;
 use common::world::World;
 use scraper::{ElementRef, Html, Selector};
 use serde_json::json;
@@ -105,6 +107,15 @@ async fn seeded() -> Seeded {
     let page = admin::add_redirect(&w.owner, "https", "example.com", "/callback").await;
     assert_eq!(page.status, 303, "the redirect address must be saved");
     let _dave = w.invite_link(DAVE, "user").await;
+    declare_header(&w.owner, &demo, "X-Trace-Id", true).await;
+    declare_header(&w.owner, &demo, "X-Region", false).await;
+    let page = set_switches(&w.owner, &demo, false, true).await;
+    assert_eq!(page.status, 303, "the switches must be saved");
+    let trace = header_id(&w.owner, &demo, "X-Trace-Id")
+        .await
+        .expect("the header must have a remove link");
+    let stored = store_value(&bob, "demo", &trace, "trace-7f3a").await;
+    assert_eq!(stored.status, 303, "the credential must be stored");
 
     let tokens = w.token(&bob, "demo").await;
     let mcp = w.session_mcp("demo", &tokens);
@@ -189,6 +200,12 @@ async fn lists(s: &Seeded) -> Vec<List> {
             page: w.owner.get("/admin/invitations").await,
             attrs: &["data-invitation-id", "data-email"],
             rows: Some(1),
+        },
+        List {
+            name: "/admin/servers/{id} (custom headers)",
+            page: w.owner.get(&format!("/admin/servers/{}", s.demo)).await,
+            attrs: &["data-header"],
+            rows: Some(2),
         },
         List {
             name: "/admin/rules",
@@ -447,6 +464,11 @@ async fn ids_are_unique_and_every_description_exists() {
     for list in lists(&s).await {
         pages.push((list.name.to_string(), list.page));
     }
+    let trace = header_id(&s.w.owner, &s.demo, "X-Trace-Id")
+        .await
+        .expect("the header must have a remove link");
+    let confirm = format!("/admin/servers/{}/headers/{trace}/remove", s.demo);
+    pages.push((confirm.clone(), s.w.owner.get(&confirm).await));
     assert_pages(
         &pages,
         id_problems,

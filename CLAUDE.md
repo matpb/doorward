@@ -453,7 +453,7 @@ M. Added for custom headers and per-user credentials
     server ends when that user's values for it change.
 88. A server without a stored secret header is never reported as locked down. While it
     declares custom headers its page says that anyone who reaches the upstream directly
-    passes the gateway's rules and its activity log.
+    bypasses the gateway's rules and its activity log.
 89. The README says how to set up custom headers, pass-through and stored values, and with
     `SECURITY.md` states what the encryption does not cover: an attacker running code in
     the live gateway, a password guessed offline from a stolen database, a stolen live

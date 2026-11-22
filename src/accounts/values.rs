@@ -62,12 +62,35 @@ pub struct Refusal {
     pub message: &'static str,
 }
 
-/// The account page's credentials part: the servers, whether the session can open the key, and a refusal.
+/// The account page's credentials part: the servers, whether the session can open the key, a refusal,
+/// and the name of the server whose credentials were just saved.
 #[derive(Default)]
 pub struct Part {
     pub servers: Vec<ServerView>,
     pub locked: bool,
     pub refusal: Option<Refusal>,
+    pub saved: Option<String>,
+}
+
+impl ServerView {
+    /// The state a server's block shows: a required value missing, else one stored, else none.
+    pub fn state(&self) -> ValueState {
+        if self.needs_values() {
+            ValueState::Needed
+        } else if self.headers.iter().any(|header| header.set_at.is_some()) {
+            ValueState::Stored
+        } else {
+            ValueState::Nothing
+        }
+    }
+}
+
+/// What a server's block says about its credentials.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ValueState {
+    Needed,
+    Stored,
+    Nothing,
 }
 
 /// The host of an upstream address, and whether it is plain http on a host that is not loopback.
@@ -87,9 +110,17 @@ fn address_facts(address: &str) -> (String, bool) {
 
 /// A date as the activity page writes the day, such as `20 Nov 2026`.
 pub fn day(at: i64) -> String {
-    let Ok(format) =
-        format_description::parse_borrowed::<2>("[day padding:none] [month repr:short] [year]")
-    else {
+    formatted(at, "[day padding:none] [month repr:short] [year]")
+}
+
+/// A date as `YYYY-MM-DD`, for the datetime of a `time` element.
+pub fn iso_day(at: i64) -> String {
+    formatted(at, "[year]-[month]-[day]")
+}
+
+/// The UTC date at `at` in the format `pattern`; empty when the time or the pattern is out of range.
+fn formatted(at: i64, pattern: &str) -> String {
+    let Ok(format) = format_description::parse_borrowed::<2>(pattern) else {
         return String::new();
     };
     OffsetDateTime::from_unix_timestamp(at)
@@ -150,7 +181,20 @@ pub fn part_in(
         servers,
         locked,
         refusal: None,
+        saved: None,
     })
+}
+
+/// The name of the server a query names as saved, when the part holds that server. The query's slug is
+/// only compared, never shown.
+pub fn saved_name(part: &Part, raw: Option<&str>) -> Option<String> {
+    let slug = form_urlencoded::parse(raw.unwrap_or("").as_bytes())
+        .find(|(key, _)| key == "server")
+        .map(|(_, value)| value.into_owned())?;
+    part.servers
+        .iter()
+        .find(|server| server.slug == slug)
+        .map(|server| server.name.clone())
 }
 
 /// True when the session cookie `session` carries a wrap that opens.
@@ -267,7 +311,9 @@ pub async fn post_values(
         })
         .await;
     match outcome {
-        Ok(Outcome::Saved) => redirect("/account"),
+        Ok(Outcome::Saved) => redirect(&format!(
+            "/account?done=credentials-saved&server={slug}#values-title"
+        )),
         Ok(Outcome::Missing) => not_found(),
         Ok(Outcome::Refused(message)) => refused(&state, &form.viewer, &slug, message).await,
         Err(err) => internal_error("stored values", &err),
