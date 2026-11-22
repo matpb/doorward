@@ -24,6 +24,9 @@ use super::account::account_page_with;
 
 /// Shown when the browser session holds no key the values could be sealed under.
 pub const LOCKED: &str = "Sign in again to store or change credentials.";
+/// The locked part's sentence: the session cannot open what is stored.
+pub const LOCKED_PART: &str =
+    "This session cannot open your stored credentials. Sign in again to store or change them.";
 const BAD_VALUE: &str = "A credential is 1 to 4096 visible characters with no line break.";
 const BOTH: &str = "A credential cannot be saved and removed in the same step.";
 

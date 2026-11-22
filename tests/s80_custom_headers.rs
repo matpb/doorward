@@ -912,9 +912,9 @@ async fn the_remove_link_opens_a_confirm_page_that_names_the_header_the_server_a
     assert_eq!(
         page.text("main > p.lede").as_deref(),
         Some(
-            "1 of 1 people stored a credential for it on demo. That credential is deleted and cannot be recovered."
+            "1 of 1 user stored a credential for it on demo. That credential is deleted and cannot be recovered."
         ),
-        "the sentence must count the people who stored one, and name the server"
+        "the sentence must count the users who stored one, and name the server"
     );
     assert_eq!(
         page.count(r#"main form input[name="csrf"]"#),
@@ -952,7 +952,7 @@ async fn the_confirm_page_says_nobody_stored_a_credential_when_none_is_stored() 
     let page = w.owner.get(&remove_path(&id, &hid)).await;
     assert_eq!(
         page.text("main > p.lede").as_deref(),
-        Some("Nobody stored a credential for it on demo."),
+        Some("No user stored a credential for it on demo."),
         "the sentence for nobody must be the short one"
     );
 }
@@ -978,9 +978,9 @@ async fn the_confirm_page_counts_every_person_who_stored_a_credential() {
     assert_eq!(
         page.text("main > p.lede").as_deref(),
         Some(
-            "2 of 2 people stored a credential for it on demo. Those credentials are deleted and cannot be recovered."
+            "2 of 2 users stored a credential for it on demo. Those credentials are deleted and cannot be recovered."
         ),
-        "two people must read as 2 of 2 with the plural sentence"
+        "two users must read as 2 of 2 with the plural sentence"
     );
 }
 
@@ -1093,15 +1093,13 @@ async fn saving_a_header_made_required_says_how_many_have_not_stored_it() {
     );
     assert_eq!(
         shown
-            .text(r#"section[aria-labelledby="headers-title"] div.notice > p > span.state[data-tone="warn"]"#)
+            .text(r#"section[aria-labelledby="headers-title"] div.notice > p.attention"#)
             .as_deref(),
         Some("X-Trace-Id is now required. 1 of 1 users have not stored it."),
-        "the second line must name the header made required and count the people without it"
+        "the second line must name the header made required and count the users without it"
     );
     assert_eq!(
-        shown.count(
-            r#"section[aria-labelledby="headers-title"] div.notice > p > span.state > code"#
-        ),
+        shown.count(r#"section[aria-labelledby="headers-title"] div.notice > p.attention > code"#),
         1,
         "the header's name must be set in code inside the second line"
     );
@@ -1175,7 +1173,7 @@ async fn a_saved_switch_with_no_required_header_names_no_one_in_a_notice() {
         "a save that makes no header required says only that it saved"
     );
     assert_eq!(
-        shown.count(r#"div.notice[data-notice="ok"] span.state"#),
+        shown.count(r#"div.notice[data-notice="ok"] p.attention"#),
         0,
         "no attention line when no header became required"
     );

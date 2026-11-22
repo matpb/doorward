@@ -420,14 +420,19 @@ async fn with_pass_through_only_the_text_names_the_header() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_stateless_generation_gets_the_same_answers() {
+async fn a_withheld_stateless_caller_gets_method_not_found_for_discover_and_the_usual_list_and_call()
+ {
     let w = World::start().await;
     let (upstream, _id, _hid, bob) = bob_without_a_value(&w).await;
     let tokens = w.token(&bob, SLUG).await;
     let stateless = w.stateless_mcp(SLUG, &tokens);
     let discovered = stateless.discover().await;
     assert_eq!(discovered.status, 200);
-    assert!(instructions(&discovered).contains("/account"));
+    assert_eq!(discovered.error_code(), Some(-32601));
+    assert_eq!(
+        discovered.header("cache-control").as_deref(),
+        Some("no-store")
+    );
     let listed = stateless.list_tools().await;
     assert_eq!(listed.status, 200);
     assert_eq!(listed.tool_names().len(), 3);
@@ -518,4 +523,36 @@ async fn no_answer_to_a_withheld_caller_is_a_401_or_a_403() {
             reply.status
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_probes_discover_first_is_steered_to_a_session_that_survives_the_store() {
+    let w = World::start().await;
+    let (upstream, _id, hid, bob) = bob_without_a_value(&w).await;
+    let tokens = w.token(&bob, SLUG).await;
+    let discovers_before = upstream.rpc_count("server/discover");
+    let probe = w.stateless_mcp(SLUG, &tokens);
+    assert_eq!(probe.discover().await.error_code(), Some(-32601));
+    let client = w.session_mcp(SLUG, &tokens);
+    let init = client.initialize().await;
+    assert!(
+        init.header("mcp-session-id")
+            .unwrap_or_default()
+            .starts_with("dw-wait-")
+    );
+    let refused = client.call_tool("echo", json!({})).await;
+    assert!(is_tool_error(&refused));
+    assert!(
+        refused
+            .text()
+            .unwrap_or_default()
+            .contains("needs your credentials")
+    );
+    assert_eq!(upstream.rpc_count("server/discover"), discovers_before);
+
+    let stored = store_value(&bob, SLUG, &hid, CANARY).await;
+    assert_eq!(stored.status, 303);
+    let reply = client.call_tool("echo", json!({})).await;
+    assert_eq!(reply.text().as_deref(), Some("called: echo"));
+    assert_eq!(carried(&upstream, "echo"), vec![Some(CANARY.to_string())]);
 }

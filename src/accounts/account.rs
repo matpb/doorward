@@ -183,7 +183,7 @@ fn credentials_part(csrf: &str, email: &str, part: &Part) -> Markup {
                     @for (slug, name) in &part.retired {
                         (retired_values(csrf, slug, name))
                     }
-                    p { (values::LOCKED) }
+                    p { (values::LOCKED_PART) }
                     form.form-actions method="post" action="/logout" {
                         input type="hidden" name="csrf" value=(csrf);
                         button type="submit" data-kind="secondary" { "Sign out and sign in again" }
@@ -214,6 +214,7 @@ fn retired_values(csrf: &str, slug: &str, name: &str) -> Markup {
                 " "
                 (ui::pill("muted", "No longer uses stored credentials"))
             }
+            p.muted { "Your credentials for this server are still stored but are no longer sent." }
             details.confirm data-confirm {
                 summary {
                     span.confirm-open { "Delete my stored credentials " span.chevron aria-hidden="true" {} }
@@ -242,13 +243,11 @@ fn saved_notice(server: &ServerView) -> Markup {
     ui::notice(
         "ok",
         html! {
-            p {
-                "Credentials saved for " (server.name) "."
-                @if missing == 1 {
-                    " 1 required credential is still missing."
-                } @else if missing > 1 {
-                    " " (missing) " required credentials are still missing."
-                }
+            p { "Credentials saved for " (server.name) "." }
+            @if missing == 1 {
+                p.attention { "1 required credential is still missing." }
+            } @else if missing > 1 {
+                p.attention { (missing) " required credentials are still missing." }
             }
         },
     )
@@ -651,8 +650,12 @@ mod tests {
         );
         assert_eq!(
             count(&doc, "section[data-values-retired] p.muted"),
-            1,
-            "the only muted sentence of the block is the one after the button"
+            2,
+            "the block holds two muted lines: the one under the head and the one after the button"
+        );
+        assert_eq!(
+            text(&doc, r#"section[data-values-retired="old"] > h3 + p.muted"#),
+            "Your credentials for this server are still stored but are no longer sent."
         );
     }
 
@@ -680,9 +683,16 @@ mod tests {
         assert_eq!(
             text(
                 &doc,
-                r#"section[data-values-server="demo"] > div.notice[data-notice="ok"]:first-child > p"#
+                r#"section[data-values-server="demo"] > div.notice[data-notice="ok"]:first-child > p:not(.attention)"#
             ),
-            "Credentials saved for Demo. 1 required credential is still missing."
+            "Credentials saved for Demo."
+        );
+        assert_eq!(
+            text(
+                &doc,
+                r#"section[data-values-server="demo"] > div.notice > p.attention"#
+            ),
+            "1 required credential is still missing."
         );
     }
 

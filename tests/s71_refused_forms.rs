@@ -894,6 +894,52 @@ async fn a_refused_header_form_sends_back_its_name_and_its_required_box() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_field_error_of_a_refused_header_is_one_text_element_beside_its_mark() {
+    let w = World::start().await;
+    let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;
+    let path = format!("/admin/servers/{id}");
+    let page = w
+        .owner
+        .submit(
+            &path,
+            &format!("{path}/headers"),
+            &[("name", "Cookie"), ("required", "1")],
+        )
+        .await;
+    assert_eq!(page.status, 400, "a refused header name must answer 400");
+    let doc = scraper::Html::parse_document(&page.body);
+    let selector = Selector::parse("p.field-error#header-name-error").expect("selector");
+    let error = doc
+        .select(&selector)
+        .next()
+        .expect("the field error must be on the page");
+    let elements: Vec<String> = error
+        .children()
+        .filter_map(|node| node.value().as_element().map(|el| el.name().to_owned()))
+        .collect();
+    assert_eq!(
+        elements,
+        vec!["span".to_owned()],
+        "the field error must hold exactly one element, the text block beside its mark"
+    );
+    let loose_text = error.children().any(|node| {
+        node.value()
+            .as_text()
+            .is_some_and(|text| !text.trim().is_empty())
+    });
+    assert!(
+        !loose_text,
+        "the field error must hold no bare text node beside its element"
+    );
+    assert_eq!(
+        page.text("p.field-error#header-name-error > span > code")
+            .as_deref(),
+        Some("Cookie"),
+        "the name is set in code inside the text block"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_refused_password_change_still_holds_the_credentials_part() {
     let w = World::start().await;
     let (_upstream, id) = w.upstream("demo", UpstreamOptions::default()).await;

@@ -233,6 +233,7 @@ h1 {
 
 h1 > .title-name {
   display: inline-block;
+  font-family: var(--mono);
 }
 
 h2 {
@@ -638,7 +639,8 @@ body[data-layout="card"] .lede {
 
 /* A notice is as wide as a form wherever it stands, so its box ends where its text does. */
 body[data-layout="panel"] main > .notice,
-body[data-layout="page"] main > .notice {
+body[data-layout="page"] main > .notice,
+body:is([data-layout="panel"], [data-layout="page"]) .part-body .notice {
   max-inline-size: 640px;
   margin-block-end: var(--s6);
 }
@@ -1337,6 +1339,23 @@ body[data-layout="card"] [data-kind="danger"] {
   position: absolute;
   inset-inline-start: calc(var(--r1) - var(--s5));
   inset-block-start: 6px;
+}
+
+/* A line of a notice with its own attention mark: the mark stands in the notice's mark column. */
+.notice > .attention {
+  position: relative;
+}
+
+.notice > .attention::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: calc(var(--r1) - var(--s5));
+  inset-block-start: 6px;
+  inline-size: 8px;
+  block-size: 8px;
+  box-sizing: border-box;
+  border: 2px solid var(--warn);
+  transform: rotate(45deg);
 }
 
 /* A link goes to the next line whole; it breaks only when it is longer than a line.

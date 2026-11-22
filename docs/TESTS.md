@@ -2008,6 +2008,9 @@ connected client. Each test builds that world, except the setup page, which has 
 
 Added in the notices round (statements 65 and 66): `the_hints_under_the_two_switches_are_held_to_a_measure_of_60_characters`
 reads the served stylesheet and checks that it caps `[data-switches] > .check > .hint` at `60ch`.
+`a_notice_inside_a_part_is_capped_at_the_width_of_a_page_notice` (the notice layout of the copy round): a notice inside a
+part body is capped at `640px` with a page notice. `the_header_name_in_the_remove_title_is_set_in_the_mono_face`:
+`h1 > .title-name` is set in `var(--mono)`, the face of the consent destination.
 
 ## s68_exposed.rs (statement 68)
 
@@ -2096,6 +2099,10 @@ has an in-crate test in `src/accounts/login.rs`, `a_req_that_is_a_request_id_is_
 Changed in the notices round (statement 71): `a_refused_header_form_sends_back_its_name_and_its_required_box`
 now reads the refused add notice as `The header was not added. Cookie cannot be used as a custom header.
 Choose another name. Go to the header name field`, with the name in a `code` element.
+
+Changed in the copy round (statement 71): `the_field_error_of_a_refused_header_is_one_text_element_beside_its_mark`
+(new): the inline error `p.field-error#header-name-error` holds exactly one element, a `span` with the
+reason, and no bare text node, so the text is one block at field width beside the mark.
 
 ## s72_overview_state.rs (statement 72)
 
@@ -2500,7 +2507,7 @@ switch is saved the same way, and bob (assigned to the server) makes the calls.
     `the_confirm_page_counts_every_person_who_stored_a_credential` and
     `the_confirm_page_is_not_found_for_another_servers_header_or_an_unknown_one` (statement 80, the
     removal page): the title and the header name in its span, the sentence for none, one and two
-    people, the danger "Remove header" and the secondary "Keep header", and 404 for a header that is
+    users, the danger "Remove header" and the secondary "Keep header", and 404 for a header that is
     not the server's.
 13. `a_plain_user_cannot_open_the_confirm_page` and
     `the_remove_link_is_a_link_and_the_removal_answers_with_the_notice`: 403 for a plain user; the row's
@@ -2587,8 +2594,8 @@ Rewritten tests (the old markup or sentence they pinned):
     notices): the added, saved and removed notices are the first child of the headers part body,
     each rendered once, with the header's name in a `code` element.
 14. `saving_a_header_made_required_says_how_many_have_not_stored_it` (statement 80): `Headers saved.` is
-    the first line, and the second line, a `span.state[data-tone="warn"]`, names the header made
-    required and counts the people without a stored value.
+    the first line, and the second line, a `p.attention`, names the header made
+    required and counts the users without a stored value.
 15. `a_saved_switch_with_no_required_header_names_no_one_in_a_notice` (statement 80): the notice reads
     `Headers saved.` alone.
 16. `with_both_switches_off_and_a_required_header_a_no_source_line_sits_under_the_switches`,
@@ -2706,8 +2713,15 @@ Account page and consent, changed in the notices and blocks round (statements 82
 - `the_saved_notice_is_the_first_child_of_that_servers_block_and_shown_once`: the notice
   `Credentials saved for demo.` is the first child of the server's block and rendered once.
 - `the_saved_notice_counts_the_required_credentials_still_missing`: two, then one, then none missing read
-  `2 required credentials are still missing.`, `1 required credential is still missing.` and
-  `Credentials saved for demo.`.
+  `2 required credentials are still missing.`, `1 required credential is still missing.` on a second
+  `p.attention` line, and `Credentials saved for demo.` alone when nothing is missing.
+- `the_saved_notice_is_a_success_line_and_then_an_attention_line_for_what_is_missing` (new): the first `p`
+  reads `Credentials saved for demo.` and the attention line follows it in the same notice.
+- `the_retired_block_says_its_credentials_are_still_stored_but_no_longer_sent` (new): one muted line,
+  `Your credentials for this server are still stored but are no longer sent.`, sits between the head and
+  the closed disclosure.
+- `a_session_whose_key_does_not_open_shows_the_locked_credentials_part` (updated): the locked sentence is
+  `This session cannot open your stored credentials. Sign in again to store or change them.`
 - `save_credentials_is_primary_only_while_a_required_credential_is_missing`: `Save credentials` is the
   primary button of its form only while a required value is missing.
 - `the_write_only_hint_shows_only_when_a_field_of_the_form_is_stored`: the hint `A stored credential is
@@ -2746,7 +2760,10 @@ Bob is assigned to the demo server with a required header and nothing stored, un
    `the_stateless_generation_ignores_a_placeholder_session_id` and
    `get_is_405_and_delete_is_204_on_a_placeholder_session_of_a_caller_who_is_not_withheld`.
 7. `with_pass_through_only_the_text_names_the_header`.
-8. `the_stateless_generation_gets_the_same_answers`.
+8. `a_withheld_stateless_caller_gets_method_not_found_for_discover_and_the_usual_list_and_call`: `server/discover` is
+   `-32601` at 200 with `no-store`; stateless list and call keep the gateway answers; upstream sees nothing.
+   `a_client_that_probes_discover_first_is_steered_to_a_session_that_survives_the_store`: discover, then
+   `initialize` (`dw-wait-` id), refused call, store the value, the same session calls through with the value.
 9. `get_is_405_and_delete_is_204_for_a_withheld_caller`.
 10. `on_the_combined_endpoint_the_withheld_servers_tools_are_listed_and_a_call_returns_the_text`.
 11. `no_answer_to_a_withheld_caller_is_a_401_or_a_403`.

@@ -426,9 +426,9 @@ fn remove_body(
         h1 { "Remove " span.title-name { (ui::breakable(&declared.name)) } "?" }
         p.lede data-stored-by=(stored) {
             @if stored == 0 {
-                "Nobody stored a credential for it on " (server.name) "."
+                "No user stored a credential for it on " (server.name) "."
             } @else {
-                span.nowrap { (stored) " of " (assigned) " people" }
+                span.nowrap { (stored) " of " (assigned) " " (if assigned == 1 { "user" } else { "users" }) }
                 " stored a credential for it on " (server.name) "."
                 @if stored == 1 {
                     " That credential is deleted and cannot be recovered."
@@ -578,11 +578,9 @@ fn done_notice(
                 html! {
                     p { "Headers saved." }
                     @for (name, unstored, total) in &lines {
-                        p {
-                            span.state data-pill data-tone="warn" {
-                                code { (ui::breakable(name)) }
-                                " is now required. " (unstored) " of " (total) " users have not stored it."
-                            }
+                        p.attention {
+                            code { (ui::breakable(name)) }
+                            " is now required. " (unstored) " of " (total) " users have not stored it."
                         }
                     }
                 },
@@ -1331,7 +1329,7 @@ fn headers_section(
     let name_note = match &error {
         Some(message) => ui::Note::Below(
             "header-name-error",
-            html! { p.field-error id="header-name-error" { (message) } },
+            html! { p.field-error id="header-name-error" { span { (message) } } },
         ),
         None => ui::Note::Hint("For example X-Api-Key. Up to 8 per server."),
     };

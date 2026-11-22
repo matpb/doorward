@@ -1972,16 +1972,20 @@ async fn the_saved_notice_counts_the_required_credentials_still_missing() {
     let saved = store_value(&bob, SLUG, &first, CANARY).await;
     let shown = bob.follow(&saved).await;
     assert_eq!(
-        shown.text(r#"div.notice[data-notice="ok"] > p"#).as_deref(),
-        Some("Credentials saved for demo. 2 required credentials are still missing."),
+        shown
+            .text(r#"div.notice[data-notice="ok"] p.attention"#)
+            .as_deref(),
+        Some("2 required credentials are still missing."),
         "two required credentials missing must be counted in the plural"
     );
 
     let saved = store_value(&bob, SLUG, &second, OTHER).await;
     let shown = bob.follow(&saved).await;
     assert_eq!(
-        shown.text(r#"div.notice[data-notice="ok"] > p"#).as_deref(),
-        Some("Credentials saved for demo. 1 required credential is still missing."),
+        shown
+            .text(r#"div.notice[data-notice="ok"] p.attention"#)
+            .as_deref(),
+        Some("1 required credential is still missing."),
         "one required credential missing must take the singular"
     );
 
@@ -1991,6 +1995,38 @@ async fn the_saved_notice_counts_the_required_credentials_still_missing() {
         shown.text(r#"div.notice[data-notice="ok"] > p"#).as_deref(),
         Some("Credentials saved for demo."),
         "with every required credential stored the notice has no missing sentence"
+    );
+    assert_eq!(
+        shown.count(r#"div.notice[data-notice="ok"] p.attention"#),
+        0,
+        "with nothing missing there is no second line"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_saved_notice_is_a_success_line_and_then_an_attention_line_for_what_is_missing() {
+    let w = World::start().await;
+    let (_upstream, id, first, bob) = demo_for_bob(&w, true).await;
+    declare_ok(&w.owner, &id, "X-Region", true).await;
+    let saved = store_value(&bob, SLUG, &first, CANARY).await;
+    let shown = bob.follow(&saved).await;
+    let block = format!(r#"section[data-values-server="{SLUG}"] > div.notice[data-notice="ok"]"#);
+    assert_eq!(
+        shown
+            .text(&format!("{block} > p:not(.attention)"))
+            .as_deref(),
+        Some("Credentials saved for demo."),
+        "the first line is the success line"
+    );
+    assert_eq!(
+        shown.text(&format!("{block} > p.attention")).as_deref(),
+        Some("1 required credential is still missing."),
+        "the second line is the attention line for what is missing"
+    );
+    assert_eq!(
+        shown.count(&format!("{block} > p:not(.attention) + p.attention")),
+        1,
+        "the attention line follows the success line in the same notice"
     );
 }
 
@@ -2044,6 +2080,28 @@ async fn the_write_only_hint_shows_only_when_a_field_of_the_form_is_stored() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_retired_block_says_its_credentials_are_still_stored_but_no_longer_sent() {
+    let w = World::start().await;
+    let (_upstream, id, hid, bob) = demo_for_bob(&w, false).await;
+    store_ok(&bob, SLUG, &hid, CANARY).await;
+    switches_ok(&w.owner, &id, false, false).await;
+    let account = bob.get("/account").await;
+    assert_eq!(
+        account
+            .text(r#"section[data-values-retired="demo"] > h3 + p.muted"#)
+            .as_deref(),
+        Some("Your credentials for this server are still stored but are no longer sent."),
+        "one muted line sits between the head and the disclosure"
+    );
+    assert_eq!(
+        account
+            .count(r#"section[data-values-retired="demo"] > h3 + p.muted + details[data-confirm]"#),
+        1,
+        "the disclosure follows that line directly"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_session_whose_key_does_not_open_shows_the_locked_credentials_part() {
     let w = World::start().await;
     let (_upstream, _id, hid, bob) = demo_for_bob(&w, false).await;
@@ -2075,7 +2133,9 @@ async fn a_session_whose_key_does_not_open_shows_the_locked_credentials_part() {
     );
     assert_eq!(
         page.text(r#"[data-values-locked] p"#).as_deref(),
-        Some("Sign in again to store or change credentials."),
+        Some(
+            "This session cannot open your stored credentials. Sign in again to store or change them."
+        ),
         "the locked part must say to sign in again"
     );
     assert_eq!(
@@ -2340,8 +2400,11 @@ async fn with_the_store_switch_off_no_value_is_attached_and_the_user_can_delete_
     );
     assert_eq!(
         account.texts(r#"section[data-values-retired="demo"] p.muted"#),
-        vec!["This cannot be undone.".to_owned()],
-        "the only muted sentence of the block is the one after the button"
+        vec![
+            "Your credentials for this server are still stored but are no longer sent.".to_owned(),
+            "This cannot be undone.".to_owned(),
+        ],
+        "the muted lines are the line under the head and the one after the button"
     );
     assert_eq!(
         account

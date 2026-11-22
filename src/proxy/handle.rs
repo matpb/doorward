@@ -655,7 +655,7 @@ async fn answer_withheld(
             }
             (Generation::Session, Some("ping")) => combined::result(id, json!({})),
             (Generation::Stateless, Some("server/discover")) => {
-                combined::result(id, combined::discover_for(&held.name, Some(&held.text)))
+                answer::error(StatusCode::OK, Some(id), -32601, "Method not found")
             }
             (_, Some("tools/list")) => match withheld_list(ctx, id, stateless).await {
                 Ok(reply) | Err(reply) => reply,

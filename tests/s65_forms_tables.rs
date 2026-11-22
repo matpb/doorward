@@ -776,3 +776,50 @@ async fn the_hints_under_the_two_switches_are_held_to_a_measure_of_60_characters
         "the stylesheet must cap the hint of each switch in [data-switches] at 60ch"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notice_inside_a_part_is_capped_at_the_width_of_a_page_notice() {
+    let w = TestGateway::start().await;
+    let c = w.client();
+    let page = c.get("/login").await;
+    let href = page
+        .attr(r#"link[rel="stylesheet"]"#, "href")
+        .expect("the sign-in page must link a stylesheet");
+    let css = c.get(&href).await.body;
+    let capped = declarations(&css)
+        .into_iter()
+        .any(|(_, selector, name, value)| {
+            name == "max-inline-size"
+                && value == "640px"
+                && selector.contains("main > .notice")
+                && selector.contains(".part-body .notice")
+        });
+    assert!(
+        capped,
+        "the stylesheet must cap a notice inside a part body at 640px, with the page notice"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_header_name_in_the_remove_title_is_set_in_the_mono_face() {
+    let w = TestGateway::start().await;
+    let c = w.client();
+    let page = c.get("/login").await;
+    let href = page
+        .attr(r#"link[rel="stylesheet"]"#, "href")
+        .expect("the sign-in page must link a stylesheet");
+    let css = c.get(&href).await.body;
+    let mono = declarations(&css)
+        .into_iter()
+        .any(|(_, selector, name, value)| {
+            name == "font-family"
+                && value == "var(--mono)"
+                && selector
+                    .split(',')
+                    .any(|part| part.trim() == "h1 > .title-name")
+        });
+    assert!(
+        mono,
+        "the stylesheet must set h1 > .title-name in the mono face, as the consent destination is"
+    );
+}
