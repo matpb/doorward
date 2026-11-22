@@ -91,3 +91,27 @@ These are the limits known at this release.
 
 For limits on what the gateway enforces between users and servers, see the README section
 [What the gateway does not do](README.md#what-the-gateway-does-not-do).
+
+## Stored credentials
+
+A person can store values for a server's custom headers. The gateway seals them under keys
+that only that person's password, session or token opens. The README section
+[What the encryption covers](README.md#what-the-encryption-covers) has the details.
+
+Covered: a copy of the database, its write-ahead log and the key file together open no stored
+credential without that person's password, or a live session or token of theirs. An admin
+cannot read them.
+
+Not covered:
+
+- Code running inside the live gateway sees credentials as calls pass through it.
+- A password guessed offline from a stolen database. Argon2id slows each guess, and a long
+  random password stops it.
+- A stolen live token or session, together with the database.
+- An admin who points a server at another address and waits for people to store their values
+  again. Changing the address deletes what was stored, and the next values go to the new
+  address.
+- An upstream that echoes a credential back in its answer.
+
+After a suspected theft, rotate the upstream credential at the upstream server. Keep the key
+file out of backups of the data directory.

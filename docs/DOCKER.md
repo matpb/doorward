@@ -180,7 +180,11 @@ The volume is `doorward-data`. Caddy keeps its certificates in `caddy-data`.
 
 ### Backup
 
-A backup holds the key, so treat the archive as a secret. Stop the stack first, so the
+A backup holds the key, so treat the archive as a secret: with the key in it, the archive
+opens the mail and upstream secrets. Credentials that people stored for servers stay sealed
+even then, because they also need that person's password or a live sign-in of theirs. To
+keep the key apart, copy the key file somewhere else and leave it out of the archive; a
+restore needs both. Stop the stack first, so the
 database is not written during the copy. The archive is private and owned by you:
 
 ```

@@ -264,3 +264,26 @@ fn the_interface_names_the_new_phrases_and_lines() {
         );
     }
 }
+
+#[test]
+fn the_readme_and_security_name_the_limits_of_stored_credentials() {
+    let readme = repo_file("README.md");
+    for phrase in ["Custom headers", "Your credentials"] {
+        assert!(readme.contains(phrase), "README.md must name {phrase:?}");
+    }
+    assert!(
+        readme.contains("pass-through") || readme.contains("pass through"),
+        "README.md must name pass-through"
+    );
+    const LIMITS: [&str; 4] = ["live gateway", "guessed offline", "rotate", "key file"];
+    let encryption = section(&readme, "What the encryption covers");
+    let security = section(&repo_file("SECURITY.md"), "Stored credentials");
+    for (file, text) in [("README.md", encryption), ("SECURITY.md", security)] {
+        for phrase in LIMITS {
+            assert!(
+                text.contains(phrase),
+                "{file} must name the limit or step {phrase:?}"
+            );
+        }
+    }
+}

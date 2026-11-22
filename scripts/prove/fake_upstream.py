@@ -5,15 +5,19 @@ Session rules only: initialize, notifications (202), tools/list, and tools/call 
 Every POST needs the secret header named in SECRET_HEADER, else 401.
 """
 
+import argparse
+import hashlib
 import json
 import os
 import secrets
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SECRET_HEADER = "x-upstream-secret"
 SECRET = os.environ.get("PROOF_UPSTREAM_SECRET", "")
+USER_HEADERS_KEY = "FAKE_UPSTREAM_USER_HEADERS"
 SLOW_SILENCE_SECONDS = 90
 SESSION_VERSIONS = ("2025-03-26", "2025-06-18", "2025-11-25")
 TOOLS = [
@@ -28,8 +32,31 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
 ]
+WHOAMI_TOOL = {
+    "name": "whoami",
+    "description": "Returns the first 12 hex characters of the SHA-256 of each user header.",
+    "inputSchema": {"type": "object", "properties": {}},
+}
 SESSIONS = set()
 SESSIONS_LOCK = threading.Lock()
+
+
+def parse_user_headers(argv, environ):
+    """The demanded header names: every --user-header in argv, else the comma-separated variable."""
+    parser = argparse.ArgumentParser(description="Fake Streamable HTTP MCP upstream.")
+    parser.add_argument("--user-header", action="append", metavar="NAME")
+    names = parser.parse_args(argv).user_header
+    if names is not None:
+        return names
+    return [name.strip() for name in environ.get(USER_HEADERS_KEY, "").split(",") if name.strip()]
+
+
+USER_HEADERS = parse_user_headers([], os.environ)
+
+
+def digest(value):
+    """The first 12 hex characters of the SHA-256 of a header value as the wire carries it (ISO-8859-1)."""
+    return hashlib.sha256(value.encode("latin-1")).hexdigest()[:12]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -99,7 +126,8 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(404)
             return
         if method == "tools/list":
-            self._json(200, {"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}})
+            tools = [*TOOLS, WHOAMI_TOOL] if USER_HEADERS else TOOLS
+            self._json(200, {"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools}})
         elif method == "tools/call":
             self._call(request_id, message.get("params") or {})
         else:
@@ -123,6 +151,10 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _call(self, request_id, params):
+        for header in USER_HEADERS:
+            if self.headers.get(header) is None:
+                self._rpc_error(400, request_id, -32600, f"missing header: {header}")
+                return
         name = params.get("name")
         if name == "echo":
             text = (params.get("arguments") or {}).get("text", "")
@@ -130,8 +162,15 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"jsonrpc": "2.0", "id": request_id, "result": result})
         elif name == "slow":
             self._slow(request_id)
+        elif name == "whoami" and USER_HEADERS:
+            self._whoami(request_id)
         else:
             self._rpc_error(200, request_id, -32602, f"Unknown tool: {name}")
+
+    def _whoami(self, request_id):
+        text = "\n".join(f"{header}: {digest(self.headers.get(header))}" for header in USER_HEADERS)
+        result = {"content": [{"type": "text", "text": text}], "isError": False}
+        self._json(200, {"jsonrpc": "2.0", "id": request_id, "result": result})
 
     def _chunk(self, data):
         self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
@@ -160,5 +199,6 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     if not SECRET:
         raise SystemExit("PROOF_UPSTREAM_SECRET is not set")
+    USER_HEADERS = parse_user_headers(sys.argv[1:], os.environ)
     server = ThreadingHTTPServer(("0.0.0.0", 9000), Handler)
     server.serve_forever()

@@ -76,7 +76,9 @@ Set up mail in the panel before you need it. A lost password, the owner's includ
 reset by email only: there is no command that sets one.
 
 The encryption key for stored secrets is created next to the database, as a file readable
-only by its owner. Back it up with the database: one is useless without the other.
+only by its owner. Keep a copy of it outside your backups of the data directory, and restore
+it with the database: one is useless without the other. The section
+[Custom headers and per-user credentials](#custom-headers-and-per-user-credentials) says why.
 
 Two more commands exist: `doorward unlock` clears a sign-in block for an account, and
 `doorward health` checks a running gateway.
@@ -150,6 +152,78 @@ people you would give that reach. And an `http` address carries the secret heade
 unencrypted between the gateway and the server: use `https` unless the server runs on the
 same host or on a network you trust.
 
+## Custom headers and per-user credentials
+
+Some upstream servers need something from each person, such as an API token. Custom headers
+let the gateway supply it. An admin declares the header names a server takes. For each one,
+the gateway either passes on the value that the client sends, or sends the value that the
+person stored in the gateway. Clients that cannot send custom headers still reach such a
+server, because the gateway attaches the stored value.
+
+An admin sets this up on the server's page, under Custom headers. Add up to 8 header names,
+such as `X-Api-Key`, and mark each one as required or not. Then switch on one or both of these:
+
+- **Pass these headers through from the client** (pass-through). A declared header that the
+  client sends reaches the server with the client's value.
+- **Let each person store their own values.** Each person saves their values on their
+  account page.
+
+`Authorization` can be declared, but the gateway never passes it through from a client. It
+can only be stored.
+
+Each person assigned to such a server opens Your account and finds Your credentials. There is
+one field for each header. Type the value and press Save credentials. An empty field keeps the
+value already stored. To delete one, tick Remove the stored credential. The field never shows
+a stored value again. The page shows only the date it was set. Values are saved encrypted.
+
+If a required header has no value for a person, nothing is sent to that server for that
+person. The server's path answers with HTTP 403 and an error that names the server and the
+account page, so the person knows where to add the value. Where storing is switched off, the
+error names the header instead. On the combined endpoint `/mcp`, the server is left out of
+that person's tool list, and the other servers keep working. The account page marks each
+server that still needs values.
+
+The gateway deletes stored credentials when:
+
+- a password is reset by email;
+- the server's upstream address changes, for every person;
+- a declared header is removed, and renaming a header counts as removing it;
+- an admin unassigns the person from the server;
+- the server is deleted.
+
+A password change keeps them. The gateway seals them again, so they stay.
+
+### What the encryption covers
+
+Each person's values are sealed under a data key. Only that person's password opens the key,
+or a live session or token of theirs. The server key in the key file seals each of those
+wraps as well.
+
+Covered: a copy of the database, its write-ahead log and the key file together open no stored
+credential without that person's password, or a live session or token of theirs. An admin
+cannot read them either. The admin panel shows only whether a person has a value.
+
+Not covered:
+
+- Someone running code inside the live gateway sees credentials as calls pass through it.
+- A password guessed offline from a stolen database. Argon2id makes each guess slow, and a
+  long random password stops it.
+- A stolen live token or session, together with the database.
+- An admin who points a server at another address and waits for people to store their values
+  again. Changing the address deletes what was stored, but the values stored next go to the
+  new address.
+- An upstream that echoes a credential back in its answer. The gateway does not check what an
+  upstream answers.
+
+If you suspect that a stored credential was stolen, rotate the upstream credential at the
+upstream server, then have each person store the new value. The gateway cannot tell that a
+credential was stolen.
+
+Keep the key file out of backups of the data directory. Its path is set by the `key_file`
+setting (`DOORWARD_KEY_FILE`), and by default it sits next to the database. Keep a copy
+somewhere else, and restore it with the database. `DOORWARD_KEY` holds the key itself rather
+than a file, so keep it out of backups too.
+
 ## Give people access
 
 Invite a person from the invitations page of the admin panel (`/admin/invitations`). Assign
@@ -207,9 +281,12 @@ there. Claude Code, Codex and the Cursor command line client were run against 0.
 
 ## What the gateway does not do
 
-- Every user reaches a server under one identity: the server's single stored secret header,
-  when it has one. Per-user permissions exist only in the gateway. Anything the server caches
-  or stores per caller is shared.
+- Every user reaches a server with one shared secret header per server, when the server has
+  one. Where an admin declared custom headers, each person's own values for them are sent as
+  well. Per-user permissions exist only in the gateway. Anything the server caches or stores
+  per caller is shared.
+- A server's cached tool list is shared by its users, even when each of them sends different
+  credentials.
 - Allow and deny rules cover tools only. A server's resources and prompts are switched on or
   off per server. When a switch is on, they pass for every user assigned to that server.
 - The combined endpoint `/mcp` puts the tool descriptions of every assigned server in one list.
