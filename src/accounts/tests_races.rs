@@ -53,6 +53,7 @@ async fn reserve_counted(db: &Db) -> (String, i64) {
             user_id: Some(_),
             phc: Some(phc),
             epoch: Some(epoch),
+            ..
         } => (phc, epoch),
         _ => panic!("the reservation must count an enabled account"),
     }
@@ -79,7 +80,8 @@ async fn an_unknown_account_reaches_the_equal_cost_check() {
             Attempt::Counted {
                 user_id: None,
                 phc: None,
-                epoch: None
+                epoch: None,
+                ..
             }
         ),
         "an unknown account must be counted and sent to the equal-cost check, not refused early"
@@ -97,6 +99,7 @@ fn success_for(user_id: i64, phc: String, epoch: i64) -> Success {
         lifetime: LIFETIME,
         phc,
         epoch,
+        vault: None,
     }
 }
 
@@ -112,6 +115,7 @@ fn change_for(user_id: i64, epoch: i64, session: Option<String>) -> Change {
         new_phc: NEW_PHC.to_owned(),
         now: NOW,
         lifetime: LIFETIME,
+        vault: None,
     }
 }
 

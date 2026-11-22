@@ -2552,3 +2552,30 @@ Rewritten tests (the old markup or sentence they pinned):
   reads "is asking to sign in as you" (change 7).
 - `web::page::tests::each_message_page_is_a_heading_and_one_lede`: the refusal row carries the
   round 5 title and lede (change 8).
+
+## Key layer of stored values (statements 84 and 85)
+
+Unit tests; `tests/s84_stored_values.rs` stays red until the account page route and the proxy land.
+
+1. `vault::tests` (statement 84): a wrap round trips with a token and with a password; a wrong
+   token, password, salt, table, row, user, generation, server key or one flipped byte opens
+   nothing; a string that is not a sealing token never wraps or opens; two wraps of one key
+   differ; a value round trips and opens nothing for another user, server, header, generation,
+   upstream address, key or flipped byte.
+2. `crypto::tests::a_failed_sign_in_runs_one_argon2_and_a_successful_one_two` (statements 84 and
+   85): a wrong password adds one Argon2 run, an unknown account one, a right password two, and
+   `crypto::tests::the_vault_holder_key_differs_from_the_token_seal_key`.
+3. `vault::tests_keys` (statement 85): first unlock makes the key, later unlocks open it; another
+   salt or a damaged wrap gets no key and changes nothing; rekey moves values to the next
+   generation or deletes them with one `values_dropped` row; `forget`; `clear_user_tokens`.
+4. `accounts::tests_vault` (statement 85): sign-in, setup and invitation wrap the same key onto
+   the new session; a damaged password wrap never fails the sign-in; a password change reseals
+   the values, drops them with a `values_dropped` row when the old key does not open, and clears
+   every old wrap; a reset deletes values and wraps and bumps the generation; `revoke_all`
+   nulls token wraps; a sign-out takes the session wrap with its row.
+5. `oauth::tests_token` (statement 85): `the_data_key_follows_consent_exchange_and_refresh_with_no_password_work`
+   (code, pair and rotated pair open to the user's key, consumed wraps are NULL, a replay wraps
+   nothing, no Argon2 run), `garbage_in_every_wrap_column_changes_no_outcome_and_leaves_no_wrap_on_new_rows`,
+   `a_code_that_fails_pkce_keeps_its_wrap_and_a_wrong_verifier_issues_nothing`,
+   `the_sweep_nulls_the_wrap_of_every_expired_or_used_row_and_keeps_live_ones` and
+   `a_disconnect_and_a_revoke_all_leave_no_wrap_behind`.

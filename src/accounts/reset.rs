@@ -14,6 +14,7 @@ use crate::crypto::{random_token, token_hash};
 use crate::mail;
 use crate::mail::templates;
 use crate::report;
+use crate::vault::keys;
 use crate::web::ui::{self, Note};
 use crate::web::{
     VerifiedForm, Viewer, busy, form_page, internal_error, not_found_link, page, redirect,
@@ -40,10 +41,10 @@ struct Reset {
 }
 
 /// What completing a reset writes: the link's hash, the new password hash and the time.
-struct Complete {
-    hash: String,
-    phc: String,
-    now: i64,
+pub(super) struct Complete {
+    pub(super) hash: String,
+    pub(super) phc: String,
+    pub(super) now: i64,
 }
 
 /// The reset row of a token hash, when it has not expired and its user is enabled.
@@ -242,7 +243,7 @@ pub async fn post_reset(
 
 /// One transaction: the link is read again, the password changes, every session ends, the link
 /// is spent and the account's sign-in block is lifted. False when the link is no longer usable.
-fn complete_in(conn: &mut Connection, complete: &Complete) -> rusqlite::Result<bool> {
+pub(super) fn complete_in(conn: &mut Connection, complete: &Complete) -> rusqlite::Result<bool> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(reset) = usable_in(&tx, &complete.hash, complete.now)? else {
         return Ok(false);
@@ -252,6 +253,10 @@ fn complete_in(conn: &mut Connection, complete: &Complete) -> rusqlite::Result<b
         params![complete.phc, reset.user_id],
     )?;
     session::revoke_all(&tx, reset.user_id)?;
+    let dropped = keys::forget(&tx, reset.user_id)?;
+    if dropped > 0 {
+        audit::values_dropped(&tx, complete.now, reset.user_id, &reset.email, dropped)?;
+    }
     tx.execute(
         "DELETE FROM password_resets WHERE user_id = ?1",
         params![reset.user_id],

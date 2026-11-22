@@ -535,7 +535,7 @@ into the test harness. In addition:
   the key file while the gateway runs and tries every stored string as a key, replays used
   and revoked secrets against that copy, moves rows between users, servers and headers,
   and reads the activity log, the pages and the gateway's standard error for a canary
-  value; the unit tests in `src/crypto.rs` and `src/vault.rs`. Also one run per real
+  value; the unit tests in `src/crypto.rs`, `src/vault/`, `src/accounts/tests_vault.rs` and `src/oauth/tests_token.rs`. Also one run per real
   client of statement 49 against a server that demands a per-user header, once passed
   through and once stored.
 - 89: `tests/s41_docs.rs`.

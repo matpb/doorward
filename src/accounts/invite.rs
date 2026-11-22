@@ -1,5 +1,7 @@
 //! Accepting an invitation: the link page, the password, and the one transaction that makes the account.
 
+use std::sync::Arc;
+
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -9,6 +11,8 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::crypto::token_hash;
+use crate::vault::Unlocked;
+use crate::vault::keys;
 use crate::web::ui::{self, Note};
 use crate::web::{
     VerifiedForm, Viewer, busy, form_page, internal_error, not_found_link, redirect,
@@ -32,12 +36,13 @@ pub struct Invitation {
 
 /// What accepting writes: the link's hash, the new password hash, the time, the session length
 /// and the session cookie the browser came with.
-struct Accept {
-    hash: String,
-    phc: String,
-    now: i64,
-    lifetime: i64,
-    presented: Option<String>,
+pub(super) struct Accept {
+    pub(super) hash: String,
+    pub(super) phc: String,
+    pub(super) now: i64,
+    pub(super) lifetime: i64,
+    pub(super) presented: Option<String>,
+    pub(super) vault: Option<Unlocked>,
 }
 
 /// The lifetime of an invitation link in seconds.
@@ -106,8 +111,8 @@ pub async fn post_invite(
     let Some(slot) = state.hasher.try_slot() else {
         return busy();
     };
-    let phc = match state.hasher.hash(slot, password).await {
-        Ok(phc) => phc,
+    let (phc, unlock) = match state.hasher.hash_unlock(slot, password).await {
+        Ok(hashed) => hashed,
         Err(err) => return internal_error("password hash", &err),
     };
     let accept = Accept {
@@ -116,6 +121,10 @@ pub async fn post_invite(
         now,
         lifetime: session::lifetime_seconds(state.config.lifetimes.session_hours),
         presented: form.viewer.presented_session().map(str::to_owned),
+        vault: Some(Unlocked {
+            keys: Arc::clone(&state.keys),
+            unlock,
+        }),
     };
     match state.db.call(move |conn| accept_in(conn, &accept)).await {
         Ok(Some(token)) => with_cookie(redirect("/account"), &session_cookie(&token)),
@@ -126,7 +135,10 @@ pub async fn post_invite(
 
 /// One transaction: the link is checked again, the address must be free, then the account,
 /// the session and the activity row are written. None when the link can no longer be used.
-fn accept_in(conn: &mut Connection, accept: &Accept) -> rusqlite::Result<Option<String>> {
+pub(super) fn accept_in(
+    conn: &mut Connection,
+    accept: &Accept,
+) -> rusqlite::Result<Option<String>> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(invitation) = usable_in(&tx, &accept.hash, accept.now)? else {
         return Ok(None);
@@ -152,6 +164,9 @@ fn accept_in(conn: &mut Connection, accept: &Accept) -> rusqlite::Result<Option<
         session::delete(&tx, previous)?;
     }
     let token = session::insert(&tx, user_id, accept.now, accept.lifetime)?;
+    if let Some(vault) = &accept.vault {
+        keys::sign_in(&tx, vault, user_id, &token)?;
+    }
     let accepted = Event {
         kind: "invitation",
         user_id: Some(user_id),

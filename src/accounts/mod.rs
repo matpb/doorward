@@ -14,3 +14,5 @@ pub mod throttle;
 
 #[cfg(test)]
 mod tests_races;
+#[cfg(test)]
+mod tests_vault;

@@ -1,5 +1,7 @@
 //! Changing the password while signed in. Shares the sign-in throttle for the wrong current password.
 
+use std::sync::Arc;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -7,8 +9,10 @@ use rusqlite::{Connection, TransactionBehavior, params};
 
 use crate::app::AppState;
 use crate::audit::{self, Event};
-use crate::crypto::token_hash;
+use crate::crypto::{Keys, token_hash};
 use crate::oauth::connected;
+use crate::vault::Unlock;
+use crate::vault::keys::{self, Table};
 use crate::web::limit;
 use crate::web::{
     VerifiedForm, Viewer, busy, internal_error, redirect, session_cookie, throttle_key, with_cookie,
@@ -37,6 +41,15 @@ pub(super) struct Change {
     pub(super) new_phc: String,
     pub(super) now: i64,
     pub(super) lifetime: i64,
+    pub(super) vault: Option<ChangeVault>,
+}
+
+/// The vault side of a change: the unlock of the old password (None when it could not be made)
+/// and of the new one.
+pub(super) struct ChangeVault {
+    pub(super) keys: Arc<Keys>,
+    pub(super) old: Option<Unlock>,
+    pub(super) new: Unlock,
 }
 
 /// The account page for a refused change, with the viewer's connected clients.
@@ -81,6 +94,7 @@ pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) ->
         user_id,
         phc,
         epoch,
+        salt,
     } = attempt
     else {
         let wait = limit::window_seconds(state.config.limits.block_minutes);
@@ -89,14 +103,18 @@ pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) ->
     };
     let current = form.fields.get("current_password").to_owned();
     let verified = phc.clone();
-    let matched = state.hasher.verify(first, current, phc).await;
+    let fallback = user_id.map_or([0; 16], |id| state.keys.vault_salt(id));
+    let (matched, old_unlock) = state
+        .hasher
+        .verify_unlock(first, current, phc, salt, fallback)
+        .await;
     let (true, Some(user_id), Some(epoch), Some(old_phc)) = (matched, user_id, epoch, verified)
     else {
         login::record_failed(&state, user_id, &user.email).await;
         return refused(&state, &form.viewer, StatusCode::BAD_REQUEST, WRONG_CURRENT).await;
     };
-    let new_phc = match state.hasher.hash(second, new_password).await {
-        Ok(phc) => phc,
+    let (new_phc, new_unlock) = match state.hasher.hash_unlock(second, new_password).await {
+        Ok(hashed) => hashed,
         Err(err) => return internal_error("password change", &err),
     };
     let change = Change {
@@ -110,6 +128,11 @@ pub async fn post_password(State(state): State<AppState>, form: VerifiedForm) ->
         new_phc,
         now,
         lifetime: session::lifetime_seconds(state.config.lifetimes.session_hours),
+        vault: Some(ChangeVault {
+            keys: Arc::clone(&state.keys),
+            old: old_unlock,
+            new: new_unlock,
+        }),
     };
     match state.db.call(move |conn| change_in(conn, &change)).await {
         Ok(Some(token)) => with_cookie(redirect("/account"), &session_cookie(&token)),
@@ -137,8 +160,39 @@ pub(super) fn change_in(
     if updated == 0 {
         return Ok(None);
     }
+    let new_key = match &change.vault {
+        Some(vault) => {
+            let old = match &vault.old {
+                Some(unlock) => keys::open_password(&tx, &vault.keys, change.user_id, unlock)?,
+                None => None,
+            };
+            let rekeyed = keys::rekey(
+                &tx,
+                &vault.keys,
+                change.user_id,
+                old.as_ref(),
+                &vault.new,
+                &change.email,
+                change.now,
+            )?;
+            Some((rekeyed, &vault.keys))
+        }
+        None => None,
+    };
     session::revoke_all(&tx, change.user_id)?;
     let token = session::insert(&tx, change.user_id, change.now, change.lifetime)?;
+    if let Some((key, server_keys)) = &new_key {
+        let row = token_hash(&token);
+        keys::wrap_row(
+            &tx,
+            server_keys,
+            change.user_id,
+            Table::Sessions,
+            &row,
+            &token,
+            key,
+        )?;
+    }
     let changed = Event {
         kind: "password_change",
         user_id: Some(change.user_id),

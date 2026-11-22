@@ -1,6 +1,7 @@
 //! `POST /oauth/token`: code redemption with PKCE, and refresh rotation with replay handling.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -18,10 +19,12 @@ use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::config::Lifetimes;
 use crate::crypto::{
-    CryptoError, constant_time_eq, open_with_token, random_token, seal_with_token, token_hash,
+    CryptoError, Keys, constant_time_eq, open_with_token, random_token, seal_with_token, token_hash,
 };
 use crate::mail::{self, templates};
 use crate::report;
+use crate::vault::DataKey;
+use crate::vault::keys::{self, Table};
 use crate::web::body::{ReadError, read, timed_out};
 
 use super::clients;
@@ -110,6 +113,7 @@ struct Job {
     at: OffsetDateTime,
     lifetimes: Lifetimes,
     issuer: String,
+    keys: Arc<Keys>,
 }
 
 /// The user, server and client name an activity row names.
@@ -177,6 +181,7 @@ pub async fn post_token(State(state): State<AppState>, request: Request) -> Resp
         at,
         lifetimes: state.config.lifetimes.clone(),
         issuer: state.config.public_url.clone(),
+        keys: Arc::clone(&state.keys),
     };
     match state.db.call(move |conn| decide_in(conn, &job)).await {
         Ok(Outcome::Issued { body, welcome }) => {
@@ -373,7 +378,7 @@ fn redeem_code(tx: &Transaction<'_>, job: &Job) -> rusqlite::Result<Outcome> {
             "the user may no longer use this server",
         ));
     }
-    issue_from_code(tx, job, &code_hash, &stored, user)
+    issue_from_code(tx, job, (code, &code_hash), &stored, user)
 }
 
 /// base64url(SHA-256(verifier)) equals the stored challenge.
@@ -400,10 +405,18 @@ fn code_replay(tx: &Transaction<'_>, job: &Job, stored: &StoredCode) -> rusqlite
 fn issue_from_code(
     tx: &Transaction<'_>,
     job: &Job,
-    code_hash: &str,
+    (code, code_hash): (&str, &str),
     stored: &StoredCode,
     user: UserRow,
 ) -> rusqlite::Result<Outcome> {
+    let held = keys::open_row(
+        tx,
+        &job.keys,
+        stored.user_id,
+        Table::AuthCodes,
+        code_hash,
+        code,
+    )?;
     let family = NewFamily {
         user_id: stored.user_id,
         server_id: stored.server_id,
@@ -417,6 +430,8 @@ fn issue_from_code(
         params![job.now, family_id, code_hash],
     )?;
     let pair = families::mint_pair(tx, family_id, job.now, &job.lifetimes)?;
+    carry_key(tx, job, stored.user_id, held.as_ref(), &pair)?;
+    keys::clear_row(tx, Table::AuthCodes, code_hash)?;
     let who = Grantee {
         user_id: stored.user_id,
         server_id: stored.server_id,
@@ -428,6 +443,26 @@ fn issue_from_code(
         body: token_body(&pair, &job.lifetimes),
         welcome,
     })
+}
+
+/// Wraps the data key onto the new access token and refresh token; no key, no wraps.
+fn carry_key(
+    tx: &Transaction<'_>,
+    job: &Job,
+    user: i64,
+    held: Option<&DataKey>,
+    pair: &Pair,
+) -> rusqlite::Result<()> {
+    let Some(key) = held else {
+        return Ok(());
+    };
+    for (table, token) in [
+        (Table::AccessTokens, &pair.access_token),
+        (Table::RefreshTokens, &pair.refresh_token),
+    ] {
+        keys::wrap_row(tx, &job.keys, user, table, &token_hash(token), token, key)?;
+    }
+    Ok(())
 }
 
 /// The first redemption of a client for a user makes a disconnect link and asks for the mail.
@@ -517,7 +552,7 @@ fn refresh(tx: &Transaction<'_>, job: &Job) -> rusqlite::Result<Outcome> {
     }
     match row.used_at {
         Some(used_at) => reuse(tx, job, token, &row, &family, used_at),
-        None => rotate(tx, job, token, &row),
+        None => rotate(tx, job, token, &row, &family),
     }
 }
 
@@ -565,6 +600,7 @@ fn rotate(
     job: &Job,
     token: &str,
     row: &StoredRefresh,
+    family: &StoredFamily,
 ) -> rusqlite::Result<Outcome> {
     if job.now >= row.expires_at {
         return Ok(Outcome::Denied(
@@ -572,7 +608,17 @@ fn rotate(
             "the refresh token has expired",
         ));
     }
+    let held = keys::open_row(
+        tx,
+        &job.keys,
+        family.user_id,
+        Table::RefreshTokens,
+        &row.token_hash,
+        token,
+    )?;
     let pair = families::mint_pair(tx, row.family_id, job.now, &job.lifetimes)?;
+    carry_key(tx, job, family.user_id, held.as_ref(), &pair)?;
+    keys::clear_row(tx, Table::RefreshTokens, &row.token_hash)?;
     let body = token_body(&pair, &job.lifetimes);
     let replay = sealed_replay(job, token, row, &body)?;
     tx.execute(

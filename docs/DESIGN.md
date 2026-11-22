@@ -27,6 +27,7 @@ holds an upstream secret, parses a request body for a decision, or issues a cred
 | `proxy::catalog` (core) | each server's cached tool list |
 | `proxy` | per-server pass-through, built on `oauth::guard`, `mcp`, `policy`, `proxy::catalog`, `proxy::upstream` |
 | `proxy::combined` | the combined endpoint, same building blocks |
+| `vault` (core) | the data key of stored header values: the wrap and value envelopes (`vault`) and the life of the key through sign-in, consent, code exchange, refresh, password change, reset and the sweep (`vault::keys`) |
 | `custom_headers` (core) | a server's declared custom headers and switches: name and value rules, storage, and what one request carries upstream |
 | `mail` | sends through the provider named by the stored `mail.provider` setting: SMTP, Resend or Mailgun |
 | `audit` | activity log |
@@ -220,10 +221,25 @@ change applies to tokens already issued. A rule that cannot be read refuses the 
 Tables: `users`, `invitations`, `password_resets`, `sessions`, `login_failures`, `servers`,
 `server_headers`, `user_servers`, `rules`, `redirect_allow`, `oauth_clients`, `dcr_attempts`, `known_clients`,
 `auth_requests`, `auth_codes`, `token_families`, `access_tokens`, `refresh_tokens`,
-`disconnect_links`, `upstream_sessions`, `tool_catalog`, `settings`, `activity`. Activity rows
+`disconnect_links`, `upstream_sessions`, `tool_catalog`, `settings`, `activity`, `user_header_values`. Activity rows
 snapshot email, slug, tool and client and do not cascade. Ciphertexts carry a key id and are
 bound to their table, column and row. The database and key files are created with owner-only
 permissions.
+
+Stored header values (migration 16). `users` holds `dek_gen` (the data key generation),
+`dek_wrap` (the password wrap), `dek_salt` (16 bytes, base64url without padding) and
+`values_version`. `sessions`, `auth_codes`, `access_tokens` and `refresh_tokens` each hold a
+nullable `dek_wrap`. `user_header_values(user_id, header_id, sealed, set_at)` holds one sealed
+value per user and declared header and cascades with both. A wrap is `w1.` and a server-key
+seal of a nonce and an XChaCha20-Poly1305 body of the 32 key bytes under the holder key, with
+the context `vault.wrap`, table, row, user and generation as associated data; the holder key
+is HKDF-SHA256 of the token under its own label, or Argon2id of the password under the user's
+salt. A value is `s1.` plus nonce and body under the data key, bound to user, server, lower-cased
+header, generation and upstream address. The password derivation runs in the hasher job of the
+password check, after the password was accepted, under the same permit (`argon_runs` counts the
+runs); a first key's salt is derived from the server key and the user id so that two first
+sign-ins that race make one key. Every wrap change shares the transaction of the row change it
+follows; `session::revoke_all` and the sweep null the wraps of codes and tokens.
 
 ## Tests
 

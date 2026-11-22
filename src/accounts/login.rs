@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -12,6 +13,7 @@ use crate::audit::{self, Event, OwnedEvent};
 use crate::crypto::token_hash;
 use crate::oauth::authorize::is_request_id;
 use crate::report;
+use crate::vault::Unlocked;
 use crate::web::limit;
 use crate::web::ui::{self, Note};
 use crate::web::{
@@ -65,6 +67,7 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
         user_id,
         phc,
         epoch,
+        salt,
     } = attempt
     else {
         let wait = limit::window_seconds(state.config.limits.block_minutes);
@@ -74,7 +77,11 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
         );
     };
     let verified = phc.clone();
-    let matched = state.hasher.verify(slot, password, phc).await;
+    let fallback = user_id.map_or([0; 16], |id| state.keys.vault_salt(id));
+    let (matched, unlock) = state
+        .hasher
+        .verify_unlock(slot, password, phc, salt, fallback)
+        .await;
     let (true, Some(user_id), Some(epoch), Some(phc)) = (matched, user_id, epoch, verified) else {
         record_failed(&state, user_id, &email).await;
         return login_page(
@@ -95,6 +102,10 @@ pub async fn post_login(State(state): State<AppState>, form: VerifiedForm) -> Re
         lifetime: session::lifetime_seconds(state.config.lifetimes.session_hours),
         phc,
         epoch,
+        vault: unlock.map(|unlock| Unlocked {
+            keys: Arc::clone(&state.keys),
+            unlock,
+        }),
     };
     match throttle::succeed(&state.db, success).await {
         Ok(Some(token)) => with_cookie(redirect(&after_sign_in(&req)), &session_cookie(&token)),

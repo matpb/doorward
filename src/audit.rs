@@ -130,6 +130,25 @@ fn insert(conn: &Connection, at: i64, event: &Event<'_>, detail: &str) -> rusqli
     Ok(())
 }
 
+/// Writes a `values_dropped` row: the user lost `count` stored header values. Holds no value.
+pub fn values_dropped(
+    conn: &Connection,
+    at: i64,
+    user_id: i64,
+    email: &str,
+    count: usize,
+) -> rusqlite::Result<()> {
+    let detail = format!("{count} stored header values were deleted");
+    let event = Event {
+        kind: "values_dropped",
+        user_id: Some(user_id),
+        user_email: email,
+        detail: &detail,
+        ..Default::default()
+    };
+    record(conn, at, &event)
+}
+
 /// Convenience for callers outside a transaction. An error is returned, never ignored here.
 pub async fn record_now(state: &AppState, event: OwnedEvent) -> Result<(), DbError> {
     let at = state.clock.now().unix_timestamp();

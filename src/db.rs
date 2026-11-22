@@ -7,7 +7,7 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-const MIGRATIONS: [(i64, &str); 15] = [
+const MIGRATIONS: [(i64, &str); 16] = [
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_accounts.sql")),
     (3, include_str!("../migrations/0003_activity.sql")),
@@ -26,6 +26,7 @@ const MIGRATIONS: [(i64, &str); 15] = [
     (13, include_str!("../migrations/0013_reset_cap.sql")),
     (14, include_str!("../migrations/0014_activity_user_at.sql")),
     (15, include_str!("../migrations/0015_custom_headers.sql")),
+    (16, include_str!("../migrations/0016_stored_values.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]

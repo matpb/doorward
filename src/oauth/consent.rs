@@ -1,5 +1,6 @@
 //! `GET` and `POST /oauth/consent`: the approval page, and the one decision a shown request allows.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{RawQuery, State};
@@ -11,8 +12,9 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 
 use crate::app::AppState;
 use crate::cimd::{CimdFetcher, ClientMetadata};
-use crate::crypto::{constant_time_eq, random_token, token_hash};
+use crate::crypto::{Keys, constant_time_eq, random_token, token_hash};
 use crate::report;
+use crate::vault::keys::{self, Table};
 use crate::web::ui;
 use crate::web::{
     MainData, VerifiedForm, Viewer, content_security_policy, form_page_with, internal_error, page,
@@ -513,6 +515,8 @@ struct Decision {
     now: i64,
     code_lifetime: i64,
     issuer: String,
+    session: String,
+    keys: Arc<Keys>,
 }
 
 /// What the decision answers.
@@ -543,6 +547,8 @@ pub async fn post_consent(State(state): State<AppState>, form: VerifiedForm) -> 
         now: state.clock.now().unix_timestamp(),
         code_lifetime: i64::try_from(state.config.lifetimes.auth_code_seconds).unwrap_or(i64::MAX),
         issuer: state.config.public_url.clone(),
+        session: session.to_owned(),
+        keys: Arc::clone(&state.keys),
     };
     match state.db.call(move |conn| decide_in(conn, &decision)).await {
         Ok(Answer::Redirect(url)) => redirect(&url),
@@ -630,13 +636,15 @@ fn approve_within(
         challenge: &stored.code_challenge,
         auth_epoch,
     };
+    let code_hash = token_hash(&code);
     insert_code(
         tx,
-        &token_hash(&code),
+        &code_hash,
         &binding,
         decision.now,
         decision.code_lifetime,
     )?;
+    carry_key(tx, decision, &code_hash, &code)?;
     if matches!(client, Client::Registered { .. }) {
         tx.execute(
             "UPDATE oauth_clients SET used_at = ?1 WHERE client_id = ?2",
@@ -650,6 +658,29 @@ fn approve_within(
         stored.state.as_deref(),
     );
     Ok(Answer::Redirect(url))
+}
+
+/// Wraps the presenting session's data key onto the new code; no key or no wrap, no change.
+fn carry_key(
+    tx: &Transaction<'_>,
+    decision: &Decision,
+    code_hash: &str,
+    code: &str,
+) -> rusqlite::Result<()> {
+    let keys = &decision.keys;
+    let user = decision.user_id;
+    let held = keys::open_row(
+        tx,
+        keys,
+        user,
+        Table::Sessions,
+        &decision.session_hash,
+        &decision.session,
+    )?;
+    if let Some(key) = held {
+        keys::wrap_row(tx, keys, user, Table::AuthCodes, code_hash, code, &key)?;
+    }
+    Ok(())
 }
 
 /// The server a code is bound to; None for the combined endpoint.

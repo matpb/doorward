@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -8,6 +10,8 @@ use crate::app::AppState;
 use crate::audit::{self, Event};
 use crate::crypto::constant_time_eq;
 use crate::db::{Db, DbError};
+use crate::vault::Unlocked;
+use crate::vault::keys;
 use crate::web::ui::{self, Note};
 use crate::web::{
     VerifiedForm, Viewer, busy, forbidden, form_page, internal_error, not_found, redirect,
@@ -71,16 +75,30 @@ pub async fn post_setup(State(state): State<AppState>, form: VerifiedForm) -> Re
     let Some(slot) = state.hasher.try_slot() else {
         return busy();
     };
-    let phc = match state.hasher.hash(slot, password.to_owned()).await {
-        Ok(phc) => phc,
+    let (phc, unlock) = match state.hasher.hash_unlock(slot, password.to_owned()).await {
+        Ok(hashed) => hashed,
         Err(err) => return internal_error("setup", &err),
+    };
+    let vault = Unlocked {
+        keys: Arc::clone(&state.keys),
+        unlock,
     };
     let now = state.clock.now().unix_timestamp();
     let lifetime = session::lifetime_seconds(state.config.lifetimes.session_hours);
     let previous = form.viewer.presented_session().map(str::to_owned);
     let created = state
         .db
-        .call(move |conn| create_owner_in(conn, &email, &phc, now, lifetime, previous.as_deref()))
+        .call(move |conn| {
+            create_owner_in(
+                conn,
+                &email,
+                &phc,
+                now,
+                lifetime,
+                previous.as_deref(),
+                Some(&vault),
+            )
+        })
         .await;
     match created {
         Ok(Some(token)) => with_cookie(redirect("/admin"), &session_cookie(&token)),
@@ -98,13 +116,14 @@ async fn setup_open(state: &AppState) -> Result<bool, DbError> {
 }
 
 /// One transaction: the "no owner yet" check and the insert. None when an owner already exists.
-fn create_owner_in(
+pub(super) fn create_owner_in(
     conn: &mut Connection,
     email: &str,
     phc: &str,
     now: i64,
     lifetime: i64,
     previous: Option<&str>,
+    vault: Option<&Unlocked>,
 ) -> rusqlite::Result<Option<String>> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let owners: i64 = tx.query_row(
@@ -140,6 +159,9 @@ fn create_owner_in(
         session::delete(&tx, previous)?;
     }
     let token = session::insert(&tx, user_id, now, lifetime)?;
+    if let Some(vault) = vault {
+        keys::sign_in(&tx, vault, user_id, &token)?;
+    }
     tx.commit()?;
     Ok(Some(token))
 }

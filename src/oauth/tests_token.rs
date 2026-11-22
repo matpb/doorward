@@ -27,6 +27,8 @@ use crate::clock::Clock;
 use crate::config::{Config, Lifetimes, Limits};
 use crate::crypto::{Keys, PasswordHasher, open_with_token, random_token, token_hash};
 use crate::db::Db;
+use crate::vault::keys::{self as vault_keys, Table};
+use crate::vault::testing as vault_testing;
 use crate::web::SESSION_COOKIE;
 
 use super::families::{self, NewFamily};
@@ -65,6 +67,7 @@ struct Gateway {
     db: PathBuf,
     clock: Arc<FakeClock>,
     keys: Keys,
+    hasher: Arc<PasswordHasher>,
     _dir: TempDir,
 }
 
@@ -105,8 +108,8 @@ impl Gateway {
             clock: clock.clone(),
             cimd: Arc::new(UnavailableCimd),
         };
-        let hasher = PasswordHasher::new().await.expect("hasher");
-        let gateway = assemble(config, deps, Arc::new(hasher))
+        let hasher = Arc::new(PasswordHasher::new().await.expect("hasher"));
+        let gateway = assemble(config, deps, Arc::clone(&hasher))
             .await
             .expect("build");
         tokio::spawn(serve(
@@ -120,6 +123,7 @@ impl Gateway {
             db,
             clock,
             keys,
+            hasher,
             _dir: dir,
         }
     }
@@ -1931,4 +1935,271 @@ async fn the_combined_endpoint_code_needs_no_assignment_and_names_its_resource()
     );
     let again = refresh(&http, &client, &refresh_token, Some(combined.as_str())).await;
     tokens_of(&again);
+}
+
+const VAULT_SALT: [u8; 16] = [3; 16];
+
+/// Gives `user` a data key under a password and wraps it onto the session of `browser`.
+fn give_key(gw: &Gateway, user: i64, browser: &Session) -> [u8; 32] {
+    let conn = gw.conn();
+    let unlock = vault_testing::unlock("a long enough password", VAULT_SALT, true);
+    let key = vault_keys::open_or_create(&conn, &gw.keys, user, &unlock)
+        .expect("the key is made")
+        .expect("a key");
+    let token = session_token(browser);
+    vault_keys::wrap_row(
+        &conn,
+        &gw.keys,
+        user,
+        Table::Sessions,
+        &token_hash(&token),
+        &token,
+        &key,
+    )
+    .expect("the session wrap");
+    *key.bytes()
+}
+
+fn session_token(browser: &Session) -> String {
+    browser
+        .cookie
+        .split_once('=')
+        .map(|(_, value)| value.to_owned())
+        .expect("a cookie value")
+}
+
+/// The data key that `token` opens from its row in `table`, as bytes.
+fn key_at(gw: &Gateway, user: i64, table: Table, token: &str) -> Option<[u8; 32]> {
+    vault_keys::open_row(&gw.conn(), &gw.keys, user, table, &token_hash(token), token)
+        .expect("the row reads")
+        .map(|key| *key.bytes())
+}
+
+fn wrapped(gw: &Gateway, table: &str) -> i64 {
+    vault_testing::wrapped_rows(&gw.conn(), table)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_data_key_follows_consent_exchange_and_refresh_with_no_password_work() {
+    let s = scene().await;
+    let key = give_key(&s.gw, s.bob_id, &s.bob);
+    let runs = s.gw.hasher.argon_runs();
+    let issued = issue(&s.bob, &s.client, REDIRECT, &s.resource()).await;
+    assert_eq!(
+        key_at(&s.gw, s.bob_id, Table::AuthCodes, &issued.code),
+        Some(key),
+        "the code opens to the session's key with the raw code"
+    );
+    let reply = redeem(&s.gw.http(), &s.client, &issued, Some(REDIRECT), None).await;
+    let (access, refresh_token) = tokens_of(&reply);
+    assert_eq!(
+        wrapped(&s.gw, "auth_codes"),
+        0,
+        "the redeemed code's wrap is NULL"
+    );
+    assert_eq!(
+        key_at(&s.gw, s.bob_id, Table::AccessTokens, &access),
+        Some(key)
+    );
+    assert_eq!(
+        key_at(&s.gw, s.bob_id, Table::RefreshTokens, &refresh_token),
+        Some(key)
+    );
+
+    let rotated = refresh(&s.gw.http(), &s.client, &refresh_token, None).await;
+    let (new_access, new_refresh) = tokens_of(&rotated);
+    assert_eq!(
+        key_at(&s.gw, s.bob_id, Table::RefreshTokens, &refresh_token),
+        None,
+        "the rotated refresh token's wrap is NULL"
+    );
+    assert_eq!(
+        key_at(&s.gw, s.bob_id, Table::AccessTokens, &new_access),
+        Some(key)
+    );
+    assert_eq!(
+        key_at(&s.gw, s.bob_id, Table::RefreshTokens, &new_refresh),
+        Some(key)
+    );
+    let (access_wraps, refresh_wraps) = (
+        wrapped(&s.gw, "access_tokens"),
+        wrapped(&s.gw, "refresh_tokens"),
+    );
+
+    let replayed = refresh(&s.gw.http(), &s.client, &refresh_token, None).await;
+    assert_eq!(
+        replayed.body, rotated.body,
+        "a replay in the window returns the same pair"
+    );
+    assert_eq!(
+        wrapped(&s.gw, "access_tokens"),
+        access_wraps,
+        "a replay wraps nothing new"
+    );
+    assert_eq!(wrapped(&s.gw, "refresh_tokens"), refresh_wraps);
+    assert_eq!(
+        s.gw.hasher.argon_runs(),
+        runs,
+        "consent, exchange and refresh run no password hashing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn garbage_in_every_wrap_column_changes_no_outcome_and_leaves_no_wrap_on_new_rows() {
+    let s = scene().await;
+    give_key(&s.gw, s.bob_id, &s.bob);
+    s.gw.conn()
+        .execute_batch(
+            "UPDATE users SET dek_wrap = 'garbage'; UPDATE sessions SET dek_wrap = 'garbage';",
+        )
+        .expect("damage");
+    let issued = issue(&s.bob, &s.client, REDIRECT, &s.resource()).await;
+    assert_eq!(
+        wrapped(&s.gw, "auth_codes"),
+        0,
+        "a damaged session wrap gives the code none"
+    );
+    s.gw.conn()
+        .execute("UPDATE auth_codes SET dek_wrap = 'garbage'", [])
+        .expect("damage the code");
+    let reply = redeem(&s.gw.http(), &s.client, &issued, Some(REDIRECT), None).await;
+    let (_, refresh_token) = tokens_of(&reply);
+    assert_eq!(
+        wrapped(&s.gw, "auth_codes"),
+        0,
+        "a damaged code wrap is cleared"
+    );
+    assert_eq!(
+        wrapped(&s.gw, "access_tokens") + wrapped(&s.gw, "refresh_tokens"),
+        0
+    );
+    s.gw.conn()
+        .execute_batch(
+            "UPDATE access_tokens SET dek_wrap = 'garbage'; UPDATE refresh_tokens SET dek_wrap = 'garbage';",
+        )
+        .expect("damage the tokens");
+    let rotated = refresh(&s.gw.http(), &s.client, &refresh_token, None).await;
+    let (new_access, new_refresh) = tokens_of(&rotated);
+    assert_eq!(
+        key_at(&s.gw, s.bob_id, Table::AccessTokens, &new_access),
+        None
+    );
+    assert_eq!(
+        key_at(&s.gw, s.bob_id, Table::RefreshTokens, &new_refresh),
+        None
+    );
+    assert_eq!(
+        wrapped(&s.gw, "refresh_tokens"),
+        0,
+        "the rotated row's damaged wrap is cleared and the new row has none"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_code_that_fails_pkce_keeps_its_wrap_and_a_wrong_verifier_issues_nothing() {
+    let s = scene().await;
+    let key = give_key(&s.gw, s.bob_id, &s.bob);
+    let issued = issue(&s.bob, &s.client, REDIRECT, &s.resource()).await;
+    let wrong = Issued {
+        verifier: random_token(""),
+        code: issued.code.clone(),
+    };
+    let refused = redeem(&s.gw.http(), &s.client, &wrong, Some(REDIRECT), None).await;
+    assert_refused(&refused, "invalid_grant", "a wrong verifier");
+    assert_eq!(
+        key_at(&s.gw, s.bob_id, Table::AuthCodes, &issued.code),
+        Some(key),
+        "a refused redemption leaves the code's wrap"
+    );
+    assert_eq!(
+        wrapped(&s.gw, "access_tokens") + wrapped(&s.gw, "refresh_tokens"),
+        0
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sweep_nulls_the_wrap_of_every_expired_or_used_row_and_keeps_live_ones() {
+    let s = scene().await;
+    let conn = s.gw.conn();
+    let family = direct_family(&s.gw, s.bob_id, 1);
+    conn.execute(
+        "UPDATE access_tokens SET dek_wrap = 'w', expires_at = ?1 WHERE family_id = ?2",
+        params![NOW - 10, family],
+    )
+    .expect("expired access");
+    conn.execute(
+        "UPDATE refresh_tokens SET dek_wrap = 'w', used_at = ?1 WHERE family_id = ?2",
+        params![NOW - 10, family],
+    )
+    .expect("used refresh");
+    let live = direct_family(&s.gw, s.bob_id, 1);
+    conn.execute(
+        "UPDATE access_tokens SET dek_wrap = 'w' WHERE family_id = ?1",
+        params![live],
+    )
+    .expect("live access");
+    conn.execute(
+        "UPDATE refresh_tokens SET dek_wrap = 'w' WHERE family_id = ?1",
+        params![live],
+    )
+    .expect("live refresh");
+    for (hash, expires, used) in [
+        ("expired", NOW - 5, None),
+        ("used", NOW + 500, Some(NOW - 1)),
+        ("live", NOW + 500, None),
+    ] {
+        conn.execute(
+            "INSERT INTO auth_codes (code_hash, client_id, redirect_uri, user_id, combined, \
+             client_name, code_challenge, auth_epoch, created_at, expires_at, used_at, dek_wrap) \
+             VALUES (?1, 'dcr_x', ?2, ?3, 1, 'C', 'c', 0, 0, ?4, ?5, 'w')",
+            params![hash, REDIRECT, s.bob_id, expires, used],
+        )
+        .expect("code row");
+    }
+    families::sweep(&conn, NOW, 30).expect("sweep");
+    let wrapped_codes: Vec<String> = conn
+        .prepare("SELECT code_hash FROM auth_codes WHERE dek_wrap IS NOT NULL")
+        .expect("query")
+        .query_map([], |row| row.get(0))
+        .expect("rows")
+        .map(|row| row.expect("hash"))
+        .collect();
+    assert_eq!(wrapped_codes, vec!["live".to_owned()]);
+    assert_eq!(
+        wrapped(&s.gw, "access_tokens"),
+        1,
+        "only the live access token keeps a wrap"
+    );
+    assert_eq!(
+        wrapped(&s.gw, "refresh_tokens"),
+        1,
+        "only the live refresh token keeps a wrap"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_disconnect_and_a_revoke_all_leave_no_wrap_behind() {
+    let s = scene().await;
+    give_key(&s.gw, s.bob_id, &s.bob);
+    let issued = issue(&s.bob, &s.client, REDIRECT, &s.resource()).await;
+    let reply = redeem(&s.gw.http(), &s.client, &issued, Some(REDIRECT), None).await;
+    let (_, refresh_token) = tokens_of(&reply);
+    assert!(wrapped(&s.gw, "access_tokens") + wrapped(&s.gw, "refresh_tokens") > 0);
+    let family = family_of(&s.gw, &refresh_token);
+    families::revoke(&s.gw.conn(), family, NOW).expect("revoke");
+    assert_eq!(
+        wrapped(&s.gw, "access_tokens") + wrapped(&s.gw, "refresh_tokens"),
+        0
+    );
+
+    let again = issue(&s.bob, &s.client, REDIRECT, &s.resource()).await;
+    let reply = redeem(&s.gw.http(), &s.client, &again, Some(REDIRECT), None).await;
+    tokens_of(&reply);
+    assert!(wrapped(&s.gw, "access_tokens") + wrapped(&s.gw, "refresh_tokens") > 0);
+    session::revoke_all(&s.gw.conn(), s.bob_id).expect("revoke_all");
+    assert_eq!(
+        wrapped(&s.gw, "access_tokens") + wrapped(&s.gw, "refresh_tokens"),
+        0
+    );
+    assert_eq!(wrapped(&s.gw, "sessions"), 0);
 }

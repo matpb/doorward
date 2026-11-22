@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use argon2::password_hash::phc::PasswordHash;
 use argon2::{Algorithm, Argon2, Params, PasswordHasher as _, PasswordVerifier as _, Version};
@@ -20,6 +21,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use zeroize::Zeroizing;
 
 use crate::report;
+use crate::vault::{PasswordKey, Unlock};
 
 use crate::config::Config;
 
@@ -27,6 +29,8 @@ const KEY_ENV: &str = "DOORWARD_KEY";
 const SEAL_INFO: &[u8] = b"doorward seal v1";
 const CSRF_INFO: &[u8] = b"doorward csrf v1";
 const TOKEN_SEAL_INFO: &[u8] = b"doorward token seal v1";
+const VAULT_WRAP_INFO: &[u8] = b"doorward vault wrap v1";
+const VAULT_SALT_INFO: &[u8] = b"doorward vault salt v1";
 const TOKEN_SEAL_VERSION: &str = "t1";
 const TOKEN_PREFIX_LEN: usize = 6;
 const TOKEN_BODY_LEN: usize = 43;
@@ -98,7 +102,7 @@ impl Keys {
     }
 
     /// Pure: unit tests call this and never touch the process environment.
-    fn from_sources(
+    pub(crate) fn from_sources(
         env_key: Option<String>,
         config: &Config,
         stored_key_id: Option<&str>,
@@ -173,6 +177,18 @@ impl Keys {
                 },
             )
             .map_err(|_| CryptoError::Open)
+    }
+
+    /// The salt of a user's first password key: HKDF of the seal subkey and the user id, so two
+    /// first sign-ins that race derive the same key.
+    pub(crate) fn vault_salt(&self, user: i64) -> [u8; 16] {
+        let hkdf = Hkdf::<Sha256>::new(None, &self.seal[..]);
+        let mut info = VAULT_SALT_INFO.to_vec();
+        info.extend_from_slice(&user.to_be_bytes());
+        let mut out = [0u8; SALT_LEN];
+        hkdf.expand(&info, &mut out)
+            .expect("16 bytes is a valid HKDF length");
+        out
     }
 
     /// Base64url HMAC-SHA256 of the binding, under the csrf subkey.
@@ -306,6 +322,30 @@ fn is_sealing_token(token: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-' || *byte == b'_')
 }
 
+/// The key a token holder derives to open a vault wrap: HKDF-SHA256 under its own label.
+/// None for any text that is not a sealing token.
+pub(crate) fn vault_token_key(token: &str) -> Option<Zeroizing<[u8; 32]>> {
+    if !is_sealing_token(token) {
+        return None;
+    }
+    let hkdf = Hkdf::<Sha256>::new(None, token.as_bytes());
+    let mut out = Zeroizing::new([0u8; 32]);
+    hkdf.expand(VAULT_WRAP_INFO, &mut out[..]).ok()?;
+    Some(out)
+}
+
+/// Argon2id with the password verifier's cost over `password` and `salt`, 32 bytes out.
+pub(crate) fn argon_key(
+    password: &str,
+    salt: &[u8; 16],
+) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
+    let mut out = Zeroizing::new([0u8; 32]);
+    hashing_context()?
+        .hash_password_into(password.as_bytes(), salt, &mut out[..])
+        .map_err(|_| CryptoError::Hash)?;
+    Ok(out)
+}
+
 /// HKDF-SHA256 of the token's bytes, no salt. None only if the expansion fails,
 /// which a 32 byte output never does.
 fn token_key(token: &str) -> Option<Zeroizing<[u8; 32]>> {
@@ -330,6 +370,7 @@ pub struct PasswordHasher {
     queue: Arc<Semaphore>,
     run: Arc<Semaphore>,
     dummy: String,
+    runs: Arc<AtomicUsize>,
 }
 
 impl PasswordHasher {
@@ -340,6 +381,7 @@ impl PasswordHasher {
             queue: Arc::new(Semaphore::new(QUEUE_PERMITS)),
             run: Arc::new(Semaphore::new(parallelism.max(2))),
             dummy: String::new(),
+            runs: Arc::new(AtomicUsize::new(0)),
         };
         let slot = hasher.try_slot().ok_or(CryptoError::Hash)?;
         let dummy = hasher.hash(slot, DUMMY_PASSWORD.to_owned()).await?;
@@ -357,7 +399,88 @@ impl PasswordHasher {
 
     /// Argon2id, 19456 KiB, 2 iterations, parallelism 1, random 16 byte salt, PHC string.
     pub async fn hash(&self, slot: HashSlot, password: String) -> Result<String, CryptoError> {
-        self.run_blocking(slot, move || hash_now(&password)).await?
+        let runs = Arc::clone(&self.runs);
+        self.run_blocking(slot, move || {
+            runs.fetch_add(1, Ordering::Relaxed);
+            hash_now(&password)
+        })
+        .await?
+    }
+
+    /// How many Argon2 runs this hasher has made since it started.
+    pub fn argon_runs(&self) -> usize {
+        self.runs.load(Ordering::Relaxed)
+    }
+
+    /// `hash`, then the vault key of the same password under a fresh salt, in one job.
+    pub async fn hash_unlock(
+        &self,
+        slot: HashSlot,
+        password: String,
+    ) -> Result<(String, Unlock), CryptoError> {
+        let runs = Arc::clone(&self.runs);
+        self.run_blocking(slot, move || {
+            runs.fetch_add(1, Ordering::Relaxed);
+            let phc = hash_now(&password)?;
+            let mut salt = [0u8; SALT_LEN];
+            fill_random(&mut salt);
+            runs.fetch_add(1, Ordering::Relaxed);
+            let key = argon_key(&password, &salt)?;
+            Ok((
+                phc,
+                Unlock {
+                    salt,
+                    key: PasswordKey::from_bytes(key),
+                    fresh: true,
+                },
+            ))
+        })
+        .await?
+    }
+
+    /// `verify`; only after the password matched an account, the vault key under the `stored`
+    /// salt (else under `fallback`, marked fresh) is derived in the same job.
+    pub async fn verify_unlock(
+        &self,
+        slot: HashSlot,
+        password: String,
+        phc: Option<String>,
+        known_salt: Option<[u8; SALT_LEN]>,
+        fallback: [u8; SALT_LEN],
+    ) -> (bool, Option<Unlock>) {
+        let known = phc.is_some();
+        let stored = phc.unwrap_or_else(|| self.dummy.clone());
+        let runs = Arc::clone(&self.runs);
+        let joined = self
+            .run_blocking(slot, move || {
+                runs.fetch_add(1, Ordering::Relaxed);
+                let checked = check_password(&password, &stored);
+                if !(known && matches!(checked, Ok(true))) {
+                    return (checked, None);
+                }
+                let fresh = known_salt.is_none();
+                let salt = known_salt.unwrap_or(fallback);
+                runs.fetch_add(1, Ordering::Relaxed);
+                let unlock = argon_key(&password, &salt).ok().map(|key| Unlock {
+                    salt,
+                    key: PasswordKey::from_bytes(key),
+                    fresh,
+                });
+                (checked, unlock)
+            })
+            .await;
+        let (outcome, unlock) = match joined {
+            Ok((checked, unlock)) => (Ok(checked), unlock),
+            Err(err) => (Err(err), None),
+        };
+        match verdict(outcome, known) {
+            Ok(true) => (true, unlock),
+            Ok(false) => (false, None),
+            Err(reason) => {
+                report::failure("password check", &reason);
+                (false, None)
+            }
+        }
     }
 
     /// With `None`, verifies against the dummy hash and returns false, so an unknown
@@ -365,8 +488,12 @@ impl PasswordHasher {
     pub async fn verify(&self, slot: HashSlot, password: String, phc: Option<String>) -> bool {
         let known = phc.is_some();
         let stored = phc.unwrap_or_else(|| self.dummy.clone());
+        let runs = Arc::clone(&self.runs);
         let outcome = self
-            .run_blocking(slot, move || check_password(&password, &stored))
+            .run_blocking(slot, move || {
+                runs.fetch_add(1, Ordering::Relaxed);
+                check_password(&password, &stored)
+            })
             .await;
         match verdict(outcome, known) {
             Ok(matched) => matched,
@@ -484,7 +611,7 @@ fn associated_data(key_id: &str, context: &str) -> Vec<u8> {
 }
 
 /// The only caller of the operating system generator in `src/`.
-fn fill_random(buf: &mut [u8]) {
+pub(crate) fn fill_random(buf: &mut [u8]) {
     getrandom::fill(buf).expect("os rng");
 }
 
@@ -586,6 +713,15 @@ mod tests {
             keys.open(CONTEXT, SEALED_MAIL).expect("open"),
             b"mail-password"
         );
+    }
+
+    #[test]
+    fn the_vault_holder_key_differs_from_the_token_seal_key() {
+        let token = random_token("dw_ss_");
+        let seal = token_key(&token).expect("seal key");
+        let vault = vault_token_key(&token).expect("vault key");
+        assert_ne!(seal[..], vault[..]);
+        assert!(vault_token_key("not a token").is_none());
     }
 
     #[test]
@@ -848,6 +984,67 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_sign_in_runs_one_argon2_and_a_successful_one_two() {
+        let hasher = PasswordHasher::new().await.expect("hasher");
+        let slot = hasher.try_slot().expect("slot");
+        let (phc, made) = hasher
+            .hash_unlock(slot, "correct horse battery".to_owned())
+            .await
+            .expect("hash");
+        assert_eq!(
+            hasher.argon_runs(),
+            3,
+            "the dummy hash, then the hash and the vault key"
+        );
+        assert!(made.fresh);
+        let before = hasher.argon_runs();
+        let slot = hasher.try_slot().expect("slot");
+        let (matched, unlock) = hasher
+            .verify_unlock(
+                slot,
+                "wrong wrong wrong".to_owned(),
+                Some(phc.clone()),
+                Some(made.salt),
+                [0; 16],
+            )
+            .await;
+        assert!(!matched && unlock.is_none());
+        assert_eq!(
+            hasher.argon_runs() - before,
+            1,
+            "a wrong password costs one run"
+        );
+        let slot = hasher.try_slot().expect("slot");
+        let (matched, unlock) = hasher
+            .verify_unlock(slot, "wrong wrong wrong".to_owned(), None, None, [0; 16])
+            .await;
+        assert!(!matched && unlock.is_none());
+        assert_eq!(
+            hasher.argon_runs() - before,
+            2,
+            "an unknown account costs one run"
+        );
+        let slot = hasher.try_slot().expect("slot");
+        let (matched, unlock) = hasher
+            .verify_unlock(
+                slot,
+                "correct horse battery".to_owned(),
+                Some(phc),
+                Some(made.salt),
+                [0; 16],
+            )
+            .await;
+        assert_eq!(
+            hasher.argon_runs() - before,
+            4,
+            "a right password costs two runs"
+        );
+        let unlock = unlock.expect("an unlock");
+        assert!(matched && !unlock.fresh);
+        assert_eq!(unlock.salt, made.salt);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn hash_then_verify() {
         let hasher = PasswordHasher::new().await.expect("hasher");
         let slot = hasher.try_slot().expect("slot");
@@ -1016,6 +1213,7 @@ mod tests {
             queue: Arc::new(Semaphore::new(QUEUE_PERMITS)),
             run: Arc::new(Semaphore::new(PERMITS)),
             dummy: String::new(),
+            runs: Arc::new(AtomicUsize::new(0)),
         });
         let running = Arc::new(AtomicUsize::new(0));
         let maximum = Arc::new(AtomicUsize::new(0));

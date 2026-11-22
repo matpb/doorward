@@ -304,8 +304,10 @@ rows are never limited.
 Activity kinds: `tool_call`, `login`, `login_failed`, `invitation`, `reset`, `admin_change`,
 `client_connected`, `client_disconnected`, `redirect_blocked`, `mail_failed`,
 `tool_appeared`, `owner_created` (setup made the owner), `unlock` (`doorward unlock`, detail
-`from the command line`) and `password_change` (a signed-in user changed the password; a reset
-by link stays `reset`).
+`from the command line`), `password_change` (a signed-in user changed the password; a reset
+by link stays `reset`) and `values_dropped` (a password change that could not open the old data
+key, or a reset, deleted the user's stored header values; the row names the user, its detail is
+`N stored header values were deleted` and it never holds a value).
 
 A `mail_failed` row's detail is `<kind>: <error>`. The kind is the mail that failed:
 `invitation`, `reset`, `new_connection` (a client connected to the account) or `test` (the

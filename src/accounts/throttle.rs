@@ -3,6 +3,8 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::audit::{self, Event};
 use crate::crypto::token_hash;
 use crate::db::{Db, DbError};
+use crate::vault::Unlocked;
+use crate::vault::keys;
 
 use super::input::normalize_email;
 use super::session;
@@ -17,6 +19,8 @@ pub enum Attempt {
         user_id: Option<i64>,
         phc: Option<String>,
         epoch: Option<i64>,
+        /// The user's stored vault salt, when the account has a data key.
+        salt: Option<[u8; 16]>,
     },
 }
 
@@ -44,6 +48,8 @@ pub struct Success {
     pub lifetime: i64,
     pub phc: String,
     pub epoch: i64,
+    /// The vault unlock made after the password matched; None leaves the session without a wrap.
+    pub vault: Option<Unlocked>,
 }
 
 /// Transaction T1: prunes old failures, checks the three limits, reserves one failure and reads the user.
@@ -113,27 +119,39 @@ fn reserve_in(conn: &mut Connection, input: &Reserve) -> rusqlite::Result<Attemp
         "INSERT INTO login_failures (account_hash, address, at) VALUES (?1, ?2, ?3)",
         params![input.account, input.address, input.now],
     )?;
-    let user: Option<(i64, String, i64, i64)> = tx
+    let user: Option<(i64, String, i64, i64, Option<String>)> = tx
         .query_row(
-            "SELECT id, password_hash, disabled, auth_epoch FROM users WHERE email = ?1",
+            "SELECT id, password_hash, disabled, auth_epoch, dek_salt FROM users WHERE email = ?1",
             params![input.email],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .optional()?;
     tx.commit()?;
-    let (user_id, phc, epoch) = match user {
-        Some((id, hash, 0, epoch)) => (Some(id), Some(hash), Some(epoch)),
-        Some((id, _, _, epoch)) => (Some(id), None, Some(epoch)),
-        None => (None, None, None),
+    let (user_id, phc, epoch, salt) = match user {
+        Some((id, hash, 0, epoch, salt)) => (Some(id), Some(hash), Some(epoch), salt),
+        Some((id, _, _, epoch, _)) => (Some(id), None, Some(epoch), None),
+        None => (None, None, None, None),
     };
     Ok(Attempt::Counted {
         user_id,
         phc,
         epoch,
+        salt: keys::parse_salt(salt.as_deref()),
     })
 }
 
-fn succeed_in(conn: &mut Connection, success: &Success) -> rusqlite::Result<Option<String>> {
+pub(super) fn succeed_in(
+    conn: &mut Connection,
+    success: &Success,
+) -> rusqlite::Result<Option<String>> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if !still_current(&tx, success)? {
         return Ok(None);
@@ -143,6 +161,9 @@ fn succeed_in(conn: &mut Connection, success: &Success) -> rusqlite::Result<Opti
         session::delete(&tx, previous)?;
     }
     let token = session::insert(&tx, success.user_id, success.now, success.lifetime)?;
+    if let Some(vault) = &success.vault {
+        keys::sign_in(&tx, vault, success.user_id, &token)?;
+    }
     let login = Event {
         kind: "login",
         user_id: Some(success.user_id),
@@ -203,6 +224,7 @@ mod tests {
             lifetime: 3_600,
             phc,
             epoch,
+            vault: None,
         }
     }
 
@@ -260,6 +282,7 @@ mod tests {
                 user_id: Some(_),
                 phc: Some(phc),
                 epoch: Some(epoch),
+                ..
             } => (phc, epoch),
             _ => panic!("the attempt must count an enabled account"),
         }

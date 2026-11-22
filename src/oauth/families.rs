@@ -204,8 +204,28 @@ pub fn clear_old_replays_of(
     Ok(())
 }
 
+/// Nulls the key wrap on every code or refresh token that is expired or used and on every
+/// expired access token.
+fn clear_spent_wraps(conn: &Connection, now: i64) -> rusqlite::Result<()> {
+    for table in ["auth_codes", "refresh_tokens"] {
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET dek_wrap = NULL WHERE dek_wrap IS NOT NULL \
+                 AND (used_at IS NOT NULL OR expires_at <= ?1)"
+            ),
+            params![now],
+        )?;
+    }
+    conn.execute(
+        "UPDATE access_tokens SET dek_wrap = NULL WHERE dek_wrap IS NOT NULL AND expires_at <= ?1",
+        params![now],
+    )?;
+    Ok(())
+}
+
 /// Housekeeping: drops what no longer decides anything and nulls replay copies past the window.
 pub fn sweep(conn: &Connection, now: i64, replay_seconds: i64) -> rusqlite::Result<()> {
+    clear_spent_wraps(conn, now)?;
     conn.execute(
         "DELETE FROM auth_requests WHERE expires_at <= ?1",
         params![now],

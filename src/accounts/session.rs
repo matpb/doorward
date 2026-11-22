@@ -2,6 +2,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::crypto::{random_token, token_hash};
 use crate::db::{Db, DbError};
+use crate::vault::keys;
 use crate::web::{Role, SessionUser};
 
 use super::input::to_i64;
@@ -76,13 +77,14 @@ pub fn delete(conn: &Connection, token: &str) -> rusqlite::Result<usize> {
 }
 
 /// Ends every session of the user at once: increments users.auth_epoch, deletes the session rows
-/// and the user's unused reset link.
+/// and the user's unused reset link, and nulls the key wrap on the user's codes and tokens.
 pub fn revoke_all(conn: &Connection, user_id: i64) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE users SET auth_epoch = auth_epoch + 1 WHERE id = ?1",
         params![user_id],
     )?;
     conn.execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id])?;
+    keys::clear_user_tokens(conn, user_id)?;
     conn.execute(
         "DELETE FROM password_resets WHERE user_id = ?1",
         params![user_id],
