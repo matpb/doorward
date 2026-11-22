@@ -8,6 +8,7 @@ pub mod headers;
 pub mod mail;
 pub mod mcp;
 pub mod upstream;
+pub mod values;
 pub mod world;
 
 use std::net::SocketAddr;

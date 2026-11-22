@@ -16,6 +16,7 @@ pub mod proxy;
 pub mod rate;
 pub mod report;
 pub mod servers;
+pub mod vault;
 pub mod web;
 
 #[cfg(test)]

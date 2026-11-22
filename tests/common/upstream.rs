@@ -40,6 +40,8 @@ const STATELESS_METHODS: [&str; 7] = [
     "prompts/get",
 ];
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+/// The params key that carries the echoed header value from the request to `call_result`.
+const ECHO_KEY: &str = "__echo_header";
 
 type Chunk = Result<Bytes, io::Error>;
 
@@ -75,6 +77,9 @@ pub enum Mode {
     RefusesCalls,
     /// Every request answers 307 with this Location.
     Redirect(String),
+    /// tools/call answers "called: <tool> <value>", the value being the request header named here, or empty.
+    #[allow(dead_code)]
+    EchoHeader(String),
     /// Normal, plus `Set-Cookie: upstream=1; Path=/` and `WWW-Authenticate: Basic realm="up"` on every response.
     SetCookie,
     /// Every POST answers 200 `text/html` with the body `<script>alert(1)</script>`.
@@ -528,7 +533,13 @@ fn session_post(
     if let Err(code) = check_session(state, rec) {
         return Reply::Now(status_only(code));
     }
-    answer(options, id, method, &params, false)
+    answer(
+        options,
+        id,
+        method,
+        &with_echo(&params, rec, options),
+        false,
+    )
 }
 
 fn stateless_post(
@@ -590,7 +601,7 @@ fn stateless_post(
     let Some(method) = method else {
         return Reply::Now(rpc_error(id, -32601, "Method not found"));
     };
-    answer(options, id, method, &params, true)
+    answer(options, id, method, &with_echo(&params, rec, options), true)
 }
 
 fn get(state: &mut Store, rec: &Recorded, options: &UpstreamOptions) -> Reply {
@@ -863,6 +874,17 @@ fn outcome(
     Ok(result)
 }
 
+/// Echo mode: the value of the request header rides in the params of a tools/call.
+fn with_echo(params: &Value, rec: &Recorded, options: &UpstreamOptions) -> Value {
+    let mut params = params.clone();
+    if let Mode::EchoHeader(name) = &options.mode
+        && let Value::Object(object) = &mut params
+    {
+        object.insert(ECHO_KEY.into(), json!(rec.header_all(name).join(",")));
+    }
+    params
+}
+
 fn call_result(params: &Value, options: &UpstreamOptions) -> Result<Value, (i64, String)> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let lenient = matches!(options.mode, Mode::LenientNames);
@@ -875,6 +897,8 @@ fn call_result(params: &Value, options: &UpstreamOptions) -> Result<Value, (i64,
             let failed = matches!(options.mode, Mode::ToolErrors);
             let text = if failed {
                 format!("failed: {tool}")
+            } else if let Some(echoed) = params.get(ECHO_KEY).and_then(Value::as_str) {
+                format!("called: {tool} {echoed}")
             } else {
                 format!("called: {tool}")
             };
