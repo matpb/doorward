@@ -25,6 +25,9 @@ Status: pre-release (0.1.0).
 - **Access rules.** Servers are assigned to people. Allow and deny rules cover all tools,
   one server, or one exact tool. A denied tool is left out of the tool list and refused
   when called.
+- **Per-person credentials.** Where a server needs something from each person, such as an
+  API token, an admin declares the header names. The gateway passes on the value the client
+  sends, or sends the one that person stored, encrypted, on their account page.
 - **Activity log.** Every sign-in, admin change and tool call is recorded with the person
   who made it.
 - **Mail.** Raw SMTP, Resend or Mailgun, set from the admin panel.
