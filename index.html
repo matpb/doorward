@@ -48,7 +48,7 @@
     <p class="problem">A server that answers any request can be used by anyone who can reach its address. Locked down behind Doorward, it answers the gateway only, and every tool call is recorded with the person who <span class="nb">made it.</span></p>
     <p class="actions">
       <a class="button" href="#start-title">Quick start</a>
-      <a href="#tutorial-title">Watch the tutorial, 9 min</a>
+      <a href="#tutorial-title">Watch the tutorial, 11 min</a>
       <a class="also-in-bar" href="https://github.com/matpb/doorward">Source</a>
       <span class="handle" aria-hidden="true"></span>
     </p>
@@ -185,6 +185,10 @@
       <dd>Servers are assigned to people. Allow and deny rules cover all tools, one server, or one exact tool.</dd>
     </div>
     <div>
+      <dt>Per-person credentials</dt>
+      <dd>Where a server needs something from each person, such as an API token, an admin declares the header names. The gateway passes on the value the client sends, or sends the one that person stored, encrypted, on their account page.</dd>
+    </div>
+    <div>
       <dt>Activity log</dt>
       <dd>Every <span class="nb">sign-in</span>, admin change and tool call is recorded with the person who made it.</dd>
     </div>
@@ -281,11 +285,11 @@
   </div>
 
   <div class="tutorial" id="tutorial">
-    <h2 id="tutorial-title">The tutorial, in nine minutes</h2>
+    <h2 id="tutorial-title">The tutorial, in eleven minutes</h2>
     <p class="tutorial-note">Narrated, with subtitles burnt in: what Doorward is, how to run it, and how to check that it works.</p>
     <video controls preload="none" playsinline poster="media/poster.jpg" width="1920" height="1080" aria-labelledby="tutorial-title">
       <source src="media/doorward-tutorial.mp4" type="video/mp4">
-      <a href="media/doorward-tutorial.mp4">Open the tutorial video (MP4, 39&nbsp;MB)</a>
+      <a href="media/doorward-tutorial.mp4">Open the tutorial video (MP4, 49&nbsp;MB)</a>
     </video>
     <div class="parts">
       <h3 id="parts-title">Open it at a part</h3>
@@ -294,13 +298,15 @@
         <li><a href="media/doorward-tutorial.mp4#t=92"><time datetime="PT1M32S">1:32</time> Install, first start</a></li>
         <li><a href="media/doorward-tutorial.mp4#t=152"><time datetime="PT2M32S">2:32</time> The admin panel</a></li>
         <li><a href="media/doorward-tutorial.mp4#t=183"><time datetime="PT3M3S">3:03</time> Add a server, lock it down</a></li>
-        <li><a href="media/doorward-tutorial.mp4#t=248"><time datetime="PT4M8S">4:08</time> Invite people, set up mail</a></li>
-        <li><a href="media/doorward-tutorial.mp4#t=307"><time datetime="PT5M7S">5:07</time> Assign servers, write rules</a></li>
-        <li><a href="media/doorward-tutorial.mp4#t=374"><time datetime="PT6M14S">6:14</time> Connect a client, consent</a></li>
-        <li><a href="media/doorward-tutorial.mp4#t=434"><time datetime="PT7M14S">7:14</time> Your account, the activity log</a></li>
-        <li><a href="media/doorward-tutorial.mp4#t=496"><time datetime="PT8M16S">8:16</time> Test it yourself</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=248"><time datetime="PT4M8S">4:08</time> Custom headers, per person</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=326"><time datetime="PT5M26S">5:26</time> Invite people, set up mail</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=386"><time datetime="PT6M26S">6:26</time> Assign servers, write rules</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=452"><time datetime="PT7M32S">7:32</time> Connect a client, consent</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=513"><time datetime="PT8M33S">8:33</time> Your account, your credentials</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=589"><time datetime="PT9M49S">9:49</time> The activity log</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=620"><time datetime="PT10M20S">10:20</time> Test it yourself</a></li>
       </ol>
-      <p>Each time opens the video file at that point. <a href="media/doorward-tutorial.mp4">The whole file</a> is an MP4 of 39&nbsp;MB.</p>
+      <p>Each time opens the video file at that point. <a href="media/doorward-tutorial.mp4">The whole file</a> is an MP4 of 49&nbsp;MB.</p>
     </div>
   </div>
 </section>

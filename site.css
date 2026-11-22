@@ -1119,9 +1119,11 @@ video {
 /* The link is 8 px wider than its row on each side, so its focus ring stands 10 px from the time. */
 .parts li a {
   display: grid;
-  grid-template-columns: 44px 1fr;
-  align-items: center;
+  grid-template-columns: auto 1fr;
+  align-content: center;
+  align-items: baseline;
   min-height: var(--control);
+  padding-block: var(--s2);
   margin-inline: calc(-1 * var(--s2));
   padding-inline: var(--s2);
   font: 400 14px/20px var(--sans);
@@ -1133,7 +1135,11 @@ video {
   background: var(--door-well);
 }
 
+/* The times end on one edge: the box is five characters wide, the longest time, and 12 px before the name. */
 .parts time {
+  inline-size: 5ch;
+  margin-inline-end: var(--s3);
+  text-align: end;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   color: var(--on-door-2);
@@ -1762,19 +1768,32 @@ video {
     margin-inline-start: calc(-1 * var(--s4) - 1px);
   }
 
-  /* The seven capabilities take the diagram's four columns; the title has the first cell. */
+  /* The eight capabilities take the diagram's four columns, four and four; the title has a row of its own. */
   .section-body.gets {
     grid-column: 2 / 10;
-    grid-row: 1;
+    grid-row: 2;
     display: grid;
     grid-template-columns: subgrid;
     row-gap: var(--s7);
+    margin-top: var(--s7);
   }
 
   .section:has(.gets) .section-head {
+    grid-column: 2 / 10;
     grid-row: 1;
     position: static;
-    grid-column: 2;
+    display: grid;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+  }
+
+  .section:has(.gets) .section-head h2 {
+    grid-column: 1 / 4;
+  }
+
+  .section:has(.gets) .section-head p {
+    grid-column: 6 / 9;
+    margin: 0;
   }
 
   .gets > div,
@@ -1794,27 +1813,19 @@ video {
   }
 
   .gets > div:nth-child(4n + 1) {
-    grid-column: 3;
-  }
-
-  .gets > div:nth-child(4n + 2) {
-    grid-column: 6;
-  }
-
-  .gets > div:nth-child(4n + 3) {
-    grid-column: 8;
-  }
-
-  .gets > div:nth-child(4n + 4) {
     grid-column: 1;
   }
 
-  .gets > div:nth-child(-n + 3) {
-    grid-row: 1;
+  .gets > div:nth-child(4n + 2) {
+    grid-column: 3;
   }
 
-  .gets > div:nth-child(n + 4) {
-    grid-row: 2;
+  .gets > div:nth-child(4n + 3) {
+    grid-column: 6;
+  }
+
+  .gets > div:nth-child(4n + 4) {
+    grid-column: 8;
   }
 
   /* The numbers of the quick start stand on the axis itself. */
@@ -1832,6 +1843,11 @@ video {
     grid-column: 2 / 10;
     display: grid;
     grid-template-columns: subgrid;
+  }
+
+  /* Rows: the title, "Open it at a part", the list, its note. The player spans the two in the middle. */
+  .tutorial {
+    grid-template-rows: auto auto 1fr auto;
   }
 
   .screens > h2,
@@ -1904,18 +1920,42 @@ video {
 
   .tutorial video {
     grid-column: 1 / 7;
-    grid-row: 2;
+    grid-row: 2 / span 2;
     margin-top: var(--s7);
   }
 
   .parts {
+    display: contents;
+  }
+
+  .parts h3 {
     grid-column: 8;
     grid-row: 2;
     margin-top: var(--s7);
   }
 
+  /* The list ends on the player's bottom edge: its rows share the height left, 36 px each at least. */
+  .parts ol {
+    grid-column: 8;
+    grid-row: 3;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .parts li {
+    flex: 1 0 auto;
+    display: grid;
+  }
+
+  /* A name of two lines, which a column under 243 px gives the longest, makes a row of 48 px. */
   .parts li a {
     min-height: 36px;
+    padding-block: var(--s1);
+  }
+
+  .parts p {
+    grid-column: 8;
+    grid-row: 4;
   }
 
   .foot {
