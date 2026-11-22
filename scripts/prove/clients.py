@@ -5,6 +5,7 @@ directory named by PROVE_CLIENTS_DIR (relative paths are taken from the reposito
 """
 
 import argparse
+import hashlib
 import html.parser
 import http.client
 import http.server
@@ -19,12 +20,13 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 import conformance as cf  # The driver's HTTP client and its OAuth steps.
+import fake_upstream  # The per-user header names, parsed as the fake upstream parses them.
 
 MARK_KEY = "PROVE_CLIENTS_RUN"
 SECRET_KEY = "PROOF_UPSTREAM_SECRET"
@@ -626,6 +628,214 @@ def command_deny_after_first_call(timeout, tool):
     return 0
 
 
+class HeaderRows(html.parser.HTMLParser):
+    """The declared header rows of the server page: lower-cased name, Required flag and header id."""
+
+    def __init__(self):
+        super().__init__()
+        self.rows = []
+        self.current = None
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        if tag == "tr":
+            self.current = None
+            if "data-header" in values:
+                required = values.get("data-required") == "yes"
+                self.current = {"name": values["data-header"], "required": required, "id": None}
+                self.rows.append(self.current)
+        elif tag == "input" and self.current is not None and (values.get("name") or "").startswith("required_"):
+            self.current["id"] = values["name"][len("required_"):]
+
+
+class ValueFields(html.parser.HTMLParser):
+    """The value fields inside one form of the account page, and the header name and state of each hint."""
+
+    def __init__(self, action):
+        super().__init__()
+        self.action = action
+        self.inside = False
+        self.fields = []
+        self.hints = {}
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        if tag == "form":
+            self.inside = values.get("action") == self.action
+        elif tag == "input" and self.inside and (values.get("name") or "").startswith("value_"):
+            self.fields.append((values["name"], values.get("aria-describedby")))
+        elif tag == "p" and "data-header" in values:
+            self.hints[values.get("id")] = (values["data-header"], values.get("data-value-state"))
+
+    def handle_endtag(self, tag):
+        if tag == "form":
+            self.inside = False
+
+
+class ErrorNotice(html.parser.HTMLParser):
+    """The text of the first error notice of a page; empty when there is none."""
+
+    def __init__(self):
+        super().__init__()
+        self.depth = None
+        self.found = False
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "div":
+            return
+        if self.depth is not None:
+            self.depth += 1
+        elif not self.found and dict(attrs).get("data-notice") == "error":
+            self.found = True
+            self.depth = 1
+
+    def handle_endtag(self, tag):
+        if tag == "div" and self.depth is not None:
+            self.depth -= 1
+            if self.depth == 0:
+                self.depth = None
+
+    def handle_data(self, data):
+        if self.depth is not None:
+            self.parts.append(data)
+
+    def text(self):
+        return " ".join("".join(self.parts).split())
+
+
+def header_rows(page):
+    parser = HeaderRows()
+    parser.feed(page.text)
+    return parser.rows
+
+
+def value_fields(page, action):
+    """The value fields of the form posting to action, as (field name, lower-cased header name, hint state)."""
+    parser = ValueFields(action)
+    parser.feed(page.text)
+    fields = []
+    for field, hint in parser.fields:
+        lower, state = parser.hints.get(hint, (None, None))
+        fields.append((field, lower, state))
+    return fields
+
+
+def done_of(answer):
+    """The done parameter of a redirect's location, or None."""
+    return parse_qs(urlsplit(answer.location or "").query).get("done", [None])[0]
+
+
+def demo_server_path(owner):
+    rows = owner.get("/admin/servers").find({"data-slug": SLUG})
+    cf.need(len(rows) == 1, f"the servers page shows {len(rows)} rows for {SLUG}, wanted 1")
+    return f"/admin/servers/{rows[0]['data-server-id']}"
+
+
+def command_headers(passing, storing):
+    """Declares each per-user header on demo as required, then sets the two switches; reads both back."""
+    names = {}
+    for name in fake_upstream.parse_user_headers([], os.environ):
+        names.setdefault(name.lower(), name)
+    if not names:
+        print(f"PROVE-CLIENTS FAIL: {fake_upstream.USER_HEADERS_KEY} is unset or names no header", file=sys.stderr)
+        return 2
+    owner = owner_client(read_stack())
+    server_path = demo_server_path(owner)
+    declared = {row["name"] for row in header_rows(owner.get(server_path))}
+    for lower, name in names.items():
+        if lower in declared:
+            continue
+        added = owner.form(server_path, f"{server_path}/headers", [("name", name), ("required", "1")])
+        cf.need(
+            added.status == 303 and done_of(added) == "header-added",
+            f"declaring {name} answered {added.status}, wanted 303 with header-added",
+        )
+        declared.add(lower)
+    fields = []
+    if passing:
+        fields.append(("pass_headers", "1"))
+    if storing:
+        fields.append(("store_headers", "1"))
+    for row in header_rows(owner.get(server_path)):
+        cf.need(row["id"] is not None, f"a header row of {SLUG} holds no Required box")
+        fields += [(f"listed_{row['id']}", "1"), (f"required_{row['id']}", "1")]
+    saved = owner.form(server_path, f"{server_path}/header-switches", fields)
+    cf.need(
+        saved.status == 303 and done_of(saved) == "headers-saved",
+        f"saving the headers answered {saved.status}, wanted 303 with headers-saved",
+    )
+    page = owner.get(server_path)
+    rows = {row["name"]: row for row in header_rows(page)}
+    lines = []
+    for lower, name in names.items():
+        cf.need(lower in rows and rows[lower]["required"], f"header {name} is not declared and required on {SLUG}")
+        lines.append(f"header {name}: declared, required")
+    states = {}
+    for key, want in (("pass_headers", passing), ("store_headers", storing)):
+        boxes = page.find({"name": key})
+        cf.need(len(boxes) == 1, f"the server page shows {len(boxes)} {key} boxes, wanted 1")
+        checked = "checked" in boxes[0]
+        cf.need(checked == want, f"the server page shows {key} {'on' if checked else 'off'}, wanted the switch as set")
+        states[key] = "on" if checked else "off"
+    lines.append(f"switches: pass {states['pass_headers']}, store {states['store_headers']}")
+    print("\n".join(lines))
+    return 0
+
+
+def read_value(path):
+    """A generated value, or the content of the file without one trailing newline; never printed."""
+    if path is None:
+        return secrets.token_hex(16)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except (OSError, UnicodeDecodeError) as error:
+        raise cf.Fail(f"the value file cannot be read: {type(error).__name__}") from None
+    value = text[:-1] if text.endswith("\n") else text
+    cf.need(value != "", "the value file holds no value")
+    return value
+
+
+def command_store_value(name, value_file):
+    """Stores one value of a header of demo for bob, through the account page, and reads the state back."""
+    state = read_stack()
+    bob = cf.Client(urlsplit(state["gateway"]).port)
+    signed = bob.form("/login", "/login", [("email", BOB_EMAIL), ("password", state["bob password"])])
+    cf.need(signed.status == 303, f"bob's sign-in answered {signed.status}, wanted 303")
+    action = f"/account/values/{SLUG}"
+    page = bob.get("/account")
+    cf.need(page.status == 200 and page.kind() == "account", f"the account page answered {page.status}")
+    matches = [field for field, lower, _ in value_fields(page, action) if lower == name.lower()]
+    cf.need(len(matches) == 1, f"the account page has {len(matches)} fields for {name} on {SLUG}, wanted 1")
+    field = matches[0]
+    token = page.csrf()
+    cf.need(token is not None, "the account page carries a csrf token")
+    value = read_value(value_file)
+    answer = bob.post_form(action, [("csrf", token), (field, value)])
+    location = urlsplit(answer.location or "")
+    saved = (
+        answer.status == 303
+        and location.path == "/account"
+        and parse_qs(location.query).get("done") == ["credentials-saved"]
+    )
+    if not saved:
+        notice = ErrorNotice()
+        notice.feed(answer.text)
+        detail = f": {notice.text()}" if notice.text() else ""
+        raise cf.Fail(f"the post answered {answer.status}{detail}")
+    after = bob.get("/account")
+    stored = [hint_state for key, _, hint_state in value_fields(after, action) if key == field]
+    cf.need(stored == ["set"], f"the account page does not show {name} stored on {SLUG}")
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    print(f"stored {name} for bob: digest {digest}")
+    if value_file is None:
+        path = os.path.join(RUN, f"value-{name.lower()}.txt")
+        write_private(path, value + "\n")
+        print(f"value file: {rel(path)}")
+    return 0
+
+
 def mcp_post(port, token, body, session=None, timeout=60):
     """One POST to the server path with the bearer token; a slow answer may take up to timeout seconds."""
     headers = {
@@ -873,6 +1083,12 @@ def build_parser():
     first = sub.add_parser("deny-after-first-call", help="deny slow once bob's first allowed call of a tool finishes")
     first.add_argument("--timeout", type=positive_seconds, default=300)
     first.add_argument("--tool", default=DENIED_TOOL, help="the tool whose first finished allowed call triggers rule on")
+    headers = sub.add_parser("headers", help="declare the per-user headers on demo and set its two switches")
+    headers.add_argument("--pass", dest="passing", required=True, choices=["on", "off"])
+    headers.add_argument("--store", dest="storing", required=True, choices=["on", "off"])
+    store = sub.add_parser("store-value", help="store one value of a header of demo for bob")
+    store.add_argument("--header", required=True)
+    store.add_argument("--value-file")
     down = sub.add_parser("down", help="stop this stack by its marker")
     down.add_argument("--wipe", action="store_true")
     serve = sub.add_parser("upstream", help="serve the fake upstream on loopback (used by up)")
@@ -908,6 +1124,10 @@ def main(argv):
             return command_rule(args.action)
         if args.cmd == "deny-after-first-call":
             return command_deny_after_first_call(args.timeout, args.tool)
+        if args.cmd == "headers":
+            return command_headers(args.passing == "on", args.storing == "on")
+        if args.cmd == "store-value":
+            return command_store_value(args.header, args.value_file)
         if args.cmd == "down":
             return command_down(args.wipe)
         return run_upstream(args.port)

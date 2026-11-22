@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Local stack for the hand-driven real-client runs: up, status, activity, selfcheck [--toggle], rule on|off, deny-after-first-call, down.
+# Local stack for the hand-driven real-client runs: up, status, activity, selfcheck [--toggle], rule on|off, deny-after-first-call, headers, store-value, down.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HELPER="$ROOT/scripts/prove/clients.py"
 
 usage() {
-    echo "usage: [PROVE_CLIENTS_DIR=<dir>] scripts/prove-clients.sh up|status|activity [--user <email>] [--out <file>]|selfcheck [--toggle]|rule off|rule on|deny-after-first-call [--timeout <seconds>] [--tool <name>]|down [--wipe]" >&2
+    echo "usage: [PROVE_CLIENTS_DIR=<dir>] scripts/prove-clients.sh up|status|activity [--user <email>] [--out <file>]|selfcheck [--toggle]|rule off|rule on|deny-after-first-call [--timeout <seconds>] [--tool <name>]|headers --pass on|off --store on|off|store-value --header <name> [--value-file <path>]|down [--wipe]" >&2
     exit 2
 }
 
@@ -54,6 +54,12 @@ case "$command" in
         ;;
     activity)
         python3 -I "$HELPER" activity "$@"
+        ;;
+    headers)
+        python3 -I "$HELPER" headers "$@"
+        ;;
+    store-value)
+        python3 -I "$HELPER" store-value "$@"
         ;;
     down)
         python3 -I "$HELPER" down "$@"
