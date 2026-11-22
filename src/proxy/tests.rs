@@ -459,6 +459,7 @@ fn post(headers: HeaderMap, body: &str) -> Outgoing {
         headers,
         body: Bytes::from(body.to_owned()),
         with_secret: true,
+        user_headers: Vec::new(),
     }
 }
 

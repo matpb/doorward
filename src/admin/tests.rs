@@ -3938,7 +3938,7 @@ async fn the_server_list_counts_tools_and_assigned_users_and_shows_the_lock_down
 async fn the_lock_down_pill_names_the_stored_state_on_the_list_and_the_page() {
     let dir = tempfile::tempdir().expect("dir");
     let (_base, mut owner) = owner_gateway(dir.path()).await;
-    add(&mut owner, "demo", SERVER_URL, None).await;
+    add(&mut owner, "demo", SERVER_URL, Some(("x-key", "v1"))).await;
     let demo = server_id_of(dir.path(), "demo");
     let path = format!("/admin/servers/{demo}");
     let cases = [
@@ -3970,6 +3970,28 @@ async fn the_lock_down_pill_names_the_stored_state_on_the_list_and_the_page() {
             "{verdict}"
         );
     }
+    add(&mut owner, "bare", SERVER_URL, None).await;
+    let bare = server_id_of(dir.path(), "bare");
+    open_db(dir.path())
+        .execute(
+            "UPDATE servers SET lockdown = 'ok' WHERE id = ?1",
+            rusqlite::params![bare],
+        )
+        .expect("store the verdict");
+    let list = owner.get("/admin/servers").await.body;
+    let row = r#"tr[data-slug="bare"]"#;
+    assert_eq!(
+        text_under(&list, row, "[data-pill]"),
+        "No secret header",
+        "an ok result without a secret header must read as no secret header"
+    );
+    let detail = owner.get(&format!("/admin/servers/{bare}")).await.body;
+    let lockdown = r#"section[aria-labelledby="lockdown-title"] [data-pill]"#;
+    assert_eq!(
+        text_of(&detail, lockdown).as_deref(),
+        Some("No secret header"),
+        "the page must read no secret header for an ok result without a secret"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

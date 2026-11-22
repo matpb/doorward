@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::body::{Body, Bytes};
+use axum::http::header::CACHE_CONTROL;
 use axum::http::header::{
     ACCEPT, ALLOW, CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
 };
@@ -21,6 +22,8 @@ use super::upstream::{
     self, Cause, Fault, Kind, LIST_LIMIT, Outgoing, Target, TargetError, time_limit,
 };
 use crate::app::AppState;
+use crate::custom_headers::{self, Resolved};
+use crate::db::DbError;
 use crate::mcp::answer;
 use crate::mcp::json::parse_strict;
 use crate::mcp::message::{
@@ -143,8 +146,12 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
         Ok(target) => target,
         Err(refusal) => return refusal,
     };
+    let user_headers = match declared_headers(ctx, headers, message.id.as_ref()).await {
+        Ok(user_headers) => user_headers,
+        Err(refusal) => return refusal,
+    };
     if let Some(name) = call.as_deref() {
-        match refusal_of(ctx, &target, name).await {
+        match refusal_of(ctx, &target, name, &user_headers).await {
             Ok(None) => {}
             Ok(Some(detail)) => {
                 record(ctx, name, "deny", "refused", &detail).await;
@@ -166,6 +173,7 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
         headers: upstream_headers,
         body: bytes,
         with_secret: true,
+        user_headers,
     };
     let owed = call.as_deref().map(|name| Owed::new(ctx, name));
     match upstream::send(ctx.state, &target, outgoing).await {
@@ -192,11 +200,16 @@ pub(super) async fn get_or_delete(ctx: &Ctx<'_>, method: &Method, headers: &Head
         Ok(target) => target,
         Err(refusal) => return refusal,
     };
+    let user_headers = match declared_headers(ctx, headers, None).await {
+        Ok(user_headers) => user_headers,
+        Err(refusal) => return refusal,
+    };
     let outgoing = Outgoing {
         method: method.clone(),
         headers: outgoing_headers(headers, false, None, Some(&session.header)),
         body: Bytes::new(),
         with_secret: true,
+        user_headers,
     };
     let sent = upstream::send(ctx.state, &target, outgoing).await;
     if *method == Method::DELETE {
@@ -372,9 +385,79 @@ async fn target(ctx: &Ctx<'_>, call: Option<&str>) -> Result<Target, Response> {
     }
 }
 
+/// The custom headers this request carries to the server, or the answer that stops it before any upstream.
+async fn declared_headers(
+    ctx: &Ctx<'_>,
+    client: &HeaderMap,
+    id: Option<&Value>,
+) -> Result<Vec<(HeaderName, HeaderValue)>, Response> {
+    let server = ctx.server_id;
+    let loaded = ctx
+        .state
+        .db
+        .call(move |conn| {
+            Ok((
+                custom_headers::load(conn, server)?,
+                servers::load(conn, server)?,
+            ))
+        })
+        .await;
+    let (config, row) = match loaded {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            report::failure("custom headers", &err);
+            return Err(bare(StatusCode::INTERNAL_SERVER_ERROR));
+        }
+    };
+    match custom_headers::resolve(&config, client, &[]) {
+        Resolved::Ready(headers) => Ok(headers),
+        Resolved::Bad => Err(answer::error(StatusCode::BAD_REQUEST, id, -32600, INVALID)),
+        Resolved::Missing { header } => match row {
+            Some(row) => Err(missing_header(ctx.state, &row.name, config.store, &header)),
+            None => Err(answer::unavailable(ctx.slug)),
+        },
+    }
+}
+
+/// The 403 of a request whose required header has no value: the account page's address when values can
+/// be stored there, else the header's name.
+fn missing_header(state: &AppState, server: &str, store: bool, header: &str) -> Response {
+    let message = if store {
+        format!(
+            "{server} needs your credentials. Add them at {}/account",
+            state.config.public_url
+        )
+    } else {
+        format!("{server} needs the header {header} from this app")
+    };
+    let mut response = answer::error(StatusCode::FORBIDDEN, None, -32000, &message);
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// The custom headers one server takes from a request, decided by the server's rules.
+pub(super) async fn resolve_server(
+    state: &AppState,
+    server_id: i64,
+    client: &HeaderMap,
+) -> Result<Resolved, DbError> {
+    let config = state
+        .db
+        .call(move |conn| custom_headers::load(conn, server_id))
+        .await?;
+    Ok(custom_headers::resolve(&config, client, &[]))
+}
+
 /// True when `name` is in the server's catalog. A miss refreshes it unless a miss refresh of the server
 /// started within `catalog_refresh_seconds`; a miss that waited for a refresh reads the catalog again.
-async fn listed(ctx: &Ctx<'_>, target: &Target, name: &str) -> Result<bool, Response> {
+async fn listed(
+    ctx: &Ctx<'_>,
+    target: &Target,
+    name: &str,
+    user_headers: &[(HeaderName, HeaderValue)],
+) -> Result<bool, Response> {
     if stored(ctx, name).await? {
         return Ok(true);
     }
@@ -391,9 +474,10 @@ async fn listed(ctx: &Ctx<'_>, target: &Target, name: &str) -> Result<bool, Resp
     let state = ctx.state.clone();
     let target = target.clone();
     let user = ctx.caller.user_id;
+    let headers = user_headers.to_vec();
     let refresh = tokio::spawn(async move {
         let limit = time_limit(&state).min(LIST_LIMIT);
-        let outcome = catalog::refresh_within(&state, &target, limit, Some(user)).await;
+        let outcome = catalog::refresh_within(&state, &target, limit, Some(user), &headers).await;
         *last = Some(state.clock.now().unix_timestamp());
         outcome
     });
@@ -449,13 +533,14 @@ async fn refusal_of(
     ctx: &Ctx<'_>,
     target: &Target,
     name: &str,
+    user_headers: &[(HeaderName, HeaderValue)],
 ) -> Result<Option<String>, Response> {
     let rules = rules_of(ctx).await?;
     let verdict = policy::decide(&rules, ctx.caller.user_id, ctx.server_id, name);
     if !verdict.allowed {
         return Ok(Some(format!("rule {}", verdict.rule.unwrap_or_default())));
     }
-    if listed(ctx, target, name).await? {
+    if listed(ctx, target, name, user_headers).await? {
         Ok(None)
     } else {
         Ok(Some(NOT_LISTED.to_owned()))

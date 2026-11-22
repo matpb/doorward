@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use axum::body::{Body, Bytes};
 use axum::extract::Request;
 use axum::http::header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS};
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::future::join_all;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -19,7 +19,9 @@ use tokio::time::{Instant, timeout, timeout_at};
 use super::budget::Reservation;
 use super::catalog::{self, RefreshError, SESSION, STATELESS};
 use super::combined_stream::{self, Call};
-use super::handle::{INVALID, NOT_LISTED, Owed, TOOL_LIMIT, answer_for, bare, cut, not_allowed};
+use super::handle::{
+    INVALID, NOT_LISTED, Owed, TOOL_LIMIT, answer_for, bare, cut, not_allowed, resolve_server,
+};
 use super::intake::{Intake, intake};
 use super::links::{self, Answer, Ask, Owner};
 use super::stream::{ACCESS_LOST, CHECK_FAILED, Owned, detail_of};
@@ -28,6 +30,8 @@ use super::upstream::{
 };
 use crate::app::AppState;
 use crate::audit::{self, OwnedEvent};
+use crate::custom_headers::Resolved;
+use crate::db::DbError;
 use crate::mcp::answer;
 use crate::mcp::message::{
     Decision, Generation, Message, Shape, Switches, decide, meta_version, param,
@@ -173,8 +177,8 @@ async fn post(state: &AppState, caller: &Arc<Caller>, headers: &HeaderMap, body:
         (Generation::Session, Some("initialize")) => result(id, initialize(&message)),
         (Generation::Session, Some("ping")) => result(id, json!({})),
         (Generation::Stateless, Some("server/discover")) => result(id, discover()),
-        (_, Some("tools/list")) => list(state, caller, &message).await,
-        (_, Some("tools/call")) => call(state, caller, &message, &bytes).await,
+        (_, Some("tools/list")) => list(state, caller, headers, &message).await,
+        (_, Some("tools/call")) => call(state, caller, headers, &message, &bytes).await,
         _ => answer::method_not_found(&message),
     }
 }
@@ -245,11 +249,56 @@ const ASKED: &str = "This tool asked for input that this endpoint does not relay
 /// The detail of a call whose caller is not assigned to the server.
 const NOT_ASSIGNED: &str = "the server is not assigned";
 
+/// Each server the caller is assigned to with its custom headers resolved from the request. A header the
+/// request sends unusably on any of them is refused for the whole request, before any upstream.
+async fn resolutions(
+    state: &AppState,
+    user: i64,
+    headers: &HeaderMap,
+    id: Option<&Value>,
+) -> Result<HashMap<i64, Resolved>, Response> {
+    let ids = match state.db.call(move |conn| assigned_ids(conn, user)).await {
+        Ok(ids) => ids,
+        Err(err) => {
+            report::failure("assigned servers", &err);
+            return Err(bare(StatusCode::INTERNAL_SERVER_ERROR));
+        }
+    };
+    let mut resolved = HashMap::new();
+    for server_id in ids {
+        match resolve_server(state, server_id, headers).await {
+            Ok(Resolved::Bad) => {
+                return Err(answer::error(StatusCode::BAD_REQUEST, id, -32600, INVALID));
+            }
+            Ok(outcome) => {
+                resolved.insert(server_id, outcome);
+            }
+            Err(err) => return Err(resolve_failed(&err)),
+        }
+    }
+    Ok(resolved)
+}
+
+/// The 500 of a server's headers that cannot be read; the database error is written where it arose.
+fn resolve_failed(err: &DbError) -> Response {
+    report::failure("custom headers", err);
+    bare(StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+/// The server ids the user is assigned to.
+fn assigned_ids(conn: &Connection, user: i64) -> rusqlite::Result<Vec<i64>> {
+    let mut statement = conn.prepare("SELECT server_id FROM user_servers WHERE user_id = ?1")?;
+    statement
+        .query_map(params![user], |row| row.get(0))?
+        .collect()
+}
+
 /// tools/call: the name is split and checked against the caller's servers, rules and catalog, then sent
 /// through the caller's link. A refused call never reaches an upstream.
 async fn call(
     state: &AppState,
     caller: &Arc<Caller>,
+    headers: &HeaderMap,
     message: &Message,
     bytes: &Bytes,
 ) -> Response {
@@ -273,6 +322,10 @@ async fn call(
                 INVALID,
             );
         }
+    };
+    let resolved = match resolutions(state, caller.user_id, headers, message.id.as_ref()).await {
+        Ok(resolved) => resolved,
+        Err(refusal) => return refusal,
     };
     let started = std::time::Instant::now();
     let Some((slug, tool)) = split(name) else {
@@ -304,9 +357,16 @@ async fn call(
         let detail = format!("rule {}", verdict.rule.unwrap_or_default());
         return deny_call(state, caller, started, id, name, row, &detail).await;
     }
+    let user_headers = match resolved.get(&server_id) {
+        Some(Resolved::Ready(user_headers)) => user_headers.as_slice(),
+        _ => {
+            let owed = Owed::of(owned_of(state, caller, started, slug, server_id), tool);
+            return unavailable(owed, slug, Cause::NoConnection).await;
+        }
+    };
     let definition = match found.definition {
         Some(definition) => definition,
-        None => match refetch(state, caller, &found.server, tool, started).await {
+        None => match refetch(state, caller, &found.server, tool, started, user_headers).await {
             Ok(Some(definition)) => definition,
             Ok(None) => {
                 return deny_call(state, caller, started, id, name, row, NOT_LISTED).await;
@@ -333,7 +393,11 @@ async fn call(
         user_id: user,
         family_id: caller.family_id,
     };
-    let stateless = match state.links.stateless(state, owner, &target).await {
+    let stateless = match state
+        .links
+        .stateless_with(state, owner, &target, user_headers)
+        .await
+    {
         Ok(stateless) => stateless,
         Err(Fault(cause)) => {
             let owed = Owed::of(owned_of(state, caller, started, slug, server_id), tool);
@@ -360,7 +424,11 @@ async fn call(
         progress_token,
     };
     let client_stateless = message.generation == Generation::Stateless;
-    let sent = match state.links.send(state, owner, &target, ask).await {
+    let sent = match state
+        .links
+        .send_with(state, owner, &target, ask, user_headers)
+        .await
+    {
         Ok(Answer::Sent(sent)) => sent,
         Ok(Answer::Refused {
             status,
@@ -471,6 +539,7 @@ async fn refetch(
     server: &Assigned,
     tool: &str,
     started: std::time::Instant,
+    user_headers: &[(HeaderName, HeaderValue)],
 ) -> Result<Option<String>, Response> {
     let server_id = server.server_id;
     let mut last = state.turns.misses.lock(server_id).await;
@@ -500,8 +569,9 @@ async fn refetch(
     let task_state = state.clone();
     let slug = server.slug.clone();
     let tool_name = tool.to_owned();
+    let headers = user_headers.to_vec();
     let refresh = tokio::spawn(async move {
-        let found = refresh_list(&task_state, owner, &slug, server_id, &tool_name).await;
+        let found = refresh_list(&task_state, owner, &slug, server_id, &tool_name, &headers).await;
         *last = Some(task_state.clock.now().unix_timestamp());
         found
     });
@@ -536,9 +606,10 @@ async fn refresh_list(
     slug: &str,
     server_id: i64,
     tool: &str,
+    user_headers: &[(HeaderName, HeaderValue)],
 ) -> Refetch {
     let deadline = Instant::now() + time_limit(state).min(LIST_LIMIT);
-    let fetched = match fetch(state, owner, server_id, deadline).await {
+    let fetched = match fetch(state, owner, server_id, deadline, user_headers).await {
         Ok(fetched) => fetched,
         Err(cause) => {
             refuse(state, slug, server_id, cause).await;
@@ -696,19 +767,28 @@ fn result_for_client(result: &Value, stateless: bool) -> (Value, &'static str) {
 }
 
 /// tools/list: the caller's tools across the servers it is assigned to now, under one turn and deadline.
-async fn list(state: &AppState, caller: &Caller, message: &Message) -> Response {
+async fn list(
+    state: &AppState,
+    caller: &Caller,
+    headers: &HeaderMap,
+    message: &Message,
+) -> Response {
     let null = Value::Null;
     let id = message.id.as_ref().unwrap_or(&null);
     if param(&message.value, "cursor").is_some_and(|cursor| !cursor.is_null()) {
         return answer::error(StatusCode::OK, Some(id), -32602, "Invalid params");
     }
+    let resolved = match resolutions(state, caller.user_id, headers, message.id.as_ref()).await {
+        Ok(resolved) => resolved,
+        Err(refusal) => return refusal,
+    };
     let limit = time_limit(state).min(LIST_LIMIT);
     let turn = match timeout(limit, enter(&state.turns, caller.user_id)).await {
         Ok(turn) => turn,
         Err(_) => return answer::unavailable(LABEL),
     };
     let deadline = Instant::now() + limit;
-    let built = collect(state, caller, deadline).await;
+    let built = collect(state, caller, deadline, &resolved).await;
     drop(turn);
     match built {
         Ok((tools, holds)) if message.generation == Generation::Stateless => hold(
@@ -729,6 +809,7 @@ async fn collect(
     state: &AppState,
     caller: &Caller,
     deadline: Instant,
+    resolved: &HashMap<i64, Resolved>,
 ) -> Result<(Vec<Value>, Vec<Reservation>), Response> {
     let user = caller.user_id;
     let assigned = match state.db.call(move |conn| assigned(conn, user)).await {
@@ -745,18 +826,22 @@ async fn collect(
         user_id: caller.user_id,
         family_id: caller.family_id,
     };
-    let outcomes = join_all(
-        assigned
-            .iter()
-            .map(|server| fetch(state, owner, server.server_id, deadline)),
-    )
+    let outcomes = join_all(assigned.iter().map(|server| async move {
+        match resolved.get(&server.server_id) {
+            Some(Resolved::Ready(user_headers)) => {
+                Some(fetch(state, owner, server.server_id, deadline, user_headers).await)
+            }
+            _ => None,
+        }
+    }))
     .await;
     let mut fetched: Vec<(usize, Fetched)> = Vec::new();
     let mut only_budget = true;
     for (position, outcome) in outcomes.into_iter().enumerate() {
         match outcome {
-            Ok(list) => fetched.push((position, list)),
-            Err(cause) => {
+            None => only_budget = false,
+            Some(Ok(list)) => fetched.push((position, list)),
+            Some(Err(cause)) => {
                 if budget_refused(cause) {
                     note(format!(
                         "tools/list: {} left out, the answer memory budget is exhausted",
@@ -1003,8 +1088,9 @@ async fn fetch(
     owner: Owner,
     server_id: i64,
     deadline: Instant,
+    user_headers: &[(HeaderName, HeaderValue)],
 ) -> Result<Fetched, Cause> {
-    match timeout_at(deadline, fetch_pages(state, owner, server_id)).await {
+    match timeout_at(deadline, fetch_pages(state, owner, server_id, user_headers)).await {
         Ok(fetched) => fetched,
         Err(_) => Err(Cause::NoAnswerInTime),
     }
@@ -1012,7 +1098,12 @@ async fn fetch(
 
 /// Every page of the server's list through the caller's link, within the byte limit and the page limit.
 /// Passing the page limit is reported as too large.
-async fn fetch_pages(state: &AppState, owner: Owner, server_id: i64) -> Result<Fetched, Cause> {
+async fn fetch_pages(
+    state: &AppState,
+    owner: Owner,
+    server_id: i64,
+    user_headers: &[(HeaderName, HeaderValue)],
+) -> Result<Fetched, Cause> {
     let target = match upstream::target(state, server_id).await {
         Ok(Some(target)) => target,
         Ok(None) => return Err(Cause::NoConnection),
@@ -1031,13 +1122,14 @@ async fn fetch_pages(state: &AppState, owner: Owner, server_id: i64) -> Result<F
     for page in 0..MAX_PAGES {
         let sent = match state
             .links
-            .send(
+            .send_with(
                 state,
                 owner,
                 &target,
                 Ask::List {
                     cursor: cursor.as_deref(),
                 },
+                user_headers,
             )
             .await
         {

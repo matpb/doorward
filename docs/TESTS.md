@@ -2450,6 +2450,42 @@ Each test builds its own world. The mail catcher holds what the gateway sends.
    `You are invited to Doorward`; its text closes with the gateway's host, and its HTML holds the
    closing sentence with a non-breaking space before `call.`.
 
+## s80_custom_headers.rs (statements 80, 81, 83 and 88)
+
+Each test builds its own world. Declared headers are added through the admin panel, the pass-through
+switch is saved the same way, and bob (assigned to the server) makes the calls.
+
+1. `an_admin_declares_a_header_and_the_page_lists_it_with_its_flag` (statement 80): a required and an
+   optional header are listed with `data-required` `yes` and `no`.
+2. `a_ninth_header_is_refused_with_400` and `each_refused_name_is_refused_with_400` (statement 80):
+   the ninth header and each refused name answer 400 with one error notice and create no row.
+3. `the_same_name_in_another_case_is_refused_as_a_duplicate`, `a_name_of_64_characters_is_accepted`
+   and `authorization_can_be_declared` (statement 80): case-insensitive uniqueness, the length limit,
+   and `Authorization` as a valid name.
+4. `a_declared_name_and_the_secret_header_name_cannot_be_the_same` (statement 80): a name equal to the
+   secret header's name is refused on declaration, and a secret named like a declared header is refused
+   on the settings form with 400.
+5. `removing_a_header_removes_its_row`, `the_two_switches_are_saved_and_shown_checked` and
+   `only_admins_declare_remove_and_switch_headers` (statement 80): removal, the switches, and the
+   refusal of a plain user with 403.
+6. `pass_through_reaches_the_upstream_for_session_and_stateless_clients`,
+   `on_the_combined_endpoint_the_header_reaches_only_the_server_that_declares_it` and
+   `a_value_of_4096_bytes_with_inner_space_and_tab_reaches_the_upstream_unchanged` (statement 81): a
+   declared header reaches its server with the client's value, only on the server that declares it.
+7. `with_pass_through_off_the_declared_header_does_not_reach_the_upstream`,
+   `an_undeclared_header_does_not_reach_the_upstream_even_with_pass_through_on` and
+   `a_declared_authorization_header_is_never_passed_through` (statement 81).
+8. `a_declared_header_sent_twice_is_refused_before_the_upstream` and
+   `bad_header_values_are_refused_before_the_upstream` (statement 81): an empty value, a value of 4097
+   bytes, a non-ASCII value and a value holding byte 0x80 answer 400 and reach no upstream.
+9. `a_missing_required_header_answers_403_on_the_server_path`,
+   `a_missing_required_header_leaves_its_server_out_of_the_combined_list` and
+   `a_header_that_is_not_required_and_is_missing_changes_nothing` (statement 83).
+10. `a_server_without_a_secret_that_refuses_the_probe_is_not_reported_ok` (statement 88): a probe that
+    the upstream refuses leaves the server `nosecret`, never `ok`.
+11. `a_server_without_a_secret_that_declares_a_header_warns_on_its_page` (statement 88): the direct
+    warning appears on the server without a secret that declares a header, and not on one with a secret.
+
 ## Round 5: tests added and rewritten for the design changes
 
 Each entry names the change of the round 5 list it proves, and why an existing test changed.

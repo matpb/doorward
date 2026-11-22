@@ -137,6 +137,15 @@ pub struct Outgoing {
     pub body: Bytes,
     /// False only for the lock-down probe.
     pub with_secret: bool,
+    /// The caller's resolved custom headers; the server's secret is set last, so it wins a name clash.
+    pub user_headers: Vec<(HeaderName, HeaderValue)>,
+}
+
+/// What a request carries besides its body: the secret when `secret`, and the caller's custom headers.
+#[derive(Clone, Copy)]
+pub struct Carry<'a> {
+    pub secret: bool,
+    pub user_headers: &'a [(HeaderName, HeaderValue)],
 }
 
 /// Sends one request to the stored URL, with the secret when `with_secret`.
@@ -151,8 +160,12 @@ pub async fn send(
         mut headers,
         body,
         with_secret,
+        user_headers,
     } = outgoing;
     headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
+    for (name, value) in user_headers {
+        headers.insert(name, value);
+    }
     if with_secret && let Some((name, value)) = &target.secret {
         headers.insert(name.clone(), value.clone());
     }

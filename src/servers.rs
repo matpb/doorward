@@ -407,10 +407,11 @@ pub fn open_servers(conn: &Connection) -> rusqlite::Result<Vec<OpenServer>> {
     rows.collect()
 }
 
-/// How many servers are not checked: every state but open and ok, as the servers list shows them.
+/// How many servers are not checked: every state but open and ok, and an ok without a secret header (nosecret).
 pub fn unchecked_count(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row(
-        "SELECT COUNT(*) FROM servers WHERE lockdown NOT IN ('open', 'ok')",
+        "SELECT COUNT(*) FROM servers WHERE lockdown NOT IN ('open', 'ok') \
+         OR (lockdown = 'ok' AND secret_header_value IS NULL)",
         [],
         |row| row.get(0),
     )

@@ -6,6 +6,7 @@ pub mod cimd;
 pub mod clock;
 pub mod config;
 pub mod crypto;
+pub mod custom_headers;
 pub mod db;
 pub mod mail;
 pub mod mcp;

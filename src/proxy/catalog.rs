@@ -14,7 +14,8 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use super::budget::Reservation;
 use super::sse::sse_events;
 use super::upstream::{
-    self, BodyError, Cause, Fault, Kind, Outgoing, Target, read_body, read_stream, time_limit,
+    self, BodyError, Carry, Cause, Fault, Kind, Outgoing, Target, read_body, read_stream,
+    time_limit,
 };
 use crate::app::AppState;
 use crate::audit::{self, Event};
@@ -142,7 +143,7 @@ async fn post(
     target: &Target,
     body: &Value,
     headers: HeaderMap,
-    with_secret: bool,
+    carry: Carry<'_>,
     cap: u64,
     user: Option<i64>,
 ) -> (Reply, Option<HeaderValue>) {
@@ -150,7 +151,8 @@ async fn post(
         method: Method::POST,
         headers,
         body: Bytes::from(body.to_string()),
-        with_secret,
+        with_secret: carry.secret,
+        user_headers: carry.user_headers.to_vec(),
     };
     let response = match upstream::send(state, target, outgoing).await {
         Ok(response) => response,
@@ -275,7 +277,7 @@ async fn list_pages(
     target: &Target,
     stateless: bool,
     session: Option<&HeaderValue>,
-    with_secret: bool,
+    carry: Carry<'_>,
     user: Option<i64>,
     held: &mut Reservation,
 ) -> Result<Option<Vec<Value>>, Failure> {
@@ -291,7 +293,7 @@ async fn list_pages(
         };
         let body = list_body(stateless, cursor.as_deref());
         let cap = limit.saturating_sub(used);
-        let (reply, _) = post(state, target, &body, headers, with_secret, cap, user).await;
+        let (reply, _) = post(state, target, &body, headers, carry, cap, user).await;
         let (result, size) = match reply {
             Reply::Result(result, size) => (result, size),
             Reply::TooLarge => return Err(Failure::too_large()),
@@ -327,6 +329,7 @@ pub(super) async fn close_session(
         headers: request_headers(SESSION, None, Some(session)),
         body: Bytes::new(),
         with_secret,
+        user_headers: Vec::new(),
     };
     let _closed = upstream::send(state, target, closing).await;
 }
@@ -337,14 +340,19 @@ async fn session_tools(
     target: &Target,
     user: Option<i64>,
     held: &mut Reservation,
+    user_headers: &[(HeaderName, HeaderValue)],
 ) -> Result<Vec<Value>, Failure> {
     let limit = state.config.limits.tools_list_bytes;
+    let carry = Carry {
+        secret: true,
+        user_headers,
+    };
     let (reply, session) = post(
         state,
         target,
         &init_body(),
         request_headers(SESSION, None, None),
-        true,
+        carry,
         limit,
         user,
     )
@@ -361,12 +369,12 @@ async fn session_tools(
         target,
         &notified,
         request_headers(SESSION, None, session.as_ref()),
-        true,
+        carry,
         limit,
         user,
     )
     .await;
-    let listed = list_pages(state, target, false, session.as_ref(), true, user, held).await;
+    let listed = list_pages(state, target, false, session.as_ref(), carry, user, held).await;
     if let Some(session) = session.as_ref() {
         close_session(state, target, session, true).await;
     }
@@ -379,11 +387,16 @@ async fn fetch(
     target: &Target,
     user: Option<i64>,
     held: &mut Reservation,
+    user_headers: &[(HeaderName, HeaderValue)],
 ) -> Result<Vec<Value>, Failure> {
-    if let Some(tools) = list_pages(state, target, true, None, true, user, held).await? {
+    let carry = Carry {
+        secret: true,
+        user_headers,
+    };
+    if let Some(tools) = list_pages(state, target, true, None, carry, user, held).await? {
         return Ok(tools);
     }
-    session_tools(state, target, user, held).await
+    session_tools(state, target, user, held, user_headers).await
 }
 
 /// Asks the upstream for its tools as the gateway itself, within one time limit, and replaces the catalog.
@@ -393,19 +406,21 @@ pub async fn refresh(
     target: &Target,
     user: Option<i64>,
 ) -> Result<Vec<String>, RefreshError> {
-    refresh_within(state, target, time_limit(state), user).await
+    refresh_within(state, target, time_limit(state), user, &[]).await
 }
 
-/// As `refresh`, with `limit` as the time the upstream may take.
+/// As `refresh`, with `limit` as the time the upstream may take and the caller's headers sent.
 pub async fn refresh_within(
     state: &AppState,
     target: &Target,
     limit: Duration,
     user: Option<i64>,
+    user_headers: &[(HeaderName, HeaderValue)],
 ) -> Result<Vec<String>, RefreshError> {
     // Held until the parsed list is stored, which is when the gateway no longer needs its bytes.
     let mut held = state.links.budget().reservation(user);
-    let fetched = match tokio::time::timeout(limit, fetch(state, target, user, &mut held)).await {
+    let fetching = fetch(state, target, user, &mut held, user_headers);
+    let fetched = match tokio::time::timeout(limit, fetching).await {
         Ok(result) => result,
         Err(_) => Err(Failure::upstream(Cause::NoAnswerInTime)),
     };
@@ -473,12 +488,16 @@ pub async fn fail(
 pub async fn lockdown(state: &AppState, target: &Target) -> &'static str {
     let limit = state.config.limits.tools_list_bytes;
     let headers = request_headers(STATELESS, Some("tools/list"), None);
+    let carry = Carry {
+        secret: false,
+        user_headers: &[],
+    };
     let (reply, _) = post(
         state,
         target,
         &list_body(true, None),
         headers,
-        false,
+        carry,
         limit,
         None,
     )
@@ -493,7 +512,7 @@ pub async fn lockdown(state: &AppState, target: &Target) -> &'static str {
         target,
         &init_body(),
         request_headers(SESSION, None, None),
-        false,
+        carry,
         limit,
         None,
     )

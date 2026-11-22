@@ -1,0 +1,11 @@
+CREATE TABLE server_headers (
+  id INTEGER PRIMARY KEY,
+  server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  name_lower TEXT NOT NULL,
+  required INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  UNIQUE (server_id, name_lower)
+) STRICT;
+ALTER TABLE servers ADD COLUMN pass_headers INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE servers ADD COLUMN store_headers INTEGER NOT NULL DEFAULT 0;

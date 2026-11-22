@@ -27,6 +27,7 @@ holds an upstream secret, parses a request body for a decision, or issues a cred
 | `proxy::catalog` (core) | each server's cached tool list |
 | `proxy` | per-server pass-through, built on `oauth::guard`, `mcp`, `policy`, `proxy::catalog`, `proxy::upstream` |
 | `proxy::combined` | the combined endpoint, same building blocks |
+| `custom_headers` (core) | a server's declared custom headers and switches: name and value rules, storage, and what one request carries upstream |
 | `mail` | sends through the provider named by the stored `mail.provider` setting: SMTP, Resend or Mailgun |
 | `audit` | activity log |
 | `admin` | the admin panel: overview, users, invitations, servers, rules, redirects, activity and mail pages; server-rendered HTML, no script |
@@ -217,7 +218,7 @@ change applies to tokens already issued. A rule that cannot be read refuses the 
 ## Storage
 
 Tables: `users`, `invitations`, `password_resets`, `sessions`, `login_failures`, `servers`,
-`user_servers`, `rules`, `redirect_allow`, `oauth_clients`, `dcr_attempts`, `known_clients`,
+`server_headers`, `user_servers`, `rules`, `redirect_allow`, `oauth_clients`, `dcr_attempts`, `known_clients`,
 `auth_requests`, `auth_codes`, `token_families`, `access_tokens`, `refresh_tokens`,
 `disconnect_links`, `upstream_sessions`, `tool_catalog`, `settings`, `activity`. Activity rows
 snapshot email, slug, tool and client and do not cascade. Ciphertexts carry a key id and are

@@ -154,13 +154,27 @@ impl Links {
         target: &Target,
         ask: Ask<'_>,
     ) -> Result<Answer, Fault> {
+        self.send_with(state, owner, target, ask, &[]).await
+    }
+
+    /// As `send`, with the caller's custom headers sent on every request this makes.
+    pub async fn send_with(
+        &self,
+        state: &AppState,
+        owner: Owner,
+        target: &Target,
+        ask: Ask<'_>,
+        user_headers: &[(HeaderName, HeaderValue)],
+    ) -> Result<Answer, Fault> {
         let key = (owner.family_id, target.server_id);
         let relays = matches!(ask, Ask::Call { .. });
         let mut retried = false;
         loop {
-            let link = self.link_for(state, owner, key, target).await?;
+            let link = self
+                .link_for(state, owner, key, target, user_headers)
+                .await?;
             let id = link.next_id();
-            let outgoing = outgoing(&link.form, &ask, id)?;
+            let outgoing = outgoing(&link.form, &ask, id, user_headers)?;
             let response = upstream::send(state, target, outgoing).await?;
             match response.status().as_u16() {
                 404 if link.session_id().is_some() && !retried => {
@@ -214,8 +228,21 @@ impl Links {
         owner: Owner,
         target: &Target,
     ) -> Result<bool, Fault> {
+        self.stateless_with(state, owner, target, &[]).await
+    }
+
+    /// As `stateless`, with the caller's custom headers sent by a handshake this makes.
+    pub async fn stateless_with(
+        &self,
+        state: &AppState,
+        owner: Owner,
+        target: &Target,
+        user_headers: &[(HeaderName, HeaderValue)],
+    ) -> Result<bool, Fault> {
         let key = (owner.family_id, target.server_id);
-        let link = self.link_for(state, owner, key, target).await?;
+        let link = self
+            .link_for(state, owner, key, target, user_headers)
+            .await?;
         Ok(matches!(link.form, Form::Stateless))
     }
 
@@ -226,10 +253,14 @@ impl Links {
         owner: Owner,
         key: (i64, i64),
         target: &Target,
+        user_headers: &[(HeaderName, HeaderValue)],
     ) -> Result<Arc<Link>, Fault> {
         match self.inner.usable(key, target) {
             Some(link) => Ok(link),
-            None => self.make(state, owner, key, target).await.map_err(unsent),
+            None => self
+                .make(state, owner, key, target, user_headers)
+                .await
+                .map_err(unsent),
         }
     }
 
@@ -254,12 +285,14 @@ impl Links {
         owner: Owner,
         key: (i64, i64),
         target: &Target,
+        user_headers: &[(HeaderName, HeaderValue)],
     ) -> Result<Arc<Link>, Fault> {
         let gate = self.inner.gate(key, owner.user_id);
         let inner = Arc::clone(&self.inner);
         let state = state.clone();
         let target = owned_target(target);
         let user = owner.user_id;
+        let user_headers = user_headers.to_vec();
         let task = tokio::spawn(async move {
             let _turn = gate.lock_owned().await;
             if let Some(link) = inner.usable(key, &target) {
@@ -267,7 +300,7 @@ impl Links {
             }
             let form = match timeout(
                 time_limit(&state).min(HANDSHAKE_LIMIT),
-                handshake(&state, &target, user),
+                handshake(&state, &target, user, &user_headers),
             )
             .await
             {
@@ -650,7 +683,12 @@ fn envelope<P: Serialize>(id: u64, method: &str, params: P) -> Result<Bytes, Fau
 }
 
 /// The request for a link: headers from nothing, and the body built from the ask alone.
-fn outgoing(form: &Form, ask: &Ask<'_>, id: u64) -> Result<Outgoing, Fault> {
+fn outgoing(
+    form: &Form,
+    ask: &Ask<'_>,
+    id: u64,
+    user_headers: &[(HeaderName, HeaderValue)],
+) -> Result<Outgoing, Fault> {
     let stateless = matches!(form, Form::Stateless);
     let (version, session) = match form {
         Form::Stateless => (STATELESS, None),
@@ -698,6 +736,7 @@ fn outgoing(form: &Form, ask: &Ask<'_>, id: u64) -> Result<Outgoing, Fault> {
         headers,
         body,
         with_secret: true,
+        user_headers: user_headers.to_vec(),
     })
 }
 
@@ -720,8 +759,12 @@ fn unsent(Fault(cause): Fault) -> Fault {
 
 /// The handshake: the stateless probe, then, when the probe has no result, initialize and
 /// the initialized notice. A transport fault at any step is a Fault.
-async fn handshake(state: &AppState, target: &Target, user: i64) -> Result<Form, Fault> {
-    let cap = state.config.limits.tools_list_bytes;
+async fn handshake(
+    state: &AppState,
+    target: &Target,
+    user: i64,
+    user_headers: &[(HeaderName, HeaderValue)],
+) -> Result<Form, Fault> {
     let probe_id = PROBE_ID;
     let probe = exchange(
         state,
@@ -733,8 +776,8 @@ async fn handshake(state: &AppState, target: &Target, user: i64) -> Result<Form,
             json!({"_meta": meta(true, None)}),
         )?,
         probe_id,
-        cap,
         user,
+        user_headers,
     )
     .await?;
     if probe.status == 200
@@ -756,8 +799,8 @@ async fn handshake(state: &AppState, target: &Target, user: i64) -> Result<Form,
             json!({"protocolVersion": SESSION, "capabilities": {}, "clientInfo": client_info()}),
         )?,
         init_id,
-        cap,
         user,
+        user_headers,
     )
     .await?;
     let answer = match (init.status, init.answer) {
@@ -783,6 +826,7 @@ async fn handshake(state: &AppState, target: &Target, user: i64) -> Result<Form,
         target,
         request_headers(revision, None, session.as_ref()),
         notice,
+        user_headers,
     )
     .await?;
     Ok(Form::Session {
@@ -835,12 +879,14 @@ async fn send_post(
     target: &Target,
     headers: HeaderMap,
     body: Bytes,
+    user_headers: &[(HeaderName, HeaderValue)],
 ) -> Result<reqwest::Response, Fault> {
     let outgoing = Outgoing {
         method: Method::POST,
         headers,
         body,
         with_secret: true,
+        user_headers: user_headers.to_vec(),
     };
     upstream::send(state, target, outgoing).await
 }
@@ -852,10 +898,11 @@ async fn exchange(
     headers: HeaderMap,
     body: Bytes,
     id: u64,
-    cap: u64,
     user: i64,
+    user_headers: &[(HeaderName, HeaderValue)],
 ) -> Result<Exchange, Fault> {
-    let response = send_post(state, target, headers, body).await?;
+    let cap = state.config.limits.tools_list_bytes;
+    let response = send_post(state, target, headers, body, user_headers).await?;
     let status = response.status().as_u16();
     let session = response.headers().get("mcp-session-id").cloned();
     if status != 200 {

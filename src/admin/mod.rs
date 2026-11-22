@@ -66,6 +66,15 @@ pub fn router(state: AppState) -> Router<AppState> {
         )
         .route("/servers/{id}/delete", post(servers::post_delete))
         .route("/servers/{id}/users", post(servers::post_users))
+        .route("/servers/{id}/headers", post(servers::post_header))
+        .route(
+            "/servers/{id}/headers/{header_id}/remove",
+            post(servers::post_remove_header),
+        )
+        .route(
+            "/servers/{id}/header-switches",
+            post(servers::post_header_switches),
+        )
         .route(
             "/servers/{id}/refresh-tools",
             post(servers::post_refresh_tools),

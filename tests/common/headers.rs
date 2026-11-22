@@ -108,21 +108,20 @@ pub fn received_calls(upstream: &FakeUpstream, tool: &str) -> Vec<Recorded> {
         .collect()
 }
 
-/// A tools/call on an initialized session client, sent with extra request headers.
+/// A tools/call from a session-style client, sent with extra request headers. The session id is sent
+/// when the client holds one; the combined endpoint issues none, so its calls carry none.
 pub async fn session_call(client: &McpClient, tool: &str, headers: &[(&str, &str)]) -> McpReply {
-    let session = client
-        .session_id()
-        .expect("the session client must be initialized before a call");
+    let session = client.session_id();
     let body = json!({
         "jsonrpc": "2.0",
         "id": 90,
         "method": "tools/call",
         "params": {"name": tool, "arguments": {}},
     });
-    let mut all = vec![
-        ("Mcp-Session-Id", session.as_str()),
-        ("MCP-Protocol-Version", SESSION_VERSION),
-    ];
+    let mut all = vec![("MCP-Protocol-Version", SESSION_VERSION)];
+    if let Some(session) = session.as_deref() {
+        all.push(("Mcp-Session-Id", session));
+    }
     all.extend_from_slice(headers);
     client.raw(body.to_string().as_bytes(), &all).await
 }

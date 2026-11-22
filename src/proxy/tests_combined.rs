@@ -2736,3 +2736,81 @@ async fn a_server_the_budget_refuses_is_left_out_and_keeps_no_refresh_error() {
         "the left out server is logged with the budget as its cause"
     );
 }
+
+/// A declared header on a server, with pass-through on.
+async fn declare_passed(state: &AppState, server_id: i64, name: &str, required: bool) {
+    let name = name.to_owned();
+    state
+        .db
+        .call(move |conn| {
+            conn.execute(
+                "UPDATE servers SET pass_headers = 1 WHERE id = ?1",
+                params![server_id],
+            )?;
+            conn.execute(
+                "INSERT INTO server_headers (server_id, name, name_lower, required, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, 0)",
+                params![server_id, name, name.to_ascii_lowercase(), required],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("declare a header");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_declared_header_sent_twice_refuses_the_whole_list_before_any_upstream() {
+    let fx = fixture().await;
+    let one = stateless_up(vec![tool("echo")]).await;
+    let two = stateless_up(vec![tool("alpha")]).await;
+    let one_id = server(&fx.state, "one", &one.url).await;
+    let two_id = server(&fx.state, "two", &two.url).await;
+    user(&fx.state, 1, vec![one_id, two_id]).await;
+    declare_passed(&fx.state, one_id, "X-Trace-Id", false).await;
+    let reply = send(
+        &fx.state,
+        1,
+        "POST",
+        &[("X-Trace-Id", "a"), ("X-Trace-Id", "b")],
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})),
+    )
+    .await;
+    assert_eq!(
+        reply.status, 400,
+        "a declared header sent twice must refuse the whole list"
+    );
+    assert!(one.seen().is_empty(), "no upstream may be contacted");
+    assert!(two.seen().is_empty(), "no upstream may be contacted");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_missing_required_header_leaves_its_server_out_and_its_call_unavailable() {
+    let fx = fixture().await;
+    let one = stateless_up(vec![tool("echo")]).await;
+    let two = stateless_up(vec![tool("alpha")]).await;
+    let one_id = server(&fx.state, "one", &one.url).await;
+    let two_id = server(&fx.state, "two", &two.url).await;
+    user(&fx.state, 1, vec![one_id, two_id]).await;
+    declare_passed(&fx.state, one_id, "X-Api-Key", true).await;
+    let listed = list(&fx.state, 1).await;
+    assert_eq!(
+        names(&listed),
+        vec!["two__alpha".to_string()],
+        "the server missing its required header must be left out"
+    );
+    assert!(one.seen().is_empty(), "nothing may be sent to that server");
+    let call = send(
+        &fx.state,
+        1,
+        "POST",
+        &[],
+        Some(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "one__echo", "arguments": {}}})),
+    )
+    .await;
+    assert_eq!(
+        call.status, 502,
+        "a call to the left out server must be answered as unavailable"
+    );
+    assert!(one.seen().is_empty(), "the call must not reach that server");
+}
