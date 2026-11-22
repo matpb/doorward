@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Doorward: an authentication gateway in front of MCP servers</title>
+<meta name="description" content="Doorward is an open-source authentication gateway in front of MCP servers. People sign in with an email and a password, an admin decides who may use which server and which tool, and every tool call is recorded with the person who made it. One binary, one SQLite database. Pre-release 0.1.0.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://matpb.github.io/doorward/">
+<meta property="og:site_name" content="Doorward">
+<meta property="og:title" content="Doorward: an authentication gateway in front of MCP servers">
+<meta property="og:description" content="One sign-in in front of the MCP servers you run. An admin decides who may use which server and which tool, and every tool call is recorded with the person who made it. Pre-release 0.1.0.">
+<meta property="og:image" content="https://matpb.github.io/doorward/og.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="Doorward. An authentication gateway in front of your MCP servers. The statement stands on paper to the left of a black door with a round handle.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="site.css">
+</head>
+<body id="top">
+<a class="skip" href="#what">Skip to the content</a>
+
+<header class="bar">
+  <a class="brand" href="#top">
+    <svg class="brand-mark" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill-rule="evenodd" d="M6.5 2h11A1.5 1.5 0 0 1 19 3.5v17a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20.5v-17A1.5 1.5 0 0 1 6.5 2Zm8.25 9.25a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/></svg>
+    <span>Doorward</span>
+  </a>
+  <nav aria-label="On this page">
+    <ul>
+      <li class="wide-only"><a href="#how-title">How it works</a></li>
+      <li class="wide-only"><a href="#gets-title">What you get</a></li>
+      <li><a href="#product-title">The product</a></li>
+      <li class="wide-only"><a href="#start-title">Quick start</a></li>
+      <li><a href="https://github.com/matpb/doorward">Source</a></li>
+    </ul>
+  </nav>
+</header>
+
+<main>
+
+<div class="threshold">
+  <section class="statement" aria-labelledby="what">
+    <h1 id="what">An authentication gateway in front of your MCP servers.</h1>
+    <p class="lede">People sign in with an email and a password. An admin decides who may use which server and which tool. Every request is checked before it reaches a server.</p>
+    <p class="problem">A server that answers any request can be used by anyone who can reach its address. Locked down behind Doorward, it answers the gateway only, and every tool call is recorded with the person who <span class="nb">made it.</span></p>
+    <p class="actions">
+      <a class="button" href="#start-title">Quick start</a>
+      <a href="#tutorial-title">Watch the tutorial, 9 min</a>
+      <a class="also-in-bar" href="https://github.com/matpb/doorward">Source</a>
+      <span class="handle" aria-hidden="true"></span>
+    </p>
+    <ul class="facts">
+      <li><span class="mark" data-v="warn" aria-hidden="true"></span>Pre-release 0.1.0</li>
+      <li>MIT or Apache-2.0</li>
+      <li>One binary, one SQLite database</li>
+    </ul>
+  </section>
+
+  <section class="path" id="how" aria-labelledby="how-title">
+    <h2 id="how-title">How a connection works</h2>
+    <p class="path-heads" aria-hidden="true"><span>Client and person</span><span>Doorward</span><span>MCP server</span></p>
+
+    <div class="phase">
+      <div class="phase-head">
+        <h3>A client connects</h3>
+        <p>Any MCP client that supports streamable HTTP and OAuth should work. Both client registration methods are supported.</p>
+      </div>
+      <ol class="steps" role="list">
+        <li class="step">
+          <div class="cell at-client">
+            <span class="who">Client</span>
+            <p><strong>It is given one address.</strong> One server, or <code>/mcp</code> for every server the person may use.</p>
+            <p class="sample"><code class="addr">https://gateway.example.com/<wbr>&lt;slug&gt;</code></p>
+          </div>
+          <span class="wire" data-dir="in" aria-hidden="true"></span>
+          <div class="cell at-door">
+            <span class="who">Doorward</span>
+            <p><strong>Its own OAuth server.</strong> The client discovers it and finds the <span class="nb">sign-in</span> pages by itself.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="wire stacked-only" data-dir="out" aria-hidden="true"></span>
+          <div class="cell at-client">
+            <span class="who">Person</span>
+            <p><strong>Signs in<span class="table-only">, then approves</span>.</strong> The browser opens the gateway&rsquo;s <span class="nb">sign-in</span> page: an email and a password.</p>
+          </div>
+          <span class="wire" data-dir="in" aria-hidden="true"></span>
+          <div class="cell at-door">
+            <span class="who">Doorward</span>
+            <p><strong>Asks for consent.</strong> The consent page names the client, the server and the <span class="nb">signed-in</span> person.<span class="table-only"> Approve only a <span class="nb">sign-in</span> you started yourself.</span></p>
+          </div>
+          <span class="wire stacked-only" data-dir="out" aria-hidden="true"></span>
+          <div class="cell at-client stacked-only">
+            <span class="who">Person</span>
+            <p><strong>Approves.</strong> Approve only a <span class="nb">sign-in</span> you started yourself.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="wire stacked-only" data-dir="in" aria-hidden="true"></span>
+          <div class="cell at-door">
+            <span class="who">Doorward</span>
+            <p><strong>Issues tokens that only work at the gateway.</strong> Access tokens last 60&nbsp;minutes and refresh tokens rotate.</p>
+          </div>
+          <span class="wire" data-dir="out" aria-hidden="true"></span>
+          <div class="cell at-client">
+            <span class="who">Client</span>
+            <p><strong>Connected.</strong> Each person sees their connected clients on their account page and can disconnect one there.</p>
+          </div>
+          <div class="cell at-server">
+            <span class="who">MCP server</span>
+            <p><strong>Sees none of this.</strong> The upstream servers never see the tokens.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+
+    <div class="phase">
+      <div class="phase-head">
+        <h3>Then, every request</h3>
+      </div>
+      <ol class="steps" role="list">
+        <li class="step">
+          <div class="cell at-client">
+            <span class="who">Client</span>
+            <p><strong>Lists the tools, or calls one.</strong> At the same address, with its token.</p>
+          </div>
+          <span class="wire" data-dir="in" aria-hidden="true"></span>
+          <div class="cell at-door">
+            <span class="who">Doorward</span>
+            <p><strong>Checks it before it reaches a server.</strong> Is the server assigned to this person? Does a rule deny this tool, for this person or for everyone?</p>
+          </div>
+        </li>
+        <li class="step">
+          <div class="cell at-door">
+            <span class="who">Doorward</span>
+            <p><span class="verdict"><span class="mark" data-v="allow" aria-hidden="true"></span><strong>Allow.</strong></span> With no matching deny rule, every tool of an assigned server is allowed. The gateway adds the server&rsquo;s secret header to the request it forwards and removes the visitor&rsquo;s own credentials.</p>
+          </div>
+          <span class="wire" data-dir="up" aria-hidden="true"></span>
+          <div class="cell at-server">
+            <span class="who">MCP server</span>
+            <p><strong>Answers the gateway only.</strong> Locked down, it refuses any request without the secret header.</p>
+          </div>
+        </li>
+        <li class="step">
+          <div class="cell at-door">
+            <span class="who">Doorward</span>
+            <p><span class="verdict"><span class="mark" data-v="deny" aria-hidden="true"></span><strong>Deny.</strong></span> A denied tool is left out of the tool list and refused when called. The request stops here.</p>
+          </div>
+          <span class="wire" data-dir="stop" aria-hidden="true"></span>
+        </li>
+        <li class="step">
+          <div class="cell at-door">
+            <span class="who">Doorward</span>
+            <p><strong>Writes it down.</strong> In the activity log, with the person who made the call.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+</div>
+
+<section class="section" id="gets" aria-labelledby="gets-title">
+  <div class="section-head">
+    <h2 id="gets-title">What you get</h2>
+    <p>In the README&rsquo;s words. It ships as one binary with one SQLite database.</p>
+  </div>
+  <dl class="section-body gets">
+    <div>
+      <dt>One address per server</dt>
+      <dd>Each MCP server you add gets a path, <code class="addr">https://gateway.example.com/<wbr>&lt;slug&gt;</code>. A combined endpoint, <code>/mcp</code>, offers the tools of every server a person may use, named <code>&lt;path&gt;__&lt;tool&gt;</code>.</dd>
+    </div>
+    <div>
+      <dt>Its own OAuth server</dt>
+      <dd>MCP clients discover it, send the person to the gateway&rsquo;s own <span class="nb">sign-in</span> and consent pages, and get tokens that only work at the gateway. The upstream servers never see them.</dd>
+    </div>
+    <div>
+      <dt>Invitations</dt>
+      <dd>The first person to sign up owns the instance. Everyone else comes in through a one-time link that expires, and sets or resets their own password by email.</dd>
+    </div>
+    <div>
+      <dt>Access rules</dt>
+      <dd>Servers are assigned to people. Allow and deny rules cover all tools, one server, or one exact tool.</dd>
+    </div>
+    <div>
+      <dt>Activity log</dt>
+      <dd>Every <span class="nb">sign-in</span>, admin change and tool call is recorded with the person who made it.</dd>
+    </div>
+    <div>
+      <dt>Mail</dt>
+      <dd>Raw SMTP, Resend or Mailgun, set from the admin panel.</dd>
+    </div>
+    <div>
+      <dt>Both protocol generations</dt>
+      <dd>The session form and the stateless form of MCP over HTTP are both served.</dd>
+    </div>
+  </dl>
+</section>
+
+<section class="inside" id="product" aria-labelledby="product-title">
+  <div class="screens" role="group" aria-labelledby="product-title">
+    <h2 id="product-title">The product itself</h2>
+    <p class="screens-note">Real pages, not mock-ups. They follow your colour scheme.</p>
+
+    <input class="screen-pick" type="radio" name="screen" id="screen-overview" checked>
+    <input class="screen-pick" type="radio" name="screen" id="screen-servers">
+    <input class="screen-pick" type="radio" name="screen" id="screen-sign-in">
+    <p class="screen-tabs">
+      <label for="screen-overview">Overview</label>
+      <label for="screen-servers">Servers</label>
+      <label for="screen-sign-in">Sign-in and consent</label>
+    </p>
+
+    <figure class="screen" data-screen="overview">
+      <figcaption>The admin panel. A warning about servers that answer without the gateway, counts of servers, users, invitations and rules, and the latest activity.</figcaption>
+      <div class="shot">
+        <p class="pane-name">Overview page</p>
+        <picture>
+          <source media="(max-width: 389.98px) and (prefers-color-scheme: dark)" srcset="img/overview-360-dark.png" width="360" height="1398">
+          <source media="(max-width: 389.98px)" srcset="img/overview-360-light.png" width="360" height="1398">
+          <source media="(max-width: 743.98px) and (prefers-color-scheme: dark)" srcset="img/overview-390-dark.png" width="390" height="1378">
+          <source media="(max-width: 743.98px)" srcset="img/overview-390-light.png" width="390" height="1378">
+          <source media="(max-width: 1199.98px) and (prefers-color-scheme: dark)" srcset="img/overview-728-dark.png" width="728" height="966">
+          <source media="(max-width: 1199.98px)" srcset="img/overview-728-light.png" width="728" height="966">
+          <source media="(prefers-color-scheme: dark)" srcset="img/overview-1502-dark.png" width="1502" height="700">
+          <img src="img/overview-1502-light.png" width="1502" height="700" alt="The Doorward admin panel: a warning about two servers that answer without the gateway, counts of servers, users, invitations and rules, and the latest activity: three tool calls that were allowed, one refused by a rule, and one sign-in, each with its person, server, tool, decision, duration and time">
+        </picture>
+      </div>
+    </figure>
+
+    <figure class="screen" data-screen="servers">
+      <figcaption>Each server with its path, tool count, user count and lock-down state. &ldquo;Locked down&rdquo; means the server refused a request without the secret. &ldquo;Answers without the gateway&rdquo; means anyone who can reach its address can use it.</figcaption>
+      <div class="shot">
+        <p class="pane-name">Servers page</p>
+        <picture>
+          <source media="(max-width: 389.98px) and (prefers-color-scheme: dark)" srcset="img/servers-360-dark.png" width="360" height="1208">
+          <source media="(max-width: 389.98px)" srcset="img/servers-360-light.png" width="360" height="1208">
+          <source media="(max-width: 743.98px) and (prefers-color-scheme: dark)" srcset="img/servers-390-dark.png" width="390" height="1208">
+          <source media="(max-width: 743.98px)" srcset="img/servers-390-light.png" width="390" height="1208">
+          <source media="(max-width: 1199.98px) and (prefers-color-scheme: dark)" srcset="img/servers-728-dark.png" width="728" height="1128">
+          <source media="(max-width: 1199.98px)" srcset="img/servers-728-light.png" width="728" height="1128">
+          <source media="(prefers-color-scheme: dark)" srcset="img/servers-1502-dark.png" width="1502" height="510">
+          <img src="img/servers-1502-light.png" width="1502" height="510" loading="lazy" decoding="async" alt="The servers page: each server with its path, tool count, user count and lock-down state">
+        </picture>
+      </div>
+    </figure>
+
+    <figure class="screen" data-screen="sign-in">
+      <figcaption>The gateway&rsquo;s own pages. The browser opens the <span class="nb">sign-in</span> page, then a consent page that names the client, the server and the <span class="nb">signed-in</span> person.</figcaption>
+      <div class="shot pair">
+        <div class="pane pair-wide">
+          <p class="pane-name">Sign-in page</p>
+          <picture>
+            <source media="(max-width: 389.98px) and (prefers-color-scheme: dark)" srcset="img/sign-in-360-dark.png" width="360" height="484">
+            <source media="(max-width: 389.98px)" srcset="img/sign-in-360-light.png" width="360" height="484">
+            <source media="(max-width: 743.98px) and (prefers-color-scheme: dark)" srcset="img/sign-in-390-dark.png" width="390" height="484">
+            <source media="(max-width: 743.98px)" srcset="img/sign-in-390-light.png" width="390" height="484">
+            <source media="(max-width: 1199.98px) and (prefers-color-scheme: dark)" srcset="img/sign-in-728-dark.png" width="728" height="540">
+            <source media="(max-width: 1199.98px)" srcset="img/sign-in-728-light.png" width="728" height="540">
+            <source media="(prefers-color-scheme: dark)" srcset="img/sign-in-dark.png" width="906" height="624">
+            <img src="img/sign-in-light.png" width="906" height="624" loading="lazy" decoding="async" alt="The sign-in page: the edge of the door with its handle, and a form with Email, Password, a link for a forgotten password and the Sign in button">
+          </picture>
+        </div>
+        <div class="pane pair-phone">
+          <p class="pane-name">Consent page</p>
+          <picture>
+            <source media="(max-width: 389.98px) and (prefers-color-scheme: dark)" srcset="img/consent-360-dark.png" width="360" height="656">
+            <source media="(max-width: 389.98px)" srcset="img/consent-360-light.png" width="360" height="656">
+            <source media="(max-width: 743.98px) and (prefers-color-scheme: dark)" srcset="img/consent-dark.png" width="390" height="624">
+            <source media="(max-width: 743.98px)" srcset="img/consent-light.png" width="390" height="624">
+            <source media="(max-width: 1199.98px) and (prefers-color-scheme: dark)" srcset="img/consent-728-dark.png" width="728" height="628">
+            <source media="(max-width: 1199.98px)" srcset="img/consent-728-light.png" width="728" height="628">
+            <source media="(prefers-color-scheme: dark)" srcset="img/consent-dark.png" width="390" height="624">
+            <img src="img/consent-light.png" width="390" height="624" loading="lazy" decoding="async" alt="The consent page: where the sign-in will be sent, a warning about the client's name, the server, the signed-in person, Approve and Deny">
+          </picture>
+        </div>
+      </div>
+    </figure>
+  </div>
+
+  <div class="tutorial" id="tutorial">
+    <h2 id="tutorial-title">The tutorial, in nine minutes</h2>
+    <p class="tutorial-note">Narrated, with subtitles burnt in: what Doorward is, how to run it, and how to check that it works.</p>
+    <video controls preload="none" playsinline poster="media/poster.jpg" width="1920" height="1080" aria-labelledby="tutorial-title">
+      <source src="media/doorward-tutorial.mp4" type="video/mp4">
+      <a href="media/doorward-tutorial.mp4">Open the tutorial video (MP4, 39&nbsp;MB)</a>
+    </video>
+    <div class="parts">
+      <h3 id="parts-title">Open it at a part</h3>
+      <ol aria-labelledby="parts-title" role="list">
+        <li><a href="media/doorward-tutorial.mp4#t=28"><time datetime="PT28S">0:28</time> What it is, how it connects</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=92"><time datetime="PT1M32S">1:32</time> Install, first start</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=152"><time datetime="PT2M32S">2:32</time> The admin panel</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=183"><time datetime="PT3M3S">3:03</time> Add a server, lock it down</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=248"><time datetime="PT4M8S">4:08</time> Invite people, set up mail</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=307"><time datetime="PT5M7S">5:07</time> Assign servers, write rules</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=374"><time datetime="PT6M14S">6:14</time> Connect a client, consent</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=434"><time datetime="PT7M14S">7:14</time> Your account, the activity log</a></li>
+        <li><a href="media/doorward-tutorial.mp4#t=496"><time datetime="PT8M16S">8:16</time> Test it yourself</a></li>
+      </ol>
+      <p>Each time opens the video file at that point. <a href="media/doorward-tutorial.mp4">The whole file</a> is an MP4 of 39&nbsp;MB.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="start" aria-labelledby="start-title">
+  <div class="section-head">
+    <h2 id="start-title">Quick start</h2>
+    <p>The binary on Linux, a proxy for HTTPS, one client. Click a command to select all of it.</p>
+  </div>
+  <div class="section-body">
+    <ol class="run">
+      <li>
+        <h3>Build it</h3>
+        <p>The gateway runs on Linux; Windows is not supported. Build it with <span class="nb">Rust 1.89</span> or newer.</p>
+        <pre class="code sh"><code><span class="tok">cargo</span> <span class="tok">build</span> <span class="tok">--release</span></code></pre>
+      </li>
+      <li>
+        <h3>Write a config file</h3>
+        <p>Four settings are enough to start. Every setting can also come from an environment variable.</p>
+        <figure class="named">
+          <figcaption>doorward.toml</figcaption>
+          <pre class="code conf"><code>public_url = "https://gateway.example.com"
+listen = "127.0.0.1:8717"
+database = "/var/lib/doorward/doorward.db"
+trusted_proxies = ["127.0.0.1", "::1"]</code></pre>
+        </figure>
+        <p><code>trusted_proxies</code> names the proxy in front; the two loopback addresses fit a proxy on the same host. The directory of <code>database</code> must exist and be writable by the gateway.</p>
+      </li>
+      <li>
+        <h3>Start it</h3>
+        <pre class="code sh"><code><span class="tok">./target/release/doorward</span> <span class="tok">--config</span> <span class="tok">doorward.toml</span></code></pre>
+        <p>The first start prints a setup code on standard error. Open <code>/setup</code>, enter the code, and the account you create becomes the owner. The admin panel is at <code>/admin</code>.</p>
+      </li>
+      <li>
+        <h3>Put HTTPS in front</h3>
+        <p>The gateway speaks plain HTTP and expects a proxy that terminates TLS: Caddy, nginx, a tunnel, or a load balancer. Caddy needs nothing more than the address.</p>
+        <figure class="named">
+          <figcaption>Caddyfile</figcaption>
+          <pre class="code conf"><code>gateway.example.com {
+	reverse_proxy 127.0.0.1:8717
+}</code></pre>
+        </figure>
+        <p>nginx needs buffering turned off for event streams: <a href="https://github.com/matpb/doorward/blob/main/README.md#put-https-in-front">the README has the block</a>.</p>
+      </li>
+      <li>
+        <h3>Add a server and lock it down</h3>
+        <p>In the admin panel, add a server with a name, a path and its upstream address. Give it a secret header, configure the server to refuse any request without it, then press &ldquo;Check lock-down&rdquo; on the server page.</p>
+      </li>
+      <li>
+        <h3>Connect a client</h3>
+        <p>Give the client the address of one server, or the combined endpoint <code class="addr">https://gateway.example.com/<wbr>mcp</code>.</p>
+        <figure class="named">
+          <figcaption>Claude Code</figcaption>
+          <pre class="code sh"><code><span class="tok">claude</span> <span class="tok">mcp</span> <span class="tok">add</span> <span class="tok">--transport</span> <span class="tok">http</span> <span class="tok">&lt;name&gt;</span> <span class="tok">https://gateway.example.com/&lt;slug&gt;</span></code>
+<code><span class="tok">claude</span> <span class="tok">mcp</span> <span class="tok">login</span> <span class="tok">&lt;name&gt;</span></code></pre>
+        </figure>
+        <figure class="named">
+          <figcaption>Codex</figcaption>
+          <pre class="code sh"><code><span class="tok">codex</span> <span class="tok">mcp</span> <span class="tok">add</span> <span class="tok">&lt;name&gt;</span> <span class="tok">--url</span> <span class="tok">https://gateway.example.com/&lt;slug&gt;</span></code>
+<code><span class="tok">codex</span> <span class="tok">mcp</span> <span class="tok">login</span> <span class="tok">&lt;name&gt;</span></code></pre>
+        </figure>
+        <p>The browser opens the gateway&rsquo;s <span class="nb">sign-in</span> page, then the consent page. Approve only a <span class="nb">sign-in</span> you started yourself.</p>
+      </li>
+    </ol>
+
+    <div class="variant">
+      <h3>Or run it with Docker</h3>
+      <p>Two Compose files are in the repository. <code>compose.caddy.yaml</code> runs Caddy in front of the gateway, with automatic HTTPS. <code>compose.yaml</code> runs the gateway alone, on the host&rsquo;s loopback address, for a proxy or tunnel you already run.</p>
+      <pre class="code sh"><code><span class="tok">cp</span> <span class="tok">.env.example</span> <span class="tok">.env</span></code>
+<code><span class="tok">docker</span> <span class="tok">compose</span> <span class="tok">-f</span> <span class="tok">compose.caddy.yaml</span> <span class="tok">build</span></code>
+<code><span class="tok">docker</span> <span class="tok">compose</span> <span class="tok">-f</span> <span class="tok">compose.caddy.yaml</span> <span class="tok">up</span> <span class="tok">-d</span></code>
+<code><span class="tok">docker</span> <span class="tok">compose</span> <span class="tok">-f</span> <span class="tok">compose.caddy.yaml</span> <span class="tok">logs</span> <span class="tok">doorward</span></code></pre>
+      <p>Set <code>DOORWARD_PUBLIC_URL</code> in <code>.env</code> before you build. The last command shows the line <code>doorward setup code: &lt;code&gt;</code>. Then follow <a href="https://github.com/matpb/doorward/blob/main/docs/DOCKER.md">docs/DOCKER.md</a>: every setting, backups, upgrades.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="status" aria-labelledby="status-title">
+  <div class="section-head">
+    <h2 id="status-title">Status</h2>
+    <p>Pre-release, and what that means today.</p>
+  </div>
+  <div class="section-body">
+    <dl class="status">
+      <div>
+        <dt><span class="mark" data-v="warn" aria-hidden="true"></span>Pre-release</dt>
+        <dd>Version 0.1.0. Fixes go into the newest version only.</dd>
+      </div>
+      <div>
+        <dt><span class="mark" data-v="allow" aria-hidden="true"></span>Run against 0.1.0</dt>
+        <dd>Claude Code, Codex and the Cursor command line client.</dd>
+      </div>
+      <div>
+        <dt><span class="mark" data-v="warn" aria-hidden="true"></span>Should work</dt>
+        <dd>Any MCP client that supports streamable HTTP and OAuth: it finds the <span class="nb">sign-in</span> pages by itself, and both client registration methods are supported.</dd>
+      </div>
+      <div>
+        <dt><span class="mark" data-v="deny" aria-hidden="true"></span>Not supported</dt>
+        <dd>Windows. The gateway runs on Linux.</dd>
+      </div>
+      <div>
+        <dt><span class="mark" data-v="warn" aria-hidden="true"></span>Limits</dt>
+        <dd>Per-user permissions exist only in the gateway: every user reaches a server under one identity. Allow and deny rules cover tools only. A tool call still succeeds when its activity row cannot be written, for example on a full disk. <span class="nb">Sign-in</span> uses a password only; there is no second factor. The rest is in <a href="https://github.com/matpb/doorward/blob/main/README.md#what-the-gateway-does-not-do">What the gateway does not do</a> and <a href="https://github.com/matpb/doorward/blob/main/SECURITY.md#known-limits">Known limits</a>.</dd>
+      </div>
+      <div>
+        <dt><span class="mark" aria-hidden="true"></span>How it is checked</dt>
+        <dd><code>./check.sh</code> runs formatting, lints, every test, the dependency audits and the repository hygiene scan, and prints <code class="words">CHECK PASS</code> when all of them pass. The proof scripts drive real clients and real HTTP against a throwaway gateway.</dd>
+      </div>
+    </dl>
+
+    <h3 class="cautions-title">Before you rely on it</h3>
+    <ul class="cautions">
+      <li>Set up mail in the panel before you need it. A lost password, the owner&rsquo;s included, is reset by email only: there is no command that sets one.</li>
+      <li>The encryption key for stored secrets is created next to the database. Back it up with the database: one is useless without the other.</li>
+      <li>An admin can point a server at any address the gateway can reach, one on your private network included, so give the admin role only to people you would give that reach.</li>
+      <li>An <code>http</code> upstream address carries the secret header unencrypted between the gateway and the server: use <code>https</code> unless the server runs on the same host or on a network you trust.</li>
+    </ul>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot" aria-labelledby="links-title">
+  <h2 id="links-title" class="vh">Links</h2>
+  <div class="foot-groups">
+    <nav aria-labelledby="foot-project">
+      <h3 id="foot-project">Project</h3>
+      <ul>
+        <li><a href="https://github.com/matpb/doorward">Source repository</a></li>
+        <li><a href="https://github.com/matpb/doorward/issues">Issue tracker</a>, for bugs and questions</li>
+        <li><a href="https://github.com/matpb/doorward/blob/main/CONTRIBUTING.md">How a change is made and checked</a></li>
+      </ul>
+    </nav>
+    <nav aria-labelledby="foot-docs">
+      <h3 id="foot-docs">Documentation</h3>
+      <ul>
+        <li><a href="https://github.com/matpb/doorward/blob/main/docs/DOCKER.md">Containers, every setting, backups, upgrades</a></li>
+        <li><a href="https://github.com/matpb/doorward/blob/main/docs/DESIGN.md">How the gateway is built and why</a></li>
+        <li><a href="https://github.com/matpb/doorward/blob/main/docs/INTERFACE.md">Every page and endpoint</a></li>
+        <li><a href="https://github.com/matpb/doorward/blob/main/docs/TESTS.md">The test catalogue</a></li>
+      </ul>
+    </nav>
+    <nav aria-labelledby="foot-security">
+      <h3 id="foot-security">Security</h3>
+      <ul>
+        <li><a href="https://github.com/matpb/doorward/security">Report a vulnerability privately</a>, not in a public issue: open the repository&rsquo;s security tab and choose &ldquo;Report a vulnerability&rdquo;. Only the maintainers see the report.</li>
+        <li><a href="https://github.com/matpb/doorward/blob/main/SECURITY.md">The security policy</a></li>
+      </ul>
+    </nav>
+    <nav aria-labelledby="foot-licence">
+      <h3 id="foot-licence">Licence</h3>
+      <ul>
+        <li>Licensed under <a href="https://github.com/matpb/doorward/blob/main/LICENSE-MIT">MIT</a> or <a href="https://github.com/matpb/doorward/blob/main/LICENSE-APACHE">Apache-2.0</a></li>
+        <li>Typefaces: Atkinson Hyperlegible <a href="fonts/OFL-Atkinson-Hyperlegible-Next.txt">Next</a> and <a href="fonts/OFL-Atkinson-Hyperlegible-Mono.txt">Mono</a>, SIL Open Font License 1.1</li>
+      </ul>
+    </nav>
+  </div>
+  <div class="foot-end">
+    <a class="brand" href="#top">
+      <svg class="brand-mark" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill-rule="evenodd" d="M6.5 2h11A1.5 1.5 0 0 1 19 3.5v17a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 20.5v-17A1.5 1.5 0 0 1 6.5 2Zm8.25 9.25a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/></svg>
+      <span>Doorward</span>
+    </a>
+    <p>This page runs no script and loads nothing from another origin.</p>
+  </div>
+</footer>
+</body>
+</html>

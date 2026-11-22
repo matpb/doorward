@@ -1,0 +1,1969 @@
+/* Doorward public page. Direction: Street side. Tokens and recipes: DESIGN.md. */
+
+/* ---------- Fonts (SIL OFL 1.1, files unmodified, licence texts in fonts/) ---------- */
+
+@font-face {
+  font-family: "Atkinson Hyperlegible Next";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Atkinson Hyperlegible Next";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("fonts/atkinson-hyperlegible-next-latin-ext-wght-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "Atkinson Hyperlegible Mono";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("fonts/atkinson-hyperlegible-mono-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Atkinson Hyperlegible Mono";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("fonts/atkinson-hyperlegible-mono-latin-ext-wght-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ---------- Tokens ---------- */
+
+:root {
+  color-scheme: light dark;
+
+  /* The door: one colour in both themes, the application's own. */
+  --door: oklch(0.13 0.005 85);
+  --on-door: oklch(0.96 0.004 85);
+  --on-door-2: oklch(0.74 0.006 85);
+  --door-line: oklch(1 0 0 / 0.12);
+  --door-line-2: oklch(1 0 0 / 0.2);
+  --door-well: oklch(1 0 0 / 0.07);
+  /* Verdicts on the door use the application's dark values: the door is always dark. */
+  --allow-on-door: oklch(0.78 0.15 150);
+  --deny-on-door: oklch(0.74 0.15 25);
+  --warn-on-door: oklch(0.82 0.13 80);
+
+  --paper: oklch(0.985 0.004 85);
+  --surface: oklch(1 0 0);
+  --line: oklch(0.89 0.006 85);
+  --line-strong: oklch(0.6 0.008 85);
+  --ink: oklch(0.2 0.008 85);
+  --ink-hover: oklch(0.32 0.008 85);
+  --ink-2: oklch(0.4 0.008 85);
+  --ink-3: oklch(0.5 0.008 85);
+
+  --allow: oklch(0.5 0.13 150);
+  --deny: oklch(0.5 0.19 27);
+  --warn: oklch(0.52 0.12 70);
+
+  --focus: var(--ink);
+
+  --sans: "Atkinson Hyperlegible Next", ui-sans-serif, system-ui, sans-serif;
+  --mono: "Atkinson Hyperlegible Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --s8: 64px;
+  --s9: 96px;
+  --s10: 128px;
+
+  --r1: 2px;
+  --r2: 4px;
+
+  --gutter: 20px;
+  --col: 288px;
+  --gap: 48px;
+  --measure: 624px;
+  --block: 656px;
+  --prose: 560px;
+  --control: 44px;
+  --bar: 56px;
+  --section: var(--s8);
+
+  --tight: -1px;
+  --tighter: -1px;
+
+  --t-fast: 120ms;
+  --t-press: 125ms;
+  --t-mid: 200ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Two columns each side of the door's edge, which is the middle of the page. */
+  --cols:
+    minmax(var(--gap), 1fr)
+    minmax(0, var(--col)) var(--gap) minmax(0, var(--col)) var(--gap)
+    var(--gap) minmax(0, var(--col)) var(--gap) minmax(0, var(--col))
+    minmax(var(--gap), 1fr);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: oklch(0.205 0.005 85);
+    --surface: oklch(0.165 0.005 85);
+    --line: oklch(0.3 0.005 85);
+    --line-strong: oklch(0.56 0.006 85);
+    --ink: oklch(0.95 0.004 85);
+    --ink-hover: oklch(0.84 0.004 85);
+    --ink-2: oklch(0.8 0.005 85);
+    --ink-3: oklch(0.68 0.006 85);
+    --allow: oklch(0.78 0.15 150);
+    --deny: oklch(0.74 0.15 25);
+    --warn: oklch(0.82 0.13 80);
+  }
+}
+
+@media (min-width: 900px) {
+  :root {
+    --gutter: 48px;
+    --section: var(--s9);
+  }
+}
+
+@media (min-width: 1200px) {
+  :root {
+    --bar: 64px;
+    --section: var(--s10);
+    --tighter: -2px;
+  }
+}
+
+@media (min-width: 1200px) and (pointer: fine) {
+  :root {
+    --control: 40px;
+  }
+}
+
+/* ---------- Base ---------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 16px/26px var(--sans);
+  font-synthesis: none;
+  overflow-wrap: break-word;
+}
+
+h1,
+h2,
+h3,
+p,
+ol,
+ul,
+dl,
+dd,
+figure,
+pre {
+  margin: 0;
+  padding: 0;
+}
+
+ol,
+ul {
+  list-style: none;
+}
+
+h1 {
+  font: 700 36px/40px var(--sans);
+  letter-spacing: var(--tight);
+  text-wrap: balance;
+}
+
+h2 {
+  font: 700 28px/32px var(--sans);
+  letter-spacing: var(--tight);
+  text-wrap: balance;
+}
+
+h3 {
+  font: 650 20px/28px var(--sans);
+}
+
+p,
+dd,
+li {
+  text-wrap: pretty;
+}
+
+strong {
+  font-weight: 650;
+}
+
+code,
+pre,
+time {
+  font-family: var(--mono);
+}
+
+/* line-height 1 so an identifier cannot stretch the line it sits in. */
+code {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* An identifier in running text stays whole. An address may break at the wbr after its last slash. */
+:not(pre) > code {
+  white-space: nowrap;
+}
+
+/* Words a program prints may part at their space: no line before them is cut short to keep them together. */
+:not(pre) > code.words {
+  white-space: normal;
+}
+
+:not(pre) > code.addr {
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--line-strong);
+  transition: text-decoration-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+}
+
+a:hover {
+  text-decoration-color: currentColor;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--r1);
+}
+
+img,
+video {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+h2 {
+  scroll-margin-top: var(--s7);
+}
+
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.skip {
+  position: absolute;
+  top: var(--s2);
+  left: var(--s2);
+  z-index: 2;
+  padding: var(--s2) var(--s4);
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: var(--r2);
+  font: 600 14px/20px var(--sans);
+  text-decoration: none;
+  transform: translateY(-64px);
+}
+
+.skip:focus-visible {
+  transform: none;
+}
+
+/* Whatever stands on the door reads the door's own colours. */
+.bar,
+.at-door,
+.at-server,
+.inside,
+.foot {
+  --focus: var(--on-door);
+  --allow: var(--allow-on-door);
+  --deny: var(--deny-on-door);
+  --warn: var(--warn-on-door);
+}
+
+/* ---------- Marks: the application's verdict shapes ---------- */
+
+.mark {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-inline-end: var(--s2);
+  vertical-align: -1px;
+}
+
+.mark::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+}
+
+.mark[data-v="allow"]::before {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--allow);
+}
+
+.mark[data-v="deny"]::before {
+  width: 10px;
+  height: 4px;
+  border-radius: 1px;
+  background: var(--deny);
+}
+
+.mark[data-v="warn"]::before {
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--warn);
+  transform: rotate(45deg);
+}
+
+/* ---------- Brand ---------- */
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  font: 700 16px/24px var(--sans);
+  color: inherit;
+  text-decoration: none;
+}
+
+/* The drawing has 5 px of air each side of 14 px of ink: the ink starts on the page edge. */
+.brand-mark {
+  flex: none;
+  margin-inline: -5px 7px;
+  fill: currentColor;
+}
+
+/* ---------- Bar ---------- */
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s5);
+  min-height: var(--bar);
+  padding-inline: var(--gutter);
+  background: var(--door);
+  color: var(--on-door);
+}
+
+.bar ul {
+  display: flex;
+  gap: var(--s2);
+  margin-inline: calc(-1 * var(--s2));
+}
+
+.bar nav a {
+  display: block;
+  padding: var(--s3) var(--s2);
+  font: 500 14px/20px var(--sans);
+  color: var(--on-door-2);
+  text-decoration: none;
+}
+
+.bar nav a:hover {
+  color: var(--on-door);
+}
+
+.wide-only {
+  display: none;
+}
+
+@media (min-width: 720px) {
+  .wide-only {
+    display: block;
+  }
+
+  h1 {
+    font: 700 44px/48px var(--sans);
+  }
+}
+
+/* ---------- Statement ---------- */
+
+.statement {
+  padding: var(--s7) var(--gutter) var(--s8);
+}
+
+.statement > * {
+  max-width: var(--measure);
+}
+
+.lede {
+  margin-top: var(--s5);
+  font: 400 20px/28px var(--sans);
+}
+
+.problem {
+  margin-top: var(--s4);
+  color: var(--ink-2);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s3) var(--s5);
+  margin-top: var(--s6);
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  height: var(--control);
+  padding-inline: var(--s5);
+  border-radius: var(--r2);
+  background: var(--ink);
+  color: var(--paper);
+  font: 600 16px/24px var(--sans);
+  text-decoration: none;
+  transition: background-color var(--t-fast) var(--ease-out), transform var(--t-press) var(--ease-out);
+}
+
+.button:hover {
+  background: var(--ink-hover);
+}
+
+.button:active {
+  transform: scale(0.97);
+}
+
+.actions a:not(.button) {
+  padding-block: var(--s2);
+}
+
+.handle {
+  display: none;
+}
+
+/* Under 480 px the bar already carries this link. */
+.actions .also-in-bar {
+  display: none;
+}
+
+@media (min-width: 480px) {
+  .actions .also-in-bar {
+    display: inline;
+  }
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s5);
+  margin-top: var(--s5);
+  padding-inline-start: 20px;
+  font: 400 14px/20px var(--sans);
+  color: var(--ink-2);
+}
+
+.facts .mark {
+  margin-inline: -20px var(--s2);
+}
+
+/* ---------- The connection diagram, stacked (under 1200 px) ---------- */
+
+.path > h2 {
+  padding: 0 var(--gutter) var(--s6);
+}
+
+.path-heads {
+  display: none;
+}
+
+.phase-head {
+  padding: var(--s5) var(--gutter);
+  border-top: 1px solid var(--ink);
+}
+
+.phase-head p {
+  max-width: var(--measure);
+  margin-top: var(--s1);
+  font: 400 14px/20px var(--sans);
+  color: var(--ink-2);
+}
+
+.cell {
+  padding: var(--s5) var(--gutter);
+}
+
+.cell p {
+  max-width: var(--measure);
+  color: var(--ink-2);
+}
+
+.cell strong {
+  color: var(--ink);
+}
+
+.cell .sample {
+  margin-top: var(--s2);
+  color: var(--ink);
+}
+
+.cell code {
+  font-size: 13px;
+}
+
+.who {
+  display: block;
+  margin-bottom: var(--s1);
+  font: 500 12px/16px var(--sans);
+  color: var(--ink-3);
+}
+
+.at-client {
+  border-top: 1px solid var(--line);
+}
+
+.at-door,
+.at-server {
+  background: var(--door);
+  border-top: 1px solid var(--door-line);
+}
+
+.at-door p,
+.at-server p,
+.at-door .who,
+.at-server .who {
+  color: var(--on-door-2);
+}
+
+.at-door strong,
+.at-server strong {
+  color: var(--on-door);
+}
+
+.verdict,
+.nb {
+  white-space: nowrap;
+}
+
+/* Stacked, the server's bands stand 20 px in from the gateway's, behind a rule: another machine, not another step. */
+@media (max-width: 1199.98px) {
+  .at-server {
+    position: relative;
+    padding-inline-start: calc(var(--gutter) + 20px);
+  }
+
+  .at-server::before {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    left: var(--gutter);
+    width: 1px;
+    background: var(--door-line-2);
+  }
+
+  .table-only {
+    display: none;
+  }
+}
+
+/* A request, stacked: a short line down across the border between two bands. */
+.wire {
+  position: relative;
+  z-index: 1;
+  display: block;
+  height: 0;
+}
+
+.wire::before {
+  content: "";
+  position: absolute;
+  top: -12px;
+  left: calc(var(--gutter) + 3px);
+  width: 2px;
+  height: 24px;
+  background: linear-gradient(to bottom, var(--wire-from) 50%, var(--wire-to) 50%);
+}
+
+.wire::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: var(--gutter);
+  width: 8px;
+  height: 8px;
+  border: solid var(--wire-to);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.wire[data-dir="in"] {
+  --wire-from: var(--ink);
+  --wire-to: var(--on-door);
+}
+
+.wire[data-dir="out"] {
+  --wire-from: var(--on-door);
+  --wire-to: var(--ink);
+}
+
+.wire[data-dir="up"] {
+  --wire-from: var(--on-door);
+  --wire-to: var(--on-door);
+  margin-inline-start: 20px;
+}
+
+.wire[data-dir="stop"] {
+  display: none;
+}
+
+@media (min-width: 640px) and (max-width: 1199.98px) {
+  .cell {
+    display: grid;
+    grid-template-columns: 136px minmax(0, var(--measure));
+    column-gap: var(--s5);
+  }
+
+  .cell p {
+    grid-column: 2;
+  }
+
+  .who {
+    grid-row: 1 / span 3;
+    margin: 0;
+    padding-top: 5px;
+  }
+
+  .wire::before {
+    left: calc(var(--gutter) + 136px + var(--s5) + 3px);
+  }
+
+  .wire::after {
+    left: calc(var(--gutter) + 136px + var(--s5));
+  }
+}
+
+/* ---------- Sections with a title to the left of the axis ---------- */
+
+.section {
+  padding: var(--section) var(--gutter);
+}
+
+.section + .section {
+  padding-top: 0;
+}
+
+.section-head p {
+  max-width: 30em;
+  margin-top: var(--s3);
+  color: var(--ink-2);
+}
+
+/* 656 px: a 32 px gutter for the numbers and a 641 px box, which holds the longest command (600 px of text). */
+.section-body {
+  max-width: var(--block);
+  margin-top: var(--s6);
+}
+
+/* ---------- What you get ---------- */
+
+.gets > div {
+  padding-block: var(--s4) 19px;
+  border-top: 1px solid var(--line);
+}
+
+.gets > div:first-child {
+  border-top-color: var(--ink);
+}
+
+.gets dt {
+  font-weight: 650;
+}
+
+.gets dd {
+  max-width: var(--prose);
+  color: var(--ink-2);
+}
+
+@media (min-width: 720px) and (max-width: 1199.98px) {
+  .section-body.gets {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: var(--gap);
+    max-width: none;
+  }
+
+  .gets > div:nth-child(2) {
+    border-top-color: var(--ink);
+  }
+}
+
+/* ---------- Behind the door: the product itself, the tutorial ---------- */
+
+.inside {
+  padding: var(--section) var(--gutter);
+  background: var(--door);
+  color: var(--on-door);
+}
+
+.inside a {
+  text-decoration-color: var(--on-door-2);
+}
+
+.inside a:hover {
+  text-decoration-color: currentColor;
+}
+
+.screens-note,
+.tutorial-note {
+  max-width: 30em;
+  margin-top: var(--s3);
+  color: var(--on-door-2);
+}
+
+.screen-pick {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.screen-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--s1);
+  margin-top: var(--s5);
+  margin-inline-start: -20px;
+}
+
+/* A tab's box holds its dot: 8 px, the 6 px dot, 6 px, the word, 8 px. Words are 32 px apart. */
+.screen-tabs label {
+  position: relative;
+  display: block;
+  padding: var(--s3) var(--s2) var(--s3) 20px;
+  font: 500 14px/20px var(--sans);
+  color: var(--on-door-2);
+  white-space: nowrap;
+  cursor: pointer;
+  border-radius: var(--r1);
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.screen-tabs label:hover {
+  color: var(--on-door);
+}
+
+/* The mark of the screen that is open: the application's rail mark. */
+.screen-tabs label::before {
+  content: "";
+  position: absolute;
+  top: 19px;
+  left: var(--s2);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: transparent;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.screen-pick#screen-overview:checked ~ .screen-tabs label[for="screen-overview"],
+.screen-pick#screen-servers:checked ~ .screen-tabs label[for="screen-servers"],
+.screen-pick#screen-sign-in:checked ~ .screen-tabs label[for="screen-sign-in"] {
+  color: var(--on-door);
+}
+
+.screen-pick#screen-overview:checked ~ .screen-tabs label[for="screen-overview"]::before,
+.screen-pick#screen-servers:checked ~ .screen-tabs label[for="screen-servers"]::before,
+.screen-pick#screen-sign-in:checked ~ .screen-tabs label[for="screen-sign-in"]::before {
+  background: var(--on-door);
+}
+
+.screen-pick#screen-overview:focus-visible ~ .screen-tabs label[for="screen-overview"],
+.screen-pick#screen-servers:focus-visible ~ .screen-tabs label[for="screen-servers"],
+.screen-pick#screen-sign-in:focus-visible ~ .screen-tabs label[for="screen-sign-in"] {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  /* This ring is drawn inside its box, so the box's corner is 4 px larger: every ring on the page turns at 4 px. */
+  border-radius: calc(var(--r1) + 4px);
+}
+
+.screen {
+  display: none;
+  margin-top: var(--s2);
+}
+
+.screen-pick#screen-overview:checked ~ .screen[data-screen="overview"],
+.screen-pick#screen-servers:checked ~ .screen[data-screen="servers"],
+.screen-pick#screen-sign-in:checked ~ .screen[data-screen="sign-in"] {
+  display: block;
+}
+
+.screen figcaption {
+  max-width: var(--measure);
+  font: 400 14px/20px var(--sans);
+  color: var(--on-door-2);
+}
+
+/* A capture is drawn at one CSS pixel for each of its own. Its picture is a window that crops it; nothing scales it. */
+/* --cap-w is the width of the file in use, --shot-w the window's width, --from what is cut from the file's left. */
+/* Under 1200 px a window is framed: it starts on the text column and holds the whole capture. */
+.shot {
+  --cap-w: 390px;
+  --shot-w: var(--cap-w);
+  --from: 0px;
+  --pull: 0px;
+  margin-top: var(--s5);
+}
+
+.shot picture {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  width: var(--shot-w);
+  margin-inline-start: var(--pull);
+  overflow: hidden;
+  background: var(--door-well);
+  box-shadow: 0 0 0 1px var(--door-line);
+}
+
+.shot img {
+  flex: none;
+  width: var(--cap-w);
+  max-width: none;
+  height: auto;
+  margin-inline-start: calc(-1 * var(--from));
+  font: 400 14px/20px var(--sans);
+  color: var(--on-door-2);
+}
+
+/* When the file did not arrive, the alt text is drawn again with room around it and the browser's own copy is hidden. */
+/* Safari draws nothing on a broken image, so it keeps the browser's own copy: the query is false only there. */
+@supports not (font: -apple-system-body) {
+  .shot img {
+    color: transparent;
+  }
+
+  .shot img::after {
+    content: attr(alt);
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    padding: var(--s4) var(--gutter);
+    background: var(--door-well);
+    color: var(--on-door-2);
+  }
+}
+
+.shot.pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s6);
+}
+
+.pane-name {
+  margin-bottom: var(--s2);
+  font: 500 12px/16px var(--sans);
+  color: var(--on-door-2);
+}
+
+/* Where the screen is less than 40 px wider than the capture, the window is inset instead: it starts 12 px in, */
+/* ends 12 px before the other edge or where the capture ends, and the capture's text stands on the page's text column. */
+@media (max-width: 429.98px), (min-width: 744px) and (max-width: 767.98px) {
+  .shot {
+    /* 100cqi is the section without its two gutters. */
+    --shot-w: min(100cqi + 2 * (var(--gutter) - var(--s3)), var(--cap-w) - var(--s3));
+    --from: var(--s3);
+    --pull: calc(var(--s3) - var(--gutter));
+  }
+}
+
+/* The file in use: 360 px under 390, 390 px to 743, 728 px to 1199. The picture's sources switch at the same widths. */
+@media (max-width: 389.98px) {
+  .shot {
+    --cap-w: 360px;
+  }
+}
+
+@media (min-width: 744px) {
+  .shot {
+    --cap-w: 728px;
+  }
+}
+
+/* 1200 px and up: desktop captures (232 px rail, 48 px, a 1112 px column, then paper to 1502), cut at the rail's edge. */
+/* Up to 1271 the window is the screen, so the capture's column stands on the page's own. */
+@media (min-width: 1200px) {
+  .shot:not(.pair) {
+    --cap-w: 1502px;
+    --shot-w: min(100cqi, 1270px);
+    --from: 232px;
+    --pull: calc(-1 * var(--gap));
+  }
+
+  /* Sign-in and consent side by side: a window on the right of the 906 px sign-in crop, the consent page whole. */
+  .shot.pair {
+    display: flex;
+    gap: var(--gap);
+    align-items: flex-start;
+    --cap-w: 390px;
+  }
+
+  .pane-name {
+    display: none;
+  }
+
+  .pair-wide {
+    --cap-w: 906px;
+    --shot-w: 100%;
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 906px;
+  }
+
+  .pair-wide picture {
+    justify-content: flex-end;
+  }
+
+  .pair-phone {
+    flex: none;
+    width: 390px;
+  }
+}
+
+/* 1272 to 1439: a frame on the page margins. Up to 1303 it is narrower than the page without its rail, so it is cut */
+/* on both sides alike: 32 px beside the column at 1272, 48 at 1304. From 1304 the cut is the rail's edge. */
+@container (min-width: 1272px) {
+  .shot:not(.pair) {
+    --shot-w: min(100cqi - 2 * var(--gap), 1270px);
+    --from: 248px;
+    --pull: 0px;
+  }
+
+  @supports (width: round(up, 1px, 1px)) {
+    .shot:not(.pair) {
+      --from: max(232px, round(up, 280px - (var(--shot-w) - 1112px) / 2, 1px));
+    }
+  }
+}
+
+@container (min-width: 1304px) {
+  .shot:not(.pair) {
+    --from: 232px;
+  }
+}
+
+/* 1440 and up: the page with its rail, 1440 px of it, 48 px past the columns on each side. */
+@container (min-width: 1440px) {
+  .shot:not(.pair) {
+    --shot-w: 1440px;
+    --from: 0px;
+    --pull: calc(-1 * var(--gap));
+  }
+}
+
+.tutorial {
+  margin-top: var(--section);
+}
+
+video {
+  width: 100%;
+  margin-top: var(--s6);
+  aspect-ratio: 16 / 9;
+  border-radius: var(--r2);
+  background: var(--door);
+  box-shadow: 0 0 0 1px var(--door-line);
+}
+
+@supports (height: round(down, 1px, 1px)) {
+  @media (max-width: 1199.98px) {
+    video {
+      height: round(down, calc((100vw - 2 * var(--gutter)) * 9 / 16), 1px);
+      aspect-ratio: auto;
+    }
+  }
+}
+
+.parts {
+  margin-top: var(--s6);
+}
+
+.parts h3 {
+  font: 600 14px/20px var(--sans);
+}
+
+.parts ol {
+  margin-top: var(--s2);
+  border-top: 1px solid var(--door-line);
+}
+
+.parts li {
+  border-bottom: 1px solid var(--door-line);
+}
+
+/* The link is 8 px wider than its row on each side, so its focus ring stands 10 px from the time. */
+.parts li a {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  align-items: center;
+  min-height: var(--control);
+  margin-inline: calc(-1 * var(--s2));
+  padding-inline: var(--s2);
+  font: 400 14px/20px var(--sans);
+  color: var(--on-door);
+  text-decoration: none;
+}
+
+.parts li a:hover {
+  background: var(--door-well);
+}
+
+.parts time {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--on-door-2);
+}
+
+.parts p {
+  margin-top: var(--s3);
+  font: 400 14px/20px var(--sans);
+  color: var(--on-door-2);
+}
+
+/* ---------- Quick start ---------- */
+
+.run {
+  counter-reset: step;
+}
+
+.run > li {
+  position: relative;
+  padding-block: var(--s5) var(--s6);
+  border-top: 1px solid var(--line);
+  counter-increment: step;
+}
+
+.run > li:first-child {
+  border-top-color: var(--ink);
+}
+
+.run h3::before {
+  content: counter(step);
+  display: inline-block;
+  width: var(--s6);
+  font: 400 13px/20px var(--mono);
+  color: var(--ink-3);
+}
+
+.run p,
+.variant p {
+  max-width: var(--prose);
+  margin-top: var(--s2);
+  color: var(--ink-2);
+}
+
+.run p code,
+.variant p code,
+.status code,
+.cautions code,
+.gets code {
+  color: var(--ink);
+}
+
+.code {
+  margin-top: var(--s4);
+  padding: var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  background: var(--surface);
+  color: var(--ink);
+  font: 400 13px/20px var(--mono);
+  tab-size: 4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Under 480 px a block is a band from edge to edge with its text on the column: the config file's 42 character lines fit at 12 px. */
+@media (max-width: 479.98px) {
+  .code {
+    margin-inline: calc(-1 * var(--gutter));
+    padding-inline: var(--gutter);
+    border-inline: 0;
+    border-radius: 0;
+  }
+
+  .code.conf {
+    padding-inline-end: 0;
+    font-size: 12px;
+  }
+}
+
+/* One click selects the whole command: the page has no script to copy it. */
+.code code {
+  font: inherit;
+  -webkit-user-select: all;
+  user-select: all;
+}
+
+.code.sh {
+  white-space: normal;
+}
+
+/* A long command wraps on the screen only: its later lines hang 2ch, by padding, and the text holds no break. */
+.code.sh code {
+  display: block;
+  padding-inline-start: 2ch;
+  text-indent: -2ch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A word of a command is one piece and moves to the next line whole. Only a word longer than a line breaks. */
+.tok {
+  display: inline-block;
+  max-width: 100%;
+  text-indent: 0;
+  vertical-align: top;
+}
+
+.code.sh code + code {
+  margin-top: var(--s1);
+}
+
+.named {
+  margin-top: var(--s4);
+}
+
+/* 480 to 1199 px: the numbers hang in a 32 px gutter and a box hangs 17 px, so titles, prose and code text share one edge. */
+@media (min-width: 480px) and (max-width: 1199.98px) {
+  .run > li,
+  .variant {
+    padding-inline-start: var(--s6);
+  }
+
+  .run h3::before {
+    margin-inline-start: calc(-1 * var(--s6));
+  }
+
+  .section-body .code {
+    margin-inline-start: calc(-1 * var(--s4) - 1px);
+  }
+}
+
+.named figcaption {
+  font: 500 12px/16px var(--sans);
+  color: var(--ink-3);
+}
+
+.named .code {
+  margin-top: var(--s1);
+}
+
+.code + p,
+.named + p {
+  margin-top: var(--s4);
+}
+
+.variant {
+  padding-top: var(--s5);
+  border-top: 1px solid var(--ink);
+}
+
+/* ---------- Status ---------- */
+
+.status > div {
+  padding-block: var(--s4) 19px;
+  border-top: 1px solid var(--line);
+}
+
+.status > div:first-child {
+  border-top-color: var(--ink);
+}
+
+.status dt {
+  font: 600 14px/20px var(--sans);
+}
+
+.status dd {
+  margin-top: var(--s1);
+  padding-inline-start: 20px;
+  color: var(--ink-2);
+}
+
+.cautions-title {
+  margin-top: var(--s7);
+}
+
+.cautions {
+  margin-top: var(--s4);
+  border-bottom: 1px solid var(--line);
+}
+
+.cautions li {
+  padding: var(--s4) calc(100% - min(100%, var(--prose))) 19px 0;
+  border-top: 1px solid var(--line);
+  color: var(--ink-2);
+}
+
+.cautions li:first-child {
+  border-top-color: var(--ink);
+}
+
+/* ---------- Links: the door, closed ---------- */
+
+.foot {
+  padding: var(--s8) var(--gutter) var(--s6);
+  background: var(--door);
+  color: var(--on-door-2);
+  font: 400 14px/20px var(--sans);
+}
+
+.foot a {
+  color: var(--on-door);
+  text-decoration-color: var(--on-door-2);
+}
+
+.foot a:hover {
+  text-decoration-color: currentColor;
+}
+
+.foot-groups {
+  display: grid;
+  gap: var(--s6);
+}
+
+.foot h3 {
+  font: 600 14px/20px var(--sans);
+  color: var(--on-door);
+}
+
+/* The row is 44 px tall; a link's padding widens its target without moving the lines of a wrapped sentence. */
+.foot li {
+  max-width: 34em;
+  padding-block: var(--s3);
+}
+
+.foot li a {
+  margin-inline: -6px;
+  padding: var(--s3) 6px;
+}
+
+.foot-end {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3) var(--s5);
+  margin-top: var(--s8);
+  padding-top: var(--s5);
+  border-top: 1px solid var(--door-line);
+}
+
+.foot .brand {
+  color: var(--on-door);
+}
+
+@media (min-width: 640px) {
+  .foot-groups {
+    grid-template-columns: 1fr 1fr;
+    gap: var(--s7) var(--gap);
+  }
+
+  .status > div {
+    display: grid;
+    grid-template-columns: 184px minmax(0, 1fr);
+    column-gap: var(--s5);
+  }
+
+  .status dt {
+    padding-top: 3px;
+  }
+
+  .status dd {
+    margin: 0;
+    padding: 0;
+  }
+
+}
+
+/* ---------- Two materials: 1200 px and up ---------- */
+
+@media (min-width: 1200px) {
+  h1 {
+    font: 700 56px/60px var(--sans);
+    letter-spacing: var(--tighter);
+  }
+
+  h2 {
+    font: 700 32px/36px var(--sans);
+  }
+
+  /* One edge for both: paper to the left of the middle, door to the right. */
+  .bar,
+  .threshold {
+    display: grid;
+    grid-template-columns: var(--cols);
+    background: linear-gradient(to right, transparent 50%, var(--door) 50%);
+  }
+
+  .bar {
+    gap: 0;
+    padding: 0;
+    color: var(--ink);
+    --focus: var(--ink);
+  }
+
+  .bar .brand {
+    grid-column: 2 / 5;
+    justify-self: start;
+  }
+
+  .bar nav {
+    grid-column: 7 / 10;
+    background: var(--door);
+    --focus: var(--on-door);
+  }
+
+  .threshold {
+    position: relative;
+  }
+
+  /* The handle: a 12 px disc in a 1 px ring, 32 px inside the door, level with the button. */
+  .handle {
+    display: block;
+    position: absolute;
+    left: calc(50% + 24px);
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--door-line);
+    border-radius: 50%;
+  }
+
+  .handle::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    width: 12px;
+    height: 12px;
+    margin: auto;
+    border-radius: 50%;
+    background: var(--on-door);
+  }
+
+  .statement {
+    grid-column: 2 / 5;
+    padding: var(--s7) 0 var(--s8);
+  }
+
+  .path {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: subgrid;
+    padding-bottom: var(--s10);
+  }
+
+  .path > h2 {
+    grid-column: 2 / 5;
+    padding: 0 0 var(--s7);
+  }
+
+  .path-heads {
+    grid-column: 2 / 10;
+    display: grid;
+    grid-template-columns: subgrid;
+    padding-bottom: var(--s2);
+    font: 500 12px/16px var(--sans);
+    color: var(--ink-3);
+  }
+
+  .path-heads span:nth-child(1) {
+    grid-column: 3;
+  }
+
+  .path-heads span:nth-child(2) {
+    grid-column: 6;
+  }
+
+  .path-heads span:nth-child(3) {
+    grid-column: 8;
+  }
+
+  .path-heads span:nth-child(n + 2) {
+    background: var(--door);
+    color: var(--on-door-2);
+  }
+
+  .phase {
+    grid-column: 2 / 10;
+    display: grid;
+    grid-template-columns: subgrid;
+    position: relative;
+  }
+
+  .phase + .phase {
+    margin-top: var(--s7);
+  }
+
+  .phase::before,
+  .phase::after,
+  .step + .step::before,
+  .step + .step::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    height: 1px;
+  }
+
+  /* The rule over a phase: ink on the paper, paper on the ink. */
+  .phase::before {
+    left: 0;
+    width: 50%;
+    background: var(--ink);
+  }
+
+  .phase::after {
+    left: 50%;
+    width: 50%;
+    background: var(--on-door);
+  }
+
+  .phase-head {
+    grid-column: 1;
+    grid-row: 1;
+    padding: var(--s4) 0 0;
+    border: 0;
+  }
+
+  .steps {
+    grid-column: 3 / 9;
+    grid-row: 1;
+    display: grid;
+    grid-template-columns: subgrid;
+    position: relative;
+  }
+
+  /* The line between the gateway and the server: only the gateway crosses it. */
+  .steps::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc((100% - 3 * var(--gap)) / 3 * 2 + 2.5 * var(--gap));
+    width: 1px;
+    background: var(--door-line);
+  }
+
+  .step {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: subgrid;
+    position: relative;
+  }
+
+  .step + .step::before {
+    left: 0;
+    width: calc(100% / 3);
+    background: var(--line);
+  }
+
+  .step + .step::after {
+    left: calc(100% / 3);
+    right: 0;
+    background: var(--door-line);
+  }
+
+  .cell {
+    grid-row: 1;
+    padding: var(--s4) 0 var(--s5);
+    border: 0;
+    font: 400 14px/20px var(--sans);
+  }
+
+  .at-client {
+    grid-column: 1;
+  }
+
+  .at-door {
+    grid-column: 4;
+  }
+
+  .at-server {
+    grid-column: 6;
+  }
+
+  .who {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* The sample address stays whole, and is measured without hinting so every browser gives it one width. */
+  .cell .sample code {
+    white-space: nowrap;
+    text-rendering: geometricPrecision;
+  }
+
+  /* A wbr still breaks inside nowrap text in Chromium, so it is taken out. */
+  .cell .sample wbr {
+    display: none;
+  }
+
+  /* A request: a 2 px line through the gutter, ink on the paper and paper on the ink. */
+  .wire {
+    grid-row: 1;
+    align-self: start;
+    height: 2px;
+    margin-top: 25px;
+    background: linear-gradient(to right, var(--wire-from) 50%, var(--wire-to) 50%);
+  }
+
+  .wire::before {
+    content: none;
+  }
+
+  .wire::after {
+    top: -3px;
+    left: auto;
+    right: 0;
+    border-width: 2px 2px 0 0;
+  }
+
+  .wire[data-dir="in"],
+  .wire[data-dir="out"] {
+    grid-column: 2 / span 2;
+    margin-inline: var(--s3);
+  }
+
+  .wire[data-dir="out"] {
+    --wire-from: var(--ink);
+    --wire-to: var(--on-door);
+  }
+
+  .wire[data-dir="out"]::after {
+    right: auto;
+    left: 0;
+    border-color: var(--ink);
+    transform: rotate(-135deg);
+  }
+
+  .wire[data-dir="up"],
+  .wire[data-dir="stop"] {
+    grid-column: 5;
+    margin-inline: var(--s2);
+  }
+
+  /* The denied request ends on the line it may not cross. */
+  .wire[data-dir="stop"] {
+    display: block;
+    margin-inline-end: var(--s5);
+    background: var(--on-door-2);
+  }
+
+  .wire[data-dir="stop"]::after {
+    top: -6px;
+    right: -2px;
+    width: 4px;
+    height: 14px;
+    border: 0;
+    border-radius: 1px;
+    background: var(--deny-on-door);
+    transform: none;
+  }
+
+  .section,
+  .inside,
+  .foot {
+    display: grid;
+    grid-template-columns: var(--cols);
+    padding-inline: 0;
+  }
+
+  /* Quick start and Status: the text column is 624 px and ends on the right margin, so the longest command is whole. */
+  /* Its left edge is min(50% + 48px, 100% - 672px): from 1440 px the page's third column. The title takes what is left. */
+  .section:not(:has(.gets)) {
+    grid-template-columns:
+      minmax(var(--gap), 1fr)
+      minmax(0, var(--measure)) calc(2 * var(--gap)) var(--measure)
+      minmax(var(--gap), 1fr);
+  }
+
+  .section-head {
+    grid-column: 2;
+    align-self: start;
+    position: sticky;
+    top: var(--s6);
+  }
+
+  .section-body {
+    grid-column: 4;
+    max-width: none;
+    margin-top: 0;
+  }
+
+  /* A block hangs 17 px into the gutter: its text stands on the column, and the longest command has 607 px. */
+  .section-body .code {
+    margin-inline-start: calc(-1 * var(--s4) - 1px);
+  }
+
+  /* The seven capabilities take the diagram's four columns; the title has the first cell. */
+  .section-body.gets {
+    grid-column: 2 / 10;
+    grid-row: 1;
+    display: grid;
+    grid-template-columns: subgrid;
+    row-gap: var(--s7);
+  }
+
+  .section:has(.gets) .section-head {
+    grid-row: 1;
+    position: static;
+    grid-column: 2;
+  }
+
+  .gets > div,
+  .gets > div:first-child {
+    padding-block: var(--s3) 0;
+    border-top-color: var(--ink);
+    font: 400 14px/20px var(--sans);
+  }
+
+  .gets dt {
+    font: 650 16px/24px var(--sans);
+    margin-bottom: var(--s1);
+  }
+
+  .gets code {
+    font-size: 13px;
+  }
+
+  .gets > div:nth-child(4n + 1) {
+    grid-column: 3;
+  }
+
+  .gets > div:nth-child(4n + 2) {
+    grid-column: 6;
+  }
+
+  .gets > div:nth-child(4n + 3) {
+    grid-column: 8;
+  }
+
+  .gets > div:nth-child(4n + 4) {
+    grid-column: 1;
+  }
+
+  .gets > div:nth-child(-n + 3) {
+    grid-row: 1;
+  }
+
+  .gets > div:nth-child(n + 4) {
+    grid-row: 2;
+  }
+
+  /* The numbers of the quick start stand on the axis itself. */
+  .run h3::before {
+    width: var(--gap);
+    margin-inline-start: calc(-1 * var(--gap));
+  }
+
+  .status > div {
+    grid-template-columns: 160px minmax(0, 1fr);
+  }
+
+  .screens,
+  .tutorial {
+    grid-column: 2 / 10;
+    display: grid;
+    grid-template-columns: subgrid;
+  }
+
+  .screens > h2,
+  .tutorial > h2 {
+    grid-column: 1 / 4;
+    grid-row: 1;
+    align-self: baseline;
+  }
+
+  .screens-note {
+    grid-column: 1 / 4;
+    grid-row: 2;
+  }
+
+  .screen-tabs {
+    grid-column: 6 / 9;
+    grid-row: 1;
+    align-self: baseline;
+    margin: 0 0 0 -20px;
+  }
+
+  .screen {
+    grid-column: 1 / -1;
+    grid-row: 2 / span 2;
+    margin: 0;
+  }
+
+  .screen-pick#screen-overview:checked ~ .screen[data-screen="overview"],
+  .screen-pick#screen-servers:checked ~ .screen[data-screen="servers"],
+  .screen-pick#screen-sign-in:checked ~ .screen[data-screen="sign-in"] {
+    display: grid;
+    grid-template-columns: subgrid;
+    grid-template-rows: subgrid;
+  }
+
+  .screen figcaption {
+    grid-column: 6 / 9;
+    margin-top: var(--s3);
+    min-height: 80px;
+  }
+
+  .shot,
+  .shot.pair {
+    grid-column: 1 / -1;
+    margin-top: var(--s7);
+  }
+
+  .stacked-only {
+    display: none;
+  }
+
+  .tutorial-note {
+    grid-column: 6 / 9;
+    grid-row: 1;
+    align-self: baseline;
+    margin: 0;
+  }
+
+  .tutorial video {
+    grid-column: 1 / 7;
+    grid-row: 2;
+    margin-top: var(--s7);
+  }
+
+  .parts {
+    grid-column: 8;
+    grid-row: 2;
+    margin-top: var(--s7);
+  }
+
+  .parts li a {
+    min-height: 36px;
+  }
+
+  .foot {
+    padding-block: var(--s9) var(--s7);
+  }
+
+  .foot li {
+    margin-top: var(--s1);
+  }
+
+  /* 8 px over and under the words, so the ring stands clear of them at the offset every other ring has. */
+  .foot li a {
+    padding-block: var(--s2);
+  }
+
+  .foot-groups {
+    grid-column: 2 / 10;
+    grid-template-columns: subgrid;
+    gap: 0;
+  }
+
+  .foot-groups nav:nth-child(1) {
+    grid-column: 1;
+  }
+
+  .foot-groups nav:nth-child(2) {
+    grid-column: 3;
+  }
+
+  .foot-groups nav:nth-child(3) {
+    grid-column: 6;
+  }
+
+  .foot-groups nav:nth-child(4) {
+    grid-column: 8;
+  }
+
+  .foot-end {
+    grid-column: 2 / 10;
+    margin-top: var(--s9);
+  }
+}
+
+/* The capture windows are sized by this section's own width (cqi), which a classic scrollbar narrows. */
+.inside {
+  container-type: inline-size;
+  overflow-x: clip;
+}
+
+/* 1200 to 1439 px: the note under "Quick start" and "Status" is 400 px at most, clear of the step numbers. */
+@media (min-width: 1200px) and (max-width: 1439.98px) {
+  .section:not(:has(.gets)) .section-head p {
+    max-width: 400px;
+  }
+}
+
+/* Under 1440 px the sample address is 12 px: 258 px, which a column holds from 1320 px. */
+@media (min-width: 1200px) and (max-width: 1439.98px) {
+  .cell .sample code {
+    font-size: 12px;
+  }
+}
+
+/* 1200 to 1319 px: its cell is 32 px wider, so prose and address end on one edge, 16 px before the door. */
+/* A float one line tall keeps the first line out of the request line's way. */
+@media (min-width: 1200px) and (max-width: 1319.98px) {
+  .cell:has(.sample) {
+    margin-inline-end: calc(-1 * var(--s6));
+  }
+
+  .cell:has(.sample)::before {
+    content: "";
+    float: right;
+    width: var(--s6);
+    height: 20px;
+  }
+}
+
+/* ---------- A short window: the first step of the diagram stays above the fold ---------- */
+
+@media (min-width: 1200px) and (max-height: 820px) {
+  .statement {
+    padding: var(--s2) 0 var(--s7);
+  }
+
+  .path > h2 {
+    padding-bottom: var(--s5);
+  }
+}
+
+/* The same under 1200 px, where the diagram is in bands: 96 px shorter. The 48 px over the h1 and over the diagram's */
+/* title are kept at any height; only the gaps between the lines of the statement and inside the bands are smaller. */
+@media (min-width: 720px) and (max-width: 1199.98px) and (max-height: 820px) {
+  .statement {
+    padding-bottom: var(--s7);
+  }
+
+  .lede,
+  .facts {
+    margin-top: var(--s4);
+  }
+
+  .actions {
+    margin-top: var(--s5);
+  }
+
+  .path > h2 {
+    padding-bottom: var(--s4);
+  }
+
+  .phase-head {
+    padding-block: var(--s3);
+  }
+
+  .cell {
+    padding-block: var(--s4);
+  }
+}
+
+/* ---------- Motion ---------- */
+
+/* The one move: a request draws itself in its own direction as its step comes into view. */
+@supports (animation-timeline: view()) {
+  @media (min-width: 1200px) and (prefers-reduced-motion: no-preference) {
+    .wire {
+      animation: wire-in linear both;
+      animation-timeline: view();
+      animation-range: cover 8% cover 28%;
+    }
+
+    .wire[data-dir="out"] {
+      animation-name: wire-out;
+    }
+
+    @keyframes wire-in {
+      from {
+        clip-path: inset(-8px 100% -8px -8px);
+      }
+
+      to {
+        clip-path: inset(-8px);
+      }
+    }
+
+    @keyframes wire-out {
+      from {
+        clip-path: inset(-8px -8px -8px 100%);
+      }
+
+      to {
+        clip-path: inset(-8px);
+      }
+    }
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .screen {
+    transition: opacity var(--t-mid) var(--ease-out);
+
+    @starting-style {
+      opacity: 0;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0s !important;
+    animation: none !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .mark::before,
+  .handle::after {
+    forced-color-adjust: none;
+  }
+}
