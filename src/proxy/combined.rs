@@ -38,7 +38,7 @@ use crate::mcp::answer;
 use crate::mcp::message::{
     Decision, Generation, Message, Shape, Switches, decide, meta_version, param,
 };
-use crate::oauth::guard::{Caller, Recheck, combined_still_valid_at};
+use crate::oauth::guard::{Caller, Recheck, combined_still_valid_at, still_valid_at};
 use crate::policy;
 use crate::report;
 use crate::servers::valid_slug;
@@ -335,6 +335,43 @@ async fn call(
     message: &Message,
     bytes: &Bytes,
 ) -> Response {
+    if message.tool.is_none() || serde_json::from_slice::<CallBody>(bytes).is_err() {
+        return answer::error(
+            StatusCode::BAD_REQUEST,
+            message.id.as_ref(),
+            -32600,
+            INVALID,
+        );
+    }
+    let resolved = match resolutions(state, caller, headers, message.id.as_ref()).await {
+        Ok(resolved) => resolved,
+        Err(refusal) => return refusal,
+    };
+    run_call(state, caller, message, bytes, &resolved, None).await
+}
+
+/// tools/call for the one server of a `/{slug}` session the gateway answers itself, under the tool's plain name.
+pub(super) async fn call_one(
+    state: &AppState,
+    caller: &Arc<Caller>,
+    message: &Message,
+    bytes: &Bytes,
+    (slug, server_id): (&str, i64),
+    reached: Reached,
+) -> Response {
+    let resolved = HashMap::from([(server_id, reached)]);
+    run_call(state, caller, message, bytes, &resolved, Some(slug)).await
+}
+
+/// The checks and the relay of one tools/call. `only` names the server when the tool name is plain.
+async fn run_call(
+    state: &AppState,
+    caller: &Arc<Caller>,
+    message: &Message,
+    bytes: &Bytes,
+    resolved: &HashMap<i64, Reached>,
+    only: Option<&str>,
+) -> Response {
     let null = Value::Null;
     let id = message.id.as_ref().unwrap_or(&null);
     let Some(name) = message.tool.as_deref() else {
@@ -345,23 +382,16 @@ async fn call(
             INVALID,
         );
     };
-    let body = match serde_json::from_slice::<CallBody>(bytes) {
-        Ok(body) => body,
-        Err(_) => {
-            return answer::error(
-                StatusCode::BAD_REQUEST,
-                message.id.as_ref(),
-                -32600,
-                INVALID,
-            );
-        }
-    };
-    let resolved = match resolutions(state, caller, headers, message.id.as_ref()).await {
-        Ok(resolved) => resolved,
-        Err(refusal) => return refusal,
+    let Ok(body) = serde_json::from_slice::<CallBody>(bytes) else {
+        return answer::error(
+            StatusCode::BAD_REQUEST,
+            message.id.as_ref(),
+            -32600,
+            INVALID,
+        );
     };
     let started = std::time::Instant::now();
-    let Some((slug, tool)) = split(name) else {
+    let Some((slug, tool)) = only.map(|slug| (slug, name)).or_else(|| split(name)) else {
         return deny_call(state, caller, started, id, name, None, NOT_LISTED).await;
     };
     let user = caller.user_id;
@@ -496,7 +526,7 @@ async fn call(
         }) => {
             let (reply, outcome) = reissue(id, &answer, client_stateless);
             let detail = detail_of(&answer, outcome);
-            match combined_still_valid_at(state, caller, server_id, caller.admitted).await {
+            match recheck(state, caller, slug, server_id).await {
                 Recheck::Live => {}
                 Recheck::Lost => {
                     owed.settle("refused", ACCESS_LOST).await;
@@ -534,7 +564,7 @@ async fn call(
     };
     let (reply, outcome) = reissue(id, &upstream_answer, client_stateless);
     let detail = detail_of(&upstream_answer, outcome);
-    match combined_still_valid_at(state, caller, server_id, caller.admitted).await {
+    match recheck(state, caller, slug, server_id).await {
         Recheck::Live => {}
         Recheck::Lost => {
             owed.settle("refused", ACCESS_LOST).await;
@@ -544,6 +574,20 @@ async fn call(
     }
     owed.settle(outcome, detail).await;
     hold(respond(StatusCode::OK, &reply), held)
+}
+
+/// The access re-check of a call: a server-bound token is checked on its own path, a combined one on `/mcp`.
+pub(super) async fn recheck(
+    state: &AppState,
+    caller: &Caller,
+    slug: &str,
+    server_id: i64,
+) -> Recheck {
+    if caller.server_id.is_some() {
+        still_valid_at(state, caller, slug, caller.admitted).await
+    } else {
+        combined_still_valid_at(state, caller, server_id, caller.admitted).await
+    }
 }
 
 /// The server a slug names with the caller's assignment, rules and stored definition of `tool`, in one read.
@@ -909,14 +953,52 @@ async fn list(
         Ok(resolved) => resolved,
         Err(refusal) => return refusal,
     };
+    list_with(state, caller, message, &resolved, None).await
+}
+
+/// tools/list for the one server of a `/{slug}` session the gateway answers itself, under plain names.
+pub(super) async fn list_one(
+    state: &AppState,
+    caller: &Caller,
+    message: &Message,
+    (slug, server_id): (&str, i64),
+    reached: Reached,
+) -> Response {
+    let resolved = HashMap::from([(server_id, reached)]);
+    list_with(state, caller, message, &resolved, Some((slug, server_id))).await
+}
+
+/// The list of the caller's servers, or of `only` alone, under one turn and deadline.
+async fn list_with(
+    state: &AppState,
+    caller: &Caller,
+    message: &Message,
+    resolved: &HashMap<i64, Reached>,
+    only: Option<(&str, i64)>,
+) -> Response {
+    let null = Value::Null;
+    let id = message.id.as_ref().unwrap_or(&null);
     let limit = time_limit(state).min(LIST_LIMIT);
     let turn = match timeout(limit, enter(&state.turns, caller.user_id)).await {
         Ok(turn) => turn,
         Err(_) => return answer::unavailable(LABEL),
     };
     let deadline = Instant::now() + limit;
-    let built = collect(state, caller, deadline, &resolved).await;
+    let built = collect(state, caller, deadline, resolved, only.map(|(_, id)| id)).await;
     drop(turn);
+    let built = built.map(|(mut tools, holds)| {
+        if let Some((slug, _)) = only {
+            let prefix = format!("{slug}__");
+            for tool in &mut tools {
+                if let Some(name) = tool.get("name").and_then(Value::as_str)
+                    && let Some(plain) = name.strip_prefix(&prefix)
+                {
+                    tool["name"] = json!(plain);
+                }
+            }
+        }
+        (tools, holds)
+    });
     match built {
         Ok((tools, holds)) if message.generation == Generation::Stateless => hold(
             result(
@@ -937,10 +1019,14 @@ async fn collect(
     caller: &Caller,
     deadline: Instant,
     resolved: &HashMap<i64, Reached>,
+    only: Option<i64>,
 ) -> Result<(Vec<Value>, Vec<Reservation>), Response> {
     let user = caller.user_id;
     let assigned = match state.db.call(move |conn| assigned(conn, user)).await {
-        Ok(assigned) => assigned,
+        Ok(assigned) => assigned
+            .into_iter()
+            .filter(|server| only.is_none_or(|id| id == server.server_id))
+            .collect::<Vec<_>>(),
         Err(err) => {
             report::failure("assigned servers", &err);
             return Err(bare(StatusCode::INTERNAL_SERVER_ERROR));

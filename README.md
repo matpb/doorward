@@ -183,7 +183,8 @@ list for that server under the person's rules, and every tool call returns a too
 names the server and the account page, so the person knows where to add the value. Where storing
 is switched off, the error names the header instead. This holds on the server's path and on the
 combined endpoint `/mcp`, and the other servers keep working. Once the value is stored, the
-client's next request on the server's path is told to start a new session. The account page
+same session keeps working: the gateway serves the placeholder session itself until the client
+opens a new one. The account page
 marks each server that still needs values.
 
 The gateway deletes stored credentials when:

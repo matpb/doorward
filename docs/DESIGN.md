@@ -251,7 +251,7 @@ from the access token's wrap and each of the user's rows for that server under t
 the request goes to, in the request's own database call; the values reach `custom_headers::resolve`
 as sensitive header values and are dropped with the request. A held value whose key does not open, or that
 does not open at all, is withheld: nothing is sent upstream and `proxy::handle` answers for the server
-itself (statement 90), never with 401 or 403. Combined requests carry the address with
+itself (statement 90), never with 401 or 403. The session id it hands out is `dw-wait-` and 32 hex digits, recorded nowhere: the bearer token already identifies the caller. Once the caller is no longer withheld, the gateway keeps serving that session itself for the one server through the combined endpoint's single-server entries (`list_one`, `call_one`), because a client such as Claude Code does not start a new session on a 404. Combined requests carry the address with
 their resolved headers and refuse a server whose target address differs. `keys::release` deletes a
 server's values (one user's, one header's, or all) with the version bump and session deletion; the
 panel calls it on an upstream address change and on an unassignment (each writes a `values_dropped`

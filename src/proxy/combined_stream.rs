@@ -15,7 +15,7 @@ use super::sse::sse_events;
 use super::stream::{ACCESS_LOST, CHECK_FAILED, Framing, Owned, detail_of, record};
 use super::upstream::{self, Cause, time_limit};
 use crate::mcp::json::parse_strict;
-use crate::oauth::guard::{Recheck, combined_still_valid_at};
+use crate::oauth::guard::Recheck;
 use crate::web::limit::HELD_FRAME;
 
 /// Chunks the client may lag the upstream by before the reading waits.
@@ -222,11 +222,11 @@ async fn send_piece(
 
 /// The re-check of the call's caller, its expiries compared at the second it was admitted.
 async fn valid(call: &Call) -> Recheck {
-    combined_still_valid_at(
+    super::combined::recheck(
         &call.owned.state,
         &call.owned.caller,
+        &call.owned.slug,
         call.owned.server_id,
-        call.owned.caller.admitted,
     )
     .await
 }

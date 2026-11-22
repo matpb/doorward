@@ -91,6 +91,9 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
         Ok(intake) => intake,
         Err(refusal) => return refusal,
     };
+    if message.generation == Generation::Session && is_placeholder(headers) {
+        return placeholder(ctx, headers, &message, &bytes).await;
+    }
     let session = if message.method.as_deref() == Some("initialize") {
         None
     } else {
@@ -211,7 +214,7 @@ pub(super) async fn get_or_delete(ctx: &Ctx<'_>, method: &Method, headers: &Head
         Ok(None) => return not_allowed(),
         Err(refusal) => {
             if refusal.status() == StatusCode::NOT_FOUND
-                && withheld_probe(ctx, headers).await.is_some()
+                && (is_placeholder(headers) || withheld_probe(ctx, headers).await.is_some())
             {
                 return if *method == Method::DELETE {
                     relayed(StatusCode::NO_CONTENT, None, Body::empty(), None)
@@ -484,22 +487,25 @@ async fn declared_headers(
             INVALID,
         )));
     }
-    let named = reached.name.as_deref().and_then(|name| {
-        withheld_text(
-            &ctx.state.config.public_url,
-            name,
-            reached.store,
-            &reached.resolved,
-        )
-        .map(|(text, detail)| Held {
-            name: name.to_owned(),
-            text,
-            detail,
-        })
-    });
-    Err(match named {
+    Err(match held_of(ctx, &reached) {
         Some(held) => Refused::held(held),
         None => Refused::other(answer::unavailable(ctx.slug)),
+    })
+}
+
+/// What a withheld caller is told, when the resolution withholds the caller's values and the server has a name.
+fn held_of(ctx: &Ctx<'_>, reached: &values::Reached) -> Option<Held> {
+    let name = reached.name.as_deref()?;
+    let (text, detail) = withheld_text(
+        &ctx.state.config.public_url,
+        name,
+        reached.store,
+        &reached.resolved,
+    )?;
+    Some(Held {
+        name: name.to_owned(),
+        text,
+        detail,
     })
 }
 
@@ -539,6 +545,76 @@ pub(super) fn withheld_text(
             "reconnect needed",
         )),
         Resolved::Ready(_) | Resolved::Bad => None,
+    }
+}
+
+/// True when the request carries exactly one session id of the placeholder shape: `dw-wait-` and 32 hex.
+fn is_placeholder(headers: &HeaderMap) -> bool {
+    let mut values = headers.get_all(MCP_SESSION_ID).iter();
+    match (values.next(), values.next()) {
+        (Some(value), None) => value.to_str().is_ok_and(|text| {
+            text.strip_prefix("dw-wait-").is_some_and(|rest| {
+                rest.len() == 32 && rest.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            })
+        }),
+        _ => false,
+    }
+}
+
+/// A request on a placeholder session, which the gateway ends itself for its whole life. A withheld caller
+/// gets the withheld answers; any other caller is served for this one server through the caller's own link.
+async fn placeholder(
+    ctx: &Ctx<'_>,
+    headers: &HeaderMap,
+    message: &Message,
+    bytes: &Bytes,
+) -> Response {
+    let null = Value::Null;
+    let id = message.id.as_ref().unwrap_or(&null);
+    let reached = match values::resolve(ctx.state, &ctx.caller, headers, ctx.server_id, None).await
+    {
+        Ok(reached) => reached,
+        Err(err) => {
+            report::failure("custom headers", &err);
+            return bare(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+    if matches!(reached.resolved, Resolved::Bad) {
+        return answer::error(
+            StatusCode::BAD_REQUEST,
+            message.id.as_ref(),
+            -32600,
+            INVALID,
+        );
+    }
+    if is_withheld_kind(&reached.resolved) {
+        return match held_of(ctx, &reached) {
+            Some(held) => answer_withheld(ctx, message, &held, message.tool.as_deref()).await,
+            None => answer::unavailable(ctx.slug),
+        };
+    }
+    if message.shape != Shape::Request {
+        return bare(StatusCode::ACCEPTED);
+    }
+    match message.method.as_deref() {
+        Some("initialize") => {
+            let name = reached.name.clone().unwrap_or_else(|| ctx.slug.to_owned());
+            let mut reply = combined::result(id, combined::initialize_for(message, &name, None));
+            if let Some(session) = headers.get(MCP_SESSION_ID) {
+                reply.headers_mut().insert(MCP_SESSION_ID, session.clone());
+            }
+            reply
+        }
+        Some("ping") => combined::result(id, json!({})),
+        Some("tools/list") => {
+            let target = (ctx.slug, ctx.server_id);
+            combined::list_one(ctx.state, &ctx.caller, message, target, reached).await
+        }
+        Some("tools/call") => {
+            let target = (ctx.slug, ctx.server_id);
+            combined::call_one(ctx.state, &ctx.caller, message, bytes, target, reached).await
+        }
+        _ => answer::method_not_found(message),
     }
 }
 

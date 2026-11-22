@@ -2738,7 +2738,13 @@ Bob is assigned to the demo server with a required header and nothing stored, un
    a rule-denied tool and an unlisted tool are still unknown tools with their usual rows.
 4. `a_locked_connection_gets_reconnect_this_app_the_same_way` (`reconnect needed`).
 5. `a_value_that_cannot_be_opened_gets_the_store_again_text_the_same_way`.
-6. `after_the_value_is_stored_the_placeholder_session_is_answered_404_and_a_new_one_carries_it`.
+6. `after_the_value_is_stored_the_same_placeholder_session_is_served_with_the_value` (call, list with plain
+   names under the rules, an unknown rule-denied tool, a normal `allow` row, ping, repeated initialize),
+   `a_fresh_initialize_after_the_value_is_stored_reaches_the_upstream_as_a_normal_session`,
+   `an_invented_placeholder_id_and_a_placeholder_id_of_an_unassigned_caller_are_not_served`,
+   `a_placeholder_session_whose_value_is_removed_again_is_answered_by_the_withheld_handshake`,
+   `the_stateless_generation_ignores_a_placeholder_session_id` and
+   `get_is_405_and_delete_is_204_on_a_placeholder_session_of_a_caller_who_is_not_withheld`.
 7. `with_pass_through_only_the_text_names_the_header`.
 8. `the_stateless_generation_gets_the_same_answers`.
 9. `get_is_405_and_delete_is_204_for_a_withheld_caller`.

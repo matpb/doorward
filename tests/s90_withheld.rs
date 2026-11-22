@@ -225,37 +225,179 @@ async fn a_value_that_cannot_be_opened_gets_the_store_again_text_the_same_way() 
     assert!(moved.requests().is_empty());
 }
 
+const WAIT_ID: &str = "dw-wait-0123456789abcdef0123456789abcdef";
+
+/// The values the upstream received for `tool`, one entry per call.
+fn carried(upstream: &FakeUpstream, tool: &str) -> Vec<Option<String>> {
+    upstream
+        .requests()
+        .iter()
+        .filter(|request| request.tool.as_deref() == Some(tool))
+        .map(|request| request.header(LOWER).map(str::to_string))
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn after_the_value_is_stored_the_placeholder_session_is_answered_404_and_a_new_one_carries_it()
- {
+async fn after_the_value_is_stored_the_same_placeholder_session_is_served_with_the_value() {
     let w = World::start().await;
-    let (upstream, _id, hid, bob) = bob_without_a_value(&w).await;
+    let (upstream, id, hid, bob) = bob_without_a_value(&w).await;
+    admin::add_rule(
+        &w.owner,
+        "everyone",
+        "deny",
+        "tool",
+        Some(id.as_str()),
+        Some("delete_db"),
+    )
+    .await;
     let tokens = w.token(&bob, SLUG).await;
     let waiting = w.session_mcp(SLUG, &tokens);
     assert_eq!(waiting.initialize().await.status, 200);
     let stored = store_value(&bob, SLUG, &hid, CANARY).await;
     assert_eq!(stored.status, 303);
-    let refused = session_call(&waiting, "echo", &[]).await;
+    upstream.clear();
+
+    let reply = session_call(&waiting, "echo", &[]).await;
+    assert_eq!(reply.text().as_deref(), Some("called: echo"));
+    assert_eq!(carried(&upstream, "echo"), vec![Some(CANARY.to_string())]);
+    let listed = waiting.list_tools().await;
     assert_eq!(
-        refused.status, 404,
-        "the placeholder id is told to start again"
+        listed.tool_names(),
+        vec!["echo".to_string(), "search".to_string()]
     );
-    assert!(upstream.requests().is_empty());
+    let denied = waiting.call_tool("delete_db", json!({})).await;
+    assert_eq!(
+        denied.error_code(),
+        Some(-32602),
+        "a rule-denied tool is unknown"
+    );
+    let rows = tool_rows(&w);
+    assert!(
+        rows.contains(&("allow".into(), "ok".into(), String::new())),
+        "a normal allow/ok row, got {rows:?}"
+    );
+    assert_eq!(waiting.request("ping", json!({})).await.status, 200);
+    let other = waiting.request("resources/list", json!({})).await;
+    assert_eq!(other.error_code(), Some(-32601));
+    assert_eq!(
+        waiting.initialize().await.status,
+        200,
+        "a client may repeat initialize"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fresh_initialize_after_the_value_is_stored_reaches_the_upstream_as_a_normal_session() {
+    let w = World::start().await;
+    let (upstream, _id, hid, bob) = bob_without_a_value(&w).await;
+    let tokens = w.token(&bob, SLUG).await;
+    store_value(&bob, SLUG, &hid, CANARY).await;
     let fresh = w.session_mcp(SLUG, &tokens);
     assert_eq!(fresh.initialize().await.status, 200);
+    assert!(upstream.rpc_count("initialize") >= 1);
     assert!(
-        upstream.rpc_count("initialize") >= 1,
-        "the new initialize reaches the upstream"
+        !fresh
+            .session_id()
+            .unwrap_or_default()
+            .starts_with("dw-wait-")
     );
     let reply = session_call(&fresh, "echo", &[]).await;
     assert_eq!(reply.text().as_deref(), Some("called: echo"));
-    let carried: Vec<Option<String>> = upstream
-        .requests()
-        .iter()
-        .filter(|request| request.tool.as_deref() == Some("echo"))
-        .map(|request| request.header(LOWER).map(str::to_string))
-        .collect();
-    assert_eq!(carried, vec![Some(CANARY.to_string())]);
+    assert_eq!(carried(&upstream, "echo"), vec![Some(CANARY.to_string())]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_invented_placeholder_id_and_a_placeholder_id_of_an_unassigned_caller_are_not_served() {
+    let w = World::start().await;
+    let (upstream, _id, hid, bob) = bob_without_a_value(&w).await;
+    let tokens = w.token(&bob, SLUG).await;
+    store_value(&bob, SLUG, &hid, CANARY).await;
+    upstream.clear();
+    for invented in [
+        "dw-wait-short",
+        "dw-wait-0123456789abcdef0123456789abcdef0",
+        "dw-wait-0123456789ABCDEF0123456789ABCDEF",
+        "dw-wait-0123456789abcdef0123456789abcdeg",
+    ] {
+        let client = w.session_mcp(SLUG, &tokens);
+        client.set_session_id(Some(invented));
+        assert_eq!(
+            session_call(&client, "echo", &[]).await.status,
+            404,
+            "{invented}"
+        );
+    }
+    assert!(upstream.requests().is_empty());
+
+    let user = w.user_id(BOB).await;
+    let page = admin::assign(&w.owner, &user, &[]).await;
+    assert_eq!(page.status, 303);
+    let plain = {
+        let client = w.session_mcp(SLUG, &tokens);
+        session_call(&client, "echo", &[]).await.status
+    };
+    let client = w.session_mcp(SLUG, &tokens);
+    client.set_session_id(Some(WAIT_ID));
+    let waiting = session_call(&client, "echo", &[]).await;
+    assert_eq!(waiting.status, plain, "the unassigned answer is unchanged");
+    assert!(waiting.text().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_placeholder_session_whose_value_is_removed_again_is_answered_by_the_withheld_handshake()
+{
+    let w = World::start().await;
+    let (upstream, _id, hid, bob) = bob_without_a_value(&w).await;
+    let tokens = w.token(&bob, SLUG).await;
+    let waiting = w.session_mcp(SLUG, &tokens);
+    assert_eq!(waiting.initialize().await.status, 200);
+    store_value(&bob, SLUG, &hid, CANARY).await;
+    assert_eq!(
+        session_call(&waiting, "echo", &[]).await.text().as_deref(),
+        Some("called: echo")
+    );
+    let removed = common::values::remove_value(&bob, SLUG, &hid).await;
+    assert_eq!(removed.status, 303);
+    upstream.clear();
+    let reply = session_call(&waiting, "echo", &[]).await;
+    assert!(is_tool_error(&reply));
+    assert!(
+        reply
+            .text()
+            .unwrap_or_default()
+            .contains("needs your credentials")
+    );
+    assert!(upstream.requests().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_stateless_generation_ignores_a_placeholder_session_id() {
+    let w = World::start().await;
+    let (_upstream, _id, hid, bob) = bob_without_a_value(&w).await;
+    let tokens = w.token(&bob, SLUG).await;
+    store_value(&bob, SLUG, &hid, CANARY).await;
+    let stateless = w.stateless_mcp(SLUG, &tokens);
+    let wait = stateless_call(&stateless, "echo", &[("Mcp-Session-Id", WAIT_ID)]).await;
+    let other = stateless_call(&stateless, "echo", &[("Mcp-Session-Id", "other-id-123")]).await;
+    assert_eq!(
+        (wait.status, wait.text()),
+        (other.status, other.text()),
+        "the stateless generation treats a placeholder id like any other id"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_is_405_and_delete_is_204_on_a_placeholder_session_of_a_caller_who_is_not_withheld() {
+    let w = World::start().await;
+    let (upstream, _id, hid, bob) = bob_without_a_value(&w).await;
+    let tokens = w.token(&bob, SLUG).await;
+    let waiting = w.session_mcp(SLUG, &tokens);
+    assert_eq!(waiting.initialize().await.status, 200);
+    store_value(&bob, SLUG, &hid, CANARY).await;
+    upstream.clear();
+    assert_eq!(waiting.get().await.status, 405);
+    assert_eq!(waiting.delete().await.status, 204);
+    assert!(upstream.requests().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

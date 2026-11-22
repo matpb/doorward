@@ -473,7 +473,8 @@ M. Added for custom headers and per-user credentials
     credentials again for a value that cannot be opened. No request of that caller gets an
     HTTP 401 or 403 for this reason, so a client does not mistake it for a failed sign-in.
     Each refused call is in the activity log with the reason. Once the values are there,
-    the client's next request on the server's path is told to start a new session. The
+    the same connection keeps working without a new sign-in or a restart of the client:
+    the gateway relays its tool calls to the server itself, under the caller's rules. The
     account page marks each server that still needs values, and the consent page names
     them. Proven with Claude Code and Codex connecting before the value is stored.
 
