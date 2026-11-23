@@ -7,6 +7,11 @@ SQLite database.
 
 Status: 1.0.0.
 
+> [!TIP]
+> Putting Doorward in production for a team? [Both Hands](https://both-hands.com/?utm_source=github&utm_medium=readme&utm_campaign=doorward)
+> installs it, secures it and trains your staff. See
+> [Help running it in production](#help-running-it-in-production).
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.png">
   <img src="docs/images/overview-light.png" alt="The Doorward admin panel: the navigation on the left, a warning about two servers that answer without the gateway, counts of servers, users, invitations and rules, and the latest activity" width="720">
@@ -344,6 +349,26 @@ hygiene scan, and prints `CHECK PASS` when all of them pass.
 
 The proof scripts (`scripts/prove-*.sh`, with helpers in `scripts/prove/`) drive real clients
 and real HTTP against a throwaway gateway. [CONTRIBUTING.md](CONTRIBUTING.md) describes them.
+
+## Help running it in production
+
+Doorward is free and open source, and everything in this README is enough to run it
+yourself. If your organization would rather not do it alone,
+[Both Hands](https://both-hands.com/?utm_source=github&utm_medium=readme&utm_campaign=doorward)
+is the consultancy of Doorward's author and offers paid help:
+
+- **Installation and hardening.** Doorward on your own infrastructure, behind HTTPS, with
+  backups, monitoring and a tested restore.
+- **Configuration.** Your MCP servers added and locked down, access rules per team, and
+  your people's clients moved over.
+- **Training.** Admins who can run the gateway, and staff who use MCP tools in production
+  safely.
+- **Security review.** A second pair of eyes on an install you already have.
+
+Service in English and French.
+[Tell Both Hands what you need](https://both-hands.com/?utm_source=github&utm_medium=readme&utm_campaign=doorward).
+
+Bugs and questions about Doorward itself stay free and public: see below.
 
 ## Questions and bugs
 
