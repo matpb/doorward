@@ -928,6 +928,36 @@ async fn a_400_drops_the_link_closes_it_once_and_the_next_send_probes_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_link_closes_its_session_in_the_revision_it_negotiated() {
+    let up = start(Behave {
+        revision: "2025-06-18",
+        ..Behave::default()
+    })
+    .await;
+    let fx = fixture().await;
+    let links = Links::new();
+    let target = target_at(&fx, up.url());
+    ask(&links, &fx.state, owned(1, 1), &target, list())
+        .await
+        .expect("first list");
+    up.ledger().calls_status = Some(400);
+    let result = ask(&links, &fx.state, owned(1, 1), &target, echo(None)).await;
+    assert!(matches!(result, Err(Fault(_))));
+    wait_for(&up, "DELETE", 1).await;
+    let deletes: Vec<Seen> = up
+        .seen()
+        .into_iter()
+        .filter(|seen| kind_of(seen) == "DELETE")
+        .collect();
+    assert_eq!(deletes.len(), 1);
+    assert_eq!(deletes[0].header("mcp-session-id"), Some("s1"));
+    assert_eq!(
+        deletes[0].header("mcp-protocol-version"),
+        Some("2025-06-18")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_list_refused_with_a_jsonrpc_error_is_a_fault_and_drops_the_link() {
     let up = start(Behave::default()).await;
     let fx = fixture().await;
@@ -1263,6 +1293,37 @@ async fn an_evicted_session_is_closed_with_the_secret() {
     assert_eq!(deletes[0].header("mcp-session-id"), Some("s1"));
     assert_eq!(deletes[0].header(SECRET_NAME), Some(SECRET_VALUE));
     assert_eq!(links.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_evicted_link_closes_its_session_in_the_revision_it_negotiated() {
+    let up = start(Behave {
+        revision: "2025-06-18",
+        ..Behave::default()
+    })
+    .await;
+    let fx = fixture().await;
+    point_server_at(&fx, up.url()).await;
+    let links = Links::with_bounds(1, 1);
+    let target = server_target(&fx).await;
+    ask(&links, &fx.state, owned(1, 1), &target, list())
+        .await
+        .expect("the first family lists");
+    ask(&links, &fx.state, owned(2, 2), &target, list())
+        .await
+        .expect("the second family lists and evicts the first");
+    wait_for(&up, "DELETE", 1).await;
+    let deletes: Vec<Seen> = up
+        .seen()
+        .into_iter()
+        .filter(|seen| kind_of(seen) == "DELETE")
+        .collect();
+    assert_eq!(deletes.len(), 1);
+    assert_eq!(deletes[0].header("mcp-session-id"), Some("s1"));
+    assert_eq!(
+        deletes[0].header("mcp-protocol-version"),
+        Some("2025-06-18")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

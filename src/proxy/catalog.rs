@@ -29,6 +29,8 @@ const TOOL_LIMIT_PER_SERVER: usize = 1000;
 const APPEARED_LIMIT: usize = 50;
 pub(super) const STATELESS: &str = "2026-07-28";
 pub(super) const SESSION: &str = "2025-11-25";
+/// Revisions the session form can continue in, newest first.
+const REVISIONS: [&str; 3] = [SESSION, "2025-06-18", "2025-03-26"];
 const ACCEPTS: &str = "application/json, text/event-stream";
 const UNAVAILABLE: &str = "The last refresh failed: the upstream did not answer with a tool list.";
 const TOO_LARGE: &str = "The last refresh failed: the tool list is larger than the limit.";
@@ -135,6 +137,15 @@ fn init_body() -> Value {
         "capabilities": {},
         "clientInfo": {"name": "doorward", "version": env!("CARGO_PKG_VERSION")},
     }})
+}
+
+/// The revision the upstream chose in its initialize result; None when it is missing or unknown.
+fn negotiated(result: &Value) -> Option<&'static str> {
+    let version = result.get("protocolVersion")?.as_str()?;
+    REVISIONS
+        .iter()
+        .copied()
+        .find(|revision| *revision == version)
 }
 
 /// Sends one JSON-RPC request. Also returns the session id the answer carries, if any.
@@ -272,10 +283,12 @@ fn page_of(result: &Value) -> Option<(Vec<Value>, Option<String>)> {
 
 /// Pages through tools/list. None when the first answer is not a JSON-RPC result. `held` covers the
 /// bytes of every page so far.
+#[allow(clippy::too_many_arguments)]
 async fn list_pages(
     state: &AppState,
     target: &Target,
     stateless: bool,
+    version: &'static str,
     session: Option<&HeaderValue>,
     carry: Carry<'_>,
     user: Option<i64>,
@@ -289,7 +302,7 @@ async fn list_pages(
         let headers = if stateless {
             request_headers(STATELESS, Some("tools/list"), None)
         } else {
-            request_headers(SESSION, None, session)
+            request_headers(version, None, session)
         };
         let body = list_body(stateless, cursor.as_deref());
         let cap = limit.saturating_sub(used);
@@ -323,10 +336,11 @@ pub(super) async fn close_session(
     target: &Target,
     session: &HeaderValue,
     with_secret: bool,
+    version: &'static str,
 ) {
     let closing = Outgoing {
         method: Method::DELETE,
-        headers: request_headers(SESSION, None, Some(session)),
+        headers: request_headers(version, None, Some(session)),
         body: Bytes::new(),
         with_secret,
         user_headers: Vec::new(),
@@ -357,26 +371,42 @@ async fn session_tools(
         user,
     )
     .await;
-    match reply {
-        Reply::Result(..) => {}
+    let version = match reply {
+        Reply::Result(result, _) => negotiated(&result),
         Reply::TooLarge => return Err(Failure::too_large()),
         Reply::Denied(code) => return Err(Failure::upstream(Cause::Status(code))),
         Reply::Other(cause) => return Err(Failure::upstream(cause)),
-    }
+    };
+    let Some(version) = version else {
+        if let Some(session) = session.as_ref() {
+            close_session(state, target, session, true, SESSION).await;
+        }
+        return Err(Failure::upstream(Cause::NotMcp));
+    };
     let notified = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
     post(
         state,
         target,
         &notified,
-        request_headers(SESSION, None, session.as_ref()),
+        request_headers(version, None, session.as_ref()),
         carry,
         limit,
         user,
     )
     .await;
-    let listed = list_pages(state, target, false, session.as_ref(), carry, user, held).await;
+    let listed = list_pages(
+        state,
+        target,
+        false,
+        version,
+        session.as_ref(),
+        carry,
+        user,
+        held,
+    )
+    .await;
     if let Some(session) = session.as_ref() {
-        close_session(state, target, session, true).await;
+        close_session(state, target, session, true, version).await;
     }
     listed?.ok_or(Failure::upstream(Cause::NotMcp))
 }
@@ -393,7 +423,8 @@ async fn fetch(
         secret: true,
         user_headers,
     };
-    if let Some(tools) = list_pages(state, target, true, None, carry, user, held).await? {
+    if let Some(tools) = list_pages(state, target, true, STATELESS, None, carry, user, held).await?
+    {
         return Ok(tools);
     }
     session_tools(state, target, user, held, user_headers).await
@@ -517,8 +548,9 @@ pub async fn lockdown(state: &AppState, target: &Target) -> &'static str {
         None,
     )
     .await;
-    if let (Reply::Result(..), Some(session)) = (&reply, session.as_ref()) {
-        close_session(state, target, session, false).await;
+    if let (Reply::Result(result, _), Some(session)) = (&reply, session.as_ref()) {
+        let version = negotiated(result).unwrap_or(SESSION);
+        close_session(state, target, session, false, version).await;
     }
     match reply {
         Reply::Result(..) => "open",

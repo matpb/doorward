@@ -214,7 +214,12 @@ impl Links {
                         && self.inner.drop_link(key, link.generation)
                         && let Some(session) = link.session_id()
                     {
-                        close_later(state, owned_target(target), session.clone());
+                        close_later(
+                            state,
+                            owned_target(target),
+                            session.clone(),
+                            link.revision(),
+                        );
                     }
                     return Err(Fault(Cause::Status(status.as_u16())));
                 }
@@ -360,6 +365,14 @@ impl Link {
         match &self.form {
             Form::Stateless => None,
             Form::Session { id, .. } => id.as_ref(),
+        }
+    }
+
+    /// The session revision this link speaks; SESSION for a stateless link, which has no session to close.
+    fn revision(&self) -> &'static str {
+        match &self.form {
+            Form::Stateless => SESSION,
+            Form::Session { revision, .. } => revision,
         }
     }
 
@@ -572,10 +585,10 @@ fn take_link(table: &mut Table, key: (i64, i64)) -> Option<(i64, Arc<Link>)> {
 }
 
 /// Closes one dropped session in the background, best effort: the answer does not matter.
-fn close_later(state: &AppState, target: Target, session: HeaderValue) {
+fn close_later(state: &AppState, target: Target, session: HeaderValue, revision: &'static str) {
     let state = state.clone();
     tokio::spawn(async move {
-        catalog::close_session(&state, &target, &session, target.secret.is_some()).await;
+        catalog::close_session(&state, &target, &session, target.secret.is_some(), revision).await;
     });
 }
 
@@ -589,7 +602,7 @@ fn close_evicted(state: &AppState, server_id: i64, link: Arc<Link>) {
         };
         match upstream::target(&state, server_id).await {
             Ok(Some(target)) if link.serves(&target) => {
-                catalog::close_session(&state, &target, &session, true).await;
+                catalog::close_session(&state, &target, &session, true, link.revision()).await;
             }
             Ok(_) => {}
             Err(err) => report::failure("evicted upstream session", &format!("{err:?}")),

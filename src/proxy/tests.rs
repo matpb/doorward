@@ -324,6 +324,38 @@ fn session_style_as(
     }
 }
 
+/// A session-style upstream that chooses `revision` in its initialize answer. It refuses the stateless
+/// form and any request after initialize whose version header is not `revision`.
+fn session_style_on(
+    revision: &'static str,
+    tools: Vec<Value>,
+) -> impl Fn(&Seen) -> Plan + Send + Sync + 'static {
+    move |seen: &Seen| {
+        let request = seen.json();
+        let id = request["id"].clone();
+        if seen.rpc() == "initialize" {
+            let result = json!({"protocolVersion": revision, "capabilities": {}});
+            return reply(Shape::Json, 200, Some("s1"), &rpc_result(&id, result));
+        }
+        if seen.header("mcp-protocol-version") != Some(revision)
+            || seen.header("mcp-session-id") != Some("s1")
+        {
+            return answer(400, None, None, "");
+        }
+        match seen.rpc().as_str() {
+            _ if seen.method == "DELETE" => answer(200, None, None, ""),
+            "notifications/initialized" => answer(202, None, None, ""),
+            "tools/list" => reply(
+                Shape::Json,
+                200,
+                None,
+                &rpc_result(&id, json!({"tools": tools.clone()})),
+            ),
+            _ => answer(404, None, None, ""),
+        }
+    }
+}
+
 /// An upstream that answers every request with the same status, type and body.
 fn always(
     status: u16,
@@ -898,6 +930,102 @@ async fn a_session_upstream_that_answers_its_notice_as_text_is_listed() {
         5,
         "the same sequence as for an empty notice"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refresh_continues_in_the_revision_the_upstream_chose() {
+    let up = TestUpstream::start(session_style_on("2025-06-18", vec![tool("alpha")])).await;
+    let fixture = fixture().await;
+    let names_seen = catalog::refresh(&fixture.state, &secret_target_at(&fixture, &up.url), None)
+        .await
+        .expect("the refresh");
+    assert_eq!(names_seen, vec!["alpha"]);
+    assert_eq!(
+        names(&fixture.state, fixture.server_id).await,
+        vec!["alpha"]
+    );
+    let seen = up.seen();
+    let rpc: Vec<String> = seen
+        .iter()
+        .map(|request| format!("{} {}", request.method, request.rpc()))
+        .collect();
+    assert_eq!(
+        rpc,
+        vec![
+            "POST tools/list",
+            "POST initialize",
+            "POST notifications/initialized",
+            "POST tools/list",
+            "DELETE ",
+        ]
+    );
+    assert_eq!(
+        seen[1].header("mcp-protocol-version"),
+        Some("2025-11-25"),
+        "initialize still offers the session revision"
+    );
+    for request in &seen[2..] {
+        assert_eq!(
+            request.header("mcp-protocol-version"),
+            Some("2025-06-18"),
+            "{} {} must carry the revision the upstream chose",
+            request.method,
+            request.rpc()
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refresh_fails_when_the_upstream_chooses_an_unknown_revision() {
+    let up = TestUpstream::start(session_style_on("2099-01-01", vec![tool("alpha")])).await;
+    let fixture = fixture().await;
+    let result = catalog::refresh(&fixture.state, &secret_target_at(&fixture, &up.url), None).await;
+    assert_eq!(result, Err(RefreshError::Unavailable));
+    assert_eq!(
+        catalog_error(&fixture.state, fixture.server_id)
+            .await
+            .as_deref(),
+        Some(UNAVAILABLE)
+    );
+    let seen = up.seen();
+    let rpc: Vec<String> = seen
+        .iter()
+        .map(|request| format!("{} {}", request.method, request.rpc()))
+        .collect();
+    assert_eq!(
+        rpc,
+        vec!["POST tools/list", "POST initialize", "DELETE "],
+        "no follow-up request is sent in a revision the gateway does not know"
+    );
+    assert_eq!(seen[2].header("mcp-session-id"), Some("s1"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refresh_fails_when_the_initialize_answer_names_no_revision() {
+    let session = session_style(vec![tool("alpha")]);
+    let up = TestUpstream::start(move |seen: &Seen| {
+        if seen.rpc() == "initialize" {
+            let result = json!({"capabilities": {}});
+            return reply(
+                Shape::Json,
+                200,
+                Some("s1"),
+                &rpc_result(&seen.json()["id"], result),
+            );
+        }
+        session(seen)
+    })
+    .await;
+    let fixture = fixture().await;
+    let result = catalog::refresh(&fixture.state, &secret_target_at(&fixture, &up.url), None).await;
+    assert_eq!(result, Err(RefreshError::Unavailable));
+    let seen = up.seen();
+    let rpc: Vec<String> = seen
+        .iter()
+        .map(|request| format!("{} {}", request.method, request.rpc()))
+        .collect();
+    assert_eq!(rpc, vec!["POST tools/list", "POST initialize", "DELETE "]);
+    assert_eq!(seen[2].header("mcp-session-id"), Some("s1"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
