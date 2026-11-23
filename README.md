@@ -5,7 +5,7 @@ in with an email and a password, an admin decides who may use which server and w
 and every request is checked before it reaches a server. It ships as one binary with one
 SQLite database.
 
-Status: pre-release (0.1.0).
+Status: 1.0.0.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.png">

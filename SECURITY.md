@@ -5,7 +5,7 @@ Reports are welcome.
 
 ## Supported versions
 
-Doorward is pre-release. Fixes go into the newest version only.
+Fixes go into the newest release only.
 
 ## Report a vulnerability
 
