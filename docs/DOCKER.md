@@ -146,7 +146,7 @@ Each key in the Compose files, and what it is for:
 | `user: "65532:65532"` | The gateway runs as a fixed user that is not root. The image sets the same user. |
 | `pids_limit: 1024` | Caps processes and threads, so a fork loop cannot exhaust the host. |
 | `mem_limit: 512m` | Caps memory. |
-| `cpus: 2` | Caps CPU time. |
+| `cpus: 1` | Caps CPU time. Docker refuses to start a container whose cap is above the host's CPU count, so raise it only on a larger host. |
 | `ulimits.nofile: 65536` | Caps open files and sockets. |
 | `stop_grace_period: 15s` | Time for requests to finish before a forced stop. |
 | `logging` with `max-size` and `max-file` | Caps the disk space the container logs use. |

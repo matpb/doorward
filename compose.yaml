@@ -27,7 +27,7 @@ services:
     security_opt: ["no-new-privileges:true"] # No gaining privileges through a binary.
     pids_limit: 1024 # Caps the number of processes (the blocking pool needs many).
     mem_limit: 512m # Caps memory.
-    cpus: 2 # Caps CPU time.
+    cpus: 1 # Caps CPU time. Docker refuses a value above the host's CPU count.
     ulimits:
       nofile: 65536 # Open-file limit.
     stop_grace_period: 15s # Time to finish requests before a forced stop.
