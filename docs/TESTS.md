@@ -2902,3 +2902,70 @@ now also expects the Servers group after the role row.
 4. `a_rule_posted_from_the_form_uses_the_chosen_server`: the form's hidden `server_id` is posted with
    a tool of `other`; the answer is `303` and the one stored rule is for `other` and `zeta`. Red
    before the change.
+
+## s94_activity_filters.rs (statement 94)
+
+The fixture is written straight into the activity table at fixed times, with the test clock at
+2030-01-01 00:00:00 UTC, where the harness starts it (moving it would expire the owner's session). Every seeded row has a tool name starting `s-`, so the helpers read only
+those rows and the rows the harness writes (owner, invitations) do not disturb a set.
+
+1. `each_filter_alone_narrows_the_page`: each of `period=24h`, `event=tool_call`, `user`, `server`,
+   `tool`, `client` and `q` alone shows exactly the seeded rows it names, and the count line
+   counts them.
+2. `three_filters_combine_with_and`: `user`, `server`, `event` and `period` together, and `user`,
+   `client`, `server` together, each show only the rows that meet all of them.
+3. `a_custom_day_range_includes_its_first_and_last_second_only`: a row at 23:59:59 of the day before
+   `from` and one at 00:00:00 of the day after `to` are out; a row at 00:00:00 of `from` and one at
+   23:59:59 of `to` are in.
+4. `a_rolling_period_counts_back_from_the_clock`: a row exactly 24 hours (7 days) old is in,
+   one second older is out.
+5. `q_treats_percent_and_underscore_as_literal_text`: `%`, `_` and `\` match only the rows holding
+   that character, and `UPPER` matches `upper` with any case.
+6. `every_event_key_selects_its_kinds`: each of the ten event keys lists exactly the seeded kinds
+   it names, a real call that the upstream marks as a tool error is `tool_failed` (not `tool_call`),
+   and a real refused call is `tool_refused`.
+7. `a_value_that_names_nothing_shows_nothing`: unknown `period` and `event`, a malformed user or
+   server, a custom period with no day or a day that is not a date (with the field error and its
+   `aria-invalid`), and `from` after `to` each show no row; the custom field errors read exactly.
+8. `a_repeated_key_answers_200_and_takes_its_first_value`: `user`, `server`, `period`, `event` and
+   `page` repeated answer 200 and use the first value.
+9. `paging_and_remove_links_keep_the_other_filters`: with 60 matching rows, the older and newer links
+   keep every filter and set `page`; each Remove link drops only its own filter and no `page`.
+10. `clear_filters_shows_only_while_a_filter_is_active`: `a#clear-filters` and `ul#active-filters`
+    are absent with no filter, with `period=all` and with an empty `q`, and present with `tool`.
+11. `the_count_line_counts_the_filtered_rows`: `Rows 1 to N of M` with M the filtered count; with no
+    match there is no range line and the page says `No activity matches.`.
+12. `the_filter_form_reflects_the_query_and_labels_every_control`: the form is a GET to
+    `/admin/activity` with one control per filter, each labelled by its own `label[for]`, each
+    holding the current value; `a#export-csv` links to the export with the same filters and no
+    `page`.
+
+## s95_activity_export.rs (statement 95)
+
+Seeded rows as in `s94_activity_filters.rs`. The 5000-row test writes 5200 rows straight into the
+table in one transaction. Expected lines are written out by hand, or come from a brute-force read of
+the table in the test.
+
+1. `the_export_answers_with_csv_headers_and_the_documented_file_name`: `200`, `Content-Type` exactly
+   `text/csv; charset=utf-8`, `Content-Disposition` exactly `attachment; filename="doorward-activity.csv"`,
+   `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`.
+2. `the_export_lists_the_filtered_rows_oldest_first_with_the_documented_columns`: the first line is
+   `time_utc,event,user,server,tool,client,decision,outcome,detail,duration_ms`; the rows follow in
+   time order with the plain event label and the RFC 3339 time; a filter limits them.
+3. `the_export_holds_every_row_across_more_than_one_chunk`: 5200 seeded rows of one server, the
+   export has 5200 data lines in the table's order, which a brute-force read of the table gives.
+4. `cells_are_quoted_as_rfc_4180_and_lines_end_in_crlf`: a comma, a double quote, a line feed and a
+   carriage return in a detail are quoted with doubled quotes, and every line ends in CRLF.
+5. `a_cell_starting_with_a_formula_character_is_prefixed_with_a_quote`: one row for each of `=`,
+   `+`, `-`, `@`, tab and CR at the start of a detail; each cell gets a leading `'`.
+6. `anonymous_is_redirected_and_a_plain_user_is_forbidden`: anonymous `303` to `/login`; bob `403`
+   with the forbidden page; neither writes an export row.
+7. `the_export_writes_one_admin_change_row_with_the_row_count`: after the export the table holds one
+   `admin_change` row by the owner with the detail `exported activity (N rows)`, N the number of data
+   lines, and the row is not in the file.
+8. `the_export_holds_no_ids_and_no_tokens`: every line has exactly ten cells, and the body holds
+   neither bob's access token nor his refresh token.
+9. `an_export_with_no_matching_rows_has_only_the_header`: a filter that names nothing gives the
+   header line alone, and writes `exported activity (0 rows)`.
+10. `a_repeated_key_on_the_export_takes_its_first_value`: `period=24h&period=all` and `server` repeated
+    answer `200` with the rows of the first value.

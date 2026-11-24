@@ -1,60 +1,35 @@
-//! The activity page: the rows that match the user and server filters, one page at a time, and the
-//! newest rows the overview shows.
+//! The activity page: the rows that match the filters, one page at a time, with the filter form, the
+//! active filters and the export link, and the newest rows the overview shows.
 
-use axum::extract::{Query, State};
+mod export;
+mod filters;
+
+pub(super) use export::get_export;
+
+use axum::extract::{RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use form_urlencoded::Serializer;
 use maud::{Markup, html};
-use rusqlite::{Connection, params};
-use serde::Deserialize;
+use rusqlite::types::Value;
+use rusqlite::{Connection, params_from_iter};
 use time::OffsetDateTime;
 use time::format_description;
 use time::format_description::well_known::Rfc3339;
 
 use crate::app::AppState;
 use crate::db::{Db, DbError};
-use crate::web::ui::{breakable, email, time_cell};
+use crate::web::ui::{self, Note, breakable, email, time_cell};
 use crate::web::{MainData, Viewer, internal_error, page_with};
 
 use super::panel_nav;
+use filters::{Criteria, EVENTS, Filters, PERIODS, criteria, parse_day};
 
 /// Rows on one page of the activity page.
 const PAGE_SIZE: i64 = 50;
 /// The day, month, year and UTC time of a row, as the page reads them.
 const PLAIN_TIME: &str =
     "[day padding:none] [month repr:short] [year] [hour repr:24]:[minute]:[second] UTC";
-
-#[derive(Deserialize)]
-pub struct ActivityQuery {
-    user: Option<String>,
-    server: Option<String>,
-    page: Option<String>,
-}
-
-/// A filter from the query: absent or empty, an id, or a value that matches no row.
-#[derive(Clone, Copy)]
-enum Filter {
-    Any,
-    Id(i64),
-    Nothing,
-}
-
-impl Filter {
-    fn of(text: Option<&str>) -> Filter {
-        match text {
-            None | Some("") => Filter::Any,
-            Some(text) => text.parse::<i64>().map_or(Filter::Nothing, Filter::Id),
-        }
-    }
-
-    fn id(self) -> Option<i64> {
-        match self {
-            Filter::Id(id) => Some(id),
-            Filter::Any | Filter::Nothing => None,
-        }
-    }
-}
 
 /// One activity row as the page shows it: the RFC 3339 time, and the same time in plain words.
 struct Row {
@@ -92,35 +67,31 @@ struct ServerOption {
     slug: String,
 }
 
+/// The activity page for the filters of its query string.
 pub async fn get_activity(
     viewer: Viewer,
     State(state): State<AppState>,
-    Query(query): Query<ActivityQuery>,
+    RawQuery(raw): RawQuery,
 ) -> Response {
-    let user = Filter::of(query.user.as_deref());
-    let server = Filter::of(query.server.as_deref());
-    let number = page_number(query.page.as_deref());
+    let filters = Filters::of(raw.as_deref());
+    let number = page_number(filters.page.as_deref());
     let offset = offset_of(number);
+    let now = state.clock.now().unix_timestamp();
+    let scope_filters = filters.clone();
     let listing = state
         .db
         .call(move |conn| {
-            let (rows, total) = match (user, server) {
-                (Filter::Nothing, _) | (_, Filter::Nothing) => (Vec::new(), 0),
-                (user, server) => (
-                    rows_in(conn, user.id(), server.id(), PAGE_SIZE, offset)?,
-                    count_in(conn, user.id(), server.id())?,
-                ),
-            };
+            let scope = criteria(&scope_filters, now);
             Ok(Listing {
-                rows,
-                total,
+                rows: rows_in(conn, &scope, PAGE_SIZE, offset)?,
+                total: count_in(conn, &scope)?,
                 users: users_in(conn)?,
                 servers: servers_in(conn)?,
             })
         })
         .await;
     match listing {
-        Ok(listing) => activity_page(&viewer, &query, number, &listing),
+        Ok(listing) => activity_page(&viewer, &filters, number, &listing),
         Err(err) => internal_error("activity page", &err),
     }
 }
@@ -174,20 +145,22 @@ fn servers_in(conn: &Connection) -> rusqlite::Result<Vec<ServerOption>> {
     rows.collect()
 }
 
-/// The rows that match the filters, newest first, from `offset`, at most `limit` of them.
+/// The rows that match the scope, newest first, from `offset`, at most `limit` of them.
 fn rows_in(
     conn: &Connection,
-    user: Option<i64>,
-    server: Option<i64>,
+    scope: &Criteria,
     limit: i64,
     offset: i64,
 ) -> rusqlite::Result<Vec<Row>> {
-    let mut statement = conn.prepare(
+    let sql = format!(
         "SELECT at, kind, user_email, server_slug, tool, decision, outcome, detail, duration_ms \
-         FROM activity WHERE (?1 IS NULL OR user_id = ?1) AND (?2 IS NULL OR server_id = ?2) \
-         ORDER BY at DESC, id DESC LIMIT ?3 OFFSET ?4",
-    )?;
-    let rows = statement.query_map(params![user, server, limit, offset], |row| {
+         FROM activity{} ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
+        scope.clause()
+    );
+    let mut statement = conn.prepare_cached(&sql)?;
+    let mut values = scope.values().to_vec();
+    values.extend([Value::Integer(limit), Value::Integer(offset)]);
+    let rows = statement.query_map(params_from_iter(values), |row| {
         let at: i64 = row.get(0)?;
         Ok(Row {
             time: rfc3339(at)?,
@@ -205,14 +178,10 @@ fn rows_in(
     rows.collect()
 }
 
-/// How many rows match the filters, in all.
-fn count_in(conn: &Connection, user: Option<i64>, server: Option<i64>) -> rusqlite::Result<i64> {
-    conn.query_row(
-        "SELECT COUNT(*) FROM activity \
-         WHERE (?1 IS NULL OR user_id = ?1) AND (?2 IS NULL OR server_id = ?2)",
-        params![user, server],
-        |row| row.get(0),
-    )
+/// How many rows match the scope, in all.
+fn count_in(conn: &Connection, scope: &Criteria) -> rusqlite::Result<i64> {
+    let sql = format!("SELECT COUNT(*) FROM activity{}", scope.clause());
+    conn.query_row(&sql, params_from_iter(scope.values()), |row| row.get(0))
 }
 
 /// The UTC time of a unix timestamp as RFC 3339.
@@ -245,36 +214,260 @@ where
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Integer, Box::new(err))
 }
 
-/// The filter form. Each select marks the option of the current filter as selected.
-fn filter_form(
-    user: Filter,
-    server: Filter,
-    users: &[UserOption],
-    servers: &[ServerOption],
-) -> Markup {
+/// The field errors of a custom period: the first day and the last day, each when it is not a date.
+fn day_errors(filters: &Filters) -> (Option<&'static str>, Option<&'static str>) {
+    if !filters.is_custom() {
+        return (None, None);
+    }
+    let first = parse_day(filters.from.as_deref())
+        .is_none()
+        .then_some("Enter the first day as YYYY-MM-DD.");
+    let last = parse_day(filters.to.as_deref())
+        .is_none()
+        .then_some("Enter the last day as YYYY-MM-DD.");
+    (first, last)
+}
+
+/// The value of a filter that no choice of its select names, so the select can still show it.
+fn unlisted<'a>(value: Option<&'a str>, choices: &[(&str, &str)]) -> Option<&'a str> {
+    value.filter(|value| !choices.iter().any(|(key, _)| key == value))
+}
+
+/// The filter form: one labelled control per filter, each holding the current value. It submits with
+/// GET and holds no page, so a submit starts at the first page.
+fn filter_form(filters: &Filters, users: &[UserOption], servers: &[ServerOption]) -> Markup {
+    let (first_error, last_error) = day_errors(filters);
+    let first_note = ui::note_under(first_error, Some("UTC. Both days are included."));
+    let first_described = first_note.describer("filter-from");
+    let last_note = ui::note_under(last_error, None);
+    let last_described = last_note.describer("filter-to");
+    let period = html! {
+        select id="filter-period" name="period" {
+            @for (key, label) in PERIODS {
+                option value=(key) selected[filters.period.as_deref() == Some(key)] { (label) }
+            }
+            @if let Some(other) = unlisted(filters.period.as_deref(), &PERIODS) {
+                option value=(other) selected { (other) " (matches nothing)" }
+            }
+        }
+    };
+    let from = html! {
+        input id="filter-from" type="date" name="from" value=[filters.from.as_deref()]
+            aria-describedby=[first_described] aria-invalid=[ui::invalid(first_error)];
+    };
+    let to = html! {
+        input id="filter-to" type="date" name="to" value=[filters.to.as_deref()]
+            aria-describedby=[last_described] aria-invalid=[ui::invalid(last_error)];
+    };
+    let event = html! {
+        select id="filter-event" name="event" {
+            option value="" { "Any event" }
+            @for (key, label) in EVENTS {
+                option value=(key) selected[filters.event.as_deref() == Some(key)] { (label) }
+            }
+            @if let Some(other) = unlisted(filters.event.as_deref(), &EVENTS) {
+                option value=(other) selected { (other) " (matches nothing)" }
+            }
+        }
+    };
+    let user = html! {
+        select id="filter-user" name="user" {
+            option value="" { "Any user" }
+            @for choice in users {
+                option value=(choice.id) selected[filters.user_id() == Some(choice.id)] {
+                    (choice.email)
+                }
+            }
+        }
+    };
+    let server = html! {
+        select id="filter-server" name="server" {
+            option value="" { "Any server" }
+            @for choice in servers {
+                option value=(choice.id) selected[filters.server_id() == Some(choice.id)] {
+                    (choice.name) " (" (choice.slug) ")"
+                }
+            }
+        }
+    };
+    let tool = html! {
+        input id="filter-tool" type="text" name="tool" value=[filters.tool.as_deref()];
+    };
+    let client = html! {
+        input id="filter-client" type="text" name="client" value=[filters.client.as_deref()];
+    };
+    let search = html! {
+        input id="filter-q" type="search" name="q" value=[filters.q.as_deref()];
+    };
     html! {
-        form.filters method="get" action="/admin/activity" data-form="activity-filter" {
-            label for="filter-user" { "User" }
-            select id="filter-user" name="user" {
-                option value="" { "Any user" }
-                @for choice in users {
-                    option value=(choice.id) selected[user.id() == Some(choice.id)] {
-                        (choice.email)
-                    }
-                }
+        form.filters.flow method="get" action="/admin/activity" data-form="activity-filter" {
+            div.fields {
+                (ui::field("filter-period", "Period", false, period, Note::None))
+                (ui::field("filter-from", "From", false, from, first_note))
+                (ui::field("filter-to", "To", false, to, last_note))
             }
-            label for="filter-server" { "Server" }
-            select id="filter-server" name="server" {
-                option value="" { "Any server" }
-                @for choice in servers {
-                    option value=(choice.id) selected[server.id() == Some(choice.id)] {
-                        (choice.name) " (" (choice.slug) ")"
-                    }
-                }
+            div.fields {
+                (ui::field("filter-event", "Event", false, event, Note::None))
+                (ui::field("filter-user", "User", false, user, Note::None))
+                (ui::field("filter-server", "Server", false, server, Note::None))
             }
-            button type="submit" data-kind="secondary" { "Filter" }
+            div.fields {
+                (ui::field("filter-tool", "Tool", false, tool, Note::None))
+                (ui::field("filter-client", "Client", false, client, Note::None))
+                (ui::field("filter-q", "Search", false, search, Note::None))
+            }
+            div.form-actions {
+                button type="submit" data-kind="secondary" { "Filter" }
+            }
         }
     }
+}
+
+/// One active filter: its key, its text as the list shows it, and the filters its Remove link drops.
+struct Chip {
+    key: &'static str,
+    text: String,
+    drop: &'static [&'static str],
+}
+
+/// The period in words, as the list of active filters shows it.
+fn period_text(filters: &Filters) -> String {
+    match filters.period.as_deref() {
+        Some("24h") => "last 24 hours".to_owned(),
+        Some("7d") => "last 7 days".to_owned(),
+        Some("30d") => "last 30 days".to_owned(),
+        Some("90d") => "last 90 days".to_owned(),
+        Some("custom") => format!(
+            "{} to {}",
+            filters.from.as_deref().unwrap_or("no first day"),
+            filters.to.as_deref().unwrap_or("no last day")
+        ),
+        Some(other) => other.to_owned(),
+        None => "all time".to_owned(),
+    }
+}
+
+/// The active filters in the order of the form. A user and a server show their email and their slug
+/// when the id names one, and the value as typed otherwise.
+fn chips(filters: &Filters, users: &[UserOption], servers: &[ServerOption]) -> Vec<Chip> {
+    let mut chips = Vec::new();
+    if filters.period_is_set() {
+        chips.push(Chip {
+            key: "period",
+            text: format!("Period: {}", period_text(filters)),
+            drop: &["period", "from", "to"],
+        });
+    }
+    if let Some(event) = filters.event.as_deref() {
+        let label = EVENTS
+            .iter()
+            .find(|(key, _)| *key == event)
+            .map_or(event, |(_, label)| *label);
+        chips.push(Chip {
+            key: "event",
+            text: format!("Event: {label}"),
+            drop: &["event"],
+        });
+    }
+    if let Some(user) = filters.user.as_deref() {
+        let email = filters
+            .user_id()
+            .and_then(|id| users.iter().find(|choice| choice.id == id))
+            .map_or(user, |choice| choice.email.as_str());
+        chips.push(Chip {
+            key: "user",
+            text: format!("User: {email}"),
+            drop: &["user"],
+        });
+    }
+    if let Some(server) = filters.server.as_deref() {
+        let slug = filters
+            .server_id()
+            .and_then(|id| servers.iter().find(|choice| choice.id == id))
+            .map_or(server, |choice| choice.slug.as_str());
+        chips.push(Chip {
+            key: "server",
+            text: format!("Server: {slug}"),
+            drop: &["server"],
+        });
+    }
+    if let Some(tool) = filters.tool.as_deref() {
+        chips.push(Chip {
+            key: "tool",
+            text: format!("Tool: {tool}"),
+            drop: &["tool"],
+        });
+    }
+    if let Some(client) = filters.client.as_deref() {
+        chips.push(Chip {
+            key: "client",
+            text: format!("Client: {client}"),
+            drop: &["client"],
+        });
+    }
+    if let Some(q) = filters.q.as_deref() {
+        chips.push(Chip {
+            key: "q",
+            text: format!("Search: {q}"),
+            drop: &["q"],
+        });
+    }
+    chips
+}
+
+/// The list of active filters, each with its Remove link, and Clear filters; nothing when no filter
+/// narrows the rows.
+fn active_filters(filters: &Filters, users: &[UserOption], servers: &[ServerOption]) -> Markup {
+    let chips = chips(filters, users, servers);
+    html! {
+        @if !chips.is_empty() {
+            ul id="active-filters" {
+                @for chip in &chips {
+                    li data-filter=(chip.key) {
+                        (chip.text) " "
+                        a href=(target("/admin/activity", &query_without(filters, chip.drop)))
+                            aria-label=(format!("Remove {}", chip.text)) { "Remove" }
+                    }
+                }
+            }
+            a id="clear-filters" href="/admin/activity" { "Clear filters" }
+        }
+    }
+}
+
+/// The path with its query string, when the query is not empty.
+fn target(path: &str, query: &str) -> String {
+    if query.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{path}?{query}")
+    }
+}
+
+/// The query string of the set filters, without the keys in `drop`.
+fn query_without(filters: &Filters, drop: &[&str]) -> String {
+    let mut serializer = Serializer::new(String::new());
+    for (key, value) in filters.pairs() {
+        if !drop.contains(&key) {
+            serializer.append_pair(key, value);
+        }
+    }
+    serializer.finish()
+}
+
+/// The pager's query: `user` and `server` as the form submits them, empty when unset, then the other
+/// set filters, then the page.
+fn pager_query(filters: &Filters, page: u64) -> String {
+    let mut serializer = Serializer::new(String::new());
+    serializer.append_pair("user", filters.user.as_deref().unwrap_or(""));
+    serializer.append_pair("server", filters.server.as_deref().unwrap_or(""));
+    for (key, value) in filters.pairs() {
+        if key != "user" && key != "server" {
+            serializer.append_pair(key, value);
+        }
+    }
+    serializer.append_pair("page", &page.to_string());
+    serializer.finish()
 }
 
 /// The label of a row in plain words, and the tone of its marker when the row needs one.
@@ -448,7 +641,7 @@ fn activity_table(rows: &[Row]) -> Markup {
 /// are none.
 pub(super) async fn latest(db: &Db, limit: i64) -> Result<Markup, DbError> {
     let rows = db
-        .call(move |conn| rows_in(conn, None, None, limit, 0))
+        .call(move |conn| rows_in(conn, &Criteria::default(), limit, 0))
         .await?;
     Ok(html! {
         @if rows.is_empty() {
@@ -472,19 +665,9 @@ fn newer_page(number: u64, total: i64) -> u64 {
     }
 }
 
-/// The links to the pages before and after this one. Each keeps the filters as the filter form
-/// submits them, with the page number.
-fn pager(query: &ActivityQuery, number: u64, total: i64, older: bool) -> Markup {
-    let user = query.user.as_deref().unwrap_or("");
-    let server = query.server.as_deref().unwrap_or("");
-    let link = |target: u64| {
-        let query = Serializer::new(String::new())
-            .append_pair("user", user)
-            .append_pair("server", server)
-            .append_pair("page", &target.to_string())
-            .finish();
-        format!("/admin/activity?{query}")
-    };
+/// The links to the pages before and after this one. Each keeps every filter and sets the page.
+fn pager(filters: &Filters, number: u64, total: i64, older: bool) -> Markup {
+    let link = |target_page: u64| target("/admin/activity", &pager_query(filters, target_page));
     let newer = number > 1;
     html! {
         @if newer || older {
@@ -500,18 +683,12 @@ fn pager(query: &ActivityQuery, number: u64, total: i64, older: bool) -> Markup 
     }
 }
 
-fn activity_page(
-    viewer: &Viewer,
-    query: &ActivityQuery,
-    number: u64,
-    listing: &Listing,
-) -> Response {
-    let user = Filter::of(query.user.as_deref());
-    let server = Filter::of(query.server.as_deref());
+fn activity_page(viewer: &Viewer, filters: &Filters, number: u64, listing: &Listing) -> Response {
     let rows = &listing.rows;
     let offset = offset_of(number);
     let end = offset.saturating_add(i64::try_from(rows.len()).unwrap_or(i64::MAX));
     let older = end < listing.total;
+    let export = target("/admin/activity.csv", &query_without(filters, &[]));
     let data = MainData {
         nav: panel_nav(viewer, "/admin/activity"),
         ..MainData::default()
@@ -526,11 +703,15 @@ fn activity_page(
                 h1 { "Activity" }
             }
             div.toolbar {
-                (filter_form(user, server, &listing.users, &listing.servers))
+                (filter_form(filters, &listing.users, &listing.servers))
+                (active_filters(filters, &listing.users, &listing.servers))
                 @if !rows.is_empty() {
                     p.range data-range {
                         (format!("Rows {} to {} of {}", offset.saturating_add(1), end, listing.total))
                     }
+                }
+                p {
+                    a id="export-csv" href=(export) { "Export CSV" }
                 }
             }
             @if rows.is_empty() {
@@ -538,7 +719,7 @@ fn activity_page(
             } @else {
                 (activity_table(rows))
             }
-            (pager(query, number, listing.total, older))
+            (pager(filters, number, listing.total, older))
         },
     )
 }

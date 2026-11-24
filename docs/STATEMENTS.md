@@ -492,6 +492,22 @@ M. Added for custom headers and per-user credentials
     `the_invitation_rule_form_lists_only_the_tools_of_the_chosen_server`,
     `the_server_picker_is_a_get_form_without_the_csrf_token` and
     `a_rule_posted_from_the_form_uses_the_chosen_server` in `src/admin/tests.rs`.
+94. The activity page filters its rows by `period` (`24h`, `7d`, `30d`, `90d`, `all`, or `custom`
+    with `from` and `to` as UTC days, both included), `event`, `user`, `server`, `tool`, `client`
+    and `q`, all combined with AND, and its paging and its Remove links keep the other filters. A
+    value that names nothing matches no row: an unknown period or event, a custom period whose day
+    is missing or not a date (the form then shows a field error), a `from` after `to`, a user or
+    server that is not an id. A repeated key takes its first value and is never refused. `q` is a
+    substring of the user, server, tool, client and detail, with ASCII letters matched in either case,
+    and `%`, `_` and `\` in it are literal. Proof: `tests/s94_activity_filters.rs` and the unit tests in
+    `src/admin/activity/filters.rs`.
+95. `GET /admin/activity.csv` returns every row the filters of statement 94 match, oldest first,
+    as CSV with the columns `time_utc,event,user,server,tool,client,decision,outcome,detail,
+    duration_ms` and CRLF line ends. A cell is quoted as RFC 4180 says, and a cell that starts
+    with `=`, `+`, `-`, `@`, a tab or a CR gets a leading `'`. The rows are read in chunks, and
+    the export writes one `admin_change` row, `exported activity (N rows)`, that is not part of
+    that export. An anonymous visitor is redirected to sign-in and a plain user gets 403. Proof:
+    `tests/s95_activity_export.rs` and the unit tests in `src/admin/activity/export.rs`.
 
 ## Proof
 

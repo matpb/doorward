@@ -34,7 +34,9 @@ Status: 1.1.0.
   API token, an admin declares the header names. The gateway passes on the value the client
   sends, or sends the one that person stored, encrypted, on their account page.
 - **Activity log.** Every sign-in, admin change and tool call is recorded with the person
-  who made it.
+  who made it. The page filters the log by period, event, person, server, tool, client and
+  text, and exports every row the filters match as CSV. Rows are kept for
+  `limits.activity_days` (90 by default); the export is how to keep more than that.
 - **Mail.** Raw SMTP, Resend or Mailgun, set from the admin panel.
 - **Both protocol generations.** The session form and the stateless form of MCP over HTTP
   are both served.
