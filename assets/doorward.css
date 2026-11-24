@@ -1656,7 +1656,7 @@ p[data-needs-values] a {
 }
 
 .activity {
-  --c-event: calc(100% - 948px);
+  --c-event: max(230px, calc(100% - 948px));
   --c-user: 256px;
   --c-decision: 132px;
   --c-duration: 96px;
@@ -2735,7 +2735,7 @@ body[data-layout="card"] main > .lede + .actions {
 /* 1280 to 1439 px: the same table with narrower columns. */
 @media (max-width: 1439.98px) {
   .activity {
-    --c-event: round(down, calc(164px + (100% - 936px) * 5 / 12), 1px);
+    --c-event: 230px;
     --c-user: 240px;
     --c-decision: 116px;
     --c-time: 88px;
@@ -3725,16 +3725,16 @@ a.chip:focus-visible {
   color: var(--ink-2);
 }
 
-/* The scale stands in a column on the right, beside the newest bucket. */
-.plot {
-  padding-inline-end: var(--scale-col);
-}
-
 /* No viewBox: a unit is a pixel at every width, so type never shrinks. */
 .time {
   display: block;
   inline-size: 100%;
   overflow: visible;
+}
+
+/* The plot leaves the scale column free at its right, inside the figure's own svg. */
+.time .plot-area {
+  inline-size: calc(100% - var(--scale-col));
 }
 
 .time text {
@@ -3847,7 +3847,7 @@ a.chip:focus-visible {
 .ranked > li {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  column-gap: var(--s4);
+  column-gap: var(--s3);
   align-items: baseline;
   padding-block-start: var(--s2);
   border-block-end: 1px solid var(--line);
@@ -3883,6 +3883,11 @@ a.chip:focus-visible {
 /* "server / tool": the tool is what is ranked, so the server is the quieter half. */
 .ranked-name[data-by="tool"] {
   font-family: var(--mono);
+}
+
+/* Both halves of a tool name are 12 px, so "server / tool" fits one line at half width. */
+.ranked-name[data-by="tool"] > code {
+  font-size: 12px;
 }
 
 .ranked-name[data-by="tool"] > code:first-child {

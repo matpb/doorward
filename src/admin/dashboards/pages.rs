@@ -1,6 +1,8 @@
 //! The dashboards pages: the list, one dashboard's edit page with its chart forms, the handlers that
 //! change them, and the dashboard section of the Overview.
 
+use std::collections::HashMap;
+
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -10,6 +12,7 @@ use crate::admin::panel_nav;
 use crate::admin::users::parse_id;
 use crate::app::AppState;
 use crate::db::DbError;
+use crate::proxy::catalog;
 use crate::servers::{self, ServerRef};
 use crate::web::{
     MainData, VerifiedForm, Viewer, forbidden, form_page_with, internal_error, not_found, redirect,
@@ -21,7 +24,7 @@ use super::model::{
     CHART_LIMIT, ChartSpec, Checked, DASHBOARD_LIMIT, Draft, GroupBy, Metric, Period, Shape,
     TOP_COUNTS, Width, check_chart, check_name, field_of,
 };
-use super::query::{self, Series};
+use super::query::{self, Scope, Series};
 use super::store::{self, Board, Change, Direction, Stored};
 
 /// The page of one refused form: its lead, its refusal, and the form as it was posted.
@@ -145,7 +148,10 @@ pub(super) fn first_value(query: Option<&str>, key: &str) -> Option<String> {
 /// What the edit page shows: the dashboard, its charts, the choices of its filters, and the chart form.
 struct BoardView {
     board: Board,
+    first: bool,
     charts: Vec<Stored>,
+    scopes: Vec<Scope>,
+    tools: HashMap<i64, Vec<String>>,
     servers: Vec<ServerRef>,
     users: Vec<(i64, String)>,
     editing: Option<(i64, Draft)>,
@@ -162,14 +168,27 @@ fn board_in(
         return Ok(None);
     };
     let charts = store::charts_in(conn, id)?;
+    let scopes = charts
+        .iter()
+        .map(|stored| query::scope_of(conn, &stored.spec))
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let picked = chart.and_then(|chart| charts.iter().find(|stored| stored.id == chart));
     let editing = picked.map(|stored| (stored.id, draft_of(stored)));
+    let servers = servers::list(conn)?;
+    let mut tools = HashMap::new();
+    for server in &servers {
+        tools.insert(server.id, catalog::names(conn, server.id)?);
+    }
+    let first = store::boards_in(conn)?.first().map(|board| board.id) == Some(id);
     Ok(Some(BoardView {
         board,
-        servers: servers::list(conn)?,
+        first,
+        servers,
         users: users_in(conn)?,
         chart_missing: chart.is_some() && picked.is_none(),
         charts,
+        scopes,
+        tools,
         editing,
     }))
 }
@@ -607,12 +626,22 @@ fn board_body(csrf: &str, view: &BoardView, refusal: Option<&Refusal>) -> Markup
         (_, Some((id, draft))) => (draft.clone(), Some(*id)),
         _ => (new_draft(), None),
     };
+    let tools = chart_draft
+        .server_id
+        .parse::<i64>()
+        .ok()
+        .and_then(|id| view.tools.get(&id))
+        .cloned()
+        .unwrap_or_default();
     html! {
         div.page-head {
             p.crumb { a href="/admin/dashboards" { "Dashboards" } }
             h1 { (board.name) }
             p.meta {
                 span { (view.charts.len()) " of " (CHART_LIMIT) " charts" }
+                @if view.first {
+                    span { "Opens first on Overview" }
+                }
             }
             div.head-actions {
                 a.button data-kind="secondary" href=(format!("/admin?dashboard={}", board.id)) { "Open on Overview" }
@@ -621,50 +650,32 @@ fn board_body(csrf: &str, view: &BoardView, refusal: Option<&Refusal>) -> Markup
         @if let Some(refusal) = refusal {
             (refusal_notice(refusal))
         }
-        section.part id="rename" aria-labelledby="rename-title" {
-            div.part-head {
-                h2 id="rename-title" { "Name" }
-                p { "A name of 1 to 80 characters, unique among the dashboards." }
+        @if view.charts.is_empty() {
+            div.empty {
+                h2 { "This dashboard has no chart yet." }
+                p { "Add the first one below." }
             }
-            div.part-body {
-                form.flow method="post" action=(base) {
-                    input type="hidden" name="csrf" value=(csrf);
-                    (name_field("dashboard-name", &name_value, name_error))
-                    div.form-actions {
-                        button type="submit" data-kind="secondary" { "Save name" }
-                    }
-                }
-            }
-        }
-        section.part id="charts" aria-labelledby="charts-title" {
-            div.part-head {
-                h2 id="charts-title" { "Charts" }
-                p { "Up to 24 charts. Move one up or down to change its place." }
-            }
-            div.part-body {
-                @if view.charts.is_empty() {
-                    div.empty {
-                        h2 { "This dashboard has no chart yet." }
-                        p { "Add the first one below." }
-                    }
-                } @else {
-                    table.list.chartlist {
-                        thead {
-                            tr {
-                                th scope="col" class="c-title" { "Chart" }
-                                th scope="col" { "Counts" }
-                                th scope="col" class="c-shown" { "Shown as" }
-                                th scope="col" class="c-act" aria-label="Actions" {}
-                            }
+        } @else {
+                table.list.chartlist {
+                    thead {
+                        tr {
+                            th scope="col" class="c-title" { "Chart" }
+                            th scope="col" { "Counts" }
+                            th scope="col" class="c-shown" { "Shown as" }
+                            th scope="col" class="c-act" aria-label="Actions" {}
                         }
-                        tbody {
-                            @let last = view.charts.len().saturating_sub(1);
-                            @for (index, chart) in view.charts.iter().enumerate() {
-                                tr data-chart-id=(chart.id) {
-                                    td.lead { a.name href=(format!("{base}?chart={}#chart", chart.id)) { (chart.title) } }
-                                    td { (chart_words(&chart.spec)) }
-                                    td.half { (shown_as(&chart.spec)) }
-                                    td.act.several {
+                    }
+                    tbody {
+                        @let last = view.charts.len().saturating_sub(1);
+                        @for (index, (chart, scope)) in view.charts.iter().zip(&view.scopes).enumerate() {
+                            tr data-chart-id=(chart.id) {
+                                td.lead { a.name href=(format!("{base}?chart={}#chart", chart.id)) { (chart.title) } }
+                                td { (figure::caption(&chart.spec, chart.spec.period, scope)) }
+                                td.half { (shown_as(&chart.spec)) }
+                                td.act.several {
+                                    @if chart_edit == Some(chart.id) {
+                                        span.editing { "Editing" }
+                                    } @else {
                                         div.row-actions {
                                             form method="post" action=(format!("{base}/charts/{}/move", chart.id)) {
                                                 input type="hidden" name="csrf" value=(csrf);
@@ -689,8 +700,22 @@ fn board_body(csrf: &str, view: &BoardView, refusal: Option<&Refusal>) -> Markup
                     }
                 }
             }
+        (chart_form(csrf, &base, &view.servers, &view.users, chart_edit, &chart_draft, refusal, &tools))
+        section.part id="rename" aria-labelledby="rename-title" {
+            div.part-head {
+                h2 id="rename-title" { "Name" }
+                p { "A name of 1 to 80 characters, unique among the dashboards." }
+            }
+            div.part-body {
+                form.flow method="post" action=(base) {
+                    input type="hidden" name="csrf" value=(csrf);
+                    (name_field("dashboard-name", &name_value, name_error))
+                    div.form-actions {
+                        button type="submit" data-kind="secondary" { "Save name" }
+                    }
+                }
+            }
         }
-        (chart_form(csrf, &base, &view.servers, &view.users, chart_edit, &chart_draft, refusal))
         section.part id="delete" aria-labelledby="delete-title" {
             div.part-head {
                 h2 id="delete-title" { "Delete" }
@@ -699,7 +724,7 @@ fn board_body(csrf: &str, view: &BoardView, refusal: Option<&Refusal>) -> Markup
             div.part-body {
                 details.confirm data-confirm {
                     summary {
-                        span.confirm-open { "Delete this dashboard " span.chevron aria-hidden="true" {} }
+                        span.confirm-open { "Delete dashboard " span.chevron aria-hidden="true" {} }
                         " "
                         span.confirm-note { "This cannot be undone." }
                     }
@@ -721,23 +746,9 @@ fn shown_as(spec: &ChartSpec) -> String {
     format!("{}, {}", spec.shape.label(), spec.width.as_str())
 }
 
-/// One line of what a chart shows, in words.
-fn chart_words(spec: &ChartSpec) -> String {
-    let grouping = match spec.group_by {
-        GroupBy::Nothing => String::new(),
-        group => format!(", by {}", group.label().to_lowercase()),
-    };
-    format!(
-        "{}{}, {}, {}, {}",
-        spec.metric.label(),
-        grouping,
-        spec.shape.label().to_lowercase(),
-        spec.period.label().to_lowercase(),
-        spec.width.as_str()
-    )
-}
-
-/// The add or edit form of one chart, each field with its label, its hint and its refusal.
+/// The chart builder: Title; Metric and Period; Group by and Shape; Rows and Width; then the scope
+/// filters under "Count only".
+#[allow(clippy::too_many_arguments)]
 fn chart_form(
     csrf: &str,
     base: &str,
@@ -746,15 +757,16 @@ fn chart_form(
     edit: Option<i64>,
     draft: &Draft,
     refusal: Option<&Refusal>,
+    tools: &[String],
 ) -> Markup {
     let action = match edit {
         Some(chart) => format!("{base}/charts/{chart}"),
         None => format!("{base}/charts"),
     };
     let heading = if edit.is_some() {
-        "Edit a chart"
+        format!("Edit {}", draft.title)
     } else {
-        "Add a chart"
+        "Add a chart".to_owned()
     };
     let submit = if edit.is_some() {
         "Save chart"
@@ -764,36 +776,69 @@ fn chart_form(
     let error = |field: &str| refusal.and_then(|refusal| error_for(refusal, field));
     let title_note = ui::note_under(error("chart-title"), Some("1 to 80 characters."));
     let title_described = title_note.describer("chart-title");
-    let tool_note = ui::note_under(
-        error("chart-tool"),
-        Some("The exact tool name. Empty means every tool."),
-    );
+    let tool_note = ui::note_under(error("chart-tool"), Some("The exact name of one tool."));
     let tool_described = tool_note.describer("chart-tool");
     let top_note = ui::note_under(
         error("chart-top"),
-        Some("For ranked lists and category tables: 5, 10, 20 or 50."),
+        Some("For a chart grouped by user, server, tool or client."),
     );
     let top_described = top_note.describer("chart-top");
+    let metric_note = ui::note_under(
+        error("chart-metric"),
+        Some("Unused tools is always a table that is not grouped."),
+    );
+    let metric_described = metric_note.describer("chart-metric");
+    let shape_hints = "chart-shape-hint-time chart-shape-hint-category chart-shape-hint-none";
+    let shape_note = match error("chart-shape") {
+        Some(text) => ui::Note::Error(text),
+        None => ui::Note::Below(
+            shape_hints,
+            html! {
+                p.hint.when-time id="chart-shape-hint-time" { "Grouped by time: bars, a line or a table." }
+                p.hint.when-category id="chart-shape-hint-category" { "Grouped by user, server, tool or client: ranked bars or a table." }
+                p.hint.when-none id="chart-shape-hint-none" { "Not grouped: a number." }
+            },
+        ),
+    };
+    let shape_described = match error("chart-shape") {
+        Some(_) => "chart-shape-error".to_owned(),
+        None => shape_hints.to_owned(),
+    };
     html! {
-        section.part id="chart" aria-labelledby="chart-title-heading" {
+        section.part id="chart" aria-labelledby="chart-form-title" {
             div.part-head {
-                h2 id="chart-title-heading" { (heading) }
-                p { "What the chart counts, how it is grouped and drawn, and the period it covers." }
+                h2 id="chart-form-title" { (heading) }
+                p {
+                    @if let Some(_) = edit {
+                        "Changes “" (draft.title) "”. Its place in the list stays."
+                    } @else {
+                        "What the chart counts, how it is grouped and drawn, and the period it covers."
+                    }
+                }
             }
             div.part-body {
-                form.flow method="post" action=(action) {
+                form.flow.builder method="post" action=(action) data-form="chart" {
                     input type="hidden" name="csrf" value=(csrf);
-                    div.fields data-cols="2" {
+                    div.fields {
                         (ui::field("chart-title", "Title", false, html! {
-                            input id="chart-title" name="title" type="text" value=(draft.title) aria-invalid=[ui::invalid(error("chart-title"))] aria-describedby=[title_described.as_deref()];
+                            input id="chart-title" name="title" type="text" value=(draft.title) maxlength="80" required aria-invalid=[ui::invalid(error("chart-title"))] aria-describedby=[title_described.as_deref()];
                         }, title_note))
+                    }
+                    div.fields data-cols="2" {
                         (ui::field("chart-metric", "Metric", false, html! {
-                            select id="chart-metric" name="metric" aria-invalid=[ui::invalid(error("chart-metric"))] {
+                            select id="chart-metric" name="metric" aria-invalid=[ui::invalid(error("chart-metric"))] aria-describedby=[metric_described.as_deref()] {
                                 @for metric in Metric::ALL {
                                     option value=(metric.as_str()) selected[draft.metric == metric.as_str()] { (metric.label()) }
                                 }
                             }
-                        }, ui::note_under(error("chart-metric"), None)))
+                        }, metric_note))
+                        (ui::field("chart-period", "Period", false, html! {
+                            select id="chart-period" name="period" aria-invalid=[ui::invalid(error("chart-period"))] {
+                                @for period in Period::ALL {
+                                    option value=(period.as_str()) selected[draft.period == period.as_str()] { (period.label()) }
+                                }
+                            }
+                        }, ui::note_under(error("chart-period"), None)))
                     }
                     div.fields data-cols="2" {
                         (ui::field("chart-group-by", "Group by", false, html! {
@@ -804,21 +849,21 @@ fn chart_form(
                             }
                         }, ui::note_under(error("chart-group-by"), None)))
                         (ui::field("chart-shape", "Shape", false, html! {
-                            select id="chart-shape" name="shape" aria-invalid=[ui::invalid(error("chart-shape"))] {
+                            select id="chart-shape" name="shape" aria-invalid=[ui::invalid(error("chart-shape"))] aria-describedby=(shape_described) {
                                 @for shape in Shape::ALL {
                                     option value=(shape.as_str()) selected[draft.shape == shape.as_str()] { (shape.label()) }
                                 }
                             }
-                        }, ui::note_under(error("chart-shape"), None)))
+                        }, shape_note))
                     }
                     div.fields data-cols="2" {
-                        (ui::field("chart-period", "Period", false, html! {
-                            select id="chart-period" name="period" aria-invalid=[ui::invalid(error("chart-period"))] {
-                                @for period in Period::ALL {
-                                    option value=(period.as_str()) selected[draft.period == period.as_str()] { (period.label()) }
+                        (ui::field("chart-top", "Rows", false, html! {
+                            select id="chart-top" name="top_n" aria-invalid=[ui::invalid(error("chart-top"))] aria-describedby=[top_described.as_deref()] {
+                                @for count in TOP_COUNTS {
+                                    option value=(count) selected[draft.top_n == count.to_string()] { "The top " (count) }
                                 }
                             }
-                        }, ui::note_under(error("chart-period"), None)))
+                        }, top_note))
                         (ui::field("chart-width", "Width", false, html! {
                             select id="chart-width" name="width" aria-invalid=[ui::invalid(error("chart-width"))] {
                                 @for width in Width::ALL {
@@ -827,35 +872,37 @@ fn chart_form(
                             }
                         }, ui::note_under(error("chart-width"), None)))
                     }
-                    div.fields data-cols="2" {
-                        (ui::field("chart-server", "Server", false, html! {
-                            select id="chart-server" name="server_id" aria-invalid=[ui::invalid(error("chart-server"))] {
-                                option value="" selected[draft.server_id.is_empty()] { "Any server" }
-                                @for server in servers {
-                                    option value=(server.id) selected[draft.server_id == server.id.to_string()] { (server.slug) ", " (server.name) }
+                    fieldset.flow {
+                        legend { "Count only" }
+                        p.muted { "Leave all three empty to count everything." }
+                        div.fields data-cols="2" {
+                            (ui::field("chart-server", "Server", true, html! {
+                                select id="chart-server" name="server_id" aria-invalid=[ui::invalid(error("chart-server"))] {
+                                    option value="" selected[draft.server_id.is_empty()] { "Any server" }
+                                    @for server in servers {
+                                        option value=(server.id) selected[draft.server_id == server.id.to_string()] { (server.slug) ", " (server.name) }
+                                    }
+                                }
+                            }, ui::note_under(error("chart-server"), None)))
+                            (ui::field("chart-user", "User", true, html! {
+                                select id="chart-user" name="user_id" aria-invalid=[ui::invalid(error("chart-user"))] {
+                                    option value="" selected[draft.user_id.is_empty()] { "Any user" }
+                                    @for (id, email) in users {
+                                        option value=(id) selected[draft.user_id == id.to_string()] { (email) }
+                                    }
+                                }
+                            }, ui::note_under(error("chart-user"), None)))
+                        }
+                        div.fields {
+                            (ui::field("chart-tool", "Tool", true, html! {
+                                input.mono id="chart-tool" name="tool" type="text" list="chart-tools" value=(draft.tool) aria-invalid=[ui::invalid(error("chart-tool"))] aria-describedby=[tool_described.as_deref()];
+                            }, tool_note))
+                            datalist id="chart-tools" {
+                                @for tool in tools {
+                                    option value=(tool) {}
                                 }
                             }
-                        }, ui::note_under(error("chart-server"), None)))
-                        (ui::field("chart-user", "User", false, html! {
-                            select id="chart-user" name="user_id" aria-invalid=[ui::invalid(error("chart-user"))] {
-                                option value="" selected[draft.user_id.is_empty()] { "Any user" }
-                                @for (id, email) in users {
-                                    option value=(id) selected[draft.user_id == id.to_string()] { (email) }
-                                }
-                            }
-                        }, ui::note_under(error("chart-user"), None)))
-                    }
-                    div.fields data-cols="2" {
-                        (ui::field("chart-tool", "Tool", true, html! {
-                            input id="chart-tool" name="tool" type="text" value=(draft.tool) aria-invalid=[ui::invalid(error("chart-tool"))] aria-describedby=[tool_described.as_deref()];
-                        }, tool_note))
-                        (ui::field("chart-top", "Top", true, html! {
-                            select id="chart-top" name="top_n" aria-invalid=[ui::invalid(error("chart-top"))] aria-describedby=[top_described.as_deref()] {
-                                @for count in TOP_COUNTS {
-                                    option value=(count) selected[draft.top_n == count.to_string()] { (count) }
-                                }
-                            }
-                        }, top_note))
+                        }
                     }
                     div.form-actions {
                         button type="submit" data-kind="primary" { (submit) }
@@ -869,7 +916,6 @@ fn chart_form(
     }
 }
 
-/// The field of a refused form that shows the refusal, when the refusal is about one field.
 fn error_for<'a>(refusal: &'a Refusal, field: &str) -> Option<&'a str> {
     (field_of(refusal.message) == Some(field)).then_some(refusal.message)
 }
@@ -943,10 +989,12 @@ pub async fn overview(state: &AppState, query: Option<&str>) -> Result<Markup, D
                 for stored in store::charts_in(conn, boards[index].id)? {
                     let shown = period.unwrap_or(stored.spec.period);
                     let series = query::series(conn, &stored.spec, shown, now)?;
+                    let scope = query::scope_of(conn, &stored.spec)?;
                     charts.push(Shown {
                         stored,
                         period: shown,
                         series,
+                        scope,
                     });
                 }
             }
@@ -966,6 +1014,7 @@ struct Shown {
     stored: Stored,
     period: Period,
     series: Series,
+    scope: Scope,
 }
 
 /// The Overview's dashboards as the page shows them.
@@ -1045,7 +1094,7 @@ fn overview_markup(view: &Overview) -> Markup {
                 } @else {
                     div.charts {
                         @for shown in &view.charts {
-                            (figure::chart_section(shown.stored.id, &shown.stored.spec, &shown.stored.title, shown.period, &shown.series))
+                            (figure::chart_section(shown.stored.id, &shown.stored.spec, &shown.stored.title, shown.period, &shown.series, &shown.scope))
                         }
                     }
                 }

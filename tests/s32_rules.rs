@@ -585,3 +585,25 @@ async fn only_admins_write_rules() {
         "a refused post must create no rule"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_no_rules_the_page_says_so_and_has_no_table_or_jump_button() {
+    let w = World::start().await;
+    let page = w.owner.get("/admin/rules").await;
+    assert_eq!(page.status, 200);
+    assert_eq!(
+        page.count("table.rules"),
+        0,
+        "an empty rules page has no table header"
+    );
+    assert_eq!(
+        page.text("p.empty-line").as_deref(),
+        Some("There are no rules. Every assigned tool is allowed."),
+        "one line says there are no rules and that every assigned tool is allowed"
+    );
+    assert_eq!(
+        page.count(r##"a[href="#add-rule"]"##),
+        0,
+        "the Add a rule jump button is hidden while there are no rules"
+    );
+}

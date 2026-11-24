@@ -11,6 +11,8 @@ const PLOT_TOP: i64 = 20;
 const PLOT_HEIGHT: i64 = 144;
 const BASELINE: i64 = 164;
 const DATE_Y: i64 = 182;
+/// The width of the scale column at the right of a time chart, inside its svg.
+const SCALE_COLUMN: i64 = 48;
 /// From this many buckets the bars are drawn a second time as one step outline.
 const STEP_FROM: usize = 32;
 /// A line tick this close to an edge of the plot hangs inwards; a tick within NEAR_EDGE of it is near.
@@ -370,48 +372,50 @@ pub fn time_svg(chart: &TimeChart<'_>) -> Markup {
     let title = format!("c{}-title", chart.id);
     html! {
         svg.time width="100%" height="188" role="img" aria-labelledby=(format!("{title} {caption}")) {
-            g.grid {
-                @for (_, y) in &grid_y {
-                    line x1="0" x2="100%" y1=(format!("{y}.5")) y2=(format!("{y}.5")) {}
-                }
-            }
             g.y aria-hidden="true" {
-                text x="100%" dx="48" y=(BASELINE + 4) { "0" }
+                text x="100%" y=(BASELINE + 4) { "0" }
                 @for (value, y) in &grid_y {
-                    text x="100%" dx="48" y=(y + 4) { (scale_label(*value)) }
+                    text x="100%" y=(y + 4) { (scale_label(*value)) }
                 }
             }
-            g.marks {
-                @for (index, bucket) in buckets.iter().enumerate() {
-                    g {
-                        title { (mark_title(bucket, chart.hourly, chart.unit)) }
-                        rect.hit x=(percent(index as f64 / count as f64)) width=(percent(1.0 / count as f64)) y=(PLOT_TOP) height=(PLOT_HEIGHT) {}
-                        @if !chart.line {
-                            @if let Some(value) = bucket.value.filter(|value| *value > 0) {
-                                rect.bar x=(percent(bar_x(index))) width=(percent((1.0 - 2.0 * inset) / count as f64)) y=(BASELINE - height(value, top).max(1)) height=(height(value, top).max(1)) {}
+            svg.plot-area x="0" y="0" width=(format!("calc(100% - {SCALE_COLUMN}px)")) height="188" overflow="visible" {
+                g.grid {
+                    @for (_, y) in &grid_y {
+                        line x1="0" x2="100%" y1=(format!("{y}.5")) y2=(format!("{y}.5")) {}
+                    }
+                }
+                g.marks {
+                    @for (index, bucket) in buckets.iter().enumerate() {
+                        g {
+                            title { (mark_title(bucket, chart.hourly, chart.unit)) }
+                            rect.hit x=(percent(index as f64 / count as f64)) width=(percent(1.0 / count as f64)) y=(PLOT_TOP) height=(PLOT_HEIGHT) {}
+                            @if !chart.line {
+                                @if let Some(value) = bucket.value.filter(|value| *value > 0) {
+                                    rect.bar x=(percent(bar_x(index))) width=(percent((1.0 - 2.0 * inset) / count as f64)) y=(BASELINE - height(value, top).max(1)) height=(height(value, top).max(1)) {}
+                                }
                             }
                         }
                     }
                 }
-            }
-            @if step_outline {
-                svg.area x="0" y=(PLOT_TOP) width="100%" height=(PLOT_HEIGHT) viewBox=(format!("0 0 {count} {PLOT_HEIGHT}")) preserveAspectRatio="none" aria-hidden="true" {
-                    polygon points=(step_points(buckets, top)) {}
-                }
-            }
-            @if chart.line {
-                svg.line x="0" y=(PLOT_TOP) width="100%" height=(PLOT_HEIGHT) viewBox=(format!("0 0 {count} {PLOT_HEIGHT}")) preserveAspectRatio="none" {
-                    @for run in runs(buckets) {
-                        polyline points=(line_points(&run, top)) {}
+                @if step_outline {
+                    svg.area x="0" y=(PLOT_TOP) width="100%" height=(PLOT_HEIGHT) viewBox=(format!("0 0 {count} {PLOT_HEIGHT}")) preserveAspectRatio="none" aria-hidden="true" {
+                        polygon points=(step_points(buckets, top)) {}
                     }
                 }
-            }
-            line.base x1="0" x2="100%" y1="164.5" y2="164.5" {}
-            g.x aria-hidden="true" {
-                @for (tick, x, class) in &ticks_out {
-                    g class=[*class] {
-                        line x1=(percent(*x)) x2=(percent(*x)) y1="165" y2="169" {}
-                        text x=(percent(*x)) y=(DATE_Y) { (tick.label) }
+                @if chart.line {
+                    svg.line x="0" y=(PLOT_TOP) width="100%" height=(PLOT_HEIGHT) viewBox=(format!("0 0 {count} {PLOT_HEIGHT}")) preserveAspectRatio="none" {
+                        @for run in runs(buckets) {
+                            polyline points=(line_points(&run, top)) {}
+                        }
+                    }
+                }
+                line.base x1="0" x2="100%" y1="164.5" y2="164.5" {}
+                g.x aria-hidden="true" {
+                    @for (tick, x, class) in &ticks_out {
+                        g class=[*class] {
+                            line x1=(percent(*x)) x2=(percent(*x)) y1="165" y2="169" {}
+                            text x=(percent(*x)) y=(DATE_Y) { (tick.label) }
+                        }
                     }
                 }
             }

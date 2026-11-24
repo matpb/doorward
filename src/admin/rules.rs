@@ -532,13 +532,18 @@ fn rules_body(
         div.page-head {
             h1 { "Rules" }
             p.lede { "A deny stands unless an allow is at least as specific in scope and subject, and more specific in one." }
-            div.head-actions {
-                a.button data-kind="secondary" href="#add-rule" { "Add a rule" }
+            @if !rules.is_empty() {
+                div.head-actions {
+                    a.button data-kind="secondary" href="#add-rule" { "Add a rule" }
+                }
             }
         }
         @if let Some(message) = refused {
             (ui::refused(Some("The rule was not added."), message, failed))
         }
+        @if rules.is_empty() {
+            p.empty-line { "There are no rules. Every assigned tool is allowed." }
+        } @else {
         table.list.rules {
             thead {
                 tr {
@@ -554,6 +559,7 @@ fn rules_body(
                     (rule_row(csrf, rule))
                 }
             }
+        }
         }
         section.part id="add-rule" aria-labelledby="add-title" {
             div.part-head {
@@ -624,13 +630,13 @@ pub(super) fn scope_field(scope: &str) -> Markup {
         "Scope",
         false,
         html! {
-            select id="rule-scope" name="scope" {
+            select id="rule-scope" name="scope" aria-describedby="rule-scope-hint" {
                 option value="all" selected[scope == "all"] { "All tools" }
                 option value="server" selected[scope == "server"] { "One server" }
                 option value="tool" selected[scope == "tool"] { "One tool" }
             }
         },
-        ui::Note::None,
+        ui::Note::Hint("“One server” and “One tool” mean the server chosen above."),
     )
 }
 
@@ -695,8 +701,11 @@ pub(super) fn chosen_server(picked: Option<&ServerRef>) -> Markup {
 /// The tool name field of a rule form, naming the picked server's tools, with the refusal of the tool
 /// when it has one.
 pub(super) fn tool_field(tool: Option<&str>, error: Option<&str>, server: Option<&str>) -> Markup {
-    let hint = server.map(|name| {
-        format!("Tools of {name}. To pick a tool of another server, choose the server above first.")
+    let hint = Some(match server {
+        Some(name) => format!(
+            "Tools of {name}. To pick a tool of another server, choose the server above first. Used only when the scope is One tool."
+        ),
+        None => "Used only when the scope is One tool.".to_owned(),
     });
     let note = ui::note_under(error, hint.as_deref());
     let described = note.describer("rule-tool");

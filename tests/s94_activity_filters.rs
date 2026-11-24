@@ -1110,12 +1110,10 @@ async fn the_filter_form_reflects_the_query_and_labels_every_control() {
         Some("s-echo")
     );
     assert_eq!(
-        page.attr("input#filter-client", "type").as_deref(),
-        Some("text")
-    );
-    assert_eq!(
-        page.attr("input#filter-client", "value").as_deref(),
-        Some("cursor")
+        page.attr("select#filter-client option[selected]", "value")
+            .as_deref(),
+        Some("cursor"),
+        "the client select must show cursor"
     );
     assert_eq!(
         page.attr("input#filter-q", "type").as_deref(),
@@ -1134,6 +1132,37 @@ async fn the_filter_form_reflects_the_query_and_labels_every_control() {
         "the event select lists tool_any as Any tool call"
     );
 
+    assert_eq!(
+        page.count("a#export-csv"),
+        0,
+        "a filter that matches no row has no export link"
+    );
+    assert_eq!(
+        page.text("div.empty p").as_deref(),
+        Some(
+            "Remove one of them above, or clear the filters. Activity older than 90 days is not kept."
+        ),
+        "the empty state says what is not kept"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_export_link_keeps_the_filters_and_shows_only_with_rows() {
+    let w = world().await;
+    let bob = add_user(&w, BOB).await;
+    let (_alpha_up, alpha) = w.upstream("alpha", UpstreamOptions::default()).await;
+    let alpha_id = id(alpha);
+    insert(
+        &w.gw.db_path(),
+        &[call(
+            ago(60),
+            (bob, BOB),
+            (alpha_id, "alpha"),
+            "s-echo",
+            "cursor",
+        )],
+    );
+    let page = list(&w, "client=cursor&q=s-echo&period=7d").await;
     let href = page
         .attr("a#export-csv", "href")
         .expect("the page must link to the export");
@@ -1150,26 +1179,16 @@ async fn the_filter_form_reflects_the_query_and_labels_every_control() {
     );
     let pairs = pairs_of(&href);
     assert_eq!(
+        values_of(&pairs, "client"),
+        vec!["cursor"],
+        "the export keeps the client"
+    );
+    assert_eq!(values_of(&pairs, "q"), vec!["s-echo"], "the export keeps q");
+    assert_eq!(
         values_of(&pairs, "period"),
-        vec!["custom"],
+        vec!["7d"],
         "the export keeps the period"
     );
-    assert_eq!(
-        values_of(&pairs, "from"),
-        vec!["2030-01-05"],
-        "the export keeps from"
-    );
-    assert_eq!(
-        values_of(&pairs, "to"),
-        vec!["2030-01-06"],
-        "the export keeps to"
-    );
-    assert_eq!(
-        values_of(&pairs, "event"),
-        vec!["tool_failed"],
-        "the export keeps the event"
-    );
-    assert_eq!(values_of(&pairs, "q"), vec!["ab"], "the export keeps q");
     assert!(
         values_of(&pairs, "page").is_empty(),
         "the export link holds no page"
@@ -1335,4 +1354,96 @@ async fn the_activity_page_carries_no_script_and_no_style_attribute() {
             "the page must not contain {banned}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_client_select_lists_distinct_clients_by_name_at_most_fifty() {
+    let w = world().await;
+    let bob = add_user(&w, BOB).await;
+    let (_alpha_up, alpha) = w.upstream("alpha", UpstreamOptions::default()).await;
+    let alpha_id = id(alpha);
+    let mut rows = Vec::new();
+    for n in (0..55).rev() {
+        let client: &'static str = Box::leak(format!("client-{n:02}").into_boxed_str());
+        rows.push(call(
+            ago(60 + n),
+            (bob, BOB),
+            (alpha_id, "alpha"),
+            "s-echo",
+            client,
+        ));
+        rows.push(call(
+            ago(60 + n),
+            (bob, BOB),
+            (alpha_id, "alpha"),
+            "s-echo",
+            client,
+        ));
+    }
+    insert(&w.gw.db_path(), &rows);
+    let page = list(&w, "").await;
+    let options = page.texts("select#filter-client option");
+    assert_eq!(options[0], "Any client", "the first choice is Any client");
+    let names: Vec<String> = (0..50).map(|n| format!("client-{n:02}")).collect();
+    assert_eq!(
+        options[1..].to_vec(),
+        names,
+        "the distinct clients by name, at most 50"
+    );
+    assert_eq!(
+        page.attr("select#filter-client option[selected]", "value")
+            .as_deref(),
+        Some(""),
+        "with no client set, Any client is selected"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_is_not_listed_still_filters_and_shows_as_selected() {
+    let w = world().await;
+    let bob = add_user(&w, BOB).await;
+    let (_alpha_up, alpha) = w.upstream("alpha", UpstreamOptions::default()).await;
+    let alpha_id = id(alpha);
+    insert(
+        &w.gw.db_path(),
+        &[
+            call(ago(60), (bob, BOB), (alpha_id, "alpha"), "s-echo", "cursor"),
+            call(
+                ago(120),
+                (bob, BOB),
+                (alpha_id, "alpha"),
+                "s-echo",
+                "claude",
+            ),
+        ],
+    );
+    let page = list(&w, "client=vscode").await;
+    assert_eq!(
+        page.attr("select#filter-client option[selected]", "value")
+            .as_deref(),
+        Some("vscode"),
+        "an unlisted client shows as the selected extra option"
+    );
+    assert_eq!(
+        page.count("table.activity tbody tr"),
+        0,
+        "no row names vscode, so none of the rows is shown"
+    );
+    assert_eq!(
+        page.text("div.empty h2").as_deref(),
+        Some("No activity matches these filters."),
+        "a client that matches nothing shows the empty state"
+    );
+    let page = list(&w, "client=cursor").await;
+    assert_eq!(
+        page.attr("select#filter-client option[selected]", "value")
+            .as_deref(),
+        Some("cursor"),
+        "a listed client is selected"
+    );
+    assert_eq!(
+        page.count("table.activity tbody tr"),
+        1,
+        "the one cursor row is shown, so the row selector above is real"
+    );
 }

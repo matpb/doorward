@@ -52,6 +52,39 @@ impl Series {
 }
 
 /// The series of a chart over `period` (the chart's own, or the dashboard's switch) at `now`, a unix time.
+/// The filters of a chart as the words its caption names them by.
+#[derive(Default)]
+pub struct Scope {
+    pub server: Option<String>,
+    pub user: Option<String>,
+    pub tool: Option<String>,
+}
+
+/// The names of a chart's server, user and tool filters; a filter that names nothing is absent.
+pub fn scope_of(conn: &Connection, spec: &ChartSpec) -> rusqlite::Result<Scope> {
+    let server = match spec.server_id {
+        Some(id) => conn
+            .query_row("SELECT slug FROM servers WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?,
+        None => None,
+    };
+    let user = match spec.user_id {
+        Some(id) => conn
+            .query_row("SELECT email FROM users WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?,
+        None => None,
+    };
+    Ok(Scope {
+        server,
+        user,
+        tool: spec.tool.clone(),
+    })
+}
+
 pub fn series(
     conn: &Connection,
     spec: &ChartSpec,
@@ -104,6 +137,15 @@ fn event_of(metric: Metric) -> Option<&'static str> {
         Metric::AllCalls => Some("tool_any"),
         Metric::SignIns => Some("sign_in"),
         Metric::SignInsRefused => Some("sign_in_refused"),
+        _ => None,
+    }
+}
+
+/// The Activity event a metric's rows open with, for a metric that counts let-through calls of any
+/// outcome: the completed let-through calls, the closest event the page has.
+fn link_event_of(metric: Metric) -> Option<&'static str> {
+    match metric {
+        Metric::ActiveUsers | Metric::DurationMedian | Metric::DurationP95 => Some("tool_call"),
         _ => None,
     }
 }
@@ -366,7 +408,7 @@ fn link_of(
         return Ok(None);
     }
     let mut pairs: Vec<(&'static str, String)> = vec![("period", period.as_str().to_owned())];
-    if let Some(event) = event_of(spec.metric) {
+    if let Some(event) = event_of(spec.metric).or(link_event_of(spec.metric)) {
         pairs.push(("event", event.to_owned()));
     }
     if let Some(user) = spec.user_id {

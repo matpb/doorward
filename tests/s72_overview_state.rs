@@ -463,18 +463,18 @@ async fn only_allow_rules_read_allow_alone() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_quiet_overview_has_no_count_state_and_plural_labels_at_zero() {
+async fn a_quiet_overview_gives_every_count_a_sub_line_at_zero() {
     let w = World::start().await;
     let page = overview(&w.owner).await;
     assert_cell(
         &page,
         "servers",
-        &expected_cell("servers", "/admin/servers", 0, "Servers", None),
+        &expected_cell("servers", "/admin/servers", 0, "Servers", Some("None yet")),
     );
     assert_cell(
         &page,
         "users",
-        &expected_cell("users", "/admin/users", 1, "User", None),
+        &expected_cell("users", "/admin/users", 1, "User", Some("None disabled")),
     );
     assert_cell(
         &page,
@@ -484,13 +484,19 @@ async fn a_quiet_overview_has_no_count_state_and_plural_labels_at_zero() {
             "/admin/invitations",
             0,
             "Open invitations",
-            None,
+            Some("None open"),
         ),
     );
     assert_cell(
         &page,
         "rules",
-        &expected_cell("rules", "/admin/rules", 0, "Rules", None),
+        &expected_cell(
+            "rules",
+            "/admin/rules",
+            0,
+            "Rules",
+            Some("Every assigned tool is allowed"),
+        ),
     );
 }
 
@@ -516,7 +522,7 @@ async fn the_nouns_take_the_singular_at_one_and_the_plural_otherwise() {
     assert_cell(
         &page,
         "users",
-        &expected_cell("users", "/admin/users", 1, "User", None),
+        &expected_cell("users", "/admin/users", 1, "User", Some("None disabled")),
     );
     assert_cell(
         &page,
@@ -565,7 +571,7 @@ async fn the_nouns_take_the_singular_at_one_and_the_plural_otherwise() {
     assert_cell(
         &page,
         "users",
-        &expected_cell("users", "/admin/users", 2, "Users", None),
+        &expected_cell("users", "/admin/users", 2, "Users", Some("None disabled")),
     );
     assert_cell(
         &page,

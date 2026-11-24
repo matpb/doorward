@@ -294,7 +294,7 @@ async fn the_export_holds_every_row_across_more_than_one_chunk() {
     let shown = w.owner.get(&format!("/admin/activity?{filter}")).await;
     assert_eq!(
         shown.text("[data-range]").as_deref(),
-        Some("Rows 1 to 50 of 5200"),
+        Some("Rows 1 to 50 of 5,200"),
         "the page must count the same 5200 rows"
     );
 }

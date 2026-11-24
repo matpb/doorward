@@ -524,9 +524,9 @@ async fn ranked_categories_are_counted_ordered_and_labelled_exactly() {
     assert_eq!(
         ranked_pairs(&page, "Slowest"),
         vec![
-            pair("other / gamma", "50"),
-            pair("demo / beta", "30"),
-            pair("demo / alpha", "20"),
+            pair("other / gamma", "50 ms"),
+            pair("demo / beta", "30 ms"),
+            pair("demo / alpha", "20 ms"),
         ],
         "the p95 of each tool over its let-through calls that have a duration"
     );
@@ -596,6 +596,9 @@ async fn ranked_links_of_every_call_metric_name_their_own_event() {
         ("refused", "event=tool_refused"),
         ("failed", "event=tool_failed"),
         ("all_calls", "event=tool_any"),
+        ("active_users", "event=tool_call"),
+        ("duration_median", "event=tool_call"),
+        ("duration_p95", "event=tool_call"),
     ];
     for (metric, event) in cases {
         let board = make_dashboard(
@@ -796,14 +799,14 @@ async fn median_and_p95_are_nearest_rank_per_bucket_and_empty_buckets_are_gaps()
     assert_eq!(
         column("Median"),
         vec![
-            "6", "No value", "No value", "No value", "50", "No value", "No value"
+            "6 ms", "No value", "No value", "No value", "50 ms", "No value", "No value"
         ],
         "the second of three and the fifth of ten; an empty bucket has no value"
     );
     assert_eq!(
         column("P95"),
         vec![
-            "7", "No value", "No value", "No value", "100", "No value", "No value"
+            "7 ms", "No value", "No value", "No value", "100 ms", "No value", "No value"
         ]
     );
     assert_eq!(
@@ -1265,4 +1268,117 @@ async fn the_edit_page_of_a_chart_with_a_server_filter_keeps_it_selected() {
         .filter_map(|option| option.value().attr("value").map(str::to_owned))
         .collect();
     assert_eq!(chosen, vec![s.demo.0.to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_time_scale_is_drawn_inside_its_own_svg() {
+    let s = seeded().await;
+    insert(s.w.gw.db_path().as_path(), &day_dataset(&s));
+    let board = make_dashboard(
+        &s.w,
+        "Scale",
+        &[
+            chart("Bars", "calls", "time", "bars", "7d"),
+            chart("Line", "calls", "time", "line", "7d"),
+        ],
+    )
+    .await;
+    let page = overview(&s.w, &format!("?dashboard={board}")).await;
+    let doc = Html::parse_document(&page.body);
+    let svgs = Selector::parse("svg.time").expect("a selector");
+    let labels = Selector::parse(":scope > g.y > text").expect("a selector");
+    let plot = Selector::parse(":scope > svg.plot-area").expect("a selector");
+    let bars = Selector::parse("svg.plot-area g.marks rect.bar").expect("a selector");
+    let mut charts = 0;
+    for time in doc.select(&svgs) {
+        charts += 1;
+        let texts: Vec<_> = time.select(&labels).collect();
+        assert!(texts.len() >= 2, "the scale has its zero and its steps");
+        for text in texts {
+            assert_eq!(
+                text.value().attr("x"),
+                Some("100%"),
+                "a scale figure ends at the svg's right edge"
+            );
+            assert!(
+                text.value().attr("dx").is_none(),
+                "no figure is pushed outside the svg"
+            );
+        }
+        let inner = time.select(&plot).next().expect("the plot has its own svg");
+        assert_eq!(
+            inner.value().attr("width"),
+            Some("calc(100% - 48px)"),
+            "the plot leaves the scale column inside the svg"
+        );
+        for bar in time.select(&bars) {
+            let x: f64 = bar
+                .value()
+                .attr("x")
+                .expect("x")
+                .trim_end_matches('%')
+                .parse()
+                .expect("a percentage");
+            let w: f64 = bar
+                .value()
+                .attr("width")
+                .expect("width")
+                .trim_end_matches('%')
+                .parse()
+                .expect("a percentage");
+            assert!(
+                x >= 0.0 && x + w <= 100.0,
+                "a bar stays inside the plot: {x} + {w}"
+            );
+        }
+    }
+    assert_eq!(charts, 2, "both time charts are drawn");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_caption_names_each_scope_filter_in_force_in_design_order() {
+    let s = seeded().await;
+    insert(
+        &s.w.gw.db_path(),
+        &[call(now() - 60, s.bob, s.demo, "alpha", "claude", Some(5))],
+    );
+    let mut scoped = chart("Scoped", "calls", "time", "bars", "30d");
+    scoped.server_id = s.demo.0.to_string();
+    scoped.user_id = s.bob.0.to_string();
+    scoped.tool = "alpha";
+    let board = make_dashboard(&s.w, "Scope", &[scoped]).await;
+    let page = overview(&s.w, &format!("?dashboard={board}")).await;
+    let doc = Html::parse_document(&page.body);
+    let caption = Selector::parse(r#"p[id$="-caption"]"#).expect("a selector");
+    let found: Vec<String> = section(&doc, "Scoped")
+        .select(&caption)
+        .map(text_of)
+        .collect();
+    assert_eq!(
+        found,
+        vec![format!(
+            "Tool calls let through per day on demo by {BOB} of alpha, last 30 days."
+        )],
+        "the caption names the server, user and tool in force"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_duration_number_carries_its_unit() {
+    let s = seeded().await;
+    insert(
+        &s.w.gw.db_path(),
+        &[call(
+            now() - 60,
+            s.bob,
+            s.demo,
+            "alpha",
+            "claude",
+            Some(5813),
+        )],
+    );
+    let median = chart("Median now", "duration_median", "none", "number", "30d");
+    let board = make_dashboard(&s.w, "Units", &[median]).await;
+    let page = overview(&s.w, &format!("?dashboard={board}")).await;
+    assert_eq!(number(&page, "Median now"), "5,813 ms");
 }

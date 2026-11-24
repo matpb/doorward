@@ -763,7 +763,7 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
 8. `activity_outlives_the_user`: after bob is deleted his rows still show his email.
 9. `user_text_is_escaped`: a failed sign-in for the address
    `"<b>x</b>"@example.com` leaves no `<b>x</b>` in the activity page body.
-10. `the_activity_page_offers_a_user_and_a_server_filter`: the page holds one GET form
+10. `the_activity_page_offers_a_user_and_a_server_filter`: with no filter set, only the Any client option is selected; the page holds one GET form
     `form[data-form="activity-filter"]` to `/admin/activity` with a `user` select (labelled
     User, options `Any user`, then every user by email) and a `server` select (labelled
     Server, options `Any server`, then every server by slug, `{name} ({slug})`) and one
@@ -1146,6 +1146,7 @@ is written `subject effect scope`.
     server, an unknown effect, an unknown subject id: each 400.
 20. `deleting_a_server_removes_its_rules`: `admin::rule_ids` shrinks.
 21. `only_admins_write_rules`: a plain user's post is 403 forbidden.
+22. `with_no_rules_the_page_says_so_and_has_no_table_or_jump_button`: no `table.rules`; the line `There are no rules. Every assigned tool is allowed.` in `p.empty-line`; no `a[href="#add-rule"]`.
 
 ## s33_consent.rs (statement 33)
 
@@ -2153,7 +2154,7 @@ the start) plus the 7-day invitation lifetime.
 13. `deny_and_allow_rules_read_deny_then_allow`: `2 deny` (`bad`), one space, `1 allow` (`ok`).
 14. `only_deny_rules_read_deny_alone`: `1 deny` only, label `Rule`.
 15. `only_allow_rules_read_allow_alone`: `2 allow` only.
-16. `a_quiet_overview_has_no_count_state_and_plural_labels_at_zero`: owner only; no `span.count-state` in any of the four cells; `Servers`, `User` at one, `Open invitations`, `Rules`.
+16. `a_quiet_overview_gives_every_count_a_sub_line_at_zero`: owner only; each of the four cells has its sub-line at zero: `None yet`, `None disabled`, `None open`, `Every assigned tool is allowed`; `Servers`, `User` at one, `Open invitations`, `Rules`.
 17. `the_nouns_take_the_singular_at_one_and_the_plural_otherwise`: one of each reads the singular labels; two of each the plural ones, with their lines.
 18. `an_admin_who_is_not_the_owner_sees_the_same_lines`: an admin's four count links equal the owner's, with their lines.
 19. `a_plain_user_cannot_open_the_overview_and_sees_no_count`: a plain user gets `403` and no `data-count`.
@@ -2945,6 +2946,9 @@ those rows and the rows the harness writes (owner, invitations) do not disturb a
    form is a `details.filter-panel` with no `open`. `from_and_to_follow_period_in_the_markup_order`,
    `server_options_read_slug_first` (`slug, name`), `a_duration_is_written_with_a_thousands_comma`
    (`1,869 ms`) and `the_activity_page_carries_no_script_and_no_style_attribute`.
+13. `the_client_select_lists_distinct_clients_by_name_at_most_fifty`: 55 distinct clients give `Any client` first (selected with no client set), then the first 50 names in order, each once.
+14. `a_client_that_is_not_listed_still_filters_and_shows_as_selected`: `client=vscode` with no such row shows no table row and the empty state, and the select shows vscode selected; a listed client is selected and filters its one row.
+15. `the_export_link_keeps_the_filters_and_shows_only_with_rows`: with one matching row the export link keeps client, q and period and holds no page.
 
 ## s95_activity_export.rs (statement 95)
 
@@ -3021,6 +3025,10 @@ harness's own setup are left out of the comparisons.
   `all_calls` rows link with `tool_call`, `tool_refused`, `tool_failed` and `tool_any`.
   `ranked_links_lead_to_an_activity_page_with_the_same_count` also covers `all_calls` and the client
   chart; the empty client row is plain text.
+24. `the_edit_page_orders_charts_builder_name_and_delete_and_says_its_place`: `main` holds the chart table, then `section#chart`, `#rename`, `#delete`; `10 of 24 charts` and `Opens first on Overview` for the first dashboard only.
+25. `the_chart_list_is_a_table_whose_counts_read_as_the_chart_caption`: the four headers; ten rows; the Counts cell is the Overview caption; Shown as holds `Bars, full`.
+26. `an_edited_row_says_editing_and_its_link_opens_the_form_in_view`: the edited row reads `Editing` with no actions; only one row reads so; the name link carries `?chart={id}#chart`.
+27. `the_builder_reads_as_the_design_and_offers_the_tools_of_the_chosen_server`: the control order Title, Metric, Period, Group by, Shape, Rows, Width, then Server, User, Tool; the Count only legend and hint; the metric hint; no tool list without a server, and the server's tools with one.
 
 ## s97_dashboard_charts.rs (statement 97)
 
@@ -3056,3 +3064,7 @@ read from the same page.
     Overview at 90 days, under three seconds in the debug build.
 18. `the_edit_page_of_a_chart_with_a_server_filter_keeps_it_selected`: the edit form selects the
     chart's server.
+24. `the_time_scale_is_drawn_inside_its_own_svg`: every scale figure is `x="100%"` with no `dx`; the plot is a nested `svg.plot-area` of width `calc(100% - 48px)`; every bar stays within 0 to 100%.
+25. `the_caption_names_each_scope_filter_in_force_in_design_order`: `Tool calls let through per day on demo by BOB of alpha, last 30 days.`
+26. `a_duration_number_carries_its_unit`: a median duration of 5,813 reads `5,813 ms`.
+27. Changed: `median_and_p95_are_nearest_rank_per_bucket_and_empty_buckets_are_gaps` and `ranked_categories_are_counted_ordered_and_labelled_exactly` now expect the ` ms` unit; `ranked_links_of_every_call_metric_name_their_own_event` also checks that `active_users`, `duration_median` and `duration_p95` link to `tool_call`.

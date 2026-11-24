@@ -52,6 +52,8 @@ struct Listing {
     total: i64,
     users: Vec<UserOption>,
     servers: Vec<ServerOption>,
+    clients: Vec<String>,
+    retention_days: u64,
 }
 
 /// A user the user filter offers.
@@ -78,6 +80,7 @@ pub async fn get_activity(
     let offset = offset_of(number);
     let now = state.clock.now().unix_timestamp();
     let scope_filters = filters.clone();
+    let retention_days = state.config.limits.activity_days;
     let listing = state
         .db
         .call(move |conn| {
@@ -87,6 +90,8 @@ pub async fn get_activity(
                 total: count_in(conn, &scope)?,
                 users: users_in(conn)?,
                 servers: servers_in(conn)?,
+                clients: clients_in(conn)?,
+                retention_days,
             })
         })
         .await;
@@ -129,6 +134,15 @@ fn users_in(conn: &Connection) -> rusqlite::Result<Vec<UserOption>> {
             email: row.get(1)?,
         })
     })?;
+    rows.collect()
+}
+
+/// The distinct client names the activity table holds, by name: at most 50.
+fn clients_in(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT client FROM activity WHERE client <> '' ORDER BY client LIMIT 50",
+    )?;
+    let rows = statement.query_map([], |row| row.get(0))?;
     rows.collect()
 }
 
@@ -239,6 +253,7 @@ fn filter_form(
     filters: &Filters,
     users: &[UserOption],
     servers: &[ServerOption],
+    clients: &[String],
     count: usize,
 ) -> Markup {
     let (first_error, last_error) = day_errors(filters);
@@ -298,8 +313,20 @@ fn filter_form(
     let tool = html! {
         input.mono id="filter-tool" type="text" name="tool" value=[filters.tool.as_deref()];
     };
+    let client_choices: Vec<(&str, &str)> = clients
+        .iter()
+        .map(|client| (client.as_str(), client.as_str()))
+        .collect();
     let client = html! {
-        input id="filter-client" type="text" name="client" value=[filters.client.as_deref()];
+        select id="filter-client" name="client" {
+            option value="" selected[filters.client.is_none()] { "Any client" }
+            @for choice in clients {
+                option value=(choice) selected[filters.client.as_deref() == Some(choice.as_str())] { (choice) }
+            }
+            @if let Some(other) = unlisted(filters.client.as_deref(), &client_choices) {
+                option value=(other) selected { (other) " (matches nothing)" }
+            }
+        }
     };
     let search = html! {
         input id="filter-q" type="search" name="q" value=[filters.q.as_deref()]
@@ -733,20 +760,22 @@ fn activity_page(viewer: &Viewer, filters: &Filters, number: u64, listing: &List
             div.page-head {
                 h1 { "Activity" }
             }
-            (filter_form(filters, &listing.users, &listing.servers, chips.len()))
+            (filter_form(filters, &listing.users, &listing.servers, &listing.clients, chips.len()))
             div.results data-results {
                 @if !rows.is_empty() {
                     p.range data-range {
-                        (format!("Rows {} to {} of {}", offset.saturating_add(1), end, listing.total))
+                        (format!("Rows {} to {} of {}", thousands(offset.saturating_add(1)), thousands(end), thousands(listing.total)))
                     }
                 }
                 (active_filters(filters, &chips))
-                a #export-csv.export href=(export) data-export { "Export all as CSV" }
+                @if listing.total > 0 {
+                    a #export-csv.export href=(export) data-export { "Export all as CSV" }
+                }
             }
             @if rows.is_empty() {
                 div.empty {
                     h2 { "No activity matches these filters." }
-                    p { "Remove one of them above, or " a href="/admin/activity" { "clear the filters" } "." }
+                    p { "Remove one of them above, or " a href="/admin/activity" { "clear the filters" } ". Activity older than " (listing.retention_days) " days is not kept." }
                 }
             } @else {
                 (activity_table(rows))

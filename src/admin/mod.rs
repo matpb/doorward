@@ -299,7 +299,7 @@ fn count_link(
 /// The servers say one thing, the worst: open beats not checked beats locked down.
 fn servers_state(total: i64, open: usize, unchecked: i64) -> Option<Markup> {
     if total == 0 {
-        None
+        Some(html! { "None yet" })
     } else if open == 1 {
         Some(ui::pill("bad", "1 answers without the gateway"))
     } else if open > 1 {
@@ -317,17 +317,20 @@ fn servers_state(total: i64, open: usize, unchecked: i64) -> Option<Markup> {
 }
 
 fn users_state(disabled: i64) -> Option<Markup> {
-    (disabled > 0).then(|| ui::pill("muted", &format!("{disabled} disabled")))
+    if disabled > 0 {
+        Some(ui::pill("muted", &format!("{disabled} disabled")))
+    } else {
+        Some(html! { "None disabled" })
+    }
 }
 
 /// The expiry of the open invitation that expires first, with its date in a time element.
 fn invitations_state(open: i64, next: Option<&Expiry>) -> Option<Markup> {
+    if open == 0 {
+        return Some(html! { "None open" });
+    }
     let expiry = next?;
-    let words = match open {
-        1 => "Expires",
-        n if n >= 2 => "Next expires",
-        _ => return None,
-    };
+    let words = if open == 1 { "Expires" } else { "Next expires" };
     Some(html! {
         (words) " " time datetime=(expiry.instant) { (expiry.day) }
     })
@@ -339,6 +342,7 @@ fn rules_state(effects: &rules::EffectCounts) -> Option<Markup> {
     let allow = (effects.allow > 0).then(|| ui::pill("ok", &format!("{} allow", effects.allow)));
     match (deny, allow) {
         (Some(deny), Some(allow)) => Some(html! { (deny) " " (allow) }),
+        (None, None) => Some(html! { "Every assigned tool is allowed" }),
         (deny, allow) => deny.or(allow),
     }
 }

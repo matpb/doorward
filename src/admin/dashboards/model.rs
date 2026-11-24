@@ -118,13 +118,13 @@ impl Metric {
     /// The label of the metric in the builder form.
     pub fn label(self) -> &'static str {
         match self {
-            Metric::Calls => "Calls",
-            Metric::Refused => "Refused calls",
-            Metric::Failed => "Failed calls",
-            Metric::AllCalls => "All calls",
+            Metric::Calls => "Tool calls let through",
+            Metric::Refused => "Tool calls refused",
+            Metric::Failed => "Tool calls that failed",
+            Metric::AllCalls => "All tool calls",
             Metric::ActiveUsers => "Active users",
             Metric::SignIns => "Sign-ins",
-            Metric::SignInsRefused => "Refused sign-ins",
+            Metric::SignInsRefused => "Sign-ins refused",
             Metric::DurationMedian => "Median duration",
             Metric::DurationP95 => "95th percentile duration",
             Metric::UnusedTools => "Unused tools",
@@ -161,12 +161,12 @@ impl GroupBy {
     /// The label of the grouping in the builder form.
     pub fn label(self) -> &'static str {
         match self {
-            GroupBy::Time => "Over time",
+            GroupBy::Time => "Time",
             GroupBy::User => "User",
             GroupBy::Server => "Server",
             GroupBy::Tool => "Tool",
             GroupBy::Client => "Client",
-            GroupBy::Nothing => "None",
+            GroupBy::Nothing => "Nothing, one total",
         }
     }
 
@@ -184,7 +184,7 @@ impl Shape {
         match self {
             Shape::Line => "Line",
             Shape::Bars => "Bars",
-            Shape::Ranked => "Ranked list",
+            Shape::Ranked => "Ranked bars",
             Shape::Number => "Number",
             Shape::Table => "Table",
         }
@@ -215,8 +215,8 @@ impl Period {
 impl Width {
     pub fn label(self) -> &'static str {
         match self {
-            Width::Half => "Half width",
-            Width::Full => "Full width",
+            Width::Half => "Half the page",
+            Width::Full => "The full page",
         }
     }
 }

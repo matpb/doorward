@@ -498,7 +498,9 @@ M. Added for custom headers and per-user credentials
     value that names nothing matches no row: an unknown period or event, a custom period whose day
     is missing or not a date (the form then shows a field error), a `from` after `to`, a user or
     server that is not an id. `event=tool_any` matches every `tool_call` row, let through, refused or
-    failed. A repeated key takes its first value and is never refused. `q` is a
+    failed. The client filter is a select of `Any client` and the distinct client names in the activity
+    table, by name, at most 50; a client that is not in that list still filters and shows as the
+    selected option. A repeated key takes its first value and is never refused. `q` is a
     substring of the user, server, tool, client and detail, with ASCII letters matched in either case,
     and `%`, `_` and `\` in it are literal. Proof: `tests/s94_activity_filters.rs` and the unit tests in
     `src/admin/activity/filters.rs`.
@@ -507,7 +509,8 @@ M. Added for custom headers and per-user credentials
     duration_ms` and CRLF line ends. A cell is quoted as RFC 4180 says, and a cell that starts
     with `=`, `+`, `-`, `@`, a tab or a CR gets a leading `'`. The rows are read in chunks, and
     the export writes one `admin_change` row, `exported activity (N rows)`, that is not part of
-    that export. An anonymous visitor is redirected to sign-in and a plain user gets 403. Proof:
+    that export. The Export link is shown only when the filters match at least one row. An
+    anonymous visitor is redirected to sign-in and a plain user gets 403. Proof:
     `tests/s95_activity_export.rs` and the unit tests in `src/admin/activity/export.rs`.
 96. Dashboards are stored in the database and shared. Every admin and the owner creates, renames,
     reorders and deletes dashboards and their charts, and each change writes one `admin_change`
@@ -517,7 +520,9 @@ M. Added for custom headers and per-user credentials
     most 20 dashboards and 24 charts on one. A chart's metric, grouping, shape, period, width,
     server, user, tool and top count are closed lists or bounded values, and a combination the
     builder cannot draw is refused with 400, stores nothing and shows the form again with its
-    refusal. A new database starts with one dashboard, `Usage`, of ten charts. Proof:
+    refusal. The edit page of a dashboard lists its charts as one table under its header, then the
+    chart builder, Name and Delete; the table's Counts cell is the chart's caption, and an edited
+    row reads `Editing` in place of its actions. A new database starts with one dashboard, `Usage`, of ten charts. Proof:
     `tests/s96_dashboards.rs`.
 97. The Overview shows the dashboard named by the query key `dashboard`, or the first dashboard
     when the key names none. The key `period` (`24h`, `7d`, `30d` or `90d`) draws every chart of
@@ -525,7 +530,10 @@ M. Added for custom headers and per-user credentials
     Activity-page event and filters select, so a figure and the Activity page agree; a chart's Data
     table holds the numbers its figure draws; a ranked label links to the Activity page filtered to
     it, with the event of its metric (`tool_any` for all tool calls), so its count equals the bar's
-    value. A ranked row with no key (the empty client) is plain text, not a link. A time chart has 24 hourly buckets, or one bucket per UTC day ending today. A duration
+    value. Active users and the duration metrics link to the `tool_call` rows they count. A ranked
+    row with no key (the empty client) is plain text, not a link. A chart's caption names each
+    filter in force: ` on` its server slug, ` by` its user email, ` of` its tool. Durations are
+    written with ` ms`. A time chart has 24 hourly buckets, or one bucket per UTC day ending today. A duration
     bucket with no tool call is a gap labelled `No value`, not zero. A ranked list is cut to its
     top count, with ties ordered by label. The server draws each chart as SVG with no script and no
     inline style, and every label is escaped. A repeated query key takes its first value. A

@@ -615,8 +615,14 @@ async fn the_activity_page_offers_a_user_and_a_server_filter() {
     );
     assert_eq!(
         page.count("select option[selected]"),
-        0,
-        "no option may be selected while no filter is set"
+        1,
+        "only Any client may be selected while no filter is set"
+    );
+    assert_eq!(
+        page.attr("select#filter-client option[selected]", "value")
+            .as_deref(),
+        Some(""),
+        "no client set selects Any client"
     );
 
     let by_bob = w.owner.get(&format!("/admin/activity?user={bob_id}")).await;

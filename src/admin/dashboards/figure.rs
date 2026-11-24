@@ -5,7 +5,7 @@ use form_urlencoded::Serializer;
 use maud::{Markup, html};
 
 use super::model::{ChartSpec, GroupBy, Metric, Period, Shape};
-use super::query::{Bucket, Category, Series};
+use super::query::{Bucket, Category, Scope, Series};
 use super::svg;
 use crate::web::ui::{breakable, email, thousands};
 
@@ -20,6 +20,7 @@ pub fn chart_section(
     title: &str,
     period: Period,
     series: &Series,
+    scope: &Scope,
 ) -> Markup {
     let buckets = match series {
         Series::Buckets(buckets) if !series.is_empty() => Some(buckets.len()),
@@ -40,7 +41,7 @@ pub fn chart_section(
                         " " span.count { (count) }
                     }
                 }
-                p id=(format!("c{id}-caption")) { (caption(spec, period)) }
+                p id=(format!("c{id}-caption")) { (caption(spec, period, scope)) }
             }
             (body(id, spec, title, period, series))
         }
@@ -57,18 +58,18 @@ fn body(id: i64, spec: &ChartSpec, title: &str, period: Period, series: &Series)
         Series::Unused(tools) => unused_table(tools),
         _ if series.is_empty() => html! { p.chart-empty { (NO_ACTIVITY) } },
         Series::Buckets(buckets) => match spec.shape {
-            Shape::Table => bucket_table(period, buckets),
+            Shape::Table => bucket_table(period, buckets, spec.metric),
             shape => {
                 let hourly = period == Period::H24;
                 let line = shape == Shape::Line;
                 html! {
                     (svg::time_svg(&svg::TimeChart { id, buckets, hourly, unit, line }))
-                    (data_details(title, bucket_head(period), &bucket_rows(buckets)))
+                    (data_details(title, bucket_head(period), &bucket_rows(buckets, spec.metric)))
                 }
             }
         },
         Series::Ranked(categories) => match spec.shape {
-            Shape::Table => category_table(spec.group_by, categories),
+            Shape::Table => category_table(spec.group_by, spec.metric, categories),
             _ => ranked_figure(title, spec.group_by, spec.metric, categories),
         },
         Series::Number(value) => number_figure(spec.metric, *value),
@@ -76,7 +77,7 @@ fn body(id: i64, spec: &ChartSpec, title: &str, period: Period, series: &Series)
 }
 
 /// The caption: the metric, the split, the limit and the period, in that order.
-fn caption(spec: &ChartSpec, period: Period) -> Markup {
+pub fn caption(spec: &ChartSpec, period: Period, scope: &Scope) -> Markup {
     let split = match spec.group_by {
         GroupBy::Time if period == Period::H24 => " per hour",
         GroupBy::Time => " per day",
@@ -91,7 +92,17 @@ fn caption(spec: &ChartSpec, period: Period) -> Markup {
         _ => format!(", the top {}", spec.top_n.unwrap_or_default()),
     };
     html! {
-        (spec.metric.caption()) (split) (limit) ", "
+        (spec.metric.caption()) (split)
+        @if let Some(slug) = &scope.server {
+            " on " code { (slug) }
+        }
+        @if let Some(email) = &scope.user {
+            " by " code { (breakable(email)) }
+        }
+        @if let Some(tool) = &scope.tool {
+            " of " code { (breakable(tool)) }
+        }
+        (limit) ", "
         span.nowrap { (period.words()) }
         @if spec.group_by == GroupBy::Time && period == Period::H24 {
             " (UTC)"
@@ -136,18 +147,18 @@ fn bucket_head(period: Period) -> &'static str {
 }
 
 /// A time chart as a plain table, the shape `table`.
-fn bucket_table(period: Period, buckets: &[Bucket]) -> Markup {
-    data_table(bucket_head(period), &bucket_rows(buckets))
+fn bucket_table(period: Period, buckets: &[Bucket], metric: Metric) -> Markup {
+    data_table(bucket_head(period), &bucket_rows(buckets, metric))
 }
 
 /// The label and value of each bucket; a duration bucket with no call says so.
-fn bucket_rows(buckets: &[Bucket]) -> Vec<(String, String)> {
+fn bucket_rows(buckets: &[Bucket], metric: Metric) -> Vec<(String, String)> {
     buckets
         .iter()
         .map(|bucket| {
             let value = bucket
                 .value
-                .map_or_else(|| "No value".to_owned(), thousands);
+                .map_or_else(|| "No value".to_owned(), |value| shown(metric, value));
             (svg::label_words(&bucket.label), value)
         })
         .collect()
@@ -167,7 +178,7 @@ fn ranked_figure(title: &str, group: GroupBy, metric: Metric, categories: &[Cate
             @for category in categories {
                 li {
                     (name(group, category))
-                    span.ranked-value { (thousands(category.value)) }
+                    span.ranked-value { (shown(metric, category.value)) }
                     svg.ranked-bar width="100%" height="4" aria-hidden="true" {
                         rect width=(svg::share(category.value, largest)) height="4" {
                             title { (category.label) ": " (thousands(category.value)) " " (unit) }
@@ -176,7 +187,7 @@ fn ranked_figure(title: &str, group: GroupBy, metric: Metric, categories: &[Cate
                 }
             }
         }
-        (data_details(title, group_head(group), &category_rows(categories)))
+        (data_details(title, group_head(group), &category_rows(categories, metric)))
     }
 }
 
@@ -212,7 +223,7 @@ fn name(group: GroupBy, category: &Category) -> Markup {
 }
 
 /// A ranked grouping as a table of its names and numbers, the shape `table`.
-fn category_table(group: GroupBy, categories: &[Category]) -> Markup {
+fn category_table(group: GroupBy, metric: Metric, categories: &[Category]) -> Markup {
     html! {
         table.figures {
             thead {
@@ -225,7 +236,7 @@ fn category_table(group: GroupBy, categories: &[Category]) -> Markup {
                 @for category in categories {
                     tr {
                         td { (name(group, category)) }
-                        td.num { (thousands(category.value)) }
+                        td.num { (shown(metric, category.value)) }
                     }
                 }
             }
@@ -242,11 +253,19 @@ fn group_head(group: GroupBy) -> &'static str {
     }
 }
 
-fn category_rows(categories: &[Category]) -> Vec<(String, String)> {
+fn category_rows(categories: &[Category], metric: Metric) -> Vec<(String, String)> {
     categories
         .iter()
-        .map(|category| (category.label.clone(), thousands(category.value)))
+        .map(|category| (category.label.clone(), shown(metric, category.value)))
         .collect()
+}
+
+/// A value as the panel writes it: thousands grouped, and a duration with its unit.
+fn shown(metric: Metric, value: i64) -> String {
+    match metric {
+        Metric::DurationMedian | Metric::DurationP95 => format!("{} ms", thousands(value)),
+        _ => thousands(value),
+    }
 }
 
 /// One number with its unit: the count in words, or milliseconds for a duration. A refusal's unit

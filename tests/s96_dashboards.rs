@@ -931,7 +931,7 @@ async fn the_edit_link_shows_the_form_filled_with_that_chart() {
     assert_eq!(page.status, 200);
     assert_eq!(
         element_text(&page, "section#chart h2").as_deref(),
-        Some("Edit a chart")
+        Some("Edit Calls by client")
     );
     assert_eq!(
         value_of(&page, "input#chart-title").as_deref(),
@@ -1172,5 +1172,220 @@ async fn the_overview_dashboard_header_links_to_its_edit_page() {
         page.text(".dash-edit a").as_deref(),
         Some("Edit dashboard"),
         "the header link reads Edit dashboard"
+    );
+}
+
+/// The parts of a page's main in document order: the chart table as "charts", else each section's id.
+fn section_ids(page: &Page) -> Vec<String> {
+    let doc = Html::parse_document(&page.body);
+    let selector = Selector::parse("main > *").expect("a selector");
+    doc.select(&selector)
+        .filter_map(|child| {
+            if child
+                .value()
+                .has_class("chartlist", scraper::CaseSensitivity::CaseSensitive)
+            {
+                Some("charts".to_owned())
+            } else {
+                child.value().attr("id").map(str::to_owned)
+            }
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_edit_page_orders_charts_builder_name_and_delete_and_says_its_place() {
+    let w = World::start().await;
+    let page = w.owner.get("/admin/dashboards/1").await;
+    assert_eq!(
+        section_ids(&page),
+        vec!["charts", "chart", "rename", "delete"],
+        "the edit page reads the chart table, the builder, Name, then Delete"
+    );
+    assert_eq!(
+        page.texts("p.meta span"),
+        vec![
+            "10 of 24 charts".to_string(),
+            "Opens first on Overview".to_string()
+        ],
+        "the header gives the count and that the dashboard opens first"
+    );
+    let second = w.owner.submit(LIST, LIST, &[("name", "Second")]).await;
+    assert_eq!(second.status, 303, "a second dashboard is created");
+    let page = w.owner.get("/admin/dashboards/2").await;
+    assert_eq!(
+        page.texts("p.meta span"),
+        vec!["0 of 24 charts".to_string()],
+        "a dashboard that is not first does not say it opens first"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_chart_list_is_a_table_whose_counts_read_as_the_chart_caption() {
+    let w = World::start().await;
+    let page = w.owner.get("/admin/dashboards/1").await;
+    assert_eq!(
+        page.texts("table.chartlist thead th"),
+        vec![
+            "Chart".to_string(),
+            "Counts".to_string(),
+            "Shown as".to_string(),
+            String::new(),
+        ],
+        "the chart list is a table with its columns under the header"
+    );
+    let rows = page.count("table.chartlist tbody tr");
+    assert_eq!(rows, 10, "every chart of the usage dashboard is a row");
+    let first = page
+        .texts("table.chartlist tbody tr td:nth-child(2)")
+        .into_iter()
+        .next()
+        .expect("the first row has a counts cell");
+    assert_eq!(
+        first, "Tool calls let through per day, last 30 days.",
+        "the counts cell is the caption the Overview shows under the title"
+    );
+    assert_eq!(
+        page.texts("table.chartlist tbody tr td.half")
+            .into_iter()
+            .next()
+            .as_deref(),
+        Some("Bars, full"),
+        "shape and width stay in Shown as"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edited_row_says_editing_and_its_link_opens_the_form_in_view() {
+    let w = World::start().await;
+    let chart_id = chart_id_of(&w, "Calls by client");
+    let page = w
+        .owner
+        .get(&format!("/admin/dashboards/1?chart={chart_id}#chart"))
+        .await;
+    assert_eq!(
+        page.text(&format!(r#"tr[data-chart-id="{chart_id}"] span.editing"#))
+            .as_deref(),
+        Some("Editing"),
+        "the edited row reads Editing where its actions were"
+    );
+    assert_eq!(
+        page.count(&format!(
+            r#"tr[data-chart-id="{chart_id}"] div.row-actions"#
+        )),
+        0,
+        "the edited row has none of its three actions"
+    );
+    assert_eq!(
+        page.count(r#"tr[data-chart-id] span.editing"#),
+        1,
+        "only the edited row reads Editing"
+    );
+    let plain = w.owner.get("/admin/dashboards/1").await;
+    assert_eq!(
+        plain
+            .attr(&format!(r#"tr[data-chart-id="{chart_id}"] a.name"#), "href")
+            .as_deref(),
+        Some(format!("/admin/dashboards/1?chart={chart_id}#chart").as_str()),
+        "the chart's link carries the #chart anchor to the form"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_builder_reads_as_the_design_and_offers_the_tools_of_the_chosen_server() {
+    let w = World::start().await;
+    let (_up, id) = w
+        .upstream(
+            "demo",
+            UpstreamOptions {
+                tools: vec!["alpha".into(), "beta".into()],
+                ..Default::default()
+            },
+        )
+        .await;
+    let page = w.owner.get("/admin/dashboards/1").await;
+    assert_eq!(
+        page.attrs(
+            "section#chart form.builder [id^='chart-']:is(input, select)",
+            "id"
+        ),
+        vec![
+            "chart-title",
+            "chart-metric",
+            "chart-period",
+            "chart-group-by",
+            "chart-shape",
+            "chart-top",
+            "chart-width",
+            "chart-server",
+            "chart-user",
+            "chart-tool",
+        ],
+        "the builder reads Title; Metric, Period; Group by, Shape; Rows, Width; then the scope filters"
+    );
+    assert_eq!(
+        page.texts("section#chart fieldset legend"),
+        vec!["Count only".to_string()],
+        "the three scope filters sit in a Count only group"
+    );
+    assert_eq!(
+        page.text("section#chart fieldset p.muted").as_deref(),
+        Some("Leave all three empty to count everything.")
+    );
+    assert_eq!(
+        page.text("section#chart p.hint#chart-metric-hint")
+            .as_deref(),
+        Some("Unused tools is always a table that is not grouped.")
+    );
+    assert_eq!(
+        page.count("datalist#chart-tools option"),
+        0,
+        "with no server chosen the tool field has no list"
+    );
+
+    let refreshed = admin::refresh_tools(&w.owner, &id).await;
+    assert_eq!(
+        refreshed.status, 303,
+        "refreshing the tools must answer 303"
+    );
+    let chart_id = chart_id_of(&w, "Calls by client");
+    let page = w
+        .owner
+        .get(&format!("/admin/dashboards/1?chart={chart_id}#chart"))
+        .await;
+    assert_eq!(
+        page.count("datalist#chart-tools option"),
+        0,
+        "the chart has no server, so no tool is offered"
+    );
+    let added = w
+        .owner
+        .submit(
+            LIST,
+            "/admin/dashboards/1/charts",
+            &[
+                ("title", "Filtered"),
+                ("metric", "calls"),
+                ("group_by", "tool"),
+                ("shape", "ranked"),
+                ("period", "30d"),
+                ("server_id", &id.to_string()),
+                ("user_id", ""),
+                ("tool", ""),
+                ("top_n", "10"),
+                ("width", "half"),
+            ],
+        )
+        .await;
+    assert_eq!(added.status, 303, "the filtered chart is added");
+    let filtered = chart_id_of(&w, "Filtered");
+    let page = w
+        .owner
+        .get(&format!("/admin/dashboards/1?chart={filtered}#chart"))
+        .await;
+    assert_eq!(
+        page.attrs("datalist#chart-tools option", "value"),
+        vec!["alpha".to_string(), "beta".to_string()],
+        "with a server chosen the tool field offers that server's tools"
     );
 }
