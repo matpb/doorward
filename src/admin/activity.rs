@@ -19,7 +19,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::app::AppState;
 use crate::db::{Db, DbError};
-use crate::web::ui::{self, Note, breakable, email, time_cell};
+use crate::web::ui::{self, breakable, email, thousands, time_cell};
 use crate::web::{MainData, Viewer, internal_error, page_with};
 
 use super::panel_nav;
@@ -233,11 +233,16 @@ fn unlisted<'a>(value: Option<&'a str>, choices: &[(&str, &str)]) -> Option<&'a 
     value.filter(|value| !choices.iter().any(|(key, _)| key == value))
 }
 
-/// The filter form: one labelled control per filter, each holding the current value. It submits with
-/// GET and holds no page, so a submit starts at the first page.
-fn filter_form(filters: &Filters, users: &[UserOption], servers: &[ServerOption]) -> Markup {
+/// The filter form, a closed `details` that the stylesheet opens from 640 px. Its controls are in the
+/// order of the form: Search, Tool, Client, Period, From and To, Event, User, Server.
+fn filter_form(
+    filters: &Filters,
+    users: &[UserOption],
+    servers: &[ServerOption],
+    count: usize,
+) -> Markup {
     let (first_error, last_error) = day_errors(filters);
-    let first_note = ui::note_under(first_error, Some("UTC. Both days are included."));
+    let first_note = ui::note_under(first_error, Some("UTC, both days included."));
     let first_described = first_note.describer("filter-from");
     let last_note = ui::note_under(last_error, None);
     let last_described = last_note.describer("filter-to");
@@ -285,48 +290,59 @@ fn filter_form(filters: &Filters, users: &[UserOption], servers: &[ServerOption]
             option value="" { "Any server" }
             @for choice in servers {
                 option value=(choice.id) selected[filters.server_id() == Some(choice.id)] {
-                    (choice.name) " (" (choice.slug) ")"
+                    (choice.slug) ", " (choice.name)
                 }
             }
         }
     };
     let tool = html! {
-        input id="filter-tool" type="text" name="tool" value=[filters.tool.as_deref()];
+        input.mono id="filter-tool" type="text" name="tool" value=[filters.tool.as_deref()];
     };
     let client = html! {
         input id="filter-client" type="text" name="client" value=[filters.client.as_deref()];
     };
     let search = html! {
-        input id="filter-q" type="search" name="q" value=[filters.q.as_deref()];
+        input id="filter-q" type="search" name="q" value=[filters.q.as_deref()]
+            aria-describedby="filter-q-hint";
     };
+    let search_note =
+        ui::Note::HintMarkup(html! { "Looks in user, server, tool, client and detail." });
     html! {
-        form.filters.flow method="get" action="/admin/activity" data-form="activity-filter" {
-            div.fields {
-                (ui::field("filter-period", "Period", false, period, Note::None))
-                (ui::field("filter-from", "From", false, from, first_note))
-                (ui::field("filter-to", "To", false, to, last_note))
+        details.filter-panel data-filter-panel {
+            summary {
+                span.filter-open {
+                    "Filters"
+                    @if count > 0 {
+                        " " span.count { (count) " set" }
+                    }
+                    span.chevron aria-hidden="true" {}
+                }
             }
-            div.fields {
-                (ui::field("filter-event", "Event", false, event, Note::None))
-                (ui::field("filter-user", "User", false, user, Note::None))
-                (ui::field("filter-server", "Server", false, server, Note::None))
-            }
-            div.fields {
-                (ui::field("filter-tool", "Tool", false, tool, Note::None))
-                (ui::field("filter-client", "Client", false, client, Note::None))
-                (ui::field("filter-q", "Search", false, search, Note::None))
-            }
-            div.form-actions {
-                button type="submit" data-kind="secondary" { "Filter" }
+            form.filterbar method="get" action="/admin/activity" data-form="activity-filter" {
+                (ui::field_in("f-q", "filter-q", "Search", search, search_note))
+                (ui::field_in("f-tool", "filter-tool", "Tool", tool, ui::Note::None))
+                (ui::field_in("f-client", "filter-client", "Client", client, ui::Note::None))
+                (ui::field_in("f-period", "filter-period", "Period", period, ui::Note::None))
+                div.dates {
+                    (ui::field_in("f-from", "filter-from", "From", from, first_note))
+                    (ui::field_in("f-to", "filter-to", "To", to, last_note))
+                }
+                (ui::field_in("f-event", "filter-event", "Event", event, ui::Note::None))
+                (ui::field_in("f-user", "filter-user", "User", user, ui::Note::None))
+                (ui::field_in("f-server", "filter-server", "Server", server, ui::Note::None))
+                div.field.field-go {
+                    button type="submit" data-kind="secondary" { "Filter" }
+                }
             }
         }
     }
 }
 
-/// One active filter: its key, its text as the list shows it, and the filters its Remove link drops.
+/// One active filter: its key, the label it shows, its value, and the filters its Remove link drops.
 struct Chip {
     key: &'static str,
-    text: String,
+    label: &'static str,
+    value: Markup,
     drop: &'static [&'static str],
 }
 
@@ -354,7 +370,8 @@ fn chips(filters: &Filters, users: &[UserOption], servers: &[ServerOption]) -> V
     if filters.period_is_set() {
         chips.push(Chip {
             key: "period",
-            text: format!("Period: {}", period_text(filters)),
+            label: "Period",
+            value: html! { (period_text(filters)) },
             drop: &["period", "from", "to"],
         });
     }
@@ -365,18 +382,23 @@ fn chips(filters: &Filters, users: &[UserOption], servers: &[ServerOption]) -> V
             .map_or(event, |(_, label)| *label);
         chips.push(Chip {
             key: "event",
-            text: format!("Event: {label}"),
+            label: "Event",
+            value: html! { (label) },
             drop: &["event"],
         });
     }
     if let Some(user) = filters.user.as_deref() {
-        let email = filters
+        let value = match filters
             .user_id()
             .and_then(|id| users.iter().find(|choice| choice.id == id))
-            .map_or(user, |choice| choice.email.as_str());
+        {
+            Some(choice) => email(&choice.email),
+            None => html! { (user) },
+        };
         chips.push(Chip {
             key: "user",
-            text: format!("User: {email}"),
+            label: "User",
+            value,
             drop: &["user"],
         });
     }
@@ -387,50 +409,58 @@ fn chips(filters: &Filters, users: &[UserOption], servers: &[ServerOption]) -> V
             .map_or(server, |choice| choice.slug.as_str());
         chips.push(Chip {
             key: "server",
-            text: format!("Server: {slug}"),
+            label: "Server",
+            value: html! { code { (slug) } },
             drop: &["server"],
         });
     }
     if let Some(tool) = filters.tool.as_deref() {
         chips.push(Chip {
             key: "tool",
-            text: format!("Tool: {tool}"),
+            label: "Tool",
+            value: html! { code { (breakable(tool)) } },
             drop: &["tool"],
         });
     }
     if let Some(client) = filters.client.as_deref() {
         chips.push(Chip {
             key: "client",
-            text: format!("Client: {client}"),
+            label: "Client",
+            value: html! { (client) },
             drop: &["client"],
         });
     }
     if let Some(q) = filters.q.as_deref() {
         chips.push(Chip {
             key: "q",
-            text: format!("Search: {q}"),
+            label: "Search",
+            value: html! { "“" (q) "”" },
             drop: &["q"],
         });
     }
     chips
 }
 
-/// The list of active filters, each with its Remove link, and Clear filters; nothing when no filter
+/// The active filters, each a link that removes it, then Clear filters; nothing when no filter
 /// narrows the rows.
-fn active_filters(filters: &Filters, users: &[UserOption], servers: &[ServerOption]) -> Markup {
-    let chips = chips(filters, users, servers);
+fn active_filters(filters: &Filters, chips: &[Chip]) -> Markup {
     html! {
         @if !chips.is_empty() {
-            ul id="active-filters" {
-                @for chip in &chips {
+            ul #active-filters.chips aria-label="Filters that are set" {
+                @for chip in chips {
                     li data-filter=(chip.key) {
-                        (chip.text) " "
-                        a href=(target("/admin/activity", &query_without(filters, chip.drop)))
-                            aria-label=(format!("Remove {}", chip.text)) { "Remove" }
+                        a.chip href=(target("/admin/activity", &query_without(filters, chip.drop))) {
+                            span.chip-key { (chip.label) }
+                            span.chip-value { (chip.value) }
+                            span.chip-x aria-hidden="true" { "×" }
+                            span.sr-only { " Remove this filter" }
+                        }
                     }
                 }
+                li {
+                    a #clear-filters.chips-clear href="/admin/activity" { "Clear filters" }
+                }
             }
-            a id="clear-filters" href="/admin/activity" { "Clear filters" }
         }
     }
 }
@@ -583,7 +613,7 @@ fn table_row(row: &Row) -> Markup {
         .join(", ");
     let duration = row
         .duration_ms
-        .map_or_else(String::new, |ms| format!("{ms} ms"));
+        .map_or_else(String::new, |ms| format!("{} ms", thousands(ms)));
     html! {
         tr data-kind=(row.kind) data-user=(row.user_email) data-server=(row.server_slug)
             data-tool=(row.tool) data-decision=(row.decision) data-outcome=(row.outcome)
@@ -685,6 +715,7 @@ fn pager(filters: &Filters, number: u64, total: i64, older: bool) -> Markup {
 
 fn activity_page(viewer: &Viewer, filters: &Filters, number: u64, listing: &Listing) -> Response {
     let rows = &listing.rows;
+    let chips = chips(filters, &listing.users, &listing.servers);
     let offset = offset_of(number);
     let end = offset.saturating_add(i64::try_from(rows.len()).unwrap_or(i64::MAX));
     let older = end < listing.total;
@@ -702,20 +733,21 @@ fn activity_page(viewer: &Viewer, filters: &Filters, number: u64, listing: &List
             div.page-head {
                 h1 { "Activity" }
             }
-            div.toolbar {
-                (filter_form(filters, &listing.users, &listing.servers))
-                (active_filters(filters, &listing.users, &listing.servers))
+            (filter_form(filters, &listing.users, &listing.servers, chips.len()))
+            div.results data-results {
                 @if !rows.is_empty() {
                     p.range data-range {
                         (format!("Rows {} to {} of {}", offset.saturating_add(1), end, listing.total))
                     }
                 }
-                p {
-                    a id="export-csv" href=(export) { "Export CSV" }
-                }
+                (active_filters(filters, &chips))
+                a #export-csv.export href=(export) data-export { "Export all as CSV" }
             }
             @if rows.is_empty() {
-                p.muted { "No activity matches." }
+                div.empty {
+                    h2 { "No activity matches these filters." }
+                    p { "Remove one of them above, or " a href="/admin/activity" { "clear the filters" } "." }
+                }
             } @else {
                 (activity_table(rows))
             }

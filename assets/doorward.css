@@ -1867,30 +1867,6 @@ p[data-needs-values] a {
   color: var(--ink-2);
 }
 
-/* Toolbar above a table and pager below it. */
-.toolbar {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: var(--s4) var(--s5);
-  flex-wrap: wrap;
-  margin-block-end: var(--s5);
-}
-
-.filters {
-  display: grid;
-  grid-template-rows: auto auto;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 232px);
-  column-gap: var(--s3);
-  row-gap: var(--s1);
-}
-
-.filters > button {
-  grid-row: 2;
-  justify-self: start;
-}
-
 .range {
   color: var(--ink-2);
   font-variant-numeric: tabular-nums;
@@ -2934,21 +2910,6 @@ body[data-layout="card"] main > .lede + .actions {
     padding-block-end: var(--s2);
   }
 
-  .filters {
-    grid-auto-flow: row;
-    grid-template-rows: none;
-    grid-template-columns: minmax(0, 1fr);
-    inline-size: 100%;
-  }
-
-  .filters > select {
-    margin-block-end: var(--s3);
-  }
-
-  .filters > button {
-    grid-row: auto;
-  }
-
   .form-actions > button {
     flex: 1;
   }
@@ -3183,81 +3144,1271 @@ main {
   }
 }
 
-/* ---------- Dashboards ---------- */
+/* ---------- Activity, Overview, dashboards and the rule form's server step ---------- */
 
-.dashboard-tabs,
-.period-switch {
+/* ---------- Tokens ---------- */
+
+:root {
+  /* What a chart draws its marks with; a refusal metric sets it to --deny. */
+  --mark: var(--ink);
+  /* The column on a time chart's right where its scale stands. */
+  --scale-col: 48px;
+}
+
+/* ---------- Controls the panel did not have ---------- */
+
+/* A date: the look of every other field, in the identifier face like every date. */
+input[type="date"] {
+  inline-size: 100%;
+  block-size: var(--control);
+  padding-inline: var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r2);
+  background-color: var(--surface);
+  color: var(--ink);
+  font: 400 calc(var(--control-text) - 1px) / 20px var(--mono);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+
+/* No rounded ends on Safari. */
+input[type="search"] {
+  appearance: none;
+}
+
+@media (hover: hover) {
+  input:where([type="date"], [type="search"]):hover {
+    border-color: var(--ink);
+  }
+}
+
+input:where([type="date"], [type="search"]):focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+  border-color: var(--ink);
+}
+
+select[aria-invalid="true"] {
+  border-color: var(--deny);
+  box-shadow: inset 0 0 0 1px var(--deny);
+}
+
+/* A value the form carries and the person cannot change here: field text, no box. */
+.field > .static {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--s2);
+  min-block-size: var(--control);
+  font-size: var(--control-text);
+}
+
+.field > .static > code {
+  color: var(--ink-2);
+}
+
+/* A button in a row of fields sits in the row of the controls. */
+.field.field-go > button,
+.field.field-go > .button {
+  grid-row: 2;
+  justify-self: start;
+}
+
+
+
+/* Hints that follow what a select holds. Without :has() every line shows. */
+@supports selector(:has(*)) {
+  .when-time,
+  .when-category,
+  .when-none,
+  .pick-pending {
+    display: none;
+  }
+
+  form:has(select[name="group_by"] option[value="time"]:checked) .when-time,
+  form:has(select[name="group_by"] option:is([value="user"], [value="server"], [value="tool"], [value="client"]):checked) .when-category,
+  form:has(select[name="group_by"] option[value="none"]:checked) .when-none {
+    display: block;
+  }
+
+  /* The select no longer shows the server the page was built for. */
+  .pick:has(select option:checked:not([selected])) .pick-pending {
+    display: block;
+  }
+
+  .pick:has(select option:checked:not([selected])) .pick-hint {
+    display: none;
+  }
+
+  /* Until the server is applied, applying it is the filled button and the rule's is not. */
+  .pick:has(select option:checked:not([selected])) button[data-kind="secondary"] {
+    border-color: var(--ink);
+    background: var(--ink);
+    color: var(--paper);
+  }
+
+  .pick:has(select option:checked:not([selected])) + form.flow button[data-kind="primary"] {
+    border-color: var(--line-strong);
+    background: none;
+    color: var(--ink);
+  }
+
+  @media (hover: hover) {
+    .pick:has(select option:checked:not([selected])) button[data-kind="secondary"]:hover {
+      background: var(--ink-2);
+    }
+
+    .pick:has(select option:checked:not([selected])) + form.flow button[data-kind="primary"]:hover {
+      border-color: var(--ink);
+      background: var(--sunken);
+    }
+  }
+}
+
+.pick-pending {
+  color: var(--ink);
+}
+
+/* The rule form follows its server step as the next row of one form. */
+.part-body > .pick + form.flow {
+  margin-block-start: var(--s5);
+}
+
+/* ---------- Activity: the filter form ---------- */
+
+.filter-panel {
+  margin-block-end: var(--s5);
+}
+
+/* Under 640 px the form folds into this one control. */
+.filter-panel > summary {
+  display: inline-flex;
+  border-radius: var(--r2);
+}
+
+.filter-open {
+  display: inline-flex;
+  align-items: center;
   gap: var(--s2);
-  margin-block: var(--s3);
+  min-block-size: var(--control);
+  padding-inline: var(--s4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r2);
+  font: 600 var(--control-text) / 20px var(--sans);
+  transition: background-color var(--t-fast), border-color var(--t-fast);
 }
 
-.dashboard-tabs [data-current="yes"],
-.period-switch [data-current="yes"] {
-  font-weight: 700;
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
+.filter-open > .count {
+  font-size: 13px;
+  color: var(--ink-2);
 }
 
-.dashboards .c-act { inline-size: 160px; }
-.chart-list .c-act { inline-size: 260px; }
+@media (hover: hover) {
+  .filter-panel > summary:hover > .filter-open {
+    border-color: var(--ink);
+    background: var(--sunken);
+  }
+}
+
+.filter-panel > summary:focus-visible {
+  outline: 0;
+}
+
+.filter-panel > summary:focus-visible > .filter-open {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* Five columns filled in the order of the markup, so the eye and the Tab key agree.
+   Search and Tool take two each; the two dates follow Period when they are asked for. */
+.filterbar {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  column-gap: var(--s4);
+  margin-block-start: calc(var(--s4) * -1);
+}
+
+/* Whole pixels: four columns are rounded down and the first takes what is left. */
+@supports (inline-size: round(down, 1px, 1px)) {
+  .filterbar {
+    grid-template-columns: minmax(0, 1fr) repeat(4, round(down, calc((100% - 4 * var(--s4)) / 5), 1px));
+  }
+}
+
+.filterbar .dates {
+  display: contents;
+}
+
+.filterbar .field {
+  grid-row: span 3;
+  grid-template-columns: minmax(0, 1fr);
+  margin-block-start: var(--s4);
+}
+
+.filterbar :is(.f-q, .f-tool) {
+  grid-column: span 2;
+}
+
+/* The two dates show only while the period is "Custom dates". */
+@supports selector(:has(*)) {
+  .filterbar:not(:has(.f-period option[value="custom"]:checked)) .dates {
+    display: none;
+  }
+}
+
+/* From 640 px the closed panel shows its content and has no summary.
+   Without ::details-content the summary stays and opens the form. */
+@media (min-width: 640px) {
+  /* Where the summary stays (no ::details-content), the opened form stands 16 px under it. */
+  .filter-panel[open] > summary {
+    margin-block-end: var(--s4);
+  }
+
+  @supports selector(::details-content) {
+    .filter-panel > summary {
+      display: none;
+    }
+
+    .filter-panel::details-content {
+      content-visibility: visible;
+      block-size: auto;
+      overflow: visible;
+      opacity: 1;
+      transition: none;
+    }
+  }
+}
+
+@media (min-width: 640px) and (max-width: 1279.98px) {
+  .filterbar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  @supports (inline-size: round(down, 1px, 1px)) {
+    .filterbar {
+      grid-template-columns: minmax(0, 1fr) repeat(2, round(down, calc((100% - 2 * var(--s4)) / 3), 1px));
+    }
+  }
+
+  .filterbar .f-q {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ---------- Activity: what was found ---------- */
+
+/* One line over the table: how many rows, the filters that made it so, the export. */
+.results {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2) var(--s4);
+  margin-block-end: var(--s3);
+}
+
+.results > .range {
+  line-height: 20px;
+}
+
+.chips {
+  flex: 1 1 0;
+  min-inline-size: min(100%, 240px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s2);
+}
+
+.chips > li {
+  max-inline-size: 100%;
+}
+
+/* The whole chip is the link that removes it. 28 px: a 20 px line, 3 + 3, the border. */
+.chip {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  column-gap: var(--s2);
+  max-inline-size: 100%;
+  padding: 3px var(--s2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r2);
+  color: var(--ink);
+  font: 400 13px/20px var(--sans);
+  text-decoration: none;
+  transition: background-color var(--t-fast), border-color var(--t-fast);
+}
+
+.chip-key {
+  flex: none;
+  color: var(--ink-3);
+}
+
+.chip-value {
+  min-inline-size: 0;
+  font-weight: 550;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: transparent;
+  transition: text-decoration-color var(--t-fast);
+}
+
+.chip-value .email,
+.chip-value .email > span,
+.chip-value > :is(code, time) {
+  text-decoration: inherit;
+}
+
+.chip-value > :is(code, time) {
+  font-weight: inherit;
+  word-spacing: calc(var(--s1) * -1);
+}
+
+.chip-x {
+  flex: none;
+  color: var(--ink-2);
+  font: 400 16px/20px var(--sans);
+}
+
+/* Under the pointer the value is struck out: what the link will do. */
+@media (hover: hover) {
+  .chip:hover {
+    border-color: var(--ink);
+    background: var(--sunken);
+  }
+
+  .chip:hover > .chip-value {
+    text-decoration-color: currentColor;
+  }
+
+  .chip:hover > .chip-x {
+    color: var(--ink);
+  }
+}
+
+.chips-clear,
+.results > .export {
+  border-radius: var(--r2);
+  color: var(--ink-2);
+  font: 500 13px/20px var(--sans);
+  transition: background-color var(--t-fast), color var(--t-fast), text-decoration-color var(--t-fast);
+}
+
+.chips-clear {
+  margin-inline-start: var(--s1);
+  padding: var(--s1) var(--s2);
+}
+
+/* The export ends on the table's right edge, as "All activity" does. */
+.results > .export {
+  margin-inline: auto calc(var(--s2) * -1);
+  padding: var(--s1) var(--s2);
+  white-space: nowrap;
+}
+
+@media (hover: hover) {
+  .chips-clear:hover,
+  .results > .export:hover {
+    background: var(--sunken);
+    color: var(--ink);
+  }
+}
+
+.chips-clear:focus-visible,
+.results > .export:focus-visible {
+  outline-offset: 1px;
+  color: var(--ink);
+}
+
+.results + .empty {
+  margin-block-start: var(--s4);
+}
+
+/* ---------- Overview: the dashboard ---------- */
+
+a.chip:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.dash {
+  margin-block-start: var(--s7);
+}
+
+/* Three cells over one hairline; an ink segment on it marks the current tab and period. */
+.dash-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: start;
+}
+
+.dash-head > * {
+  border-block-end: 1px solid var(--line);
+}
+
+/* One row that scrolls sideways. 4 px of room all round for a focus ring; the hairline
+   scrolls with the tabs and the scrollbar, when there is one, hangs under it. */
+.dash-head > .tabs {
+  margin: calc(var(--s1) * -1) calc(var(--s1) * -1) 0;
+  padding: var(--s1) var(--s1) 0;
+  border-block-end: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.tabs > ul {
+  display: flex;
+  column-gap: var(--s5);
+  inline-size: max-content;
+  min-inline-size: 100%;
+  border-block-end: 1px solid var(--line);
+}
+
+.tabs li {
+  flex: none;
+}
+
+/* The current tab stays in sight at either end of the strip, over the others. */
+.tabs li:has(> a[aria-current]) {
+  position: sticky;
+  inset-inline: calc(var(--s2) * -1);
+  z-index: 1;
+  margin-inline: calc(var(--s3) * -1);
+  padding-inline: var(--s3);
+  background: var(--paper);
+}
+
+/* A name longer than 28 characters is cut; the link's title holds it whole. */
+.tab-label {
+  display: block;
+  max-inline-size: min(28ch, 60vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tabs a,
+.dash-title {
+  position: relative;
+  display: block;
+  padding-block-end: var(--s3);
+  color: var(--ink-2);
+  font: 500 20px/28px var(--sans);
+  text-decoration: none;
+  transition: color var(--t-fast);
+}
+
+.tabs a[aria-current="page"],
+.dash-title {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.period > ul {
+  display: flex;
+}
+
+/* 7 px over and 13 px under the 13 px word: the height and the baseline of a tab. */
+.period a {
+  position: relative;
+  display: block;
+  padding: 7px var(--s2) 13px;
+  color: var(--ink-2);
+  font: 500 13px/20px var(--sans);
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color var(--t-fast);
+}
+
+.period a[aria-current="true"] {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+@media (hover: hover) {
+  .tabs a:hover,
+  .period a:hover {
+    color: var(--ink);
+  }
+}
+
+.tabs a:focus-visible,
+.period a:focus-visible {
+  outline-offset: 2px;
+  border-radius: var(--r2);
+}
+
+.period a:focus-visible {
+  outline-offset: -2px;
+}
+
+.tabs li:has(> a[aria-current]) > a:focus-visible {
+  outline-offset: -2px;
+}
+
+/* The segment covers the hairline and stands 1 px above it. */
+.tab-mark,
+.period-mark {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: -1px;
+  block-size: 2px;
+  background: var(--ink);
+}
+
+.period-mark {
+  inset-inline: var(--s2);
+}
+
+.dash-edit {
+  padding: 7px 0 13px var(--s5);
+  font: 400 13px/20px var(--sans);
+  white-space: nowrap;
+}
+
+/* A 24 px target on the 20 px line. */
+.dash-edit > a {
+  display: inline-block;
+  margin-block: calc(var(--r1) * -1);
+  padding-block: var(--r1);
+  color: var(--ink-2);
+  font-weight: 500;
+}
+
+/* ---------- Charts ---------- */
 
 .charts {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
-  gap: var(--s4);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: var(--s7);
 }
 
+/* A figure is opened by a hairline, as a part is. No box. */
 .chart {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s2);
+  container-type: inline-size;
   min-inline-size: 0;
-  padding: var(--s3);
-  border: 1px solid var(--line);
-  border-radius: var(--r3);
-  background: var(--surface);
+  padding-block: var(--s5) var(--s6);
+  border-block-start: 1px solid var(--line);
 }
 
-.chart[data-width="full"] { grid-column: 1 / -1; }
-.chart h3 { margin: 0; font-size: 1rem; }
-.chart-caption { margin: 0; color: var(--ink-2); font-size: 0.875rem; }
-.chart-figure { min-inline-size: 0; }
-.chart-svg { display: block; inline-size: 100%; block-size: auto; }
-.chart-grid { stroke: var(--line); stroke-width: 1; }
-.chart-axis { stroke: var(--line-strong); stroke-width: 1; }
-.chart-tick { fill: var(--ink-2); font-size: 11px; font-variant-numeric: tabular-nums; }
-.chart-line { fill: none; stroke: var(--ink); stroke-width: 2; stroke-linejoin: round; }
-.chart-point { fill: var(--ink); }
-.chart-bar { fill: var(--ink-2); }
-.chart-step { fill: var(--sunken); stroke: var(--ink-2); stroke-width: 1.5; }
-.chart-hit { fill: transparent; }
-
-.ranked {
-  display: grid;
-  gap: var(--s2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.chart[data-width="full"] {
+  grid-column: 1 / -1;
 }
 
-.ranked li {
+/* The first row stands under the head's hairline and has none of its own. */
+.charts > .chart:first-child,
+.charts > .chart[data-width="half"]:first-child + .chart[data-width="half"] {
+  border-block-start-color: transparent;
+}
+
+.chart[data-tone="bad"] {
+  --mark: var(--deny);
+}
+
+.chart > figcaption {
+  margin-block-end: var(--s4);
+}
+
+.chart > figcaption > h3 > .count {
+  margin-inline-start: var(--s2);
+}
+
+.chart > figcaption > p {
+  color: var(--ink-2);
+  font-size: 13px;
+  max-inline-size: 64ch;
+}
+
+.chart-empty {
+  color: var(--ink-2);
+}
+
+/* The scale stands in a column on the right, beside the newest bucket. */
+.plot {
+  padding-inline-end: var(--scale-col);
+}
+
+/* No viewBox: a unit is a pixel at every width, so type never shrinks. */
+.time {
+  display: block;
+  inline-size: 100%;
+  overflow: visible;
+}
+
+.time text {
+  fill: var(--ink-3);
+  font: 500 12px/16px var(--sans);
+  font-variant-numeric: tabular-nums;
+}
+
+.time .y text {
+  text-anchor: end;
+}
+
+/* A date under the axis is an identifier, like every date in the panel. */
+.time .x text {
+  font-family: var(--mono);
+  font-weight: 400;
+  word-spacing: calc(var(--s1) * -1);
+}
+
+.time line {
+  stroke: var(--line);
+  stroke-width: 1px;
+  shape-rendering: crispEdges;
+}
+
+.time .base,
+.time .x line {
+  stroke: var(--line-strong);
+}
+
+.time .bar {
+  fill: var(--mark);
+  shape-rendering: crispEdges;
+}
+
+/* The whole column of a bucket answers the pointer, so a 1 px bar still does. */
+.time .hit {
+  fill: transparent;
+  transition: fill var(--t-fast);
+}
+
+@media (hover: hover) {
+  .time .marks > g:hover > .hit {
+    fill: var(--sunken);
+  }
+}
+
+.time .line {
+  overflow: visible;
+  pointer-events: none;
+}
+
+.time .line polyline {
+  fill: none;
+  stroke: var(--mark);
+  stroke-width: 2px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* In a narrow figure every other date of a week gives way. */
+@container (max-width: 440px) {
+  .time .x .minor {
+    display: none;
+  }
+}
+
+/* A second drawing of 90 bars, shown where a bar would be under 5 px: 90 x 5 + 48. */
+.time .area {
+  display: none;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.time .area polygon {
+  fill: var(--mark);
+}
+
+@container (max-width: 497.98px) {
+  .chart[data-buckets="90"] .bar {
+    display: none;
+  }
+
+  .chart[data-buckets="90"] .area {
+    display: block;
+  }
+}
+
+/* Under a line a date is centred on its point; at an edge it hangs inwards. */
+.chart[data-shape="line"] .time .x text {
+  text-anchor: middle;
+}
+
+.chart[data-shape="line"] .time .x .edge-start text {
+  text-anchor: start;
+}
+
+.chart[data-shape="line"] .time .x .edge-end text {
+  text-anchor: end;
+}
+
+@container (max-width: 400px) {
+  .time .x .near-edge text {
+    display: none;
+  }
+}
+
+/* Ranked bars: the row's closing hairline is thickened in ink as far as its value goes. */
+.ranked > li {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--s1) var(--s2);
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--s4);
   align-items: baseline;
+  padding-block-start: var(--s2);
+  border-block-end: 1px solid var(--line);
+  break-inside: avoid;
 }
 
-.rank-value { font-variant-numeric: tabular-nums; }
-.rank-bar { grid-column: 1 / -1; inline-size: 100%; block-size: 8px; background: var(--sunken); border-radius: var(--r1); }
-.rank-fill { fill: var(--ink-2); }
+.ranked > li:first-child {
+  padding-block-start: 0;
+}
 
-.chart-number { margin: var(--s2) 0 0; font-size: 2rem; font-weight: 700; font-variant-numeric: tabular-nums; }
-.chart-number .unit { font-size: 0.875rem; font-weight: 400; color: var(--ink-2); }
+/* A 24 px target on the 20 px line. No underline at rest: the bar is under the name. */
+.ranked-name {
+  justify-self: start;
+  max-inline-size: 100%;
+  margin-block: calc(var(--r1) * -1);
+  padding-block: var(--r1);
+  font: 400 13px/20px var(--sans);
+  text-decoration-color: transparent;
+}
 
-.chart-data > summary { cursor: pointer; color: var(--ink-2); font-size: 0.875rem; }
-.chart-table { border-collapse: collapse; inline-size: 100%; font-size: 0.875rem; }
-.chart-table th,
-.chart-table td { padding: var(--s1) var(--s2); border-block-end: 1px solid var(--line); text-align: start; }
-.chart-table .num { text-align: end; font-variant-numeric: tabular-nums; }
+@media (hover: hover) {
+  .ranked-name:hover {
+    text-decoration-color: currentColor;
+  }
+}
+
+.ranked-name .email,
+.ranked-name .email > span,
+.ranked-name > code {
+  text-decoration: inherit;
+}
+
+/* "server / tool": the tool is what is ranked, so the server is the quieter half. */
+.ranked-name[data-by="tool"] {
+  font-family: var(--mono);
+}
+
+.ranked-name[data-by="tool"] > code:first-child {
+  color: var(--ink-2);
+}
+
+.ranked-name[data-by="tool"] > code:first-child::after {
+  content: " / ";
+  color: var(--ink-3);
+}
+
+.ranked-name[data-by="tool"] > code + code {
+  display: inline-block;
+  max-inline-size: 100%;
+  line-height: 20px;
+  text-indent: 0;
+}
+
+.ranked-value {
+  font: 500 13px/20px var(--sans);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ranked-bar {
+  grid-column: 1 / -1;
+  display: block;
+  margin-block: var(--s1) -1px;
+}
+
+.ranked-bar > rect {
+  fill: var(--mark);
+}
+
+/* On touch a row is 44 px and so is the name's target. */
+@media (pointer: coarse), (max-width: 639.98px) {
+  .ranked > li,
+  .ranked > li:first-child {
+    padding-block-start: var(--s4);
+  }
+
+  .ranked-name {
+    margin-block: calc(var(--s4) * -1) calc(var(--s2) * -1);
+    padding-block: var(--s4) var(--s2);
+  }
+
+  .ranked > li:first-child {
+    margin-block-start: calc(var(--s3) * -1);
+  }
+}
+
+/* A full-width ranking of eight rows or more reads down two columns. */
+@container (min-width: 720px) {
+  .ranked:has(> li:nth-child(8)) {
+    columns: 2;
+    column-gap: var(--s7);
+  }
+
+  .ranked:has(> li:nth-child(8)) > li {
+    padding-block-start: var(--s2);
+  }
+}
+
+/* One number: the size of a count on the overview, and of nothing larger. */
+.figure-number {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--s2);
+}
+
+.figure-value {
+  margin-inline-start: -2px;
+  font: 700 32px/36px var(--sans);
+  letter-spacing: var(--tight);
+  font-variant-numeric: tabular-nums;
+}
+
+.figure-unit {
+  color: var(--ink-2);
+  font: 500 14px/20px var(--sans);
+}
+
+/* A table inside a figure: two columns at every width, never stacked. */
+.figures {
+  inline-size: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.figures th {
+  padding: 0 var(--s4) var(--s2) 0;
+  border-block-end: 1px solid var(--ink);
+  text-align: start;
+  font: 500 12px/16px var(--sans);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* 7 px under the text: 8 minus the rule, so a row is 36 px like a ranked row. */
+.figures td {
+  padding: var(--s2) var(--s4) 7px 0;
+  border-block-end: 1px solid var(--line);
+  vertical-align: top;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.figures :is(th, td).num {
+  padding-inline-end: 0;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.figures .c-server {
+  inline-size: 30%;
+}
+
+/* The numbers behind a chart: a quiet control under it, closed. */
+.data {
+  margin-block-start: var(--s2);
+}
+
+.data > summary {
+  display: inline-flex;
+  border-radius: var(--r2);
+}
+
+.data-open {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  min-block-size: var(--control-sm);
+  margin-inline-start: calc(var(--s2) * -1);
+  padding-inline: var(--s2);
+  border-radius: var(--r2);
+  color: var(--ink-2);
+  font: 500 13px/20px var(--sans);
+  transition: background-color var(--t-fast), color var(--t-fast);
+}
+
+@media (hover: hover) {
+  .data > summary:hover > .data-open {
+    background: var(--sunken);
+    color: var(--ink);
+  }
+}
+
+.data > summary:focus-visible {
+  outline: 0;
+}
+
+.data > summary:focus-visible > .data-open {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+  color: var(--ink);
+}
+
+/* Ninety days are ninety rows: the table scrolls inside ten of them, under its head. */
+.data-body {
+  max-block-size: 320px;
+  margin-block-start: var(--s2);
+  border-block-end: 1px solid var(--line);
+  overflow-y: auto;
+}
+
+/* Separate borders, so the sticky head keeps its rule and every row is 28 px. */
+.data-body > .figures {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.data-body th {
+  position: sticky;
+  inset-block-start: 0;
+  padding-block-start: var(--s1);
+  border-block-end: 0;
+  background: var(--paper);
+  box-shadow: inset 0 -1px 0 var(--ink);
+}
+
+.data-body td {
+  padding-block: var(--s1) 3px;
+}
+
+/* ---------- Dashboards: the list and the edit page ---------- */
+
+.dashboards .c-num { inline-size: 96px; }
+.dashboards .c-note { inline-size: 30%; }
+.dashboards .c-act { inline-size: 208px; }
+
+.chartlist .c-title { inline-size: 24%; }
+.chartlist .c-shown { inline-size: 136px; }
+.chartlist .c-act { inline-size: 272px; }
+
+/* The name is the way in to the edit page: it shows as a link at every width. */
+.dashboards a.name,
+.chartlist a.name {
+  text-decoration-color: var(--line-strong);
+}
+
+/* Several actions in one row: 16 px apart, the last one ending on the column's edge. */
+.row-actions {
+  text-align: end;
+}
+
+.row-actions > * + * {
+  margin-inline-start: var(--s4);
+}
+
+/* Deleting a chart is asked twice. The word keeps its place in the line of actions and
+   the question opens under that line. */
+.row-confirm {
+  display: inline;
+}
+
+.row-actions > .row-confirm > summary {
+  display: inline-flex;
+  align-items: center;
+  inline-size: auto;
+  min-block-size: 0;
+  block-size: var(--control-sm);
+  margin-inline-end: calc((var(--s2) + 1px) * -1);
+  padding-inline: var(--s2);
+  border: 1px solid transparent;
+  border-radius: var(--r2);
+  color: var(--ink-2);
+  font: 500 13px/20px var(--sans);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--line-strong);
+  transition: background-color var(--t-fast), color var(--t-fast), text-decoration-color var(--t-fast);
+}
+
+@media (hover: hover) {
+  .row-actions > .row-confirm > summary:hover {
+    background: var(--sunken);
+    color: var(--ink);
+    text-decoration-color: currentColor;
+  }
+}
+
+.row-actions > .row-confirm > summary:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+  color: var(--ink);
+}
+
+.row-confirm[open] > summary {
+  color: var(--ink);
+  text-decoration-color: currentColor;
+}
+
+/* In the opened question the button is the panel's filled danger button, small. */
+.list td.act .row-confirm .confirm-body button[data-kind="danger"] {
+  margin-inline-end: 0;
+  padding-inline: var(--s3);
+  background: var(--deny-fill);
+  color: var(--on-deny);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+@media (hover: hover) {
+  .list td.act .row-confirm .confirm-body button[data-kind="danger"]:hover {
+    background: var(--deny-hover);
+    color: var(--on-deny);
+  }
+}
+
+.row-confirm > .confirm-body {
+  justify-items: end;
+  gap: var(--s2);
+  max-inline-size: none;
+  padding-block: var(--s2) var(--s3);
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.row-actions > form {
+  display: inline-flex;
+  column-gap: var(--s4);
+}
+
+/* An action that cannot be taken keeps its place: the first chart cannot move up. */
+.row-action[data-kind]:disabled {
+  background: none;
+  color: var(--ink-2);
+  text-decoration-color: transparent;
+}
+
+/* ---------- Narrow windows ---------- */
+
+@media (max-width: 899.98px) {
+  .charts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .charts > .chart[data-width="half"]:first-child + .chart[data-width="half"] {
+    border-block-start-color: var(--line);
+  }
+
+  /* Several actions do not fit beside a name: they are the record's last line. */
+  .list:not(.activity) td.act.several {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    padding-inline-start: 0;
+    text-align: start;
+  }
+
+  .list:not(.activity) td.act.several .row-actions {
+    margin-inline-start: calc((var(--s2) + 1px) * -1);
+    text-align: start;
+  }
+
+  /* Delete stands at the far end of the line, away from the two that move. */
+  .row-actions > .row-confirm > summary {
+    float: inline-end;
+    margin-inline-end: 0;
+  }
+
+  .row-confirm > .confirm-body {
+    clear: both;
+    justify-items: start;
+    padding-inline-start: calc(var(--s2) + 1px);
+  }
+
+  /* A record with no note has no line for it, and nothing to part with a dot. */
+  .list.dashboards:not(.activity) td.half + td.half {
+    padding-inline-start: 0;
+  }
+
+  .list.dashboards:not(.activity) td.half + td.half::before {
+    content: none;
+  }
+
+  .list.dashboards td.half:empty {
+    display: none;
+  }
+
+  .list:not(.activity) td.act.several :is(button, .row-action) {
+    margin-block: 0;
+  }
+
+  .list:not(.activity) td.act.several ~ td,
+  .list:not(.activity) td:has(~ td.act.several) {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 639.98px) {
+  .filter-panel {
+    margin-block-end: var(--s4);
+  }
+
+  /* Opened: one column, 24 px apart, the two dates side by side. */
+  .filterbar {
+    display: block;
+    margin-block-start: 0;
+    padding-block-start: var(--s4);
+  }
+
+  .filterbar .field,
+  .filterbar :is(.f-q, .f-tool) {
+    grid-column: auto;
+    grid-row: auto;
+    margin-block-start: var(--s5);
+  }
+
+  /* A tool name of 36 characters fits a phone's field. */
+  input.mono {
+    padding-inline: var(--s2);
+    font-size: 14px;
+  }
+
+  /* The list's arrow would take 20 px from the name. The list still opens on focus. */
+  input.mono[list]::-webkit-calendar-picker-indicator {
+    display: none !important;
+  }
+
+  .filterbar > .field:first-child {
+    margin-block-start: 0;
+  }
+
+  .filterbar .dates {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    column-gap: var(--s4);
+  }
+
+  .filterbar .field-go > button {
+    inline-size: 100%;
+  }
+
+  /* A chip is 36 px tall and its target 44. */
+  .chip {
+    padding-block: 7px;
+  }
+
+  .chip::after {
+    content: "";
+    position: absolute;
+    inset: calc(var(--s1) * -1 - 1px) -1px;
+  }
+
+  .chips-clear,
+  .results > .export {
+    padding-block: var(--s3);
+  }
+
+  .results {
+    row-gap: var(--s1);
+  }
+
+  .chips {
+    flex-basis: 100%;
+    order: 1;
+  }
+
+  /* The tabs take the line; the period and the edit link share the next, or wrap. */
+  .dash-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .dash-head > .tabs,
+  .dash-head > .dash-title {
+    flex: 0 0 calc(100% + 2 * var(--s1));
+    scrollbar-width: none;
+  }
+
+  .dash-head > .dash-title {
+    flex-basis: 100%;
+  }
+
+  /* 16 px in a 44 px row. */
+  .tabs a {
+    padding-block: 10px;
+    font-size: 16px;
+    line-height: 24px;
+  }
+
+  .dash-head > .period,
+  .dash-head > .dash-edit {
+    border-block-end: 0;
+  }
+
+  .dash-head > .dash-edit {
+    margin-inline-start: auto;
+    padding-inline-start: 0;
+  }
+
+  .period > ul {
+    margin-inline-start: calc(var(--s2) * -1);
+  }
+
+  .period a,
+  .dash-edit {
+    padding-block: var(--s3);
+  }
+
+  .period a {
+    min-inline-size: var(--control);
+    text-align: center;
+  }
+
+  .period li:first-child > a {
+    text-align: start;
+  }
+
+  .period-mark {
+    inset-block-end: var(--s2);
+  }
+
+  /* A row's actions are 44 px tall. */
+  .list:not(.activity) td.act.several :is(button, summary) {
+    block-size: var(--control);
+  }
+
+  .field.field-go > button,
+  .field.field-go > .button {
+    grid-row: auto;
+  }
+}
+
+/* ---------- Moving between dashboards ---------- */
+
+.tab-mark {
+  view-transition-name: tab-mark;
+}
+
+.period-mark {
+  view-transition-name: period-mark;
+}
+
+::view-transition-group(tab-mark),
+::view-transition-group(period-mark) {
+  animation-duration: var(--t-mid);
+  animation-timing-function: var(--ease-out);
+}
+
+/* ---------- Forced colours ---------- */
+
+@media (forced-colors: active) {
+  .tab-mark,
+  .period-mark {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  .time .bar,
+  .ranked-bar > rect {
+    forced-color-adjust: none;
+    fill: CanvasText;
+  }
+
+  .time .line polyline {
+    forced-color-adjust: none;
+    stroke: CanvasText;
+  }
+
+  .time .area polygon {
+    forced-color-adjust: none;
+    fill: CanvasText;
+  }
+}

@@ -134,16 +134,16 @@ impl Metric {
     /// What the metric counts, as a caption says it.
     pub fn caption(self) -> &'static str {
         match self {
-            Metric::Calls => "Tool calls let through that completed",
+            Metric::Calls => "Tool calls let through",
             Metric::Refused => "Tool calls refused",
-            Metric::Failed => "Tool calls that failed or reported a tool error",
-            Metric::AllCalls => "Every tool call, let through or refused",
-            Metric::ActiveUsers => "Distinct users with a tool call let through",
+            Metric::Failed => "Tool calls that failed or reported an error",
+            Metric::AllCalls => "All tool calls",
+            Metric::ActiveUsers => "People with at least one tool call",
             Metric::SignIns => "Sign-ins",
             Metric::SignInsRefused => "Sign-ins refused",
-            Metric::DurationMedian => "Median duration of tool calls let through, in ms",
-            Metric::DurationP95 => "95th percentile duration of tool calls let through, in ms",
-            Metric::UnusedTools => "Tools in the server lists with no tool call let through",
+            Metric::DurationMedian => "Median duration of calls let through",
+            Metric::DurationP95 => "95th percentile duration of calls let through",
+            Metric::UnusedTools => "Tools the servers list that had no call let through",
         }
     }
 

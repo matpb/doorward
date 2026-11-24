@@ -597,8 +597,8 @@ async fn the_activity_page_offers_a_user_and_a_server_filter() {
         options(&page, "select#filter-server"),
         vec![
             option("", "Any server"),
-            option(&alpha_id, "Alpha Tools (alpha)"),
-            option(&beta_id, "Beta Tools (beta)"),
+            option(&alpha_id, "alpha, Alpha Tools"),
+            option(&beta_id, "beta, Beta Tools"),
         ],
         "the server filter must offer Any server, then every server ordered by slug"
     );

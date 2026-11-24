@@ -452,8 +452,8 @@ async fn activity_is_paged() {
         "a page past the end must show no rows"
     );
     assert!(
-        past.body.contains("No activity matches."),
-        "a page past the end must say No activity matches."
+        past.body.contains("No activity matches these filters."),
+        "a page past the end must say No activity matches these filters."
     );
     assert_eq!(
         past.count(r#"a[data-page-link="newer"]"#),

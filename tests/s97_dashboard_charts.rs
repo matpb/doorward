@@ -291,14 +291,14 @@ fn text_of(element: ElementRef<'_>) -> String {
 
 /// The chart section whose heading is `title`.
 fn section<'a>(doc: &'a Html, title: &str) -> ElementRef<'a> {
-    let sections = Selector::parse("section.chart").expect("a selector");
+    let sections = Selector::parse("figure.chart").expect("a selector");
     let heading = Selector::parse("h3").expect("a selector");
     doc.select(&sections)
         .find(|section| {
             section
                 .select(&heading)
                 .next()
-                .is_some_and(|h3| text_of(h3) == title)
+                .is_some_and(|h3| h3.text().next().map(str::trim) == Some(title))
         })
         .unwrap_or_else(|| panic!("the overview shows no chart titled {title}"))
 }
@@ -306,7 +306,7 @@ fn section<'a>(doc: &'a Html, title: &str) -> ElementRef<'a> {
 /// The one figure text of a number chart, such as `3 calls`.
 fn number(page: &Page, title: &str) -> String {
     let doc = Html::parse_document(&page.body);
-    let figure = Selector::parse("p.chart-number").expect("a selector");
+    let figure = Selector::parse("p.figure-number").expect("a selector");
     let found: Vec<String> = section(&doc, title).select(&figure).map(text_of).collect();
     assert_eq!(found.len(), 1, "{title} shows one number");
     found[0].clone()
@@ -327,20 +327,32 @@ fn data_rows(page: &Page, title: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The ranked rows of a chart: label, value text and the link the label goes to.
-fn ranked(page: &Page, title: &str) -> Vec<(String, String, String)> {
+/// The rows of a ranked chart: the label (a tool's two parts joined by " / "), the value, and the
+/// link of the label when it is a link. A row with no key is plain text, so its link is None.
+fn ranked(page: &Page, title: &str) -> Vec<(String, String, Option<String>)> {
     let doc = Html::parse_document(&page.body);
     let items = Selector::parse("ol.ranked li").expect("a selector");
-    let link = Selector::parse("a").expect("a selector");
-    let value = Selector::parse("span.rank-value").expect("a selector");
+    let name = Selector::parse(".ranked-name").expect("a selector");
+    let code = Selector::parse("code").expect("a selector");
+    let value = Selector::parse("span.ranked-value").expect("a selector");
     section(&doc, title)
         .select(&items)
         .map(|item| {
-            let anchor = item.select(&link).next().expect("a label link");
+            let label = item.select(&name).next().expect("a label");
+            let parts: Vec<String> = label.select(&code).map(text_of).collect();
+            let text = if parts.is_empty() {
+                text_of(label)
+            } else {
+                parts.join(" / ")
+            };
             (
-                text_of(anchor),
+                text,
                 item.select(&value).next().map(text_of).unwrap_or_default(),
-                anchor.value().attr("href").unwrap_or_default().to_owned(),
+                label
+                    .value()
+                    .attr("href")
+                    .filter(|_| label.value().name() == "a")
+                    .map(str::to_owned),
             )
         })
         .collect()
@@ -349,7 +361,7 @@ fn ranked(page: &Page, title: &str) -> Vec<(String, String, String)> {
 /// The `title` of each bar of a chart: "DATE: VALUE", as the figure writes it.
 fn bar_titles(page: &Page, title: &str) -> Vec<String> {
     let doc = Html::parse_document(&page.body);
-    let bars = Selector::parse("rect.chart-bar > title").expect("a selector");
+    let bars = Selector::parse("g.marks > g > title").expect("a selector");
     section(&doc, title).select(&bars).map(text_of).collect()
 }
 
@@ -373,7 +385,7 @@ async fn activity_total(c: &TestClient, href: &str) -> i64 {
             .unwrap_or_else(|| panic!("the range {text:?} names a total"))
     } else {
         assert!(
-            page.body.contains("No activity matches."),
+            page.body.contains("No activity matches these filters."),
             "the activity page of {href} says it has no rows"
         );
         0
@@ -427,19 +439,19 @@ async fn the_number_metrics_count_exactly_the_rows_their_class_names() {
     let page = overview(&s.w, &format!("?dashboard={board}")).await;
     assert_eq!(
         number(&page, "Calls"),
-        "3 calls",
+        "3 tool calls",
         "let-through calls that completed"
     );
-    assert_eq!(number(&page, "Refused"), "2 calls refused");
+    assert_eq!(number(&page, "Refused"), "2 tool calls refused");
     assert_eq!(
         number(&page, "Failed"),
-        "2 calls failed",
+        "2 tool calls failed",
         "failures and tool errors"
     );
-    assert_eq!(number(&page, "All"), "7 calls");
+    assert_eq!(number(&page, "All"), "7 tool calls");
     assert_eq!(
         number(&page, "Users"),
-        "2 users",
+        "2 people",
         "bob and carol made let-through calls"
     );
     assert_eq!(number(&page, "Sign-ins"), "1 sign-in");
@@ -534,6 +546,8 @@ async fn ranked_links_lead_to_an_activity_page_with_the_same_count() {
         "Failed by server",
         "Refused by user",
         "Sign-in refusals",
+        "Every call by tool",
+        "Calls by client",
     ];
     let board = make_dashboard(
         &s.w,
@@ -544,6 +558,8 @@ async fn ranked_links_lead_to_an_activity_page_with_the_same_count() {
             chart(titles[2], "failed", "server", "ranked", "24h"),
             chart(titles[3], "refused", "user", "ranked", "24h"),
             chart(titles[4], "sign_ins_refused", "user", "ranked", "24h"),
+            chart(titles[5], "all_calls", "tool", "ranked", "24h"),
+            chart(titles[6], "calls", "client", "ranked", "24h"),
         ],
     )
     .await;
@@ -552,12 +568,50 @@ async fn ranked_links_lead_to_an_activity_page_with_the_same_count() {
         let rows = ranked(&page, title);
         assert!(!rows.is_empty(), "{title} has rows");
         for (label, value, href) in rows {
-            assert!(href.starts_with("/admin/activity?"), "{title}: {href}");
             let shown: i64 = value.replace(',', "").parse().expect("a value");
+            let Some(href) = href else {
+                assert_eq!(
+                    (title, label.as_str()),
+                    ("Calls by client", "unknown"),
+                    "only the empty client is written as plain text"
+                );
+                continue;
+            };
+            assert!(href.starts_with("/admin/activity?"), "{title}: {href}");
             assert_eq!(
                 activity_total(&s.w.owner, &href).await,
                 shown,
                 "{title}: the Activity page for {label} counts the bar's value"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ranked_links_of_every_call_metric_name_their_own_event() {
+    let s = seeded().await;
+    insert(s.w.gw.db_path().as_path(), &day_dataset(&s));
+    let cases = [
+        ("calls", "event=tool_call"),
+        ("refused", "event=tool_refused"),
+        ("failed", "event=tool_failed"),
+        ("all_calls", "event=tool_any"),
+    ];
+    for (metric, event) in cases {
+        let board = make_dashboard(
+            &s.w,
+            &format!("Event {metric}"),
+            &[chart("Rows", metric, "tool", "ranked", "24h")],
+        )
+        .await;
+        let page = overview(&s.w, &format!("?dashboard={board}")).await;
+        let rows = ranked(&page, "Rows");
+        assert!(!rows.is_empty(), "{metric} has rows");
+        for (label, _, href) in rows {
+            let href = href.unwrap_or_else(|| panic!("{metric}: {label} is a link"));
+            assert!(
+                href.contains(event),
+                "{metric}: {label} links with {event}, got {href}"
             );
         }
     }
@@ -598,11 +652,11 @@ async fn hourly_buckets_are_24_with_exact_boundaries_and_zero_fill() {
     let rows = data_rows(&page, "Calls by hour");
     assert_eq!(rows.len(), 24, "24 hourly buckets");
     assert_eq!(
-        rows[0].0, "2029-12-31 01:00",
+        rows[0].0, "31 Dec 2029 01:00",
         "the first bucket starts 23 hours before the current hour"
     );
     assert_eq!(
-        rows[23].0, "2030-01-01 00:00",
+        rows[23].0, "1 Jan 2030 00:00",
         "the last bucket is the current hour"
     );
     let values: Vec<String> = rows.into_iter().map(|(_, value)| value).collect();
@@ -673,13 +727,13 @@ async fn daily_buckets_are_n_utc_days_ending_today_with_exact_boundaries() {
     assert_eq!(
         labels,
         vec![
-            "2029-12-26",
-            "2029-12-27",
-            "2029-12-28",
-            "2029-12-29",
-            "2029-12-30",
-            "2029-12-31",
-            "2030-01-01",
+            "26 Dec 2029",
+            "27 Dec 2029",
+            "28 Dec 2029",
+            "29 Dec 2029",
+            "30 Dec 2029",
+            "31 Dec 2029",
+            "1 Jan 2030",
         ]
     );
     let values: Vec<&str> = shown.iter().map(|(_, value)| value.as_str()).collect();
@@ -687,13 +741,13 @@ async fn daily_buckets_are_n_utc_days_ending_today_with_exact_boundaries() {
     assert_eq!(
         bar_titles(&page, "Calls by day"),
         vec![
-            "2029-12-26: 3",
-            "2029-12-27: 0",
-            "2029-12-28: 0",
-            "2029-12-29: 0",
-            "2029-12-30: 10",
-            "2029-12-31: 0",
-            "2030-01-01: 1",
+            "26 Dec 2029: 3 tool calls",
+            "27 Dec 2029: 0 tool calls",
+            "28 Dec 2029: 0 tool calls",
+            "29 Dec 2029: 0 tool calls",
+            "30 Dec 2029: 10 tool calls",
+            "31 Dec 2029: 0 tool calls",
+            "1 Jan 2030: 1 tool calls",
         ],
         "every bar's title is its date and exact value"
     );
@@ -754,7 +808,15 @@ async fn median_and_p95_are_nearest_rank_per_bucket_and_empty_buckets_are_gaps()
     );
     assert_eq!(
         bar_titles(&page, "P95"),
-        vec!["2029-12-26: 7", "2029-12-30: 100"],
+        vec![
+            "26 Dec 2029: 7 ms",
+            "27 Dec 2029: no value",
+            "28 Dec 2029: no value",
+            "29 Dec 2029: no value",
+            "30 Dec 2029: 100 ms",
+            "31 Dec 2029: no value",
+            "1 Jan 2030: no value",
+        ],
         "an empty bucket draws no mark"
     );
 }
@@ -919,9 +981,9 @@ async fn chart_filters_by_server_user_and_tool_restrict_the_rows() {
     )
     .await;
     let page = overview(&s.w, &format!("?dashboard={board}")).await;
-    assert_eq!(number(&page, "Calls by bob"), "2 calls");
-    assert_eq!(number(&page, "Calls to beta"), "1 call");
-    assert_eq!(number(&page, "Failed on other"), "2 calls failed");
+    assert_eq!(number(&page, "Calls by bob"), "2 tool calls");
+    assert_eq!(number(&page, "Calls to beta"), "1 tool call");
+    assert_eq!(number(&page, "Failed on other"), "2 tool calls failed");
     assert_eq!(
         ranked_pairs(&page, "Calls on demo"),
         vec![
@@ -951,21 +1013,21 @@ async fn the_dashboard_period_overrides_every_chart_while_set() {
     let own = overview(&s.w, &format!("?dashboard={board}")).await;
     assert_eq!(
         number(&own, "Thirty days"),
-        "2 calls",
+        "2 tool calls",
         "the chart's own period is 30 days"
     );
     let day = overview(&s.w, &format!("?dashboard={board}&period=24h")).await;
     assert_eq!(
         number(&day, "Thirty days"),
-        "1 call",
+        "1 tool call",
         "the switch shows the last 24 hours"
     );
     let week = overview(&s.w, &format!("?dashboard={board}&period=7d")).await;
-    assert_eq!(number(&week, "Thirty days"), "1 call");
+    assert_eq!(number(&week, "Thirty days"), "1 tool call");
     let unknown = overview(&s.w, &format!("?dashboard={board}&period=1y")).await;
     assert_eq!(
         number(&unknown, "Thirty days"),
-        "2 calls",
+        "2 tool calls",
         "an unknown period is no override"
     );
 }
@@ -999,8 +1061,8 @@ async fn the_data_table_numbers_equal_the_figure_titles() {
         24,
         "every bucket has a mark, zero marks included"
     );
-    assert_eq!(table, vec!["2029-12-31 22:00: 2".to_owned()]);
-    assert!(titles.contains(&"2029-12-31 22:00: 2".to_owned()));
+    assert_eq!(table, vec!["31 Dec 2029 22:00: 2".to_owned()]);
+    assert!(titles.contains(&"31 Dec 2029 22:00 to 23:00 UTC: 2 tool calls".to_owned()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1069,7 +1131,7 @@ async fn overview_with_no_dashboards_has_a_note_and_a_link_and_keeps_its_counts(
         "no chart without a dashboard"
     );
     assert!(
-        page.count(r#"a[href="/admin/dashboards"]"#) >= 1,
+        page.count(r#"a[href^="/admin/dashboards"]"#) >= 1,
         "the note links to the dashboards"
     );
     assert_eq!(
@@ -1106,7 +1168,7 @@ async fn a_repeated_query_key_answers_200_and_takes_its_first_value() {
     assert_eq!(page.status, 200, "a repeated key is not refused");
     assert_eq!(
         number(&page, "Calls"),
-        "1 call",
+        "1 tool call",
         "the first period, 7 days, applies"
     );
 }
@@ -1118,8 +1180,15 @@ async fn empty_data_says_no_activity_in_this_period() {
     assert_eq!(page.status, 200);
     assert_eq!(
         page.body.matches(NO_ACTIVITY).count(),
-        10,
-        "each of the ten Usage charts has no data and says so"
+        9,
+        "nine of the ten Usage charts have no data and say so"
+    );
+    assert_eq!(
+        page.body
+            .matches("Every listed tool was called in this period.")
+            .count(),
+        1,
+        "the unused tools chart with no tool to list says every listed tool was called"
     );
     let board = make_dashboard(
         &w,
@@ -1130,7 +1199,7 @@ async fn empty_data_says_no_activity_in_this_period() {
     let page = overview(&w, &format!("?dashboard={board}")).await;
     assert_eq!(
         number(&page, "Zero"),
-        "0 calls",
+        "0 tool calls",
         "a number is always a figure"
     );
 }

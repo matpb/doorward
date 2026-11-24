@@ -18,8 +18,8 @@ use crate::web::{
 
 use super::figure;
 use super::model::{
-    ChartSpec, Checked, Draft, GroupBy, Metric, Period, Shape, TOP_COUNTS, Width, check_chart,
-    check_name, field_of,
+    CHART_LIMIT, ChartSpec, Checked, DASHBOARD_LIMIT, Draft, GroupBy, Metric, Period, Shape,
+    TOP_COUNTS, Width, check_chart, check_name, field_of,
 };
 use super::query::{self, Series};
 use super::store::{self, Board, Change, Direction, Stored};
@@ -500,46 +500,72 @@ fn list_body(csrf: &str, rows: &[(Board, usize)], refusal: Option<&Refusal>) -> 
         _ => String::new(),
     };
     let error = refusal.and_then(|refusal| error_for(refusal, "dashboard-name"));
+    let full = i64::try_from(rows.len()).is_ok_and(|count| count >= DASHBOARD_LIMIT);
+    let last = rows.len().saturating_sub(1);
     html! {
         div.page-head {
+            p.crumb { a href="/admin" { "Overview" } }
             h1 { "Dashboards" }
-            p.lede { "Charts that every admin sees and edits. The first dashboard is the one the Overview opens on." }
+            p.lede { "Every admin sees and edits the same dashboards. They are tabs on Overview, in this order." }
+            @if !full {
+                div.head-actions {
+                    a.button data-kind="secondary" href="#add" { "Add a dashboard" }
+                }
+            }
         }
         @if let Some(refusal) = refusal {
             (refusal_notice(refusal))
         }
-        table.list.dashboards {
-            thead {
-                tr {
-                    th scope="col" { "Dashboard" }
-                    th scope="col" class="num" { "Charts" }
-                    th scope="col" class="c-act" aria-label="Order" {}
-                }
+        @if rows.is_empty() {
+            div.empty {
+                h2 { "No dashboard yet." }
+                p { "Add the first one below. It becomes a tab on Overview." }
             }
-            tbody {
-                @for (board, charts) in rows {
-                    tr data-dashboard-id=(board.id) {
-                        td { a href=(format!("/admin/dashboards/{}", board.id)) { (board.name) } }
-                        td.num { (charts) }
-                        td.act {
-                            (move_button(csrf, &format!("/admin/dashboards/{}/move", board.id), "up", "Move up"))
-                            (move_button(csrf, &format!("/admin/dashboards/{}/move", board.id), "down", "Move down"))
+        } @else {
+            table.list.dashboards {
+                thead {
+                    tr {
+                        th scope="col" { "Dashboard" }
+                        th scope="col" class="c-num num" { "Charts" }
+                        th scope="col" class="c-note" { span.sr-only { "Place" } }
+                        th scope="col" class="c-act" aria-label="Actions" {}
+                    }
+                }
+                tbody {
+                    @for (index, (board, charts)) in rows.iter().enumerate() {
+                        tr data-dashboard-id=(board.id) {
+                            td.lead { a.name href=(format!("/admin/dashboards/{}", board.id)) { (board.name) } }
+                            td.num.half { (charts) span.unit { " charts" } }
+                            td.half {
+                                @if index == 0 {
+                                    "Opens first on Overview"
+                                }
+                            }
+                            td.act.several {
+                                (move_pair(csrf, &format!("/admin/dashboards/{}/move", board.id), index == 0, index == last))
+                            }
                         }
                     }
                 }
             }
         }
-        section.part id="add-dashboard" aria-labelledby="add-title" {
-            div.part-head {
-                h2 id="add-title" { "Add a dashboard" }
-                p { "A name of 1 to 80 characters. Dashboards are shared by every admin." }
-            }
-            div.part-body {
-                form.flow method="post" action="/admin/dashboards" {
-                    input type="hidden" name="csrf" value=(csrf);
-                    (name_field("dashboard-name", &name, error))
-                    div.form-actions {
-                        button type="submit" data-kind="primary" { "Create dashboard" }
+        @if full {
+            p.notice data-tone="warn" { (format!("{DASHBOARD_LIMIT} of {DASHBOARD_LIMIT} dashboards exist. Delete one to add another.")) }
+        } @else {
+            section.part id="add" aria-labelledby="add-title" {
+                div.part-head {
+                    h2 id="add-title" { "Add a dashboard" }
+                    p { "It starts empty and becomes the last tab. " span.nowrap { (rows.len()) " of " (DASHBOARD_LIMIT) } " dashboards exist." }
+                }
+                div.part-body {
+                    form.flow method="post" action="/admin/dashboards" {
+                        input type="hidden" name="csrf" value=(csrf);
+                        div.fields {
+                            (name_field("dashboard-name", &name, error))
+                        }
+                        div.form-actions {
+                            button type="submit" data-kind="primary" { "Add dashboard" }
+                        }
                     }
                 }
             }
@@ -583,10 +609,13 @@ fn board_body(csrf: &str, view: &BoardView, refusal: Option<&Refusal>) -> Markup
     };
     html! {
         div.page-head {
+            p.crumb { a href="/admin/dashboards" { "Dashboards" } }
             h1 { (board.name) }
-            p.lede { "The charts below show on the Overview in this order." }
+            p.meta {
+                span { (view.charts.len()) " of " (CHART_LIMIT) " charts" }
+            }
             div.head-actions {
-                a.button data-kind="secondary" href=(format!("/admin?dashboard={}", board.id)) { "Show on the Overview" }
+                a.button data-kind="secondary" href=(format!("/admin?dashboard={}", board.id)) { "Open on Overview" }
             }
         }
         @if let Some(refusal) = refusal {
@@ -602,7 +631,7 @@ fn board_body(csrf: &str, view: &BoardView, refusal: Option<&Refusal>) -> Markup
                     input type="hidden" name="csrf" value=(csrf);
                     (name_field("dashboard-name", &name_value, name_error))
                     div.form-actions {
-                        button type="submit" data-kind="secondary" { "Rename" }
+                        button type="submit" data-kind="secondary" { "Save name" }
                     }
                 }
             }
@@ -614,28 +643,44 @@ fn board_body(csrf: &str, view: &BoardView, refusal: Option<&Refusal>) -> Markup
             }
             div.part-body {
                 @if view.charts.is_empty() {
-                    p.muted { "This dashboard has no charts yet." }
+                    div.empty {
+                        h2 { "This dashboard has no chart yet." }
+                        p { "Add the first one below." }
+                    }
                 } @else {
-                    table.list.chart-list {
+                    table.list.chartlist {
                         thead {
                             tr {
-                                th scope="col" { "Chart" }
-                                th scope="col" { "Shows" }
+                                th scope="col" class="c-title" { "Chart" }
+                                th scope="col" { "Counts" }
+                                th scope="col" class="c-shown" { "Shown as" }
                                 th scope="col" class="c-act" aria-label="Actions" {}
                             }
                         }
                         tbody {
-                            @for chart in &view.charts {
+                            @let last = view.charts.len().saturating_sub(1);
+                            @for (index, chart) in view.charts.iter().enumerate() {
                                 tr data-chart-id=(chart.id) {
-                                    td.lead { (chart.title) }
+                                    td.lead { a.name href=(format!("{base}?chart={}#chart", chart.id)) { (chart.title) } }
                                     td { (chart_words(&chart.spec)) }
-                                    td.act {
-                                        (move_button(csrf, &format!("{base}/charts/{}/move", chart.id), "up", "Move up"))
-                                        (move_button(csrf, &format!("{base}/charts/{}/move", chart.id), "down", "Move down"))
-                                        a href=(format!("{base}?chart={}#chart", chart.id)) { "Edit" }
-                                        form method="post" action=(format!("{base}/charts/{}/delete", chart.id)) {
-                                            input type="hidden" name="csrf" value=(csrf);
-                                            button.row-action type="submit" data-kind="danger" { "Delete chart" }
+                                    td.half { (shown_as(&chart.spec)) }
+                                    td.act.several {
+                                        div.row-actions {
+                                            form method="post" action=(format!("{base}/charts/{}/move", chart.id)) {
+                                                input type="hidden" name="csrf" value=(csrf);
+                                                button.row-action type="submit" name="direction" value="up" data-kind="secondary" disabled[index == 0] { "Move up" }
+                                                button.row-action type="submit" name="direction" value="down" data-kind="secondary" disabled[index == last] { "Move down" }
+                                            }
+                                            details.confirm.row-confirm data-confirm {
+                                                summary { "Delete chart" }
+                                                div.confirm-body {
+                                                    p { "Removes “" (chart.title) "” from this dashboard. This cannot be undone." }
+                                                    form method="post" action=(format!("{base}/charts/{}/delete", chart.id)) {
+                                                        input type="hidden" name="csrf" value=(csrf);
+                                                        button type="submit" data-kind="danger" { "Delete chart" }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -671,6 +716,11 @@ fn board_body(csrf: &str, view: &BoardView, refusal: Option<&Refusal>) -> Markup
     }
 }
 
+/// The shape and width of a chart in words, such as `Bars, full`.
+fn shown_as(spec: &ChartSpec) -> String {
+    format!("{}, {}", spec.shape.label(), spec.width.as_str())
+}
+
 /// One line of what a chart shows, in words.
 fn chart_words(spec: &ChartSpec) -> String {
     let grouping = match spec.group_by {
@@ -702,7 +752,7 @@ fn chart_form(
         None => format!("{base}/charts"),
     };
     let heading = if edit.is_some() {
-        "Edit chart"
+        "Edit a chart"
     } else {
         "Add a chart"
     };
@@ -782,7 +832,7 @@ fn chart_form(
                             select id="chart-server" name="server_id" aria-invalid=[ui::invalid(error("chart-server"))] {
                                 option value="" selected[draft.server_id.is_empty()] { "Any server" }
                                 @for server in servers {
-                                    option value=(server.id) selected[draft.server_id == server.id.to_string()] { (server.name) " (" (server.slug) ")" }
+                                    option value=(server.id) selected[draft.server_id == server.id.to_string()] { (server.slug) ", " (server.name) }
                                 }
                             }
                         }, ui::note_under(error("chart-server"), None)))
@@ -810,7 +860,7 @@ fn chart_form(
                     div.form-actions {
                         button type="submit" data-kind="primary" { (submit) }
                         @if edit.is_some() {
-                            a href=(base) { "Cancel" }
+                            a.button data-kind="secondary" href=(format!("{base}#chart")) { "Cancel" }
                         }
                     }
                 }
@@ -862,13 +912,15 @@ fn name_field(id: &str, value: &str, error: Option<&str>) -> Markup {
     )
 }
 
-/// A button that posts a direction to an order action.
-fn move_button(csrf: &str, action: &str, direction: &str, label: &str) -> Markup {
+/// The Move up and Move down buttons of one row, in one form; the end of the list cannot move.
+fn move_pair(csrf: &str, action: &str, first: bool, last: bool) -> Markup {
     html! {
-        form.inline method="post" action=(action) {
-            input type="hidden" name="csrf" value=(csrf);
-            input type="hidden" name="direction" value=(direction);
-            button type="submit" data-kind="secondary" { (label) }
+        div.row-actions {
+            form method="post" action=(action) {
+                input type="hidden" name="csrf" value=(csrf);
+                button.row-action type="submit" name="direction" value="up" data-kind="secondary" disabled[first] { "Move up" }
+                button.row-action type="submit" name="direction" value="down" data-kind="secondary" disabled[last] { "Move down" }
+            }
         }
     }
 }
@@ -925,49 +977,81 @@ struct Overview {
 }
 
 fn overview_markup(view: &Overview) -> Markup {
+    let chosen = view
+        .selected
+        .and_then(|id| view.boards.iter().find(|board| board.id == id));
     html! {
-        section.block.dashboards data-dashboards aria-labelledby="dashboards-title" {
-            div.block-head {
-                h2 id="dashboards-title" { "Dashboards" }
-                a href="/admin/dashboards" { "All dashboards" }
-            }
+        section.dash aria-labelledby="dash-title" {
             @if view.boards.is_empty() {
-                p.muted {
-                    "There are no dashboards yet. "
-                    a href="/admin/dashboards" { "Make one on the dashboards page." }
+                div.empty {
+                    h2 id="dash-title" { "No dashboard yet." }
+                    p { "A dashboard is a page of charts drawn from Activity. " a href="/admin/dashboards#add" { "Add a dashboard" } "." }
                 }
-            } @else {
-                div.dashboard-tabs role="group" aria-label="Dashboards" {
-                    @for board in &view.boards {
-                        a href=(overview_href(Some(board.id), view.period)) data-current=(current(view.selected == Some(board.id))) {
-                            (board.name)
+            } @else if let Some(board) = chosen {
+                div.dash-head {
+                    @if view.boards.len() > 1 {
+                        h2.sr-only id="dash-title" { "Dashboard: " (board.name) }
+                        nav.tabs aria-label="Dashboards" {
+                            ul {
+                                @for tab in &view.boards {
+                                    @let current = view.selected == Some(tab.id);
+                                    li {
+                                        a href=(overview_href(Some(tab.id), view.period))
+                                            aria-current=[current.then_some("page")]
+                                            title=[(tab.name.chars().count() > 28).then_some(tab.name.as_str())] {
+                                            @if current {
+                                                span.tab-mark aria-hidden="true" {}
+                                            }
+                                            span.tab-label { (tab.name) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } @else {
+                        h2.dash-title id="dash-title" { (board.name) }
+                    }
+                    nav.period aria-label="Period of every chart" {
+                        ul {
+                            li {
+                                a href=(overview_href(Some(board.id), None)) aria-current=[view.period.is_none().then_some("true")] {
+                                    @if view.period.is_none() {
+                                        span.period-mark aria-hidden="true" {}
+                                    }
+                                    "Per chart"
+                                }
+                            }
+                            @for (period, label) in [(Period::H24, "24h"), (Period::D7, "7d"), (Period::D30, "30d"), (Period::D90, "90d")] {
+                                li {
+                                    a href=(overview_href(Some(board.id), Some(period))) aria-current=[(view.period == Some(period)).then_some("true")] {
+                                        @if view.period == Some(period) {
+                                            span.period-mark aria-hidden="true" {}
+                                        }
+                                        (label)
+                                    }
+                                }
+                            }
                         }
                     }
-                }
-                div.period-switch role="group" aria-label="Period" {
-                    @for (period, label) in [(Period::H24, "24 hours"), (Period::D7, "7 days"), (Period::D30, "30 days"), (Period::D90, "90 days")] {
-                        a href=(overview_href(view.selected, Some(period))) data-current=(current(view.period == Some(period))) { (label) }
-                    }
-                    a href=(overview_href(view.selected, None)) data-current=(current(view.period.is_none())) { "Per chart" }
-                }
-                @if let Some(id) = view.selected {
-                    p.dashboard-edit {
-                        a href=(format!("/admin/dashboards/{id}")) { "Edit dashboard" }
+                    p.dash-edit {
+                        a href=(format!("/admin/dashboards/{}", board.id)) { "Edit dashboard" }
                     }
                 }
-                div.charts {
-                    @for shown in &view.charts {
-                        (figure::chart_section(shown.stored.id, &shown.stored.spec, &shown.stored.title, shown.period, &shown.series))
+                @if view.charts.is_empty() {
+                    div.empty {
+                        h2 { "This dashboard has no chart yet." }
+                        p { a href=(format!("/admin/dashboards/{}#chart", board.id)) { "Add a chart" } "." }
+                    }
+                } @else {
+                    div.charts {
+                        @for shown in &view.charts {
+                            (figure::chart_section(shown.stored.id, &shown.stored.spec, &shown.stored.title, shown.period, &shown.series))
+                        }
                     }
                 }
             }
         }
     }
-}
-
-/// The value of a switch's `data-current`: yes on the link of the shown dashboard or period.
-fn current(on: bool) -> &'static str {
-    if on { "yes" } else { "no" }
 }
 
 /// The Overview's path with the dashboard and the period switch as query keys.

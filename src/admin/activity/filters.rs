@@ -12,7 +12,8 @@ pub const TOOL_ERROR: &str = "the tool reported an error";
 const DAY: i64 = 86_400;
 
 /// The keys of the event filter with their labels, in the order the form lists them.
-pub const EVENTS: [(&str, &str); 10] = [
+pub const EVENTS: [(&str, &str); 11] = [
+    ("tool_any", "Any tool call"),
     ("tool_call", "Tool call"),
     ("tool_refused", "Tool call refused"),
     ("tool_failed", "Tool call failed"),
@@ -251,6 +252,7 @@ fn event_condition(scope: &mut Criteria, key: &str) {
             "kind = 'tool_call' AND decision <> 'deny' AND outcome = 'ok' AND detail <> ?",
             vec![text(TOOL_ERROR)],
         ),
+        "tool_any" => ("kind = 'tool_call'", Vec::new()),
         "tool_refused" => ("kind = 'tool_call' AND decision = 'deny'", Vec::new()),
         "tool_failed" => (
             "kind = 'tool_call' AND decision <> 'deny' AND (outcome <> 'ok' OR detail = ?)",

@@ -567,7 +567,17 @@ async fn every_event_key_selects_its_kinds() {
         ],
     );
 
-    let expectations: [Expectation<'static>; 10] = [
+    let expectations: [Expectation<'static>; 11] = [
+        (
+            "tool_any",
+            vec![
+                "e-tool_call",
+                "e-tool_error_marker",
+                "e-tool_failed",
+                "e-tool_refused",
+            ],
+            vec![("demo", "delete_db"), ("demo", "echo"), ("errors", "echo")],
+        ),
         ("tool_call", vec!["e-tool_call"], vec![("demo", "echo")]),
         (
             "tool_refused",
@@ -643,8 +653,8 @@ async fn a_value_that_names_nothing_shows_nothing() {
         assert_eq!(page.status, 200, "{filter} must answer 200");
         assert_eq!(page.count("tr[data-kind]"), 0, "{filter} must show no row");
         assert!(
-            page.body.contains("No activity matches."),
-            "{filter} must say No activity matches."
+            page.body.contains("No activity matches these filters."),
+            "{filter} must say No activity matches these filters."
         );
     }
 
@@ -938,15 +948,25 @@ async fn clear_filters_shows_only_while_a_filter_is_active() {
         "the link reads Clear filters"
     );
     assert_eq!(
-        page.count("ul#active-filters li"),
+        page.count("ul#active-filters li[data-filter]"),
         1,
         "one chip per active filter"
     );
+    let chip = r#"ul#active-filters li[data-filter="tool"] a.chip"#;
     assert_eq!(
-        page.text(r#"ul#active-filters li[data-filter="tool"]"#)
-            .as_deref(),
-        Some("Tool: s-echo Remove"),
-        "the chip names the filter and its value, then its Remove link"
+        page.text(&format!("{chip} .chip-key")).as_deref(),
+        Some("Tool"),
+        "the chip names its filter"
+    );
+    assert_eq!(
+        page.text(&format!("{chip} .chip-value")).as_deref(),
+        Some("s-echo"),
+        "the chip shows its value"
+    );
+    assert_eq!(
+        page.text(&format!("{chip} .sr-only")).as_deref(),
+        Some("Remove this filter"),
+        "the chip is a link that removes the filter"
     );
 }
 
@@ -983,8 +1003,8 @@ async fn the_count_line_counts_the_filtered_rows() {
         "no match means no count line"
     );
     assert!(
-        page.body.contains("No activity matches."),
-        "no match must say No activity matches."
+        page.body.contains("No activity matches these filters."),
+        "no match must say No activity matches these filters."
     );
 }
 
@@ -1107,14 +1127,20 @@ async fn the_filter_form_reflects_the_query_and_labels_every_control() {
         vec!["Filter".to_string()],
         "the form must hold one button reading Filter"
     );
+    assert_eq!(
+        page.text(r#"select#filter-event option[value="tool_any"]"#)
+            .as_deref(),
+        Some("Any tool call"),
+        "the event select lists tool_any as Any tool call"
+    );
 
     let href = page
         .attr("a#export-csv", "href")
         .expect("the page must link to the export");
     assert_eq!(
         page.text("a#export-csv").as_deref(),
-        Some("Export CSV"),
-        "the export link reads Export CSV"
+        Some("Export all as CSV"),
+        "the export link reads Export all as CSV"
     );
     let url = Url::parse(&format!("http://127.0.0.1{href}")).expect("the export link is a path");
     assert_eq!(
@@ -1148,4 +1174,165 @@ async fn the_filter_form_reflects_the_query_and_labels_every_control() {
         values_of(&pairs, "page").is_empty(),
         "the export link holds no page"
     );
+}
+
+/// The position of each id in the page, so the order of the controls can be checked.
+fn positions(page: &Page, ids: &[&str]) -> Vec<usize> {
+    ids.iter()
+        .map(|id| {
+            page.body
+                .find(&format!("id=\"{id}\""))
+                .unwrap_or_else(|| panic!("the page holds {id}"))
+        })
+        .collect()
+}
+
+/// The stored name of the server with this slug.
+fn server_name(db: &Path, slug: &str) -> String {
+    let conn = Connection::open(db).expect("the gateway database opens");
+    conn.query_row(
+        "SELECT name FROM servers WHERE slug = ?1",
+        params![slug],
+        |row| row.get(0),
+    )
+    .expect("the server exists")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_filter_form_is_a_closed_details_and_the_server_never_opens_it() {
+    let w = world().await;
+    let (_alpha_up, alpha) = w.upstream("alpha", UpstreamOptions::default()).await;
+    let alpha_id = id(alpha);
+    for filter in ["", "q=ab&period=7d&event=tool_call"] {
+        let page = list(&w, filter).await;
+        assert_eq!(page.status, 200, "{filter:?} must answer 200");
+        assert_eq!(
+            page.count("details.filter-panel"),
+            1,
+            "the filter form is one details"
+        );
+        assert_eq!(
+            page.count("details.filter-panel[open]"),
+            0,
+            "the server must not write open on the filter details ({filter:?})"
+        );
+        assert_eq!(
+            page.count("details.filter-panel > summary > .filter-open"),
+            1,
+            "the details has its summary control"
+        );
+        assert_eq!(
+            page.count(&format!("details.filter-panel {FORM}")),
+            1,
+            "the form sits inside the details"
+        );
+    }
+    let set = list(&w, &format!("server={alpha_id}")).await;
+    assert_eq!(
+        set.attr("details.filter-panel .f-server select", "name")
+            .as_deref(),
+        Some("server"),
+        "the server field sits in the form"
+    );
+    assert_eq!(
+        set.count("details.filter-panel > summary .count"),
+        1,
+        "the summary holds the count of set filters"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn from_and_to_follow_period_in_the_markup_order() {
+    let w = world().await;
+    let page = list(&w, "period=custom&from=2030-01-05&to=2030-01-06").await;
+    let found = positions(
+        &page,
+        &[
+            "filter-q",
+            "filter-tool",
+            "filter-client",
+            "filter-period",
+            "filter-from",
+            "filter-to",
+            "filter-event",
+            "filter-user",
+            "filter-server",
+        ],
+    );
+    assert!(
+        found.windows(2).all(|pair| pair[0] < pair[1]),
+        "the controls are in the order Search, Tool, Client, Period, From, To, Event, User, Server: {found:?}"
+    );
+    assert_eq!(
+        page.attr("input#filter-from", "aria-describedby")
+            .as_deref(),
+        Some("filter-from-hint"),
+        "the From hint is tied to its input"
+    );
+    assert_eq!(
+        page.text("p#filter-from-hint").as_deref(),
+        Some("UTC, both days included."),
+        "the From hint names the time zone"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn server_options_read_slug_first() {
+    let w = world().await;
+    let (_alpha_up, alpha) = w.upstream("alpha", UpstreamOptions::default()).await;
+    let alpha_id = id(alpha);
+    let name = server_name(&w.gw.db_path(), "alpha");
+    let page = list(&w, "").await;
+    assert_eq!(
+        page.text(&format!(
+            r#"select#filter-server option[value="{alpha_id}"]"#
+        ))
+        .as_deref(),
+        Some(format!("alpha, {name}").as_str()),
+        "a server option reads its slug, a comma, then its name"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_duration_is_written_with_a_thousands_comma() {
+    let w = world().await;
+    let bob = add_user(&w, BOB).await;
+    let (_alpha_up, alpha) = w.upstream("alpha", UpstreamOptions::default()).await;
+    insert(
+        &w.gw.db_path(),
+        &[call(
+            ago(60),
+            (bob, BOB),
+            (id(alpha), "alpha"),
+            "s-echo",
+            "claude",
+        )],
+    );
+    {
+        let conn = Connection::open(w.gw.db_path()).expect("the gateway database opens");
+        conn.execute(
+            "UPDATE activity SET duration_ms = 1869 WHERE id = (SELECT MAX(id) FROM activity)",
+            [],
+        )
+        .expect("a duration is set");
+    }
+    let page = list(&w, "tool=s-echo").await;
+    assert_eq!(
+        page.text("tr[data-kind] td.duration").as_deref(),
+        Some("1,869 ms"),
+        "a duration of 1869 ms reads 1,869 ms"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_activity_page_carries_no_script_and_no_style_attribute() {
+    let w = world().await;
+    let page = list(&w, "q=ab&period=7d").await;
+    let lower = page.body.to_ascii_lowercase();
+    for banned in ["<script", " style=", "<style"] {
+        assert!(
+            !lower.contains(banned),
+            "the page must not contain {banned}"
+        );
+    }
 }

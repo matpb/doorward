@@ -1,5 +1,5 @@
-//! One chart on the Overview: its heading, its caption and its figure, with the Data table of the same
-//! numbers. Each shape's markup is one function.
+//! One chart on the Overview: its figure with its caption, and the shape's markup. The numbers of
+//! a bars or line or ranked chart stand behind a closed Data disclosure.
 
 use form_urlencoded::Serializer;
 use maud::{Markup, html};
@@ -7,11 +7,13 @@ use maud::{Markup, html};
 use super::model::{ChartSpec, GroupBy, Metric, Period, Shape};
 use super::query::{Bucket, Category, Series};
 use super::svg;
+use crate::web::ui::{breakable, email, thousands};
 
 /// The sentence a chart with no activity in its period shows in place of its figure.
 pub const NO_ACTIVITY: &str = "No activity in this period.";
 
-/// The chart as one section: its heading, its caption, and its figure or the sentence that there is no activity.
+/// The chart as one figure: its title and caption, then its marks, or the sentence that there is no
+/// activity in its period.
 pub fn chart_section(
     id: i64,
     spec: &ChartSpec,
@@ -19,76 +21,109 @@ pub fn chart_section(
     period: Period,
     series: &Series,
 ) -> Markup {
+    let buckets = match series {
+        Series::Buckets(buckets) if !series.is_empty() => Some(buckets.len()),
+        _ => None,
+    };
+    let count = match series {
+        Series::Unused(tools) => Some(tools.len()),
+        _ => None,
+    };
     html! {
-        section.chart data-chart-id=(id) data-shape=(spec.shape.as_str()) data-width=(spec.width.as_str()) {
-            h3 { (title) }
-            p.chart-caption { (caption(spec, period)) }
-            @if series.is_empty() {
-                p.muted { (NO_ACTIVITY) }
-            } @else {
-                (figure(title, spec, period, series))
+        figure.chart id=(format!("chart-{id}")) data-chart=(id) data-shape=(spec.shape.as_str())
+            data-width=(spec.width.as_str()) data-tone=[tone(spec.metric)]
+            data-buckets=[buckets] {
+            figcaption {
+                h3 id=(format!("c{id}-title")) {
+                    (title)
+                    @if let Some(count) = count {
+                        " " span.count { (count) }
+                    }
+                }
+                p id=(format!("c{id}-caption")) { (caption(spec, period)) }
             }
+            (body(id, spec, title, period, series))
         }
     }
 }
 
-/// The caption: what the chart counts, the period in words, and how it is grouped.
-fn caption(spec: &ChartSpec, period: Period) -> String {
-    let mut parts = vec![spec.metric.caption().to_owned(), period.words().to_owned()];
-    match spec.group_by {
-        GroupBy::Time if period == Period::H24 => parts.push("per hour, UTC".to_owned()),
-        GroupBy::Time => parts.push("per day, UTC".to_owned()),
-        GroupBy::Nothing => {}
-        group => parts.push(format!(
-            "the top {} {}",
-            spec.top_n.unwrap_or_default(),
-            category_noun(group)
-        )),
-    }
-    format!("{}.", parts.join(", "))
-}
-
-fn category_noun(group: GroupBy) -> &'static str {
-    match group {
-        GroupBy::User => "users",
-        GroupBy::Server => "servers",
-        GroupBy::Tool => "tools",
-        _ => "clients",
-    }
-}
-
-/// The figure of a chart by its shape, with its Data table where the shape has one.
-fn figure(title: &str, spec: &ChartSpec, period: Period, series: &Series) -> Markup {
+/// The marks of a chart by its shape, or the sentence in place of them.
+fn body(id: i64, spec: &ChartSpec, title: &str, period: Period, series: &Series) -> Markup {
+    let unit = unit_words(spec.metric, true);
     match series {
+        Series::Unused(tools) if tools.is_empty() => html! {
+            p.chart-empty { "Every listed tool was called in this period." }
+        },
+        Series::Unused(tools) => unused_table(tools),
+        _ if series.is_empty() => html! { p.chart-empty { (NO_ACTIVITY) } },
         Series::Buckets(buckets) => match spec.shape {
-            Shape::Line => line_figure(title, buckets, period),
-            Shape::Bars => bars_figure(title, buckets, period),
-            _ => bucket_table(period, buckets),
+            Shape::Table => bucket_table(period, buckets),
+            shape => {
+                let hourly = period == Period::H24;
+                let line = shape == Shape::Line;
+                html! {
+                    (svg::time_svg(&svg::TimeChart { id, buckets, hourly, unit, line }))
+                    (data_details(title, bucket_head(period), &bucket_rows(buckets)))
+                }
+            }
         },
         Series::Ranked(categories) => match spec.shape {
             Shape::Table => category_table(spec.group_by, categories),
-            _ => ranked_figure(spec.group_by, categories),
+            _ => ranked_figure(title, spec.group_by, spec.metric, categories),
         },
         Series::Number(value) => number_figure(spec.metric, *value),
-        Series::Unused(tools) => unused_table(tools),
     }
 }
 
-fn line_figure(title: &str, buckets: &[Bucket], period: Period) -> Markup {
+/// The caption: the metric, the split, the limit and the period, in that order.
+fn caption(spec: &ChartSpec, period: Period) -> Markup {
+    let split = match spec.group_by {
+        GroupBy::Time if period == Period::H24 => " per hour",
+        GroupBy::Time => " per day",
+        GroupBy::Nothing => "",
+        GroupBy::User => " by user",
+        GroupBy::Server => " by server",
+        GroupBy::Tool => " by tool",
+        GroupBy::Client => " by client",
+    };
+    let limit = match spec.group_by {
+        GroupBy::Time | GroupBy::Nothing => String::new(),
+        _ => format!(", the top {}", spec.top_n.unwrap_or_default()),
+    };
     html! {
-        div.chart-figure {
-            (svg::line(title, buckets))
+        (spec.metric.caption()) (split) (limit) ", "
+        span.nowrap { (period.words()) }
+        @if spec.group_by == GroupBy::Time && period == Period::H24 {
+            " (UTC)"
         }
-        (data_details(bucket_head(period), &bucket_rows(buckets)))
+        "."
     }
 }
 
-fn bars_figure(title: &str, buckets: &[Bucket], period: Period) -> Markup {
-    html! {
-        div.chart-figure {
-            (svg::bars(title, buckets))
-        }
-        (data_details(bucket_head(period), &bucket_rows(buckets)))
+/// The tone of a figure: a refusal or a failure is drawn in the refusal colour.
+fn tone(metric: Metric) -> Option<&'static str> {
+    match metric {
+        Metric::Refused | Metric::Failed | Metric::SignInsRefused => Some("bad"),
+        _ => None,
+    }
+}
+
+/// The unit of a metric's value in words: singular when `plural` is false.
+fn unit_words(metric: Metric, plural: bool) -> &'static str {
+    match (metric, plural) {
+        (Metric::ActiveUsers, true) => "people",
+        (Metric::ActiveUsers, false) => "person",
+        (Metric::SignIns, true) => "sign-ins",
+        (Metric::SignIns, false) => "sign-in",
+        (Metric::SignInsRefused, true) => "sign-ins refused",
+        (Metric::SignInsRefused, false) => "sign-in refused",
+        (Metric::Refused, true) => "tool calls refused",
+        (Metric::Refused, false) => "tool call refused",
+        (Metric::Failed, true) => "tool calls failed",
+        (Metric::Failed, false) => "tool call failed",
+        (Metric::DurationMedian | Metric::DurationP95, _) => "ms",
+        (_, true) => "tool calls",
+        (_, false) => "tool call",
     }
 }
 
@@ -113,37 +148,89 @@ fn bucket_rows(buckets: &[Bucket]) -> Vec<(String, String)> {
             let value = bucket
                 .value
                 .map_or_else(|| "No value".to_owned(), thousands);
-            (bucket.label.clone(), value)
+            (svg::label_words(&bucket.label), value)
         })
         .collect()
 }
 
-/// The ranked list: each label links to the Activity rows behind it, its value, and a bar as wide as its share.
-fn ranked_figure(group: GroupBy, categories: &[Category]) -> Markup {
+/// The ranked list: each name links to the Activity rows behind it, with its value and a bar as wide
+/// as its share of the largest.
+fn ranked_figure(title: &str, group: GroupBy, metric: Metric, categories: &[Category]) -> Markup {
     let largest = categories
         .iter()
         .map(|category| category.value)
         .max()
         .unwrap_or(0);
+    let unit = unit_words(metric, true);
     html! {
         ol.ranked {
             @for category in categories {
                 li {
-                    a href=(activity_href(&category.link)) { (category.label) }
-                    span.rank-value { (thousands(category.value)) }
-                    svg.rank-bar viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true" focusable="false" {
-                        rect.rank-fill x="0" y="0" width=(svg::percent_width(category.value, largest)) height="8" {}
+                    (name(group, category))
+                    span.ranked-value { (thousands(category.value)) }
+                    svg.ranked-bar width="100%" height="4" aria-hidden="true" {
+                        rect width=(svg::share(category.value, largest)) height="4" {
+                            title { (category.label) ": " (thousands(category.value)) " " (unit) }
+                        }
                     }
                 }
             }
         }
-        (data_details(group_head(group), &category_rows(categories)))
+        (data_details(title, group_head(group), &category_rows(categories)))
     }
 }
 
-/// A ranked grouping as a plain table, the shape `table`.
+/// A category's name: a link to its rows when it has a key, else plain text. A tool is its server's
+/// slug and the tool, each in code.
+fn name(group: GroupBy, category: &Category) -> Markup {
+    let by = match group {
+        GroupBy::User => "user",
+        GroupBy::Server => "server",
+        GroupBy::Tool => "tool",
+        _ => "client",
+    };
+    let inner = match group {
+        GroupBy::Tool => {
+            let (slug, tool) = category
+                .label
+                .split_once(" / ")
+                .unwrap_or(("", &category.label));
+            html! { code { (slug) } code { (breakable(tool)) } }
+        }
+        GroupBy::Server => html! { code { (category.label) } },
+        GroupBy::User if category.label.contains('@') => email(&category.label),
+        _ => html! { (category.label) },
+    };
+    match &category.link {
+        Some(pairs) => html! {
+            a.ranked-name data-by=(by) href=(activity_href(pairs)) { (inner) }
+        },
+        None => html! {
+            span.ranked-name data-by=(by) { (inner) }
+        },
+    }
+}
+
+/// A ranked grouping as a table of its names and numbers, the shape `table`.
 fn category_table(group: GroupBy, categories: &[Category]) -> Markup {
-    data_table(group_head(group), &category_rows(categories))
+    html! {
+        table.figures {
+            thead {
+                tr {
+                    th scope="col" { (group_head(group)) }
+                    th scope="col" class="num" { "Value" }
+                }
+            }
+            tbody {
+                @for category in categories {
+                    tr {
+                        td { (name(group, category)) }
+                        td.num { (thousands(category.value)) }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn group_head(group: GroupBy) -> &'static str {
@@ -162,87 +249,41 @@ fn category_rows(categories: &[Category]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// One number with its unit: the count in words, or milliseconds for a duration.
+/// One number with its unit: the count in words, or milliseconds for a duration. A refusal's unit
+/// is the refusal tone's span.
 fn number_figure(metric: Metric, value: Option<i64>) -> Markup {
     let Some(value) = value else {
-        return html! { p.muted { (NO_ACTIVITY) } };
+        return html! { p.chart-empty { (NO_ACTIVITY) } };
     };
-    let unit = match metric {
-        Metric::DurationMedian | Metric::DurationP95 => "ms",
-        other => count_word(other, value),
-    };
+    let unit = unit_words(metric, value != 1);
     html! {
-        p.chart-number {
-            (thousands(value))
-            span.unit { " " (unit) }
-        }
-    }
-}
-
-/// The word after a count: singular at one, plural otherwise.
-fn count_word(metric: Metric, value: i64) -> &'static str {
-    let one = value == 1;
-    match metric {
-        Metric::ActiveUsers => {
-            if one {
-                "user"
-            } else {
-                "users"
-            }
-        }
-        Metric::SignIns => {
-            if one {
-                "sign-in"
-            } else {
-                "sign-ins"
-            }
-        }
-        Metric::SignInsRefused => {
-            if one {
-                "sign-in refused"
-            } else {
-                "sign-ins refused"
-            }
-        }
-        Metric::Refused => {
-            if one {
-                "call refused"
-            } else {
-                "calls refused"
-            }
-        }
-        Metric::Failed => {
-            if one {
-                "call failed"
-            } else {
-                "calls failed"
-            }
-        }
-        _ => {
-            if one {
-                "call"
-            } else {
-                "calls"
+        p.figure-number {
+            span.figure-value { (thousands(value)) }
+            " "
+            @if tone(metric).is_some() {
+                span.state data-tone="bad" { (unit) }
+            } @else {
+                span.figure-unit { (unit) }
             }
         }
     }
 }
 
-/// The tools with no call, as a plain table of server and tool.
+/// The tools with no call, grouped by server, as a table with no Data disclosure.
 fn unused_table(tools: &[(String, String)]) -> Markup {
     html! {
-        table.chart-table {
+        table.figures.unused {
             thead {
                 tr {
-                    th scope="col" { "Server" }
+                    th scope="col" class="c-server" { "Server" }
                     th scope="col" { "Tool" }
                 }
             }
             tbody {
                 @for (server, tool) in tools {
                     tr {
-                        td { (server) }
-                        td { (tool) }
+                        td { code { (server) } }
+                        td { code { (breakable(tool)) } }
                     }
                 }
             }
@@ -250,19 +291,23 @@ fn unused_table(tools: &[(String, String)]) -> Markup {
     }
 }
 
-/// The Data table in a closed disclosure under its chart.
-fn data_details(head: &str, rows: &[(String, String)]) -> Markup {
+/// The numbers of a chart in a closed disclosure under it.
+fn data_details(title: &str, head: &str, rows: &[(String, String)]) -> Markup {
     html! {
-        details.chart-data {
-            summary { "Data" }
-            (data_table(head, rows))
+        details.data {
+            summary {
+                span.data-open { "Data" span.chevron aria-hidden="true" {} }
+            }
+            div.data-body tabindex="0" role="group" aria-label=(format!("Data of {title}")) {
+                (data_table(head, rows))
+            }
         }
     }
 }
 
 fn data_table(head: &str, rows: &[(String, String)]) -> Markup {
     html! {
-        table.chart-table {
+        table.figures {
             thead {
                 tr {
                     th scope="col" { (head) }
@@ -272,7 +317,7 @@ fn data_table(head: &str, rows: &[(String, String)]) -> Markup {
             tbody {
                 @for (label, value) in rows {
                     tr {
-                        th scope="row" { (label) }
+                        td { (label) }
                         td.num { (value) }
                     }
                 }
@@ -288,22 +333,6 @@ fn activity_href(pairs: &[(&'static str, String)]) -> String {
         serializer.append_pair(key, value);
     }
     format!("/admin/activity?{}", serializer.finish())
-}
-
-/// A count with a thousands comma between each group of three digits, a minus sign first if negative.
-pub fn thousands(value: i64) -> String {
-    let digits = value.unsigned_abs().to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
-    if value < 0 {
-        out.push('-');
-    }
-    for (index, ch) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -327,14 +356,10 @@ mod tests {
     }
 
     #[test]
-    fn the_count_word_is_singular_at_one_only() {
-        assert_eq!(count_word(Metric::Calls, 1), "call");
-        assert_eq!(count_word(Metric::Calls, 2), "calls");
-        assert_eq!(count_word(Metric::SignInsRefused, 1), "sign-in refused");
-        assert_eq!(
-            count_word(Metric::ActiveUsers, 0),
-            "users",
-            "zero is plural"
-        );
+    fn the_unit_is_singular_at_one_only() {
+        assert_eq!(unit_words(Metric::Calls, false), "tool call");
+        assert_eq!(unit_words(Metric::Calls, true), "tool calls");
+        assert_eq!(unit_words(Metric::SignInsRefused, false), "sign-in refused");
+        assert_eq!(unit_words(Metric::ActiveUsers, true), "people");
     }
 }

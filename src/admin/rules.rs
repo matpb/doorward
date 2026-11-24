@@ -647,39 +647,45 @@ pub(super) fn server_picker(
 ) -> Markup {
     let note = ui::note_under(error, Some(PICKER_HINT));
     let described = note.describer("rule-server");
+    let in_force = picked.and_then(|id| servers.iter().find(|server| server.id == id));
     html! {
-        form.flow id="rule-pick-server" method="get" action=(action) {
-            div.fields {
-                (ui::field(
-                    "rule-server",
-                    "Server",
-                    false,
-                    html! {
-                        select id="rule-server" name="server" aria-invalid=[ui::invalid(error)] aria-describedby=[described.as_deref()] {
-                            @for server in servers {
-                                option value=(server.id) selected[picked == Some(server.id)] { (server.name) " (" (server.slug) ")" }
+        form.pick id="rule-pick-server" method="get" action=(action) data-form="rule-server" {
+            div.fields data-cols="2" {
+                div.field {
+                    label for="rule-server" { "Server" }
+                    select id="rule-server" name="server" aria-invalid=[ui::invalid(error)] aria-describedby=[described.as_deref()] {
+                        @for server in servers {
+                            option value=(server.id) selected[picked == Some(server.id)] { (server.slug) ", " (server.name) }
+                        }
+                    }
+                    (ui::note_markup("rule-server", note))
+                    @if let Some(server) = in_force {
+                        p.pick-pending {
+                            span.state data-tone="warn" {
+                                "Not applied yet: the rule below is still for " (server.name) ". Press “Show its tools”."
                             }
                         }
-                    },
-                    note,
-                ))
-            }
-            div.form-actions {
-                button type="submit" data-kind="secondary" formmethod="get" formaction=(action) formnovalidate name="show" value="tools" { "Show its tools" }
+                    }
+                }
+                div.field.field-go {
+                    button type="submit" data-kind="secondary" formmethod="get" formaction=(action) formnovalidate name="show" value="tools" { "Show its tools" }
+                }
             }
         }
     }
 }
 
-/// The server a rule takes, read-only: the rule form posts its id in a hidden field.
+/// The server a rule takes, read-only under the label "Rule is for": the rule form posts its id in a
+/// hidden field.
 pub(super) fn chosen_server(picked: Option<&ServerRef>) -> Markup {
     html! {
         div.field {
-            p {
+            span.label id="rule-server-label" { "Rule is for" }
+            p.static data-rule-server aria-labelledby="rule-server-label" {
                 @if let Some(server) = picked {
-                    "Server: " (server.name) " (" (server.slug) ")"
+                    (server.name) " " code { (server.slug) }
                 } @else {
-                    "Server: none yet."
+                    "No server yet."
                 }
             }
         }

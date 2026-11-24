@@ -436,13 +436,13 @@ async fn a_panel_page_holds_the_navigation_in_its_header() {
             shot.name
         );
         assert_eq!(
-            page.count("nav"),
+            page.count("nav:not(.tabs):not(.period)"),
             1,
             "{} must hold one nav, in its header",
             shot.name
         );
         assert_eq!(
-            page.count("main nav"),
+            page.count("main nav:not(.tabs):not(.period)"),
             0,
             "{} must keep no navigation inside main",
             shot.name
@@ -508,7 +508,18 @@ async fn the_current_section_is_marked_once() {
             shot.name
         );
         assert_eq!(
-            all(doc.root_element(), "a[aria-current]").len(),
+            all(doc.root_element(), "a[aria-current]")
+                .into_iter()
+                .filter(|link| {
+                    !link.ancestors().filter_map(ElementRef::wrap).any(|node| {
+                        node.value().attr("class").is_some_and(|class| {
+                            class
+                                .split_whitespace()
+                                .any(|c| c == "tabs" || c == "period")
+                        })
+                    })
+                })
+                .count(),
             1,
             "{} must hold exactly one link with aria-current",
             shot.name

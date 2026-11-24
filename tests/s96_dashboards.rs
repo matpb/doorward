@@ -931,7 +931,7 @@ async fn the_edit_link_shows_the_form_filled_with_that_chart() {
     assert_eq!(page.status, 200);
     assert_eq!(
         element_text(&page, "section#chart h2").as_deref(),
-        Some("Edit chart")
+        Some("Edit a chart")
     );
     assert_eq!(
         value_of(&page, "input#chart-title").as_deref(),
@@ -964,12 +964,12 @@ async fn the_delete_dashboard_action_sits_in_a_confirm_disclosure() {
     let w = World::start().await;
     let page = w.owner.get("/admin/dashboards/1").await;
     assert_eq!(
-        page.count("details.confirm[data-confirm]"),
+        page.count("details.confirm[data-confirm]:not(.row-confirm)"),
         1,
         "the dashboard's delete sits in one confirm disclosure"
     );
     let doc = Html::parse_document(&page.body);
-    let selector = Selector::parse("details.confirm form").expect("a selector");
+    let selector = Selector::parse("details.confirm:not(.row-confirm) form").expect("a selector");
     let actions: Vec<String> = doc
         .select(&selector)
         .filter_map(|form| form.value().attr("action").map(str::to_owned))
@@ -1054,5 +1054,123 @@ async fn a_dashboard_moves_past_its_neighbour_and_a_chart_can_be_deleted() {
     assert_eq!(
         count(&w, "SELECT COUNT(*) FROM charts WHERE dashboard_id = 1"),
         9
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn delete_chart_sits_in_a_confirm_disclosure_and_still_needs_its_csrf_post() {
+    let w = World::start().await;
+    let page = w.owner.get("/admin/dashboards/1").await;
+    let id = dashboard_id(&w, "Usage");
+    let first = chart_id_of(&w, "Tool calls over time");
+    let doc = Html::parse_document(&page.body);
+    let disclosures =
+        Selector::parse("details.confirm.row-confirm[data-confirm]").expect("a selector");
+    let summary = Selector::parse("summary").expect("a selector");
+    let form = Selector::parse("form").expect("a selector");
+    let input = Selector::parse(r#"input[name="csrf"]"#).expect("a selector");
+    let action = format!("/admin/dashboards/{id}/charts/{first}/delete");
+    let found: Vec<_> = doc
+        .select(&disclosures)
+        .filter(|details| {
+            details
+                .select(&summary)
+                .next()
+                .is_some_and(|s| s.text().collect::<String>() == "Delete chart")
+        })
+        .collect();
+    assert_eq!(
+        found.len(),
+        10,
+        "each of the ten charts has a Delete chart disclosure"
+    );
+    let target = found
+        .iter()
+        .find(|details| {
+            details
+                .select(&form)
+                .any(|f| f.value().attr("action") == Some(action.as_str()))
+        })
+        .expect("the first chart's disclosure holds its delete form");
+    let token = target
+        .select(&input)
+        .next()
+        .and_then(|field| field.value().attr("value"))
+        .expect("the delete form carries a csrf token");
+    assert!(!token.is_empty(), "the csrf token is not empty");
+    assert!(
+        target.value().attr("open").is_none(),
+        "the disclosure is closed on the page"
+    );
+    let before = count(&w, "SELECT COUNT(*) FROM charts");
+    let refused = w.owner.post(&action, &[]).await;
+    assert_eq!(
+        refused.status, 403,
+        "a delete without its csrf token is refused"
+    );
+    assert_eq!(
+        count(&w, "SELECT COUNT(*) FROM charts"),
+        before,
+        "nothing is deleted"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tab_longer_than_28_characters_carries_its_full_name_in_title() {
+    let w = World::start().await;
+    let owner = &w.owner;
+    let long = "Production database, by person and by tool, last 30 days";
+    assert!(
+        long.chars().count() > 28,
+        "the name is longer than 28 characters"
+    );
+    let created = create(owner, long).await;
+    assert_eq!(created.status, 303, "the long dashboard is created");
+    let page = owner.get("/admin").await;
+    assert_eq!(page.status, 200, "the Overview answers 200");
+    let doc = Html::parse_document(&page.body);
+    let tabs = Selector::parse("nav.tabs li a").expect("a selector");
+    let titles: Vec<(String, Option<String>)> = doc
+        .select(&tabs)
+        .map(|a| {
+            (
+                a.text().collect::<String>(),
+                a.value().attr("title").map(str::to_owned),
+            )
+        })
+        .collect();
+    let (_, title) = titles
+        .iter()
+        .find(|(text, _)| text.contains("Production database"))
+        .expect("the long tab is on the strip");
+    assert_eq!(
+        title.as_deref(),
+        Some(long),
+        "the long tab's title is the whole name"
+    );
+    let (_, short) = titles
+        .iter()
+        .find(|(text, _)| text == "Usage")
+        .expect("the Usage tab is on the strip");
+    assert_eq!(
+        short.as_deref(),
+        None,
+        "a name of 28 characters or fewer has no title"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_overview_dashboard_header_links_to_its_edit_page() {
+    let w = World::start().await;
+    let page = w.owner.get("/admin?dashboard=1").await;
+    assert_eq!(
+        page.attr(".dash-edit a", "href").as_deref(),
+        Some("/admin/dashboards/1"),
+        "Edit dashboard opens the dashboard's edit page"
+    );
+    assert_eq!(
+        page.text(".dash-edit a").as_deref(),
+        Some("Edit dashboard"),
+        "the header link reads Edit dashboard"
     );
 }

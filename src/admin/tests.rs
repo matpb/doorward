@@ -3562,8 +3562,13 @@ fn assert_rule_form_texts(body: &str, post_action: &str, server: &str) {
     );
     assert_eq!(
         chosen.as_deref(),
-        Some(format!("Server: {server} ({server})").as_str()),
+        Some(format!("{server} {server}").as_str()),
         "the chosen server is read-only text in the rule form"
+    );
+    assert_eq!(
+        text_of(body, "span#rule-server-label").as_deref(),
+        Some("Rule is for"),
+        "the chosen server is labelled Rule is for"
     );
 }
 
@@ -3690,6 +3695,42 @@ async fn the_invitation_rule_form_lists_only_the_tools_of_the_chosen_server() {
             suggestions(&page.body),
             ["alpha", "beta"],
             "{query:?} is not a server, so the first server's tools are listed"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_in_force_is_selected_and_its_pending_note_names_it() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let (demo, other) = two_servers(dir.path(), &mut owner).await;
+    let page = owner.get(&format!("/admin/rules?server={other}")).await;
+    assert_eq!(
+        picked(&page.body, "select#rule-server"),
+        vec![other.clone()],
+        "the option of the server in force carries selected"
+    );
+    assert_eq!(
+        text_of(&page.body, "form.pick p.pick-pending span.state").as_deref(),
+        Some("Not applied yet: the rule below is still for other. Press “Show its tools”."),
+        "the pending note names the server the rule is for"
+    );
+    assert_eq!(
+        elements(&page.body, "form.pick p.hint.pick-pending").len(),
+        0,
+        "the pending note is not a hint, so no control names it"
+    );
+    let default = owner.get("/admin/rules").await;
+    assert_eq!(
+        picked(&default.body, "select#rule-server"),
+        vec![demo.clone()],
+        "with no server named, the first server is the one in force"
+    );
+    let lower = page.body.to_ascii_lowercase();
+    for banned in ["<script", " style=", "<style"] {
+        assert!(
+            !lower.contains(banned),
+            "the rule form must not contain {banned}"
         );
     }
 }
@@ -4815,7 +4856,7 @@ async fn the_activity_pages_hold_fifty_rows_and_link_with_the_filters() {
         elements(&past, "tr[data-kind]").is_empty(),
         "a page past the end holds no rows"
     );
-    assert!(past.contains("No activity matches."));
+    assert!(past.contains("No activity matches these filters."));
     assert_eq!(
         attr_of(&past, r#"a[data-page-link="newer"]"#, "href").as_deref(),
         Some("/admin/activity?user=&server=&page=3")

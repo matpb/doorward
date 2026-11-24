@@ -249,6 +249,33 @@ impl Note<'_> {
     }
 }
 
+/// A count with a thousands comma between each group of three digits, a minus sign first if negative.
+pub fn thousands(value: i64) -> String {
+    let digits = value.unsigned_abs().to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
+    if value < 0 {
+        out.push('-');
+    }
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// One labelled field whose div also carries `classes`, as `field` does otherwise.
+pub fn field_in(classes: &str, id: &str, label: &str, control: Markup, note: Note<'_>) -> Markup {
+    html! {
+        div class=(format!("field {classes}")) {
+            label for=(id) { (label) }
+            (control)
+            (note_markup(id, note))
+        }
+    }
+}
+
 /// One labelled field: its label, then the control, then its note. `optional` adds "(optional)".
 /// The control names the note in aria-describedby.
 pub fn field(id: &str, label: &str, optional: bool, control: Markup, note: Note<'_>) -> Markup {
@@ -265,7 +292,7 @@ pub fn field(id: &str, label: &str, optional: bool, control: Markup, note: Note<
 }
 
 /// The note of a field as markup.
-fn note_markup(id: &str, note: Note<'_>) -> Markup {
+pub fn note_markup(id: &str, note: Note<'_>) -> Markup {
     match note {
         Note::None => html! {},
         Note::Hint(text) => hint(&format!("{id}-hint"), text),

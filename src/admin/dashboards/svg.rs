@@ -1,58 +1,270 @@
-//! Server-drawn SVG for time charts: bars, or one step area when a bucket is too narrow for a bar,
-//! and lines. Marks carry titles; colours come from classes in the stylesheet, never from styles.
+//! Server-drawn geometry of the time charts and of the ranked bars. The outer svg of a time chart has
+//! no viewBox, so a unit is a CSS pixel: across the plot positions are percentages, down it pixels.
 
 use maud::{Markup, html};
 
 use super::query::Bucket;
+use crate::web::ui::thousands;
 
-const WIDTH: f64 = 560.0;
-const HEIGHT: f64 = 220.0;
-const LEFT: f64 = 48.0;
-const RIGHT: f64 = 12.0;
-const TOP: f64 = 12.0;
-const BOTTOM: f64 = 40.0;
-const PLOT_WIDTH: f64 = WIDTH - LEFT - RIGHT;
-const PLOT_HEIGHT: f64 = HEIGHT - TOP - BOTTOM;
-const BASELINE: f64 = HEIGHT - BOTTOM;
-/// A bucket narrower than this at the nominal width is drawn as a step area instead of bars.
-const MIN_SLOT: f64 = 5.0;
-const MAX_GRIDLINES: i64 = 4;
-/// The most tick labels a chart writes along its axis.
-const MAX_TICKS: usize = 8;
+/// The plot runs from y 20 down to the baseline at y 164: 144 px.
+const PLOT_TOP: i64 = 20;
+const PLOT_HEIGHT: i64 = 144;
+const BASELINE: i64 = 164;
+const DATE_Y: i64 = 182;
+/// From this many buckets the bars are drawn a second time as one step outline.
+const STEP_FROM: usize = 32;
+/// A line tick this close to an edge of the plot hangs inwards; a tick within NEAR_EDGE of it is near.
+const EDGE: f64 = 0.04;
+const NEAR_EDGE: f64 = 0.24;
 
-/// The gridline step and the top of the value scale: the smallest 1, 2 or 5 times a power of ten
-/// that leaves at most four gridlines, so the scale starts at zero and ends on a whole gridline.
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// One time chart: its id (its caption is `c{id}-caption`), its buckets, whether they are hours, the
+/// unit of a value in words, and whether it is drawn as a line rather than bars.
+pub struct TimeChart<'a> {
+    pub id: i64,
+    pub buckets: &'a [Bucket],
+    pub hourly: bool,
+    pub unit: &'a str,
+    pub line: bool,
+}
+
+/// The step and the number of steps of a scale: the smallest whole step covering `max` in two to
+/// four steps. The top of the scale is their product.
 pub fn nice_scale(max: i64) -> (i64, i64) {
-    if max <= 0 {
-        return (1, 1);
-    }
-    let mut magnitude: i128 = 1;
+    let max = i128::from(max.max(1));
+    let mut unit: i128 = 1;
     loop {
-        for multiple in [1, 2, 5] {
-            let step = magnitude * multiple;
-            let lines = (i128::from(max) + step - 1) / step;
-            if lines <= i128::from(MAX_GRIDLINES) {
-                let top = lines * step;
-                return (
-                    i64::try_from(step).unwrap_or(i64::MAX),
-                    i64::try_from(top).unwrap_or(i64::MAX),
-                );
+        let mut candidates = vec![unit, unit * 2];
+        if unit % 2 == 0 {
+            candidates.push(unit * 5 / 2);
+        }
+        candidates.push(unit * 5);
+        for step in candidates {
+            let steps = (max + step - 1) / step;
+            if steps <= 4 {
+                return (step as i64, steps.max(2) as i64);
             }
         }
-        magnitude *= 10;
+        unit *= 10;
     }
 }
 
-/// The width of a ranked bar as a percentage of the largest value, to one decimal place.
-pub fn percent_width(value: i64, max: i64) -> String {
-    if max <= 0 {
-        return "0.0%".to_owned();
-    }
-    let share = value.clamp(0, max) as f64 * 100.0 / max as f64;
-    format!("{share:.1}%")
+/// A value's height above the baseline on a scale of `top`, in whole pixels.
+fn height(value: i64, top: i64) -> i64 {
+    (PLOT_HEIGHT as f64 * value as f64 / top as f64).round() as i64
 }
 
-/// The contiguous runs of buckets that have a value, each as (index, value) pairs.
+/// A scale figure: from 100,000 shortened to thousands, from a million to millions.
+fn scale_label(value: i64) -> String {
+    if value >= 1_000_000 {
+        let tenths = (value + 50_000) / 100_000;
+        if tenths % 10 == 0 {
+            format!("{}M", tenths / 10)
+        } else {
+            format!("{}.{}M", tenths / 10, tenths % 10)
+        }
+    } else if value >= 100_000 {
+        format!("{}k", (value + 500) / 1_000)
+    } else {
+        thousands(value)
+    }
+}
+
+/// The share of each slot a bar leaves empty on either side, by the number of buckets.
+fn inset(count: usize) -> f64 {
+    if count <= 12 {
+        0.2
+    } else if count <= 31 {
+        0.14
+    } else {
+        0.1
+    }
+}
+
+/// A fraction of the plot as a percentage with three decimals.
+fn percent(fraction: f64) -> String {
+    format!("{:.3}%", fraction * 100.0)
+}
+
+/// A bucket's day, and its hour when the chart is hourly.
+#[derive(Clone, Copy)]
+struct When {
+    days: i64,
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+}
+
+impl When {
+    /// A bucket label: `YYYY-MM-DD`, or `YYYY-MM-DD HH:MM` for an hour.
+    fn of(label: &str) -> Option<When> {
+        let (date, clock) = label.split_once(' ').unwrap_or((label, "0:0"));
+        let mut parts = date.split('-');
+        let year: i64 = parts.next()?.parse().ok()?;
+        let month: i64 = parts.next()?.parse().ok()?;
+        let day: i64 = parts.next()?.parse().ok()?;
+        let hour: i64 = clock.split(':').next()?.parse().ok()?;
+        Some(When {
+            days: days_from_civil(year, month, day),
+            year,
+            month,
+            day,
+            hour,
+        })
+    }
+
+    /// `18 Nov`.
+    fn short(self) -> String {
+        format!("{} {}", self.day, MONTHS[(self.month - 1) as usize])
+    }
+
+    /// `18 Nov 2026`.
+    fn full(self) -> String {
+        format!("{} {}", self.short(), self.year)
+    }
+
+    /// Whether the day is a Monday; 1970-01-01 was a Thursday.
+    fn monday(self) -> bool {
+        (self.days + 3).rem_euclid(7) == 0
+    }
+}
+
+/// The days since 1970-01-01 of a civil date.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// A bucket's label in words: `26 Dec 2029`, or `26 Dec 2029 13:00` for an hour.
+pub fn label_words(label: &str) -> String {
+    match label.split_once(' ') {
+        Some((_, clock)) => match When::of(label) {
+            Some(when) => format!("{} {clock}", when.full()),
+            None => label.to_owned(),
+        },
+        None => match When::of(label) {
+            Some(when) => when.full(),
+            None => label.to_owned(),
+        },
+    }
+}
+
+/// The title of a bucket's mark: its day or its hour, and its value in words.
+fn mark_title(bucket: &Bucket, hourly: bool, unit: &str) -> String {
+    let when_text = match When::of(&bucket.label) {
+        Some(when) if hourly => format!(
+            "{} {:02}:00 to {:02}:00 UTC",
+            when.full(),
+            when.hour,
+            (when.hour + 1) % 24
+        ),
+        Some(when) => when.full(),
+        None => bucket.label.clone(),
+    };
+    match bucket.value {
+        Some(value) => format!("{when_text}: {} {unit}", thousands(value)),
+        None => format!("{when_text}: no value"),
+    }
+}
+
+/// A date tick: the bucket it stands under, its label, and whether it is minor.
+struct Tick {
+    index: usize,
+    label: String,
+    minor: bool,
+}
+
+/// The ticks of a time chart: every sixth hour, midnight written as its day; every day of seven,
+/// every second one from the newest minor; Mondays up to 31 days; the first of each month beyond.
+fn ticks(buckets: &[Bucket], hourly: bool) -> Vec<Tick> {
+    let count = buckets.len();
+    let mut out = Vec::new();
+    for (index, bucket) in buckets.iter().enumerate() {
+        let Some(when) = When::of(&bucket.label) else {
+            continue;
+        };
+        if hourly {
+            if when.hour % 6 == 0 {
+                let label = if when.hour == 0 {
+                    when.short()
+                } else {
+                    format!("{:02}:00", when.hour)
+                };
+                out.push(Tick {
+                    index,
+                    label,
+                    minor: false,
+                });
+            }
+        } else if count == 7 {
+            let minor = (count - 1 - index) % 2 == 1;
+            out.push(Tick {
+                index,
+                label: when.short(),
+                minor,
+            });
+        } else if count <= 31 {
+            if when.monday() {
+                out.push(Tick {
+                    index,
+                    label: when.short(),
+                    minor: false,
+                });
+            }
+        } else if when.day == 1 {
+            out.push(Tick {
+                index,
+                label: when.short(),
+                minor: false,
+            });
+        }
+    }
+    out
+}
+
+/// The class of each line tick: an edge tick hangs inwards, and a tick near one is `near-edge`.
+fn tick_classes(positions: &[f64]) -> Vec<&'static str> {
+    let mut classes: Vec<&'static str> = positions
+        .iter()
+        .map(|x| {
+            if *x < EDGE {
+                "edge-start"
+            } else if *x > 1.0 - EDGE {
+                "edge-end"
+            } else {
+                ""
+            }
+        })
+        .collect();
+    for index in 0..positions.len() {
+        if classes[index].is_empty() {
+            continue;
+        }
+        for neighbour in [index.checked_sub(1), index.checked_add(1)]
+            .into_iter()
+            .flatten()
+        {
+            let near = positions
+                .get(neighbour)
+                .is_some_and(|x| (x - positions[index]).abs() < NEAR_EDGE);
+            if near && classes[neighbour].is_empty() {
+                classes[neighbour] = "near-edge";
+            }
+        }
+    }
+    classes
+}
+
+/// The runs of consecutive buckets that have a value, as (index, value) pairs.
 fn runs(buckets: &[Bucket]) -> Vec<Vec<(usize, i64)>> {
     let mut runs: Vec<Vec<(usize, i64)>> = Vec::new();
     let mut current: Vec<(usize, i64)> = Vec::new();
@@ -69,188 +281,152 @@ fn runs(buckets: &[Bucket]) -> Vec<Vec<(usize, i64)>> {
     runs
 }
 
-/// The geometry of one chart: its scale and the number of buckets across the plot.
-struct Plot {
-    top: i64,
-    step: i64,
-    count: usize,
+/// The outline of the step area in the nested svg's own units: a bucket's whole bar height, from
+/// the baseline up across its slot and back down at its right edge.
+fn step_points(buckets: &[Bucket], top: i64) -> String {
+    let count = buckets.len();
+    let mut points = vec![format!("0,{PLOT_HEIGHT}")];
+    for (index, bucket) in buckets.iter().enumerate() {
+        let bar = bucket
+            .value
+            .filter(|value| *value > 0)
+            .map_or(0, |value| height(value, top).max(1));
+        let y = PLOT_HEIGHT - bar;
+        points.push(format!("{index},{y}"));
+        points.push(format!("{},{y}", index + 1));
+    }
+    points.push(format!("{count},{PLOT_HEIGHT}"));
+    points.join(" ")
 }
 
-impl Plot {
-    fn new(buckets: &[Bucket]) -> Plot {
-        let max = buckets
-            .iter()
-            .filter_map(|bucket| bucket.value)
-            .max()
-            .unwrap_or(0);
-        let (step, top) = nice_scale(max);
-        Plot {
-            top,
-            step,
-            count: buckets.len(),
-        }
-    }
-
-    fn slot(&self) -> f64 {
-        PLOT_WIDTH / self.count as f64
-    }
-
-    /// The left edge of a bucket's slot.
-    fn left(&self, index: usize) -> f64 {
-        LEFT + self.slot() * index as f64
-    }
-
-    fn centre(&self, index: usize) -> f64 {
-        self.left(index) + self.slot() / 2.0
-    }
-
-    fn y(&self, value: i64) -> f64 {
-        BASELINE - PLOT_HEIGHT * value as f64 / self.top as f64
-    }
-
-    fn gridlines(&self) -> Vec<i64> {
-        (1..=self.top / self.step)
-            .map(|line| line * self.step)
-            .collect()
-    }
-}
-
-fn coordinate(value: f64) -> String {
-    format!("{value:.2}")
-}
-
-/// The time chart as bars: a bar per bucket with a value, or a step area when the buckets are narrow.
-pub fn bars(title: &str, buckets: &[Bucket]) -> Markup {
-    let plot = Plot::new(buckets);
-    let body = if plot.slot() >= MIN_SLOT {
-        bar_marks(&plot, buckets)
-    } else {
-        step_marks(&plot, buckets)
-    };
-    frame(title, &plot, buckets, body)
-}
-
-/// The time chart as a line, broken where a bucket has no value.
-pub fn line(title: &str, buckets: &[Bucket]) -> Markup {
-    let plot = Plot::new(buckets);
-    let body = html! {
-        @for run in runs(buckets) {
-            polyline.chart-line points=(points(run.iter().map(|(index, value)| (plot.centre(*index), plot.y(*value))))) {}
-        }
-        @for (index, bucket) in buckets.iter().enumerate() {
-            @if let Some(value) = bucket.value {
-                circle.chart-point cx=(coordinate(plot.centre(index))) cy=(coordinate(plot.y(value))) r="3" {
-                    title { (mark_title(bucket, value)) }
-                }
-            }
-        }
-    };
-    frame(title, &plot, buckets, body)
-}
-
-/// The title of a mark: its date and its exact value.
-fn mark_title(bucket: &Bucket, value: i64) -> String {
-    format!("{}: {}", bucket.label, super::figure::thousands(value))
-}
-
-fn points(points: impl Iterator<Item = (f64, f64)>) -> String {
-    points
-        .map(|(x, y)| format!("{},{}", coordinate(x), coordinate(y)))
+/// The line's points in the nested svg's units: each bucket's centre at its value.
+fn line_points(run: &[(usize, i64)], top: i64) -> String {
+    run.iter()
+        .map(|(index, value)| {
+            let y = PLOT_HEIGHT as f64 - PLOT_HEIGHT as f64 * *value as f64 / top as f64;
+            format!("{:.1},{:.1}", *index as f64 + 0.5, y)
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn bar_marks(plot: &Plot, buckets: &[Bucket]) -> Markup {
-    let width = plot.slot() * 0.7;
-    html! {
-        @for (index, bucket) in buckets.iter().enumerate() {
-            @if let Some(value) = bucket.value {
-                rect.chart-bar x=(coordinate(plot.centre(index) - width / 2.0)) y=(coordinate(plot.y(value)))
-                    width=(coordinate(width)) height=(coordinate(BASELINE - plot.y(value))) {
-                    title { (mark_title(bucket, value)) }
-                }
-            }
-        }
+/// The class of a date tick's group: its edge or near class, else `minor`, else none.
+fn tick_class(edge: &'static str, minor: bool) -> Option<&'static str> {
+    if !edge.is_empty() {
+        Some(edge)
+    } else if minor {
+        Some("minor")
+    } else {
+        None
     }
 }
 
-/// One step area per run of values, with a transparent mark over each bucket for its title.
-fn step_marks(plot: &Plot, buckets: &[Bucket]) -> Markup {
-    html! {
-        @for run in runs(buckets) {
-            polygon.chart-step points=(step_points(plot, &run)) {}
-        }
-        @for (index, bucket) in buckets.iter().enumerate() {
-            @if let Some(value) = bucket.value {
-                rect.chart-hit x=(coordinate(plot.left(index))) y=(coordinate(TOP))
-                    width=(coordinate(plot.slot())) height=(coordinate(PLOT_HEIGHT)) {
-                    title { (mark_title(bucket, value)) }
-                }
-            }
-        }
-    }
-}
-
-/// The outline of a step area: along the baseline, up to each bucket's value across its slot, and back.
-fn step_points(plot: &Plot, run: &[(usize, i64)]) -> String {
-    let (first, _) = run[0];
-    let (last, _) = run[run.len() - 1];
-    let mut outline = vec![(plot.left(first), BASELINE)];
-    for (index, value) in run {
-        outline.push((plot.left(*index), plot.y(*value)));
-        outline.push((plot.left(*index) + plot.slot(), plot.y(*value)));
-    }
-    outline.push((plot.left(last) + plot.slot(), BASELINE));
-    points(outline.into_iter())
-}
-
-/// The svg element: its title, the gridlines and their values, the baseline, the x tick labels and the marks.
-fn frame(title: &str, plot: &Plot, buckets: &[Bucket], body: Markup) -> Markup {
-    html! {
-        svg.chart-svg viewBox=(format!("0 0 {WIDTH} {HEIGHT}")) width="100%" role="img" {
-            title { (title) }
-            g.chart-grid {
-                @for value in plot.gridlines() {
-                    line x1=(coordinate(LEFT)) y1=(coordinate(plot.y(value))) x2=(coordinate(WIDTH - RIGHT)) y2=(coordinate(plot.y(value))) {}
-                }
-            }
-            line.chart-axis x1=(coordinate(LEFT)) y1=(coordinate(BASELINE)) x2=(coordinate(WIDTH - RIGHT)) y2=(coordinate(BASELINE)) {}
-            g {
-                @for value in std::iter::once(0).chain(plot.gridlines()) {
-                    text.chart-tick x=(coordinate(LEFT - 6.0)) y=(coordinate(plot.y(value) + 4.0)) text-anchor="end" {
-                        (super::figure::thousands(value))
-                    }
-                }
-            }
-            g {
-                @for (index, bucket) in tick_buckets(buckets) {
-                    text.chart-tick x=(coordinate(plot.centre(index))) y=(coordinate(BASELINE + 16.0)) text-anchor="middle" {
-                        (tick_label(bucket))
-                    }
-                }
-            }
-            (body)
-        }
-    }
-}
-
-/// The buckets that get an x tick label: every nth, so that at most eight labels are written.
-fn tick_buckets(buckets: &[Bucket]) -> Vec<(usize, &Bucket)> {
-    let every = buckets.len().div_ceil(MAX_TICKS).max(1);
+/// The largest value of the buckets, or zero.
+fn largest(buckets: &[Bucket]) -> i64 {
     buckets
         .iter()
-        .enumerate()
-        .filter(|(index, _)| index % every == 0)
-        .collect()
+        .filter_map(|bucket| bucket.value)
+        .max()
+        .unwrap_or(0)
 }
 
-/// A tick label: the clock of an hourly bucket, or the month and day of a daily one.
-fn tick_label(bucket: &Bucket) -> &str {
-    if let Some((_, clock)) = bucket.label.rsplit_once(' ') {
-        clock
+/// The svg of a time chart: the grid, the scale, the marks, the baseline and the date ticks.
+pub fn time_svg(chart: &TimeChart<'_>) -> Markup {
+    let buckets = chart.buckets;
+    let count = buckets.len();
+    let (step, steps) = nice_scale(largest(buckets));
+    let top = step * steps;
+    let grid: Vec<i64> = (1..=steps).map(|k| k * step).collect();
+    let inset = inset(count);
+    let bar_x = |index: usize| (index as f64 + inset) / count as f64;
+    let line_x = |index: usize| (index as f64 + 0.5) / count as f64;
+    let tick_list = ticks(buckets, chart.hourly);
+    let positions: Vec<f64> = tick_list
+        .iter()
+        .map(|tick| {
+            if chart.line {
+                line_x(tick.index)
+            } else {
+                bar_x(tick.index)
+            }
+        })
+        .collect();
+    let edges: Vec<&'static str> = if chart.line {
+        tick_classes(&positions)
     } else {
-        bucket.label.get(5..).unwrap_or(bucket.label.as_str())
+        vec![""; positions.len()]
+    };
+    let ticks_out: Vec<(&Tick, f64, Option<&'static str>)> = tick_list
+        .iter()
+        .zip(positions.iter().zip(edges.iter()))
+        .map(|(tick, (x, edge))| (tick, *x, tick_class(edge, tick.minor)))
+        .collect();
+    let grid_y: Vec<(i64, i64)> = grid
+        .iter()
+        .map(|value| (*value, BASELINE - height(*value, top)))
+        .collect();
+    let step_outline = !chart.line && count >= STEP_FROM;
+    let caption = format!("c{}-caption", chart.id);
+    let title = format!("c{}-title", chart.id);
+    html! {
+        svg.time width="100%" height="188" role="img" aria-labelledby=(format!("{title} {caption}")) {
+            g.grid {
+                @for (_, y) in &grid_y {
+                    line x1="0" x2="100%" y1=(format!("{y}.5")) y2=(format!("{y}.5")) {}
+                }
+            }
+            g.y aria-hidden="true" {
+                text x="100%" dx="48" y=(BASELINE + 4) { "0" }
+                @for (value, y) in &grid_y {
+                    text x="100%" dx="48" y=(y + 4) { (scale_label(*value)) }
+                }
+            }
+            g.marks {
+                @for (index, bucket) in buckets.iter().enumerate() {
+                    g {
+                        title { (mark_title(bucket, chart.hourly, chart.unit)) }
+                        rect.hit x=(percent(index as f64 / count as f64)) width=(percent(1.0 / count as f64)) y=(PLOT_TOP) height=(PLOT_HEIGHT) {}
+                        @if !chart.line {
+                            @if let Some(value) = bucket.value.filter(|value| *value > 0) {
+                                rect.bar x=(percent(bar_x(index))) width=(percent((1.0 - 2.0 * inset) / count as f64)) y=(BASELINE - height(value, top).max(1)) height=(height(value, top).max(1)) {}
+                            }
+                        }
+                    }
+                }
+            }
+            @if step_outline {
+                svg.area x="0" y=(PLOT_TOP) width="100%" height=(PLOT_HEIGHT) viewBox=(format!("0 0 {count} {PLOT_HEIGHT}")) preserveAspectRatio="none" aria-hidden="true" {
+                    polygon points=(step_points(buckets, top)) {}
+                }
+            }
+            @if chart.line {
+                svg.line x="0" y=(PLOT_TOP) width="100%" height=(PLOT_HEIGHT) viewBox=(format!("0 0 {count} {PLOT_HEIGHT}")) preserveAspectRatio="none" {
+                    @for run in runs(buckets) {
+                        polyline points=(line_points(&run, top)) {}
+                    }
+                }
+            }
+            line.base x1="0" x2="100%" y1="164.5" y2="164.5" {}
+            g.x aria-hidden="true" {
+                @for (tick, x, class) in &ticks_out {
+                    g class=[*class] {
+                        line x1=(percent(*x)) x2=(percent(*x)) y1="165" y2="169" {}
+                        text x=(percent(*x)) y=(DATE_Y) { (tick.label) }
+                    }
+                }
+            }
+        }
     }
+}
+
+/// A ranked row's share of the largest value, as a percentage with three decimals; a value above
+/// zero is never narrower than 0.4 %.
+pub fn share(value: i64, largest: i64) -> String {
+    if largest <= 0 {
+        return "0.000%".to_owned();
+    }
+    let fraction = (value as f64 / largest as f64 * 100.0).max(if value > 0 { 0.4 } else { 0.0 });
+    format!("{fraction:.3}%")
 }
 
 #[cfg(test)]
@@ -265,39 +441,48 @@ mod tests {
     }
 
     #[test]
-    fn the_scale_steps_by_one_two_or_five_with_at_most_four_gridlines() {
-        assert_eq!(
-            nice_scale(0),
-            (1, 1),
-            "nothing to scale: one gridline at one"
-        );
-        assert_eq!(nice_scale(4), (1, 4));
-        assert_eq!(
-            nice_scale(5),
-            (2, 6),
-            "a step of one would need five gridlines"
-        );
-        assert_eq!(nice_scale(7), (2, 8));
-        assert_eq!(nice_scale(1_000), (500, 1_000));
-        assert_eq!(nice_scale(1_001), (500, 1_500));
-        for max in [1, 3, 9, 11, 49, 51, 999, 12_345, 1_000_000] {
-            let (step, top) = nice_scale(max);
-            assert!(top >= max, "the top covers {max}");
-            assert!(
-                top / step <= MAX_GRIDLINES,
-                "at most four gridlines for {max}"
-            );
-            assert_eq!(top % step, 0, "the top is a gridline");
-        }
+    fn the_scale_is_the_smallest_whole_step_in_two_to_four_steps() {
+        assert_eq!(nice_scale(6_000), (2_000, 3));
+        assert_eq!(nice_scale(5_030), (2_000, 3));
+        assert_eq!(nice_scale(1), (1, 2));
+        assert_eq!(nice_scale(2_000), (500, 4));
     }
 
     #[test]
-    fn a_ranked_bar_is_its_share_of_the_largest_value_to_one_decimal() {
-        assert_eq!(percent_width(1, 3), "33.3%");
-        assert_eq!(percent_width(3, 3), "100.0%");
-        assert_eq!(percent_width(0, 5), "0.0%");
-        assert_eq!(percent_width(5, 0), "0.0%", "no largest value means no bar");
-        assert_eq!(percent_width(2, 3), "66.7%");
+    fn a_scale_figure_from_a_hundred_thousand_is_written_short() {
+        assert_eq!(scale_label(2_000), "2,000");
+        assert_eq!(scale_label(250_000), "250k");
+        assert_eq!(scale_label(1_200_000), "1.2M");
+    }
+
+    #[test]
+    fn a_label_counts_its_days_from_the_epoch_and_knows_a_monday() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert!(When::of("1970-01-05").expect("a day").monday());
+        assert_eq!(When::of("2026-11-18").expect("a day").short(), "18 Nov");
+    }
+
+    #[test]
+    fn a_mark_names_its_day_and_its_value_or_says_there_is_none() {
+        assert_eq!(
+            mark_title(&bucket("2026-11-18", Some(4_826)), false, "tool calls"),
+            "18 Nov 2026: 4,826 tool calls"
+        );
+        assert_eq!(
+            mark_title(&bucket("2026-11-24 13:00", Some(512)), true, "tool calls"),
+            "24 Nov 2026 13:00 to 14:00 UTC: 512 tool calls"
+        );
+        assert_eq!(
+            mark_title(&bucket("2026-11-18", None), false, "ms"),
+            "18 Nov 2026: no value"
+        );
+    }
+
+    #[test]
+    fn a_ranked_share_is_the_value_over_the_largest_and_never_under_0_4_percent() {
+        assert_eq!(share(50, 100), "50.000%");
+        assert_eq!(share(1, 1_000), "0.400%");
+        assert_eq!(share(0, 100), "0.000%");
     }
 
     #[test]
@@ -306,30 +491,7 @@ mod tests {
             bucket("a", Some(1)),
             bucket("b", None),
             bucket("c", Some(2)),
-            bucket("d", Some(3)),
-            bucket("e", None),
         ];
-        assert_eq!(runs(&buckets), vec![vec![(0, 1)], vec![(2, 2), (3, 3)]]);
-    }
-
-    #[test]
-    fn at_most_eight_tick_labels_are_written_and_they_are_the_clock_or_the_day() {
-        let daily: Vec<Bucket> = (0..90)
-            .map(|day| bucket(&format!("2029-10-{:02}", day % 28 + 1), Some(0)))
-            .collect();
-        let shown = tick_buckets(&daily);
-        assert!(shown.len() <= MAX_TICKS, "{} labels", shown.len());
-        assert_eq!(shown[0].0, 0);
-        assert_eq!(tick_label(&bucket("2029-12-31 23:00", None)), "23:00");
-        assert_eq!(tick_label(&bucket("2029-12-31", None)), "12-31");
-        assert_eq!(
-            tick_buckets(
-                &(0..24)
-                    .map(|hour| bucket("x", Some(hour)))
-                    .collect::<Vec<_>>()
-            )
-            .len(),
-            8
-        );
+        assert_eq!(runs(&buckets), vec![vec![(0, 1)], vec![(2, 2)]]);
     }
 }

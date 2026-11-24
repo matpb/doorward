@@ -2940,6 +2940,12 @@ those rows and the rows the harness writes (owner, invitations) do not disturb a
     holding the current value; `a#export-csv` links to the export with the same filters and no
     `page`.
 
+8. `every_event_key_selects_its_kinds` also reads `event=tool_any`: every `tool_call` row, let through,
+   refused or failed. `the_filter_form_is_a_closed_details_and_the_server_never_opens_it`: the filter
+   form is a `details.filter-panel` with no `open`. `from_and_to_follow_period_in_the_markup_order`,
+   `server_options_read_slug_first` (`slug, name`), `a_duration_is_written_with_a_thousands_comma`
+   (`1,869 ms`) and `the_activity_page_carries_no_script_and_no_style_attribute`.
+
 ## s95_activity_export.rs (statement 95)
 
 Seeded rows as in `s94_activity_filters.rs`. The 5000-row test writes 5200 rows straight into the
@@ -2969,6 +2975,11 @@ the table in the test.
    header line alone, and writes `exported activity (0 rows)`.
 10. `a_repeated_key_on_the_export_takes_its_first_value`: `period=24h&period=all` and `server` repeated
     answer `200` with the rows of the first value.
+
+- `delete_chart_sits_in_a_confirm_disclosure_and_still_needs_its_csrf_post`: each chart's Delete chart
+  is a `details.confirm.row-confirm` holding the delete form; a POST without the csrf token is 403 and
+  deletes nothing. `a_tab_longer_than_28_characters_carries_its_full_name_in_title`;
+  `the_overview_dashboard_header_links_to_its_edit_page`.
 
 ## s96_dashboards.rs (statement 96)
 
@@ -3005,6 +3016,11 @@ harness's own setup are left out of the comparisons.
     the last moved down change nothing.
 16. `a_dashboard_moves_past_its_neighbour_and_a_chart_can_be_deleted`: the order after a move, then
     a delete.
+
+- `ranked_links_of_every_call_metric_name_their_own_event`: `calls`, `refused`, `failed` and
+  `all_calls` rows link with `tool_call`, `tool_refused`, `tool_failed` and `tool_any`.
+  `ranked_links_lead_to_an_activity_page_with_the_same_count` also covers `all_calls` and the client
+  chart; the empty client row is plain text.
 
 ## s97_dashboard_charts.rs (statement 97)
 

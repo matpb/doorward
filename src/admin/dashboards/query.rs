@@ -25,7 +25,8 @@ pub struct Bucket {
 pub struct Category {
     pub label: String,
     pub value: i64,
-    pub link: Vec<(&'static str, String)>,
+    /// The Activity filters of the row; None when the row has no key to filter by.
+    pub link: Option<Vec<(&'static str, String)>>,
 }
 
 /// What a chart draws: time buckets, ranked categories, one number, or the unused tools.
@@ -100,16 +101,16 @@ fn event_of(metric: Metric) -> Option<&'static str> {
         Metric::Calls => Some("tool_call"),
         Metric::Refused => Some("tool_refused"),
         Metric::Failed => Some("tool_failed"),
+        Metric::AllCalls => Some("tool_any"),
         Metric::SignIns => Some("sign_in"),
         Metric::SignInsRefused => Some("sign_in_refused"),
         _ => None,
     }
 }
 
-/// The row class of a metric that is not one Activity event: every tool call, or the calls let through.
+/// The row class of a metric that is not one Activity event: the calls let through.
 fn class_of(metric: Metric) -> Option<&'static str> {
     match metric {
-        Metric::AllCalls => Some("kind = 'tool_call'"),
         Metric::ActiveUsers | Metric::DurationMedian | Metric::DurationP95 => {
             Some("kind = 'tool_call' AND decision <> 'deny'")
         }
@@ -360,7 +361,10 @@ fn link_of(
     id: Option<i64>,
     raw1: &str,
     raw2: &str,
-) -> rusqlite::Result<Vec<(&'static str, String)>> {
+) -> rusqlite::Result<Option<Vec<(&'static str, String)>>> {
+    if group == GroupBy::Client && raw1.is_empty() {
+        return Ok(None);
+    }
     let mut pairs: Vec<(&'static str, String)> = vec![("period", period.as_str().to_owned())];
     if let Some(event) = event_of(spec.metric) {
         pairs.push(("event", event.to_owned()));
@@ -395,13 +399,9 @@ fn link_of(
                 _ => add("q", raw2.to_owned()),
             }
         }
-        _ => {
-            if !raw1.is_empty() {
-                add("client", raw1.to_owned());
-            }
-        }
+        _ => add("client", raw1.to_owned()),
     }
-    Ok(pairs)
+    Ok(Some(pairs))
 }
 
 /// The tools of the server lists with no let-through call in the period, in server slug then catalog order.

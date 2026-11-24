@@ -497,7 +497,8 @@ M. Added for custom headers and per-user credentials
     and `q`, all combined with AND, and its paging and its Remove links keep the other filters. A
     value that names nothing matches no row: an unknown period or event, a custom period whose day
     is missing or not a date (the form then shows a field error), a `from` after `to`, a user or
-    server that is not an id. A repeated key takes its first value and is never refused. `q` is a
+    server that is not an id. `event=tool_any` matches every `tool_call` row, let through, refused or
+    failed. A repeated key takes its first value and is never refused. `q` is a
     substring of the user, server, tool, client and detail, with ASCII letters matched in either case,
     and `%`, `_` and `\` in it are literal. Proof: `tests/s94_activity_filters.rs` and the unit tests in
     `src/admin/activity/filters.rs`.
@@ -523,7 +524,8 @@ M. Added for custom headers and per-user credentials
     that dashboard over that period in place of the chart's own. Each chart counts the rows its
     Activity-page event and filters select, so a figure and the Activity page agree; a chart's Data
     table holds the numbers its figure draws; a ranked label links to the Activity page filtered to
-    it. A time chart has 24 hourly buckets, or one bucket per UTC day ending today. A duration
+    it, with the event of its metric (`tool_any` for all tool calls), so its count equals the bar's
+    value. A ranked row with no key (the empty client) is plain text, not a link. A time chart has 24 hourly buckets, or one bucket per UTC day ending today. A duration
     bucket with no tool call is a gap labelled `No value`, not zero. A ranked list is cut to its
     top count, with ties ordered by label. The server draws each chart as SVG with no script and no
     inline style, and every label is escaped. A repeated query key takes its first value. A
