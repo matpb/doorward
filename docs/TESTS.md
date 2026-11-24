@@ -2969,3 +2969,74 @@ the table in the test.
    header line alone, and writes `exported activity (0 rows)`.
 10. `a_repeated_key_on_the_export_takes_its_first_value`: `period=24h&period=all` and `server` repeated
     answer `200` with the rows of the first value.
+
+## s96_dashboards.rs (statement 96)
+
+Each test builds its own instance with the harness; the owner and an admin are the usual actors.
+Forms are posted with the csrf token the list or edit page holds. The admin_change rows of the
+harness's own setup are left out of the comparisons.
+
+1. `anonymous_is_redirected_and_a_plain_user_is_forbidden_on_every_route`: every dashboard route,
+   GET and POST, redirects an anonymous visitor to sign-in and answers a plain user `403`.
+2. `a_post_without_the_csrf_token_is_refused_and_stores_nothing`: the refused post writes no row.
+3. `an_admin_and_the_owner_create_rename_reorder_add_change_and_delete`: each action succeeds for
+   both roles and leaves the rows the action names.
+4. `another_admin_sees_and_edits_a_dashboard_made_by_one_admin`: shared, not per admin.
+5. `every_change_writes_its_admin_change_row`: the detail sequence of the admin_change rows matches
+   the actions in order, exactly.
+6. `the_name_is_trimmed_unique_and_1_to_80_characters`: surrounding spaces are removed; empty,
+   a duplicate and 81 characters are refused.
+7. `the_limits_are_20_dashboards_and_24_charts_per_dashboard`: the 21st dashboard and the 25th chart
+   are refused.
+8. `every_invalid_chart_combination_and_value_is_refused_and_stores_nothing`: 20 cases, each with
+   its exact field message.
+9. `a_refused_chart_form_comes_back_filled_with_the_field_error`: `400`, the posted values in the
+   form, and the message under the field.
+10. `a_chart_filtered_to_a_deleted_server_or_user_is_removed_with_it`: deleting the server or the user
+    deletes the charts that filter to it.
+11. `the_seeded_usage_dashboard_has_its_ten_charts_on_a_fresh_database`: the names and the order of
+    the ten seeded charts.
+12. `the_edit_link_shows_the_form_filled_with_that_chart`: `?chart={id}` fills the form.
+13. `the_delete_dashboard_action_sits_in_a_confirm_disclosure`: exactly one `details.confirm` with the
+    dashboard's delete form in it.
+14. `unknown_dashboards_and_charts_are_not_found`: `404` for an unknown id, a chart of another
+    dashboard and a non-number.
+15. `moving_a_chart_swaps_it_with_its_neighbour_and_stops_at_the_ends`: the first chart moved up and
+    the last moved down change nothing.
+16. `a_dashboard_moves_past_its_neighbour_and_a_chart_can_be_deleted`: the order after a move, then
+    a delete.
+
+## s97_dashboard_charts.rs (statement 97)
+
+Rows are written straight into the table with fixed times. The clock is 2030-01-01T00:00:00Z.
+Expected values are hand-computed from the rows the test writes. The Data table and the figure are
+read from the same page.
+
+1. `the_number_metrics_count_exactly_the_rows_their_class_names`: each number metric over a fixed
+   set of rows, including the refused, failed and duration cases.
+2. `ranked_categories_are_counted_ordered_and_labelled_exactly`: counts, order and labels.
+3. `ranked_links_lead_to_an_activity_page_with_the_same_count`: a link's Activity page holds the
+   same count as its label's value.
+4. `hourly_buckets_are_24_with_exact_boundaries_and_zero_fill`: 24 hourly buckets with their UTC
+   start times, and an empty hour is zero.
+5. `daily_buckets_are_n_utc_days_ending_today_with_exact_boundaries`: the day buckets end today in
+   UTC.
+6. `median_and_p95_are_nearest_rank_per_bucket_and_empty_buckets_are_gaps`: nearest-rank values per
+   bucket; a bucket with no call reads `No value`.
+7. `active_users_counts_distinct_users_in_each_bucket`: a user counted once per bucket.
+8. `ranked_lists_are_cut_to_top_n_with_ties_by_label`: five rows; the tie at one is ordered by label.
+9. `unused_tools_lists_catalog_tools_without_a_let_through_call_in_order`: the harness's default
+   catalog is cleared first; a refused call does not use a tool, a failed call does.
+10. `chart_filters_by_server_user_and_tool_restrict_the_rows`: each filter alone and together.
+11. `the_dashboard_period_overrides_every_chart_while_set`: `period` changes every chart's window.
+12. `the_data_table_numbers_equal_the_figure_titles`: each Data table row equals its figure's value.
+13. `hostile_labels_are_escaped_and_no_page_holds_a_script_or_a_style`: markup in a title or a
+    label is escaped; no page holds `script` or `style`.
+14. `overview_with_no_dashboards_has_a_note_and_a_link_and_keeps_its_counts`: the note, the link to
+    the dashboards page and the existing counts.
+15. `a_repeated_query_key_answers_200_and_takes_its_first_value`: `dashboard` and `period` repeated.
+16. `empty_data_says_no_activity_in_this_period`: each empty chart shows `No activity in this period.`.
+17. `the_overview_at_90_days_over_200000_rows_answers_in_under_three_seconds`: 200,000 rows, the
+    Overview at 90 days, under three seconds in the debug build.
+18. `the_edit_page_of_a_chart_with_a_server_filter_keeps_it_selected`: the edit form selects the
+    chart's server.

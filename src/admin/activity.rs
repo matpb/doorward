@@ -2,7 +2,7 @@
 //! active filters and the export link, and the newest rows the overview shows.
 
 mod export;
-mod filters;
+pub(super) mod filters;
 
 pub(super) use export::get_export;
 

@@ -37,6 +37,9 @@ Status: 1.1.0.
   who made it. The page filters the log by period, event, person, server, tool, client and
   text, and exports every row the filters match as CSV. Rows are kept for
   `limits.activity_days` (90 by default); the export is how to keep more than that.
+- **Dashboards.** Charts of the activity log, shared by every admin and the owner and shown on
+  the Overview. A new instance starts with a `Usage` dashboard of ten charts. Each figure has a
+  Data table with the same numbers, and the charts are drawn by the server with no script.
 - **Mail.** Raw SMTP, Resend or Mailgun, set from the admin panel.
 - **Both protocol generations.** The session form and the stateless form of MCP over HTTP
   are both served.

@@ -3182,3 +3182,82 @@ main {
     transform: none;
   }
 }
+
+/* ---------- Dashboards ---------- */
+
+.dashboard-tabs,
+.period-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin-block: var(--s3);
+}
+
+.dashboard-tabs [data-current="yes"],
+.period-switch [data-current="yes"] {
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.dashboards .c-act { inline-size: 160px; }
+.chart-list .c-act { inline-size: 260px; }
+
+.charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+  gap: var(--s4);
+}
+
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  min-inline-size: 0;
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r3);
+  background: var(--surface);
+}
+
+.chart[data-width="full"] { grid-column: 1 / -1; }
+.chart h3 { margin: 0; font-size: 1rem; }
+.chart-caption { margin: 0; color: var(--ink-2); font-size: 0.875rem; }
+.chart-figure { min-inline-size: 0; }
+.chart-svg { display: block; inline-size: 100%; block-size: auto; }
+.chart-grid { stroke: var(--line); stroke-width: 1; }
+.chart-axis { stroke: var(--line-strong); stroke-width: 1; }
+.chart-tick { fill: var(--ink-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart-line { fill: none; stroke: var(--ink); stroke-width: 2; stroke-linejoin: round; }
+.chart-point { fill: var(--ink); }
+.chart-bar { fill: var(--ink-2); }
+.chart-step { fill: var(--sunken); stroke: var(--ink-2); stroke-width: 1.5; }
+.chart-hit { fill: transparent; }
+
+.ranked {
+  display: grid;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ranked li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--s1) var(--s2);
+  align-items: baseline;
+}
+
+.rank-value { font-variant-numeric: tabular-nums; }
+.rank-bar { grid-column: 1 / -1; inline-size: 100%; block-size: 8px; background: var(--sunken); border-radius: var(--r1); }
+.rank-fill { fill: var(--ink-2); }
+
+.chart-number { margin: var(--s2) 0 0; font-size: 2rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.chart-number .unit { font-size: 0.875rem; font-weight: 400; color: var(--ink-2); }
+
+.chart-data > summary { cursor: pointer; color: var(--ink-2); font-size: 0.875rem; }
+.chart-table { border-collapse: collapse; inline-size: 100%; font-size: 0.875rem; }
+.chart-table th,
+.chart-table td { padding: var(--s1) var(--s2); border-block-end: 1px solid var(--line); text-align: start; }
+.chart-table .num { text-align: end; font-variant-numeric: tabular-nums; }

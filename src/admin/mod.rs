@@ -1,6 +1,7 @@
 //! The admin panel. One nested router behind the admin check; the mail routes add the owner check.
 
 mod activity;
+mod dashboards;
 mod invitation_plan;
 mod invitations;
 mod mail;
@@ -12,7 +13,7 @@ mod tests;
 mod users;
 
 use axum::Router;
-use axum::extract::{Request, State};
+use axum::extract::{RawQuery, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::Response;
@@ -38,6 +39,29 @@ pub fn router(state: AppState) -> Router<AppState> {
         .nest("/mail", owner_only)
         .route("/activity", get(activity::get_activity))
         .route("/activity.csv", get(activity::get_export))
+        .route(
+            "/dashboards",
+            get(dashboards::get_list).post(dashboards::post_create),
+        )
+        .route(
+            "/dashboards/{id}",
+            get(dashboards::get_board).post(dashboards::post_rename),
+        )
+        .route("/dashboards/{id}/delete", post(dashboards::post_delete))
+        .route("/dashboards/{id}/move", post(dashboards::post_move))
+        .route("/dashboards/{id}/charts", post(dashboards::post_chart_add))
+        .route(
+            "/dashboards/{id}/charts/{chart_id}",
+            post(dashboards::post_chart_update),
+        )
+        .route(
+            "/dashboards/{id}/charts/{chart_id}/delete",
+            post(dashboards::post_chart_delete),
+        )
+        .route(
+            "/dashboards/{id}/charts/{chart_id}/move",
+            post(dashboards::post_chart_move),
+        )
         .route(
             "/redirects",
             get(redirects::get_redirects).post(redirects::post_add),
@@ -99,7 +123,11 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route_layer(middleware::from_fn_with_state(state, require_admin))
 }
 
-async fn panel(viewer: Viewer, State(state): State<AppState>) -> Response {
+async fn panel(
+    viewer: Viewer,
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+) -> Response {
     let now = state.clock.now().unix_timestamp();
     let counted = state.db.call(move |conn| counts_in(conn, now)).await;
     let states = state.db.call(move |conn| states_in(conn, now)).await;
@@ -108,8 +136,9 @@ async fn panel(viewer: Viewer, State(state): State<AppState>) -> Response {
         .db
         .call(|conn| crate::servers::open_servers(conn))
         .await;
-    match (counted, states, latest, open) {
-        (Ok(counts), Ok(states), Ok(latest), Ok(open)) => page_with(
+    let boards = dashboards::overview(&state, query.as_deref()).await;
+    match (counted, states, latest, open, boards) {
+        (Ok(counts), Ok(states), Ok(latest), Ok(open), Ok(boards)) => page_with(
             StatusCode::OK,
             "admin",
             "Overview",
@@ -123,6 +152,7 @@ async fn panel(viewer: Viewer, State(state): State<AppState>) -> Response {
                 }
                 (open_alert(&open))
                 (counts_markup(&counts, &states, open.len()))
+                (boards)
                 section.block data-latest-activity aria-labelledby="latest-title" {
                     div.block-head {
                         h2 id="latest-title" { "Latest activity" }
@@ -132,9 +162,11 @@ async fn panel(viewer: Viewer, State(state): State<AppState>) -> Response {
                 }
             },
         ),
-        (Err(err), _, _, _) | (_, Err(err), _, _) | (_, _, Err(err), _) | (_, _, _, Err(err)) => {
-            internal_error("admin overview", &err)
-        }
+        (Err(err), _, _, _, _)
+        | (_, Err(err), _, _, _)
+        | (_, _, Err(err), _, _)
+        | (_, _, _, Err(err), _)
+        | (_, _, _, _, Err(err)) => internal_error("admin overview", &err),
     }
 }
 

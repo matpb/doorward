@@ -508,6 +508,27 @@ M. Added for custom headers and per-user credentials
     the export writes one `admin_change` row, `exported activity (N rows)`, that is not part of
     that export. An anonymous visitor is redirected to sign-in and a plain user gets 403. Proof:
     `tests/s95_activity_export.rs` and the unit tests in `src/admin/activity/export.rs`.
+96. Dashboards are stored in the database and shared. Every admin and the owner creates, renames,
+    reorders and deletes dashboards and their charts, and each change writes one `admin_change`
+    row. A plain user gets 403 on every dashboard route, POSTs included, and an anonymous visitor
+    is redirected to sign-in. A form post without the csrf token is refused and stores nothing. A
+    dashboard name is trimmed and is 1 to 80 characters, unique among the dashboards; there are at
+    most 20 dashboards and 24 charts on one. A chart's metric, grouping, shape, period, width,
+    server, user, tool and top count are closed lists or bounded values, and a combination the
+    builder cannot draw is refused with 400, stores nothing and shows the form again with its
+    refusal. A new database starts with one dashboard, `Usage`, of ten charts. Proof:
+    `tests/s96_dashboards.rs`.
+97. The Overview shows the dashboard named by the query key `dashboard`, or the first dashboard
+    when the key names none. The key `period` (`24h`, `7d`, `30d` or `90d`) draws every chart of
+    that dashboard over that period in place of the chart's own. Each chart counts the rows its
+    Activity-page event and filters select, so a figure and the Activity page agree; a chart's Data
+    table holds the numbers its figure draws; a ranked label links to the Activity page filtered to
+    it. A time chart has 24 hourly buckets, or one bucket per UTC day ending today. A duration
+    bucket with no tool call is a gap labelled `No value`, not zero. A ranked list is cut to its
+    top count, with ties ordered by label. The server draws each chart as SVG with no script and no
+    inline style, and every label is escaped. A repeated query key takes its first value. A
+    90-day Overview over 200,000 rows answers in under three seconds in the debug build. Proof:
+    `tests/s97_dashboard_charts.rs` and the unit tests in `src/admin/dashboards/`.
 
 ## Proof
 
@@ -588,6 +609,8 @@ into the test harness. In addition:
 - 89: `tests/s41_docs.rs`.
 - 90: `tests/s90_withheld.rs`, the updated tests of 83 in `tests/s80_custom_headers.rs` and
   `tests/s84_stored_values.rs`, and one run each with Claude Code and Codex.
+- 96: `tests/s96_dashboards.rs`. 97: `tests/s97_dashboard_charts.rs` and the unit tests in
+  `src/admin/dashboards/`.
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
   a walk-through of every page in a real browser at 390 px and desktop width in both
   themes, which also measures control heights and sideways scroll; screenshots kept under

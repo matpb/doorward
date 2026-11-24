@@ -341,6 +341,41 @@ writes `doorward: mail failure record failed: <error>`.
 Retention: the housekeeping run, at start and every ten minutes, deletes every activity
 row older than `activity_days` days, whatever its kind.
 
+### Dashboards
+
+Every route below is for the owner and admins; a plain user gets `403` and an anonymous visitor is
+redirected to sign-in. Every POST needs the csrf field and the same origin checks as the other forms.
+
+| Route | Fields | Outcome |
+|---|---|---|
+| `GET /admin` | `dashboard` (id), `period` (`24h`, `7d`, `30d` or `90d`) | the Overview's `section[data-dashboards]` sits between the counts and the latest activity: tabs `div.dashboard-tabs a` per dashboard, the period switch `div.period-switch` (its links keep the dashboard; `Per chart` clears `period`), the shown tab and period carry `data-current="yes"`, the others `data-current="no"`, and the charts of the named dashboard, or of the first one when the key names none or an unknown id. Each chart is `section.chart[data-chart-id]` with `h3` its title, `p.chart-caption`, and its figure: an SVG for `line` and `bars`, an `ol.ranked` for `ranked`, `p.chart-number` for `number`, a table for `table`; a `details.chart-data` holds the Data table of the same numbers. With no dashboard the section says so and links to `/admin/dashboards` |
+| `GET /admin/dashboards` | | `data-page="dashboards"`; `tr[data-dashboard-id]` rows in order with their chart counts, the move buttons, and `section#add-dashboard` |
+| `POST /admin/dashboards` | `name` | `303` to `/admin/dashboards/{id}`; `400` with the list page, `The dashboard was not added.` and the name sent back |
+| `GET /admin/dashboards/{id}` | `chart` (id, optional) | `data-page="dashboard"` with `#rename`, `#charts` (`tr[data-chart-id]` rows with Edit and Delete chart), `#chart` (the add form, or the edit form filled with the named chart) and `#delete`. `404` for an unknown dashboard, or a `chart` that is not one of its charts |
+| `POST /admin/dashboards/{id}` | `name` | renames; `303` to the dashboard; `400` with the page and `The dashboard was not renamed.` |
+| `POST /admin/dashboards/{id}/delete` | | deletes the dashboard and its charts; `303` to `/admin/dashboards`. The button sits in a `details.confirm[data-confirm]` |
+| `POST /admin/dashboards/{id}/move` | `direction` (`up` or `down`) | swaps the dashboard with its neighbour; `303`. Another value changes nothing |
+| `POST /admin/dashboards/{id}/charts` | the chart fields below | adds a chart; `303` to the dashboard; `400` with the page, `The chart was not added.` and the form filled |
+| `POST /admin/dashboards/{id}/charts/{chart_id}` | the chart fields below | saves a chart; `303`; `400` with `The chart was not saved.` |
+| `POST /admin/dashboards/{id}/charts/{chart_id}/delete` | | deletes the chart; `303` to the dashboard |
+| `POST /admin/dashboards/{id}/charts/{chart_id}/move` | `direction` (`up` or `down`) | swaps the chart with its neighbour; `303` to the dashboard |
+
+Chart fields: `title` (1 to 80 characters), `metric` (`calls`, `refused`, `failed`, `all_calls`,
+`active_users`, `sign_ins`, `sign_ins_refused`, `duration_median`, `duration_p95`, `unused_tools`),
+`group_by` (`time`, `user`, `server`, `tool`, `client`, `none`), `shape` (`line`, `bars`, `ranked`,
+`number`, `table`), `period` (`24h`, `7d`, `30d`, `90d`), `width` (`half`, `full`), `server_id` and
+`user_id` (empty for any, else an id of an existing server or user), `tool` (empty for any, else at
+most 128 characters), `top_n` (`5`, `10`, `20` or `50`, for ranked lists and category tables).
+Each refusal names its field: `chart-title`, `chart-metric`, `chart-group-by`, `chart-shape`,
+`chart-period`, `chart-width`, `chart-server`, `chart-user`, `chart-tool` or `chart-top`.
+
+Metrics: `calls` is the Activity page's tool-call event (let through, completed, no tool error);
+`refused` is `tool_refused`; `failed` is `tool_failed`; `all_calls` is every tool call. Each number
+and every category uses the same filters as the Activity page. `unused_tools` lists the tools of the
+server lists that have no let-through call in the chart's period, in server then position order.
+A ranked link opens the Activity page with that label's filter; `all_calls` and the empty client
+label have no single Activity filter, so their links do not reproduce the count.
+
 ## Authorization server
 
 The token, registration and discovery answers carry `X-Content-Type-Options: nosniff`.

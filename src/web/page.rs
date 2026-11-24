@@ -35,7 +35,9 @@ pub struct MainData<'a> {
 pub fn layout_of(kind: &str) -> &'static str {
     match kind {
         "admin" | "users" | "user" | "invitations" | "invitation-created" | "servers"
-        | "server" | "rules" | "redirects" | "mail" | "activity" => "panel",
+        | "server" | "rules" | "redirects" | "mail" | "activity" | "dashboards" | "dashboard" => {
+            "panel"
+        }
         "account" => "page",
         _ => "card",
     }
