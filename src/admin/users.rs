@@ -25,7 +25,7 @@ use super::panel_nav;
 const OWNER: &str = "owner";
 const OWNER_MESSAGE: &str = "The owner account cannot be changed this way.";
 const ROLE_MESSAGE: &str = "Choose the role admin or user.";
-const SERVER_MESSAGE: &str = "Choose only servers that exist.";
+pub(super) const SERVER_MESSAGE: &str = "Choose only servers that exist.";
 
 /// One user as the pages show it.
 struct User {
@@ -150,12 +150,7 @@ pub async fn post_servers(
     let Some(id) = parse_id(&id) else {
         return not_found();
     };
-    let ids = form
-        .fields
-        .all("server_id")
-        .iter()
-        .map(|value| parse_id(value))
-        .collect::<Option<Vec<i64>>>();
+    let ids = server_ids(&form);
     let now = state.clock.now().unix_timestamp();
     let verdict = state
         .db
@@ -237,6 +232,15 @@ async fn change(state: AppState, id: &str, form: VerifiedForm, action: Action) -
 /// An id from the path. Anything that is not a number is no user.
 pub(super) fn parse_id(text: &str) -> Option<i64> {
     text.parse::<i64>().ok()
+}
+
+/// The posted `server_id` values as ids; None when one of them is not a number.
+pub(super) fn server_ids(form: &VerifiedForm) -> Option<Vec<i64>> {
+    form.fields
+        .all("server_id")
+        .iter()
+        .map(|value| parse_id(value))
+        .collect::<Option<Vec<i64>>>()
 }
 
 fn user_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
@@ -656,7 +660,7 @@ fn user_body(
 }
 
 /// One server as a checkbox: its name, then its path in code; checked when the user may reach it.
-fn server_check(choice: &ServerChoice) -> Markup {
+pub(super) fn server_check(choice: &ServerChoice) -> Markup {
     let value = choice.id.to_string();
     let label = html! {
         span.check-name { (choice.name) }

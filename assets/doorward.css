@@ -2611,6 +2611,11 @@ body[data-layout="card"] main > .lede + .actions {
     white-space: normal;
   }
 
+  /* A row that has no servers reads "no servers" on a phone, mid-line after the role. */
+  .invitations .no-servers {
+    text-transform: lowercase;
+  }
+
   .list:not(.activity) td.half + td.half::before {
     content: "\00B7";
     margin-inline-end: var(--s2);

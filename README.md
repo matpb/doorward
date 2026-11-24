@@ -268,8 +268,10 @@ than a file, so keep it out of backups too.
 
 ## Give people access
 
-Invite a person from the invitations page of the admin panel (`/admin/invitations`). Assign
-servers to them from their page or from the server's page. An admin can do this for
+Invite a person from the invitations page of the admin panel (`/admin/invitations`). Tick the
+servers they should reach and add their personal rules on the invitation's page; these apply
+from their first sign-in, and nothing applies before the account exists. Assign servers to
+them later from their page or from the server's page. An admin can do this for
 anyone, the owner and other admins included; only the owner changes roles and mail
 settings. With no matching deny rule, every tool of an assigned server is allowed. Rules
 allow or deny all tools, one server, or one exact tool, for one person or for everyone.

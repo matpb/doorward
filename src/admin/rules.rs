@@ -18,23 +18,96 @@ use crate::web::{
 use super::panel_nav;
 use super::users::parse_id;
 
-const EFFECT: &str = "Choose the effect allow or deny.";
-const SCOPE: &str = "Choose the scope all tools, one server or one tool.";
+pub(super) const EFFECT: &str = "Choose the effect allow or deny.";
+pub(super) const SCOPE: &str = "Choose the scope all tools, one server or one tool.";
 const SUBJECT: &str = "Choose everyone or a user that exists.";
-const SERVER: &str = "A server or tool rule needs a server that exists.";
-const TOOL: &str = "A tool rule needs the tool name.";
-const UNLISTED: &str = "The server's tool list has no tool with that name.";
-const DUPLICATE: &str = "A rule for that subject and target already exists.";
+pub(super) const SERVER: &str = "A server or tool rule needs a server that exists.";
+pub(super) const TOOL: &str = "A tool rule needs the tool name.";
+pub(super) const UNLISTED: &str = "The server's tool list has no tool with that name.";
+pub(super) const DUPLICATE: &str = "A rule for that subject and target already exists.";
+
+/// The scope a rule covers: all tools, one server, or one tool of a server.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RuleScope {
+    All,
+    Server,
+    Tool,
+}
+
+/// The scope a posted value names; None for any other value.
+pub(super) fn scope_of(text: &str) -> Option<RuleScope> {
+    match text {
+        "all" => Some(RuleScope::All),
+        "server" => Some(RuleScope::Server),
+        "tool" => Some(RuleScope::Tool),
+        _ => None,
+    }
+}
+
+/// The effect a posted value names; None for any other value.
+pub(super) fn effect_of(text: &str) -> Option<&'static str> {
+    match text {
+        "allow" => Some("allow"),
+        "deny" => Some("deny"),
+        _ => None,
+    }
+}
+
+/// The server and tool a rule covers. Each is None when the scope does not name it.
+pub(super) struct Target {
+    pub(super) server_id: Option<i64>,
+    pub(super) tool: Option<String>,
+}
+
+/// Checks a posted target in the order server, tool name, tool list. A refusal is its message.
+pub(super) fn check_target(
+    conn: &Connection,
+    scope: RuleScope,
+    server_id: &str,
+    tool: &str,
+) -> rusqlite::Result<Result<Target, &'static str>> {
+    let server_id = if scope == RuleScope::All {
+        None
+    } else {
+        let Some(id) = parse_id(server_id) else {
+            return Ok(Err(SERVER));
+        };
+        if !servers::server_exists(conn, id)? {
+            return Ok(Err(SERVER));
+        }
+        Some(id)
+    };
+    let tool = match scope {
+        RuleScope::Tool if tool.is_empty() => return Ok(Err(TOOL)),
+        RuleScope::Tool => Some(tool.to_owned()),
+        _ => None,
+    };
+    let listed = match (server_id, tool.as_deref()) {
+        (Some(server), Some(name)) => catalog::names(conn, server)?
+            .iter()
+            .any(|known| known == name),
+        _ => true,
+    };
+    if !listed {
+        return Ok(Err(UNLISTED));
+    }
+    Ok(Ok(Target { server_id, tool }))
+}
+
+/// The message of a refused field that the page marks, None when a refusal is about no one field.
+pub(super) fn field_error<'a>(message: Option<&'a str>, field: &str) -> Option<&'a str> {
+    message.filter(|text| refused_field(text).is_some_and(|(id, _)| id == field))
+}
 
 /// One stored rule as the page shows it. `server` and `tool` are None when the rule has none.
-struct Stored {
-    id: i64,
-    subject: String,
-    effect: String,
-    server_id: Option<i64>,
-    server: Option<String>,
-    tool: Option<String>,
-    stale: bool,
+pub(super) struct Stored {
+    pub(super) id: i64,
+    pub(super) subject: String,
+    pub(super) effect: String,
+    pub(super) server_id: Option<i64>,
+    pub(super) server: Option<String>,
+    pub(super) tool: Option<String>,
+    pub(super) stale: bool,
 }
 
 impl Stored {
@@ -49,7 +122,7 @@ impl Stored {
     }
 
     /// The rule as a sentence: its subject, its effect and its target.
-    fn text(&self) -> String {
+    pub(super) fn text(&self) -> String {
         let target = match (self.server.as_deref(), self.tool.as_deref()) {
             (Some(server), Some(tool)) => format!("tool {tool} on server {server}"),
             (Some(server), None) => format!("server {server}"),
@@ -150,14 +223,12 @@ pub async fn post_delete(
 
 /// Checks the draft in the order effect, scope, subject, server, tool, tool list, duplicate.
 fn check(conn: &Connection, draft: &Draft) -> rusqlite::Result<Result<Checked, &'static str>> {
-    let effect = match draft.effect.as_str() {
-        "allow" => "allow",
-        "deny" => "deny",
-        _ => return Ok(Err(EFFECT)),
+    let Some(effect) = effect_of(&draft.effect) else {
+        return Ok(Err(EFFECT));
     };
-    if !matches!(draft.scope.as_str(), "all" | "server" | "tool") {
+    let Some(scope) = scope_of(&draft.scope) else {
         return Ok(Err(SCOPE));
-    }
+    };
     let user_id = if draft.subject == "everyone" {
         None
     } else {
@@ -169,38 +240,17 @@ fn check(conn: &Connection, draft: &Draft) -> rusqlite::Result<Result<Checked, &
         }
         Some(id)
     };
-    let server_id = if draft.scope == "all" {
-        None
-    } else {
-        let Some(id) = parse_id(&draft.server_id) else {
-            return Ok(Err(SERVER));
-        };
-        if !servers::server_exists(conn, id)? {
-            return Ok(Err(SERVER));
-        }
-        Some(id)
+    let target = match check_target(conn, scope, &draft.server_id, &draft.tool)? {
+        Ok(target) => target,
+        Err(message) => return Ok(Err(message)),
     };
-    let tool = match draft.scope.as_str() {
-        "tool" if draft.tool.is_empty() => return Ok(Err(TOOL)),
-        "tool" => Some(draft.tool.clone()),
-        _ => None,
-    };
-    let listed = match (server_id, tool.as_deref()) {
-        (Some(server), Some(name)) => catalog::names(conn, server)?
-            .iter()
-            .any(|known| known == name),
-        _ => true,
-    };
-    if !listed {
-        return Ok(Err(UNLISTED));
-    }
     let taken: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM rules WHERE COALESCE(user_id, 0) = ?1 \
          AND COALESCE(server_id, 0) = ?2 AND COALESCE(tool, '') = ?3)",
         params![
             user_id.unwrap_or(0),
-            server_id.unwrap_or(0),
-            tool.as_deref().unwrap_or("")
+            target.server_id.unwrap_or(0),
+            target.tool.as_deref().unwrap_or("")
         ],
         |row| row.get(0),
     )?;
@@ -210,8 +260,8 @@ fn check(conn: &Connection, draft: &Draft) -> rusqlite::Result<Result<Checked, &
     Ok(Ok(Checked {
         user_id,
         effect,
-        server_id,
-        tool,
+        server_id: target.server_id,
+        tool: target.tool,
     }))
 }
 
@@ -270,7 +320,12 @@ fn delete_in(conn: &mut Connection, actor: &SessionUser, id: i64, at: i64) -> ru
 }
 
 /// Writes one admin_change row inside the caller's transaction.
-fn record(conn: &Connection, at: i64, actor: &SessionUser, detail: &str) -> rusqlite::Result<()> {
+pub(super) fn record(
+    conn: &Connection,
+    at: i64,
+    actor: &SessionUser,
+    detail: &str,
+) -> rusqlite::Result<()> {
     let change = Event {
         kind: "admin_change",
         user_id: Some(actor.id),
@@ -326,8 +381,40 @@ fn rules_in(conn: &Connection, only: Option<i64>) -> rusqlite::Result<Vec<Stored
     rows.collect()
 }
 
+/// The rules of an invitation's plan, oldest first, each named after the invited address. `only`
+/// reads just the rule with that id.
+pub(super) fn plan_rules_in(
+    conn: &Connection,
+    invitation: i64,
+    email: &str,
+    only: Option<i64>,
+) -> rusqlite::Result<Vec<Stored>> {
+    let mut statement = conn.prepare(
+        "SELECT invitation_rules.id, invitation_rules.effect, invitation_rules.server_id, \
+         servers.slug, invitation_rules.tool, \
+         invitation_rules.tool IS NOT NULL AND NOT EXISTS (SELECT 1 FROM tool_catalog \
+         WHERE tool_catalog.server_id = invitation_rules.server_id \
+         AND tool_catalog.name = invitation_rules.tool) \
+         FROM invitation_rules LEFT JOIN servers ON servers.id = invitation_rules.server_id \
+         WHERE invitation_rules.invitation_id = ?1 AND (?2 IS NULL OR invitation_rules.id = ?2) \
+         ORDER BY invitation_rules.id",
+    )?;
+    let rows = statement.query_map(params![invitation, only], |row| {
+        Ok(Stored {
+            id: row.get(0)?,
+            subject: email.to_owned(),
+            effect: row.get(1)?,
+            server_id: row.get(2)?,
+            server: row.get(3)?,
+            tool: row.get(4)?,
+            stale: row.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
 /// Every stored tool with its server's path, by path then name, for the tool name choice.
-fn tools_in(conn: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+pub(super) fn tools_in(conn: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
     let mut statement = conn.prepare(
         "SELECT servers.slug, tool_catalog.name FROM tool_catalog \
          JOIN servers ON servers.id = tool_catalog.server_id \
@@ -393,25 +480,9 @@ fn rules_body(
     let server_choice = draft.map_or("", |draft| draft.server_id.as_str());
     let tool = draft.map(|draft| ui::sent_back(&draft.tool, ui::SENT_BACK_LIMIT));
     let failed = refused.and_then(refused_field);
-    let error_on = |id: &str| refused.filter(|_| failed.is_some_and(|(field, _)| field == id));
-    let subject_error = error_on("rule-subject");
+    let subject_error = field_error(refused, "rule-subject");
     let subject_note = ui::note_under(subject_error, None);
     let subject_described = subject_note.describer("rule-subject");
-    let effect_error = error_on("rule-effect");
-    let effect_note = ui::note_under(effect_error, None);
-    let effect_described = effect_note.describer("rule-effect");
-    let server_error = error_on("rule-server");
-    let server_note = ui::note_under(
-        server_error,
-        Some("Used when the scope is one server or one tool."),
-    );
-    let server_described = server_note.describer("rule-server");
-    let tool_error = error_on("rule-tool");
-    let tool_note = ui::note_under(
-        tool_error,
-        Some("Used when the scope is one tool. It must be in the server's tool list."),
-    );
-    let tool_described = tool_note.describer("rule-tool");
     html! {
         div.page-head {
             h1 { "Rules" }
@@ -462,63 +533,16 @@ fn rules_body(
                             },
                             subject_note,
                         ))
-                        (ui::field(
-                            "rule-effect",
-                            "Effect",
-                            false,
-                            html! {
-                                select id="rule-effect" name="effect" aria-invalid=[ui::invalid(effect_error)] aria-describedby=[effect_described.as_deref()] {
-                                    option value="allow" selected[effect == "allow"] { "Allow" }
-                                    option value="deny" selected[effect == "deny"] { "Deny" }
-                                }
-                            },
-                            effect_note,
-                        ))
+                        (effect_field(effect, field_error(refused, "rule-effect")))
                     }
                     div.fields data-cols="2" {
-                        (ui::field(
-                            "rule-scope",
-                            "Scope",
-                            false,
-                            html! {
-                                select id="rule-scope" name="scope" {
-                                    option value="all" selected[scope == "all"] { "All tools" }
-                                    option value="server" selected[scope == "server"] { "One server" }
-                                    option value="tool" selected[scope == "tool"] { "One tool" }
-                                }
-                            },
-                            ui::Note::None,
-                        ))
-                        (ui::field(
-                            "rule-server",
-                            "Server",
-                            false,
-                            html! {
-                                select id="rule-server" name="server_id" aria-invalid=[ui::invalid(server_error)] aria-describedby=[server_described.as_deref()] {
-                                    @for server in servers {
-                                        option value=(server.id) selected[server_choice == server.id.to_string()] { (server.name) " (" (server.slug) ")" }
-                                    }
-                                }
-                            },
-                            server_note,
-                        ))
+                        (scope_field(scope))
+                        (server_field(servers, server_choice, field_error(refused, "rule-server")))
                     }
                     div.fields {
-                        (ui::field(
-                            "rule-tool",
-                            "Tool name",
-                            false,
-                            html! {
-                                input.mono id="rule-tool" name="tool" type="text" list="rule-tools" value=[tool.as_deref()] aria-invalid=[ui::invalid(tool_error)] aria-describedby=[tool_described.as_deref()];
-                            },
-                            tool_note,
-                        ))
+                        (tool_field(tool.as_deref(), field_error(refused, "rule-tool")))
                     }
-                    datalist id="rule-tools" {
-                        @for (slug, tool) in tools {
-                            option value=(tool) label=(slug);
-                        }
-                    }
+                    (tool_datalist(tools))
                     div.form-actions {
                         button type="submit" data-kind="primary" { "Add rule" }
                     }
@@ -528,9 +552,95 @@ fn rules_body(
     }
 }
 
+/// The effect field of a rule form: allow or deny, with the refusal of the effect when it has one.
+pub(super) fn effect_field(effect: &str, error: Option<&str>) -> Markup {
+    let note = ui::note_under(error, None);
+    let described = note.describer("rule-effect");
+    ui::field(
+        "rule-effect",
+        "Effect",
+        false,
+        html! {
+            select id="rule-effect" name="effect" aria-invalid=[ui::invalid(error)] aria-describedby=[described.as_deref()] {
+                option value="allow" selected[effect == "allow"] { "Allow" }
+                option value="deny" selected[effect == "deny"] { "Deny" }
+            }
+        },
+        note,
+    )
+}
+
+/// The scope field of a rule form: all tools, one server or one tool.
+pub(super) fn scope_field(scope: &str) -> Markup {
+    ui::field(
+        "rule-scope",
+        "Scope",
+        false,
+        html! {
+            select id="rule-scope" name="scope" {
+                option value="all" selected[scope == "all"] { "All tools" }
+                option value="server" selected[scope == "server"] { "One server" }
+                option value="tool" selected[scope == "tool"] { "One tool" }
+            }
+        },
+        ui::Note::None,
+    )
+}
+
+/// The server field of a rule form: every server, with the refusal of the server when it has one.
+pub(super) fn server_field(servers: &[ServerRef], choice: &str, error: Option<&str>) -> Markup {
+    let note = ui::note_under(
+        error,
+        Some("Used when the scope is one server or one tool."),
+    );
+    let described = note.describer("rule-server");
+    ui::field(
+        "rule-server",
+        "Server",
+        false,
+        html! {
+            select id="rule-server" name="server_id" aria-invalid=[ui::invalid(error)] aria-describedby=[described.as_deref()] {
+                @for server in servers {
+                    option value=(server.id) selected[choice == server.id.to_string()] { (server.name) " (" (server.slug) ")" }
+                }
+            }
+        },
+        note,
+    )
+}
+
+/// The tool name field of a rule form, with the refusal of the tool when it has one.
+pub(super) fn tool_field(tool: Option<&str>, error: Option<&str>) -> Markup {
+    let note = ui::note_under(
+        error,
+        Some("Used when the scope is one tool. It must be in the server's tool list."),
+    );
+    let described = note.describer("rule-tool");
+    ui::field(
+        "rule-tool",
+        "Tool name",
+        false,
+        html! {
+            input.mono id="rule-tool" name="tool" type="text" list="rule-tools" value=[tool] aria-invalid=[ui::invalid(error)] aria-describedby=[described.as_deref()];
+        },
+        note,
+    )
+}
+
+/// The tools of every server, offered as the choices of the tool name field.
+pub(super) fn tool_datalist(tools: &[(String, String)]) -> Markup {
+    html! {
+        datalist id="rule-tools" {
+            @for (slug, tool) in tools {
+                option value=(tool) label=(slug);
+            }
+        }
+    }
+}
+
 /// The field a refusal of the rule form is about, with the word the notice uses for it. A refusal
 /// about the scope or about a duplicate rule is about no one field.
-fn refused_field(message: &str) -> Option<(&'static str, &'static str)> {
+pub(super) fn refused_field(message: &str) -> Option<(&'static str, &'static str)> {
     match message {
         EFFECT => Some(("rule-effect", "effect")),
         SUBJECT => Some(("rule-subject", "subject")),
@@ -570,7 +680,7 @@ fn rule_row(csrf: &str, rule: &Stored) -> Markup {
 }
 
 /// The effect of a rule as a pill: Allow in ok, Deny in bad.
-fn effect_pill(effect: &str) -> Markup {
+pub(super) fn effect_pill(effect: &str) -> Markup {
     if effect == "allow" {
         ui::pill("ok", "Allow")
     } else {
@@ -590,7 +700,7 @@ fn subject_markup(subject: &str) -> Markup {
 }
 
 /// What the rule applies to, with the server and tool names in code.
-fn target_markup(rule: &Stored) -> Markup {
+pub(super) fn target_markup(rule: &Stored) -> Markup {
     html! {
         @if let (Some(server), Some(tool)) = (rule.server.as_deref(), rule.tool.as_deref()) {
             "tool " span.whole { code { (ui::breakable(tool)) } } " on server " span.whole { code { (server) } }

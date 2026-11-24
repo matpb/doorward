@@ -157,6 +157,17 @@ pub(super) fn accept_in(
     )?;
     let user_id = tx.last_insert_rowid();
     tx.execute(
+        "INSERT INTO user_servers (user_id, server_id) \
+         SELECT ?1, server_id FROM invitation_servers WHERE invitation_id = ?2 ORDER BY server_id",
+        params![user_id, invitation.id],
+    )?;
+    tx.execute(
+        "INSERT INTO rules (user_id, effect, server_id, tool, created_at) \
+         SELECT ?1, effect, server_id, tool, ?3 FROM invitation_rules WHERE invitation_id = ?2 \
+         ORDER BY id",
+        params![user_id, invitation.id, accept.now],
+    )?;
+    tx.execute(
         "DELETE FROM invitations WHERE id = ?1",
         params![invitation.id],
     )?;

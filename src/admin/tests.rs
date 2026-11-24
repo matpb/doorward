@@ -25,6 +25,7 @@ use crate::audit::{self, Event};
 use crate::config::Config;
 use crate::crypto::{Keys, PasswordHasher, token_hash};
 use crate::db::Db;
+use crate::policy;
 use crate::proxy::tests::{TestUpstream, answer};
 use crate::servers::{Scope, set_assignments};
 use crate::web::{Role, SESSION_COOKIE, SessionUser};
@@ -5165,8 +5166,9 @@ async fn the_invitation_email_has_a_row_of_its_own_and_the_role_a_narrower_one()
         vec![
             row(None, 1, &["invite-email"]),
             row(Some("2"), 1, &["invite-role"]),
+            row(None, 1, &[]),
         ],
-        "the email must sit alone in a row, the role alone in a data-cols 2 row"
+        "the email must sit alone in a row, the role alone in a data-cols 2 row, the servers after them"
     );
 }
 
@@ -5261,5 +5263,1164 @@ async fn a_limited_page_does_not_mark_its_heading_as_refused() {
         attr_of(&limited.body, "main h1", "data-tone"),
         None,
         "the limited page is not a verdict on the person"
+    );
+}
+
+const CAROL: &str = "carol@example.com";
+
+/// Posts the invite form as `browser` with each server of `servers` ticked.
+async fn invite_with(browser: &mut Browser, email: &str, role: &str, servers: &[i64]) -> Answer {
+    let ids: Vec<String> = servers.iter().map(i64::to_string).collect();
+    let mut fields = vec![("email", email), ("role", role)];
+    fields.extend(ids.iter().map(|id| ("server_id", id.as_str())));
+    browser
+        .submit("/admin/invitations", "/admin/invitations", &fields)
+        .await
+}
+
+fn plan_path(invitation: i64) -> String {
+    format!("/admin/invitations/{invitation}")
+}
+
+/// The id of the invitation stored for `email`.
+fn invitation_id_of(dir: &Path, email: &str) -> i64 {
+    open_db(dir)
+        .query_row(
+            "SELECT id FROM invitations WHERE email = ?1",
+            [email],
+            |row| row.get(0),
+        )
+        .expect("the invitation exists")
+}
+
+/// Posts one rule to an invitation's plan from the plan page's form.
+async fn plan_rule(browser: &mut Browser, invitation: i64, fields: &[(&str, &str)]) -> Answer {
+    let path = plan_path(invitation);
+    browser
+        .submit(&path, &format!("{path}/rules"), fields)
+        .await
+}
+
+/// Replaces the servers of an invitation's plan with the ids given.
+async fn plan_servers(browser: &mut Browser, invitation: i64, ids: &[&str]) -> Answer {
+    let path = plan_path(invitation);
+    let fields: Vec<(&str, &str)> = ids.iter().map(|id| ("server_id", *id)).collect();
+    browser
+        .submit(&path, &format!("{path}/servers"), &fields)
+        .await
+}
+
+/// Accepts the invitation whose link the invite answer shows, from a browser of its own.
+async fn accept_link(base: &str, answer: &Answer) -> Answer {
+    let link = attr_of(&answer.body, "[data-invite-link]", "data-invite-link")
+        .expect("the invitation link");
+    let path = link
+        .strip_prefix(base)
+        .expect("the link is under the base")
+        .to_owned();
+    let mut invitee = Browser::new(base);
+    invitee
+        .submit(&path, &path, &[("password", PASSWORD)])
+        .await
+}
+
+/// Adds a tool to a server's tool list, as a refresh of the server's tools would.
+fn list_tool(dir: &Path, server: i64, name: &str) {
+    open_db(dir)
+        .execute(
+            "INSERT INTO tool_catalog (server_id, position, name, definition) VALUES (?1, 0, ?2, '{}')",
+            rusqlite::params![server, name],
+        )
+        .expect("insert tool");
+}
+
+/// The ids that `sql` selects for the one parameter, in the order it selects them.
+fn ids_of(dir: &Path, sql: &str, param: i64) -> Vec<i64> {
+    let conn = open_db(dir);
+    let mut statement = conn.prepare(sql).expect("prepare");
+    statement
+        .query_map([param], |row| row.get(0))
+        .expect("query")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("rows")
+}
+
+/// (effect, server id, tool) of each rule that `sql` selects for the one parameter.
+fn rule_triples(dir: &Path, sql: &str, param: i64) -> Vec<(String, Option<i64>, Option<String>)> {
+    let conn = open_db(dir);
+    let mut statement = conn.prepare(sql).expect("prepare");
+    statement
+        .query_map([param], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .expect("query")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("rows")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invitation_plan_is_applied_on_accept() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    for slug in ["alpha", "beta", "gamma"] {
+        assert_eq!(add(&mut owner, slug, SERVER_URL, None).await.status, 303);
+    }
+    let alpha = server_id_of(dir.path(), "alpha");
+    let gamma = server_id_of(dir.path(), "gamma");
+    list_tool(dir.path(), alpha, "search");
+    let invite = invite_with(&mut owner, BOB, "user", &[alpha, gamma]).await;
+    assert_eq!(invite.kind().as_deref(), Some("invitation-created"));
+    let invitation = invitation_id_of(dir.path(), BOB);
+    let plan = plan_path(invitation);
+
+    let listed = owner.get("/admin/invitations").await;
+    assert_eq!(
+        attr_of(&listed.body, &format!(r#"a[href="{plan}"]"#), "href").as_deref(),
+        Some(plan.as_str()),
+        "the email links to the plan"
+    );
+    assert_eq!(
+        text_of(&listed.body, "[data-server-count]").as_deref(),
+        Some("2 servers"),
+        "the row counts the ticked servers"
+    );
+
+    let alpha_text = alpha.to_string();
+    let gamma_text = gamma.to_string();
+    let replaced = plan_servers(
+        &mut owner,
+        invitation,
+        &[alpha_text.as_str(), gamma_text.as_str()],
+    )
+    .await;
+    assert_eq!(replaced.status, 303, "the servers of the plan are saved");
+    // The allow on gamma is planned first, so the plan order differs from (server_id, tool) order.
+    let allowed = plan_rule(
+        &mut owner,
+        invitation,
+        &[
+            ("effect", "allow"),
+            ("scope", "server"),
+            ("server_id", gamma_text.as_str()),
+        ],
+    )
+    .await;
+    assert_eq!(allowed.status, 303, "the allow rule is planned");
+    let denied = plan_rule(
+        &mut owner,
+        invitation,
+        &[
+            ("effect", "deny"),
+            ("scope", "tool"),
+            ("server_id", alpha_text.as_str()),
+            ("tool", "search"),
+        ],
+    )
+    .await;
+    assert_eq!(denied.status, 303, "the deny rule is planned");
+    assert_eq!(
+        rows_of(dir.path(), "admin_change")
+            .iter()
+            .map(|row| row.2.as_str())
+            .filter(|detail| detail.contains("invitation"))
+            .collect::<Vec<_>>(),
+        [
+            "invitation servers of bob@example.com set to 2 servers",
+            "invitation servers of bob@example.com set to 2 servers",
+            "added invitation rule 1: bob@example.com allow server gamma",
+            "added invitation rule 2: bob@example.com deny tool search on server alpha",
+        ],
+        "the invite and each plan change are recorded, naming the invited address"
+    );
+
+    let accepted = accept_link(&base, &invite).await;
+    assert_eq!(accepted.status, 303, "the invitation is accepted");
+    let user = user_id_of(dir.path(), BOB);
+    assert_eq!(
+        ids_of(
+            dir.path(),
+            "SELECT server_id FROM user_servers WHERE user_id = ?1 ORDER BY server_id",
+            user
+        ),
+        vec![alpha, gamma],
+        "the planned servers are assigned"
+    );
+    assert_eq!(
+        rule_triples(
+            dir.path(),
+            "SELECT effect, server_id, tool FROM rules WHERE user_id = ?1 ORDER BY id",
+            user
+        ),
+        vec![
+            ("allow".to_owned(), Some(gamma), None),
+            ("deny".to_owned(), Some(alpha), Some("search".to_owned())),
+        ],
+        "the planned rules are the new user's rules, in plan order"
+    );
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM invitation_servers"),
+        0
+    );
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM invitation_rules"),
+        0
+    );
+    let deny_id: i64 = open_db(dir.path())
+        .query_row("SELECT id FROM rules WHERE effect = 'deny'", [], |row| {
+            row.get(0)
+        })
+        .expect("the deny rule");
+    let conn = open_db(dir.path());
+    let loaded = policy::load(&conn, user, alpha).expect("the rules of the user");
+    assert_eq!(
+        policy::decide(&loaded, user, alpha, "search"),
+        policy::Verdict {
+            allowed: false,
+            rule: Some(deny_id),
+        },
+        "the planned deny refuses the tool"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invitation_plan_is_invisible_to_policy_while_pending() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "alpha", SERVER_URL, None).await;
+    let alpha = server_id_of(dir.path(), "alpha");
+    add_user(dir.path(), PLAIN, "user").await;
+    let plain = user_id_of(dir.path(), PLAIN);
+    open_db(dir.path())
+        .execute(
+            "INSERT INTO user_servers (user_id, server_id) VALUES (?1, ?2)",
+            rusqlite::params![plain, alpha],
+        )
+        .expect("assign the existing user");
+    invite_with(&mut owner, BOB, "user", &[alpha]).await;
+    let invitation = invitation_id_of(dir.path(), BOB);
+    let planned = plan_rule(
+        &mut owner,
+        invitation,
+        &[("effect", "deny"), ("scope", "all")],
+    )
+    .await;
+    assert_eq!(planned.status, 303, "the deny on all tools is planned");
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM rules"),
+        0,
+        "a pending rule is no row of rules"
+    );
+    let conn = open_db(dir.path());
+    let loaded = policy::load(&conn, plain, alpha).expect("the rules of the user");
+    assert!(loaded.is_empty(), "no rule applies to the existing user");
+    assert_eq!(
+        policy::decide(&loaded, plain, alpha, "search"),
+        policy::Verdict {
+            allowed: true,
+            rule: None,
+        },
+        "the existing user is still allowed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoked_or_expired_invitation_leaves_no_plan() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "alpha", SERVER_URL, None).await;
+    let alpha = server_id_of(dir.path(), "alpha");
+    invite_with(&mut owner, BOB, "user", &[alpha]).await;
+    let revoked = invitation_id_of(dir.path(), BOB);
+    let planned = plan_rule(&mut owner, revoked, &[("effect", "deny"), ("scope", "all")]).await;
+    assert_eq!(planned.status, 303);
+    assert_eq!(
+        ids_of(
+            dir.path(),
+            "SELECT server_id FROM invitation_servers WHERE invitation_id = ?1",
+            revoked
+        ),
+        vec![alpha]
+    );
+    let gone = owner
+        .submit(
+            "/admin/invitations",
+            &format!("{}/revoke", plan_path(revoked)),
+            &[],
+        )
+        .await;
+    assert_eq!(gone.status, 303, "the invitation is revoked");
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM invitation_servers"),
+        0
+    );
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM invitation_rules"),
+        0
+    );
+
+    let invite = invite_with(&mut owner, CAROL, "user", &[alpha]).await;
+    let expired = invitation_id_of(dir.path(), CAROL);
+    let planned = plan_rule(&mut owner, expired, &[("effect", "deny"), ("scope", "all")]).await;
+    assert_eq!(planned.status, 303);
+    let link = attr_of(&invite.body, "[data-invite-link]", "data-invite-link")
+        .expect("the invitation link");
+    let path = link
+        .strip_prefix(base.as_str())
+        .expect("the link is under the base")
+        .to_owned();
+    let mut invitee = Browser::new(&base);
+    let form = invitee.get(&path).await;
+    let csrf = attr_of(&form.body, r#"input[name="csrf"]"#, "value").expect("the csrf field");
+    open_db(dir.path())
+        .execute(
+            "UPDATE invitations SET expires_at = 1 WHERE id = ?1",
+            [expired],
+        )
+        .expect("expire the invitation");
+    let accepted = invitee
+        .post(&path, &[("csrf", csrf.as_str()), ("password", PASSWORD)])
+        .await;
+    assert_eq!(accepted.status, 404, "an expired link is refused");
+    assert_eq!(accepted.kind().as_deref(), Some("link-invalid"));
+    assert_eq!(
+        owner.get(&plan_path(expired)).await.status,
+        404,
+        "an expired invitation has no plan page"
+    );
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM users WHERE email = '{CAROL}'")
+        ),
+        0
+    );
+    assert_eq!(count(dir.path(), "SELECT COUNT(*) FROM user_servers"), 0);
+    assert_eq!(count(dir.path(), "SELECT COUNT(*) FROM rules"), 0);
+    invite_with(&mut owner, CAROL, "user", &[alpha]).await;
+    let renewed = invitation_id_of(dir.path(), CAROL);
+    assert_ne!(renewed, expired, "the expired invitation is replaced");
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM invitation_rules WHERE invitation_id = {renewed}")
+        ),
+        0,
+        "an invitation made after the expiry carries no rules of the expired one"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invitation_plan_refuses_unknown_ids() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "alpha", SERVER_URL, None).await;
+    let alpha = server_id_of(dir.path(), "alpha");
+    list_tool(dir.path(), alpha, "search");
+    let alpha_text = alpha.to_string();
+    invite_with(&mut owner, BOB, "user", &[alpha]).await;
+    let invitation = invitation_id_of(dir.path(), BOB);
+
+    let refused = invite_with(&mut owner, CAROL, "user", &[999]).await;
+    assert_eq!(
+        refused.status, 400,
+        "an unknown server is refused on invite"
+    );
+    assert_eq!(
+        refused.error().as_deref(),
+        Some("The invitation was not sent. Choose only servers that exist.")
+    );
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM invitations WHERE email = '{CAROL}'")
+        ),
+        0,
+        "a refused invitation stores nothing"
+    );
+
+    let servers = plan_servers(&mut owner, invitation, &["999"]).await;
+    assert_eq!(
+        servers.status, 400,
+        "an unknown server is refused on the plan"
+    );
+    assert_eq!(
+        servers.error().as_deref(),
+        Some("The servers were not saved. Choose only servers that exist.")
+    );
+    assert_eq!(
+        ids_of(
+            dir.path(),
+            "SELECT server_id FROM invitation_servers WHERE invitation_id = ?1",
+            invitation
+        ),
+        vec![alpha],
+        "a refused set changes nothing"
+    );
+
+    // Each case: the posted fields, the Rules page message, and the link the notice adds.
+    let cases = [
+        (
+            vec![("effect", "maybe"), ("scope", "all")],
+            "Choose the effect allow or deny.",
+            " Go to the effect field",
+        ),
+        (
+            vec![("effect", "allow"), ("scope", "galaxy")],
+            "Choose the scope all tools, one server or one tool.",
+            "",
+        ),
+        (
+            vec![
+                ("effect", "allow"),
+                ("scope", "server"),
+                ("server_id", "999"),
+            ],
+            "A server or tool rule needs a server that exists.",
+            " Go to the server field",
+        ),
+        (
+            vec![
+                ("effect", "allow"),
+                ("scope", "tool"),
+                ("server_id", alpha_text.as_str()),
+                ("tool", "missing"),
+            ],
+            "The server's tool list has no tool with that name.",
+            " Go to the tool name field",
+        ),
+        (
+            vec![
+                ("effect", "allow"),
+                ("scope", "tool"),
+                ("server_id", alpha_text.as_str()),
+                ("tool", ""),
+            ],
+            "A tool rule needs the tool name.",
+            " Go to the tool name field",
+        ),
+    ];
+    for (fields, message, link) in cases {
+        let answer = plan_rule(&mut owner, invitation, &fields).await;
+        assert_eq!(answer.status, 400, "refused: {message}");
+        assert_eq!(
+            answer.error().as_deref(),
+            Some(format!("The rule was not added. {message}{link}").as_str())
+        );
+    }
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM invitation_rules"),
+        0
+    );
+
+    assert_eq!(owner.get("/admin/invitations/999999").await.status, 404);
+    let unknown = owner
+        .submit(
+            "/admin/invitations",
+            "/admin/invitations/999999/servers",
+            &[("server_id", "999")],
+        )
+        .await;
+    assert_eq!(unknown.status, 404, "an unknown invitation has no servers");
+    let unknown = owner
+        .submit(
+            "/admin/invitations",
+            "/admin/invitations/999999/rules",
+            &[("effect", "allow"), ("scope", "all")],
+        )
+        .await;
+    assert_eq!(unknown.status, 404, "an unknown invitation has no rules");
+
+    let carol = invite_with(&mut owner, CAROL, "user", &[]).await;
+    let accepted_id = invitation_id_of(dir.path(), CAROL);
+    assert_eq!(accept_link(&base, &carol).await.status, 303);
+    assert_eq!(owner.get(&plan_path(accepted_id)).await.status, 404);
+    let accepted = owner
+        .submit(
+            "/admin/invitations",
+            &format!("{}/servers", plan_path(accepted_id)),
+            &[("server_id", alpha_text.as_str())],
+        )
+        .await;
+    assert_eq!(accepted.status, 404, "an accepted invitation has no plan");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invitation_plan_routes_refuse_anonymous_and_plain_users() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "alpha", SERVER_URL, None).await;
+    let alpha = server_id_of(dir.path(), "alpha");
+    add_user(dir.path(), PLAIN, "user").await;
+    invite_with(&mut owner, BOB, "user", &[]).await;
+    let invitation = invitation_id_of(dir.path(), BOB);
+    let planned = plan_rule(
+        &mut owner,
+        invitation,
+        &[("effect", "deny"), ("scope", "all")],
+    )
+    .await;
+    assert_eq!(planned.status, 303);
+    let rule = ids_of(
+        dir.path(),
+        "SELECT id FROM invitation_rules WHERE invitation_id = ?1",
+        invitation,
+    )[0];
+    let plan = plan_path(invitation);
+    let alpha_text = alpha.to_string();
+    let server_fields = [("server_id", alpha_text.as_str())];
+    let rule_fields = [("effect", "allow"), ("scope", "all")];
+    type Field<'a> = (&'a str, &'a str);
+    let no_fields: [Field; 0] = [];
+    // Each route with the fields its form posts; the plain user's posts carry a valid csrf token.
+    let routes: [(bool, String, &[Field<'_>]); 4] = [
+        (false, plan.clone(), &no_fields),
+        (true, format!("{plan}/servers"), &server_fields),
+        (true, format!("{plan}/rules"), &rule_fields),
+        (true, format!("{plan}/rules/{rule}/delete"), &no_fields),
+    ];
+    let mut anonymous = Browser::new(&base);
+    let mut plain = sign_in(&base, PLAIN).await;
+    for (post, path, fields) in &routes {
+        let answer = if *post {
+            anonymous.post(path, fields).await
+        } else {
+            anonymous.get(path).await
+        };
+        assert_eq!(answer.status, 303, "anonymous {path} must redirect");
+        assert_eq!(
+            answer.location(),
+            Some("/login"),
+            "anonymous {path} goes to /login"
+        );
+        let answer = if *post {
+            plain.submit("/account", path, fields).await
+        } else {
+            plain.get(path).await
+        };
+        assert_eq!(answer.status, 403, "a plain user must be refused {path}");
+        assert_eq!(answer.kind().as_deref(), Some("forbidden"));
+    }
+    for (_, path, fields) in &routes[1..] {
+        let answer = owner.post(path, fields).await;
+        assert_eq!(answer.status, 403, "a post without csrf is refused {path}");
+    }
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM invitation_servers"),
+        0
+    );
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM invitation_rules"),
+        1,
+        "the refused posts change nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admin_cannot_plan_an_admin_invitation() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), ADMIN, "admin").await;
+    let mut admin = sign_in(&base, ADMIN).await;
+    add(&mut owner, "alpha", SERVER_URL, None).await;
+    let alpha = server_id_of(dir.path(), "alpha");
+    let alpha_text = alpha.to_string();
+    invite_with(&mut owner, CAROL, "admin", &[]).await;
+    let invitation = invitation_id_of(dir.path(), CAROL);
+    let planned = plan_rule(
+        &mut owner,
+        invitation,
+        &[("effect", "deny"), ("scope", "all")],
+    )
+    .await;
+    assert_eq!(planned.status, 303);
+    let rule = ids_of(
+        dir.path(),
+        "SELECT id FROM invitation_rules WHERE invitation_id = ?1",
+        invitation,
+    )[0];
+    let plan = plan_path(invitation);
+
+    assert_eq!(
+        admin.get(&plan).await.status,
+        403,
+        "an admin cannot open it"
+    );
+    let servers = admin
+        .submit(
+            "/admin/invitations",
+            &format!("{plan}/servers"),
+            &[("server_id", alpha_text.as_str())],
+        )
+        .await;
+    assert_eq!(servers.status, 403, "an admin cannot set its servers");
+    let rules = admin
+        .submit(
+            "/admin/invitations",
+            &format!("{plan}/rules"),
+            &[("effect", "allow"), ("scope", "all")],
+        )
+        .await;
+    assert_eq!(rules.status, 403, "an admin cannot add a rule to it");
+    let deleted = admin
+        .submit(
+            "/admin/invitations",
+            &format!("{plan}/rules/{rule}/delete"),
+            &[],
+        )
+        .await;
+    assert_eq!(deleted.status, 403, "an admin cannot delete its rule");
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM invitation_rules"),
+        1,
+        "the refused posts change nothing"
+    );
+    assert_eq!(owner.get(&plan).await.status, 200, "the owner can open it");
+    assert_eq!(
+        plan_servers(&mut owner, invitation, &[alpha_text.as_str()])
+            .await
+            .status,
+        303,
+        "the owner can set its servers"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reinviting_an_address_keeps_its_rules_and_takes_the_new_servers() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    for slug in ["alpha", "beta", "gamma"] {
+        add(&mut owner, slug, SERVER_URL, None).await;
+    }
+    let alpha = server_id_of(dir.path(), "alpha");
+    let beta = server_id_of(dir.path(), "beta");
+    let gamma = server_id_of(dir.path(), "gamma");
+    invite_with(&mut owner, BOB, "user", &[alpha]).await;
+    let first = invitation_id_of(dir.path(), BOB);
+    let planned = plan_rule(&mut owner, first, &[("effect", "deny"), ("scope", "all")]).await;
+    assert_eq!(planned.status, 303);
+
+    invite_with(&mut owner, BOB, "user", &[beta, gamma]).await;
+    let second = invitation_id_of(dir.path(), BOB);
+    assert_ne!(second, first, "the invitation is replaced");
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM invitations WHERE id = {first}")
+        ),
+        0,
+        "the old invitation is gone"
+    );
+    assert_eq!(
+        ids_of(
+            dir.path(),
+            "SELECT server_id FROM invitation_servers WHERE invitation_id = ?1",
+            second
+        ),
+        vec![beta, gamma],
+        "the servers ticked in the new form"
+    );
+    assert_eq!(
+        rule_triples(
+            dir.path(),
+            "SELECT effect, server_id, tool FROM invitation_rules WHERE invitation_id = ?1",
+            second
+        ),
+        vec![("deny".to_owned(), None, None)],
+        "the rules of the old invitation"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn duplicate_invitation_rule_is_refused() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "alpha", SERVER_URL, None).await;
+    let alpha = server_id_of(dir.path(), "alpha");
+    let alpha_text = alpha.to_string();
+    invite_with(&mut owner, BOB, "user", &[]).await;
+    let invitation = invitation_id_of(dir.path(), BOB);
+    let first = plan_rule(
+        &mut owner,
+        invitation,
+        &[
+            ("effect", "allow"),
+            ("scope", "server"),
+            ("server_id", alpha_text.as_str()),
+        ],
+    )
+    .await;
+    assert_eq!(first.status, 303);
+    let second = plan_rule(
+        &mut owner,
+        invitation,
+        &[
+            ("effect", "deny"),
+            ("scope", "server"),
+            ("server_id", alpha_text.as_str()),
+        ],
+    )
+    .await;
+    assert_eq!(second.status, 400, "the same target twice is refused");
+    assert_eq!(
+        second.error().as_deref(),
+        Some("The rule was not added. A rule for that subject and target already exists.")
+    );
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM invitation_rules"),
+        1,
+        "the second rule is not stored"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_server_drops_it_from_plans() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "alpha", SERVER_URL, None).await;
+    add(&mut owner, "beta", SERVER_URL, None).await;
+    let alpha = server_id_of(dir.path(), "alpha");
+    let beta = server_id_of(dir.path(), "beta");
+    invite_with(&mut owner, BOB, "user", &[alpha, beta]).await;
+    let invitation = invitation_id_of(dir.path(), BOB);
+    let alpha_text = alpha.to_string();
+    let planned = plan_rule(
+        &mut owner,
+        invitation,
+        &[
+            ("effect", "allow"),
+            ("scope", "server"),
+            ("server_id", alpha_text.as_str()),
+        ],
+    )
+    .await;
+    assert_eq!(planned.status, 303);
+
+    let path = format!("/admin/servers/{alpha}");
+    let deleted = owner.submit(&path, &format!("{path}/delete"), &[]).await;
+    assert_eq!(deleted.status, 303, "the server is deleted");
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM invitation_servers WHERE server_id = {alpha}")
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM invitation_rules WHERE server_id = {alpha}")
+        ),
+        0
+    );
+    assert_eq!(
+        ids_of(
+            dir.path(),
+            "SELECT server_id FROM invitation_servers WHERE invitation_id = ?1",
+            invitation
+        ),
+        vec![beta],
+        "the other server stays in the plan"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_plan_page_uses_the_panel_layout_like_the_user_page() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), PLAIN, "user").await;
+    let plain = user_id_of(dir.path(), PLAIN);
+    invite_with(&mut owner, BOB, "user", &[]).await;
+    let invitation = invitation_id_of(dir.path(), BOB);
+    let plan = plan_path(invitation);
+    let user = owner.get(&format!("/admin/users/{plain}")).await;
+    let layout = |body: &str| attr_of(body, "body", "data-layout");
+    assert_eq!(layout(&user.body).as_deref(), Some("panel"));
+    let page = owner.get(&plan).await;
+    assert_eq!(page.status, 200);
+    assert_eq!(
+        layout(&page.body),
+        layout(&user.body),
+        "the plan page must use the panel layout of the user page"
+    );
+    assert_eq!(
+        attr_of(&page.body, "main", "data-page").as_deref(),
+        Some("invitations"),
+        "the plan page is data-page invitations, as docs/INTERFACE.md says"
+    );
+    assert_eq!(
+        text_of(
+            &page.body,
+            r#"section[aria-labelledby="plan-revoke-title"] .part-head > p"#
+        )
+        .as_deref(),
+        Some("Their link stops working and this plan is deleted."),
+        "the Revoke section says what revoking does"
+    );
+    let refused = plan_rule(
+        &mut owner,
+        invitation,
+        &[("effect", "maybe"), ("scope", "all")],
+    )
+    .await;
+    assert_eq!(refused.status, 400);
+    assert_eq!(
+        layout(&refused.body),
+        layout(&user.body),
+        "the refused plan page keeps the panel layout"
+    );
+    assert_eq!(
+        elements(
+            &page.body,
+            r#"details[data-confirm] form[action$="/revoke"]"#
+        )
+        .len(),
+        1,
+        "revoke sits in a confirm disclosure at the foot of the page"
+    );
+}
+
+/// The role of the invitation of `email`, as stored.
+fn role_of_invitation(dir: &Path, email: &str) -> String {
+    open_db(dir)
+        .query_row(
+            "SELECT role FROM invitations WHERE email = ?1",
+            [email],
+            |row| row.get(0),
+        )
+        .expect("the invitation exists")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reinviting_with_another_role_carries_no_rules() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "alpha", SERVER_URL, None).await;
+    let alpha = server_id_of(dir.path(), "alpha");
+    let alpha_text = alpha.to_string();
+
+    invite_with(&mut owner, CAROL, "admin", &[]).await;
+    let as_admin = invitation_id_of(dir.path(), CAROL);
+    let planned = plan_rule(
+        &mut owner,
+        as_admin,
+        &[("effect", "deny"), ("scope", "all")],
+    )
+    .await;
+    assert_eq!(planned.status, 303);
+    invite_with(&mut owner, CAROL, "user", &[]).await;
+    let as_user = invitation_id_of(dir.path(), CAROL);
+    assert_ne!(as_user, as_admin, "the invitation is replaced");
+    assert_eq!(role_of_invitation(dir.path(), CAROL), "user");
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM invitation_rules WHERE invitation_id = {as_user}")
+        ),
+        0,
+        "an admin invitation's rule is not carried to a user invitation"
+    );
+
+    let planned = plan_rule(
+        &mut owner,
+        as_user,
+        &[
+            ("effect", "allow"),
+            ("scope", "server"),
+            ("server_id", alpha_text.as_str()),
+        ],
+    )
+    .await;
+    assert_eq!(planned.status, 303);
+    invite_with(&mut owner, CAROL, "admin", &[]).await;
+    let back_as_admin = invitation_id_of(dir.path(), CAROL);
+    assert_eq!(role_of_invitation(dir.path(), CAROL), "admin");
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM invitation_rules WHERE invitation_id = {back_as_admin}")
+        ),
+        0,
+        "a user invitation's rule is not carried to an admin invitation"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admin_cannot_revoke_or_replace_an_admin_invitation() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), ADMIN, "admin").await;
+    let mut admin = sign_in(&base, ADMIN).await;
+    invite_with(&mut owner, CAROL, "admin", &[]).await;
+    let invitation = invitation_id_of(dir.path(), CAROL);
+    let planned = plan_rule(
+        &mut owner,
+        invitation,
+        &[("effect", "deny"), ("scope", "all")],
+    )
+    .await;
+    assert_eq!(planned.status, 303);
+
+    let revoked = admin
+        .submit(
+            "/admin/invitations",
+            &format!("{}/revoke", plan_path(invitation)),
+            &[],
+        )
+        .await;
+    assert_eq!(
+        revoked.status, 403,
+        "an admin cannot revoke an admin invitation"
+    );
+    assert_eq!(revoked.kind().as_deref(), Some("forbidden"));
+    let replaced = admin
+        .submit(
+            "/admin/invitations",
+            "/admin/invitations",
+            &[("email", CAROL), ("role", "user")],
+        )
+        .await;
+    assert_eq!(
+        replaced.status, 403,
+        "an admin cannot replace an admin invitation"
+    );
+    assert_eq!(replaced.kind().as_deref(), Some("forbidden"));
+    assert_eq!(
+        invitation_id_of(dir.path(), CAROL),
+        invitation,
+        "the owner's invitation stays"
+    );
+    assert_eq!(role_of_invitation(dir.path(), CAROL), "admin");
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM invitation_rules"),
+        1,
+        "the plan stays"
+    );
+
+    invite_with(&mut owner, CAROL, "admin", &[]).await;
+    let replaced_by_owner = invitation_id_of(dir.path(), CAROL);
+    assert_ne!(replaced_by_owner, invitation, "the owner can replace it");
+    let revoked = owner
+        .submit(
+            "/admin/invitations",
+            &format!("{}/revoke", plan_path(replaced_by_owner)),
+            &[],
+        )
+        .await;
+    assert_eq!(revoked.status, 303, "the owner can revoke it");
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM invitations WHERE email = '{CAROL}'")
+        ),
+        0
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admin_can_plan_a_user_invitation() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), ADMIN, "admin").await;
+    let mut admin = sign_in(&base, ADMIN).await;
+    add(&mut owner, "alpha", SERVER_URL, None).await;
+    let alpha = server_id_of(dir.path(), "alpha");
+    let alpha_text = alpha.to_string();
+    invite_with(&mut owner, BOB, "user", &[]).await;
+    let invitation = invitation_id_of(dir.path(), BOB);
+    let plan = plan_path(invitation);
+
+    assert_eq!(admin.get(&plan).await.status, 200, "an admin opens it");
+    let servers = admin
+        .submit(
+            "/admin/invitations",
+            &format!("{plan}/servers"),
+            &[("server_id", alpha_text.as_str())],
+        )
+        .await;
+    assert_eq!(servers.status, 303, "an admin sets its servers");
+    let added = admin
+        .submit(
+            "/admin/invitations",
+            &format!("{plan}/rules"),
+            &[
+                ("effect", "deny"),
+                ("scope", "server"),
+                ("server_id", alpha_text.as_str()),
+            ],
+        )
+        .await;
+    assert_eq!(added.status, 303, "an admin adds a rule");
+    let rule = ids_of(
+        dir.path(),
+        "SELECT id FROM invitation_rules WHERE invitation_id = ?1",
+        invitation,
+    )[0];
+    let deleted = admin
+        .submit(
+            "/admin/invitations",
+            &format!("{plan}/rules/{rule}/delete"),
+            &[],
+        )
+        .await;
+    assert_eq!(deleted.status, 303, "an admin deletes the rule");
+    assert_eq!(
+        count(dir.path(), "SELECT COUNT(*) FROM invitation_rules"),
+        0
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn accept_failure_leaves_no_account() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "alpha", SERVER_URL, None).await;
+    let alpha = server_id_of(dir.path(), "alpha");
+    let invite = invite_with(&mut owner, BOB, "user", &[alpha]).await;
+    let invitation = invitation_id_of(dir.path(), BOB);
+    let planned = plan_rule(
+        &mut owner,
+        invitation,
+        &[("effect", "deny"), ("scope", "all")],
+    )
+    .await;
+    assert_eq!(planned.status, 303);
+    // Makes the copy of the plan fail after the account row is written.
+    open_db(dir.path())
+        .execute_batch(
+            "CREATE TRIGGER refuse_plan_copy BEFORE INSERT ON rules \
+             BEGIN SELECT RAISE(ABORT, 'plan copy refused'); END;",
+        )
+        .expect("the trigger");
+    let accepted = accept_link(&base, &invite).await;
+    assert_eq!(accepted.status, 500, "a failed accept is an internal error");
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM users WHERE email = '{BOB}'")
+        ),
+        0,
+        "no account is created"
+    );
+    assert_eq!(count(dir.path(), "SELECT COUNT(*) FROM user_servers"), 0);
+    assert_eq!(count(dir.path(), "SELECT COUNT(*) FROM rules"), 0);
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM invitations WHERE id = {invitation}")
+        ),
+        1,
+        "the invitation stays"
+    );
+    assert_eq!(
+        ids_of(
+            dir.path(),
+            "SELECT server_id FROM invitation_servers WHERE invitation_id = ?1",
+            invitation
+        ),
+        vec![alpha],
+        "its servers stay"
+    );
+    assert_eq!(
+        count(
+            dir.path(),
+            &format!("SELECT COUNT(*) FROM invitation_rules WHERE invitation_id = {invitation}")
+        ),
+        1,
+        "its rules stay"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invite_form_servers_are_recorded() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    add(&mut owner, "alpha", SERVER_URL, None).await;
+    add(&mut owner, "gamma", SERVER_URL, None).await;
+    let alpha = server_id_of(dir.path(), "alpha");
+    let gamma = server_id_of(dir.path(), "gamma");
+    invite_with(&mut owner, BOB, "user", &[alpha, gamma]).await;
+    assert_eq!(
+        rows_of(dir.path(), "admin_change")
+            .iter()
+            .map(|row| row.2.as_str())
+            .filter(|detail| detail.contains("bob@example.com"))
+            .collect::<Vec<_>>(),
+        ["invitation servers of bob@example.com set to 2 servers"],
+        "the servers ticked on the invite form are recorded"
+    );
+    assert_eq!(
+        rows_of(dir.path(), "invitation")
+            .iter()
+            .map(|row| row.2.as_str())
+            .collect::<Vec<_>>(),
+        ["invited bob@example.com as user"],
+        "the invited row is unchanged"
+    );
+    invite_with(&mut owner, CAROL, "user", &[]).await;
+    assert_eq!(
+        rows_of(dir.path(), "admin_change")
+            .iter()
+            .filter(|row| row.2.contains("carol@example.com"))
+            .count(),
+        0,
+        "an invitation with no servers records no server change"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_invite_form_note_says_to_restrict_tools_first() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let page = owner.get("/admin/invitations").await;
+    assert_eq!(
+        text_of(&page.body, "#invite-servers-hint").as_deref(),
+        Some(
+            "What they can reach as soon as they accept. To restrict tools first, send the invitation with no servers, then set rules and servers on its page."
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_admin_viewer_gets_no_link_to_an_admin_invitation() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (base, mut owner) = owner_gateway(dir.path()).await;
+    add_user(dir.path(), ADMIN, "admin").await;
+    let mut admin = sign_in(&base, ADMIN).await;
+    invite_with(&mut owner, CAROL, "admin", &[]).await;
+    let as_admin = plan_path(invitation_id_of(dir.path(), CAROL));
+    invite_with(&mut owner, BOB, "user", &[]).await;
+    let as_user = plan_path(invitation_id_of(dir.path(), BOB));
+    let seen_by_admin = admin.get("/admin/invitations").await;
+    assert_eq!(
+        attr_of(
+            &seen_by_admin.body,
+            &format!(r#"a[href="{as_user}"]"#),
+            "href"
+        )
+        .as_deref(),
+        Some(as_user.as_str()),
+        "an admin still gets the link to a user invitation"
+    );
+    assert!(
+        attr_of(
+            &seen_by_admin.body,
+            &format!(r#"a[href="{as_admin}"]"#),
+            "href"
+        )
+        .is_none(),
+        "an admin gets no link to an admin invitation"
+    );
+    assert!(
+        seen_by_admin.body.contains(CAROL),
+        "the address is still shown"
+    );
+    let seen_by_owner = owner.get("/admin/invitations").await;
+    assert_eq!(
+        attr_of(
+            &seen_by_owner.body,
+            &format!(r#"a[href="{as_admin}"]"#),
+            "href"
+        )
+        .as_deref(),
+        Some(as_admin.as_str()),
+        "the owner gets the link to an admin invitation"
     );
 }

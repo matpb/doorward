@@ -1,6 +1,7 @@
 //! The admin panel. One nested router behind the admin check; the mail routes add the owner check.
 
 mod activity;
+mod invitation_plan;
 mod invitations;
 mod mail;
 mod redirects;
@@ -49,6 +50,16 @@ pub fn router(state: AppState) -> Router<AppState> {
             get(invitations::get_invitations).post(invitations::post_invitation),
         )
         .route("/invitations/{id}/revoke", post(invitations::post_revoke))
+        .route("/invitations/{id}", get(invitation_plan::get_plan))
+        .route(
+            "/invitations/{id}/servers",
+            post(invitation_plan::post_servers),
+        )
+        .route("/invitations/{id}/rules", post(invitation_plan::post_rule))
+        .route(
+            "/invitations/{id}/rules/{rule_id}/delete",
+            post(invitation_plan::post_rule_delete),
+        )
         .route("/users", get(users::get_users))
         .route("/users/{id}", get(users::get_user))
         .route("/users/{id}/role", post(users::post_role))

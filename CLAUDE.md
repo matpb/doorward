@@ -482,6 +482,18 @@ M. Added for custom headers and per-user credentials
     reconnected. The account page marks each server that still needs values, and the
     consent page says so. Proven with Claude Code and Codex connecting before the value is
     stored.
+91. An admin can set the servers and the personal rules of a pending invitation. They are
+    stored apart from live assignments and rules, so nothing applies before the account
+    exists; accepting the invitation creates the account, its server assignments and its
+    rules in one transaction; revoking the invitation or deleting a server removes the plan at
+    once; an expired invitation's plan can no longer be applied or carried and is removed with
+    the invitation. Proof: the invitation plan tests in `src/admin/tests.rs`, listed in
+    `docs/TESTS.md`.
+92. An admin cannot revoke, replace or plan an invitation whose role is admin; only the owner
+    can. Re-inviting an address carries its pending rules only when the role is unchanged.
+    Proof: `admin_cannot_revoke_or_replace_an_admin_invitation`,
+    `reinviting_with_another_role_carries_no_rules` and `admin_cannot_plan_an_admin_invitation`
+    in `src/admin/tests.rs`.
 
 ### Proof
 

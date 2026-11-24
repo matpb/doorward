@@ -2826,3 +2826,55 @@ Review additions in `s84_stored_values.rs`: `a_refresh_with_a_stored_value_that_
 `forget_with_the_store_switch_on_does_not_redirect_with_the_saved_notice`. Units: `vault::tests_keys`
 heal tests (including one wrapped session after a heal) and
 `accounts::tests_vault::a_password_change_without_a_vault_part_clears_the_wrap_and_drops_the_values`.
+
+## Invitation plans (statement 91)
+
+Tests in `src/admin/tests.rs`, over real HTTP:
+
+1. `invitation_plan_is_applied_on_accept`: the plan's servers and rules are saved from the plan
+   page, each change is recorded with the invited address (the invite form's servers too), and
+   accepting the invitation gives the new user exactly the two `user_servers` rows and the two
+   `rules` rows of the plan, the rules in the order they were planned; the plan tables are empty
+   afterwards and `policy::decide` refuses the planned tool.
+2. `invitation_plan_is_invisible_to_policy_while_pending`: a pending deny on all tools is in no
+   `rules` row, and an existing user is still allowed.
+3. `revoked_or_expired_invitation_leaves_no_plan`: revoking deletes the plan rows; an expired
+   invitation's link is refused with `link-invalid`, nothing is assigned, its plan page is `404`,
+   and an invitation made for the address after the expiry carries none of its rules.
+4. `invitation_plan_refuses_unknown_ids`: an unknown server on the invite form and on the plan is
+   `400` with its message and stores nothing; each refused rule is `400` with the message of
+   the Rules page; an unknown or accepted invitation id is `404`.
+5. `invitation_plan_routes_refuse_anonymous_and_plain_users`: each route redirects anonymous
+   visitors to `/login`; a plain user's posts carry a valid csrf token and Origin, so their `403`
+   is the role check; a post without a csrf token is `403` for the owner.
+6. `admin_cannot_plan_an_admin_invitation`: an admin gets `403` on the plan page and on each
+   plan post for an invitation of the role `admin`; the owner can open it and save its servers.
+7. `reinviting_an_address_keeps_its_rules_and_takes_the_new_servers`: a new invitation for an
+   address replaces the open one, keeps its rules, and takes the servers ticked in the new form.
+8. `duplicate_invitation_rule_is_refused`: the same target twice on one invitation is `400` with
+   the duplicate message, and one rule is stored.
+9. `deleting_a_server_drops_it_from_plans`: deleting a server removes its `invitation_servers` and
+   `invitation_rules` rows; the other server stays in the plan.
+10. `the_plan_page_uses_the_panel_layout_like_the_user_page`: the plan page and a refused plan page
+    carry `body[data-layout]` equal to the user page's (`panel`), and Revoke sits in a confirm
+    disclosure at the foot of the page.
+
+11. `reinviting_with_another_role_carries_no_rules`: a rule of an admin invitation is not carried
+    to a user invitation for the same address, and a rule of a user invitation not to an admin one.
+12. `admin_cannot_revoke_or_replace_an_admin_invitation`: an admin gets `403` on revoke of an admin
+    invitation and on a new invitation for its address, and nothing changes; the owner can do both.
+13. `admin_can_plan_a_user_invitation`: an admin opens the plan of a user invitation and sets its
+    servers, adds a rule and deletes it.
+14. `accept_failure_leaves_no_account`: an accept that fails after the account row is written
+    (a trigger refuses the copy of the rules) is `500`, creates no user, and leaves the
+    invitation with its servers and rules.
+15. `invite_form_servers_are_recorded`: the servers ticked on the invite form are recorded as
+    `invitation servers of EMAIL set to N servers`; the `invited` row is unchanged; an
+    invitation with no servers records no server change.
+16. `the_invite_form_note_says_to_restrict_tools_first`: the note under the Servers label reads
+    the new sentence.
+17. `an_admin_viewer_gets_no_link_to_an_admin_invitation`: an admin sees the address of an admin
+    invitation as plain text, and the owner gets its link.
+
+Changed existing test: `admin::tests::the_invitation_email_has_a_row_of_its_own_and_the_role_a_narrower_one`
+now also expects the Servers group after the role row.
