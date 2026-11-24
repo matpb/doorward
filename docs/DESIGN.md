@@ -1,6 +1,6 @@
 # Doorward design (v1)
 
-Status: revised after the first adversarial review. Statement numbers refer to `CLAUDE.md`;
+Status: revised after the first adversarial review. Statement numbers refer to `docs/STATEMENTS.md`;
 S32 to S36 replace S15, S19, S21 and S22 and add the resources and prompts switch.
 
 ## Shape

@@ -1,6 +1,6 @@
 # Doorward test catalogue (v1)
 
-One section per test file. A file is named after the statement of `CLAUDE.md` it proves.
+One section per test file. A file is named after the statement of `docs/STATEMENTS.md` it proves.
 Every test here is written before the gateway code it covers, and fails until that code
 exists. `docs/INTERFACE.md` gives the routes, fields, statuses and attributes used below.
 

@@ -7,7 +7,7 @@ Small, tested changes are welcome.
 
 - A security problem is not a pull request: follow [SECURITY.md](SECURITY.md).
 - For a new feature, open an issue first and say what it is for. The scope of version 1 is
-  the list of statements in `CLAUDE.md`.
+  the list of statements in `docs/STATEMENTS.md`.
 
 ## Build and check
 
