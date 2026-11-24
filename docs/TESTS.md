@@ -732,9 +732,11 @@ Upstream in `Progress { steps: 3, interval_ms: 300 }`.
    `datalist#rule-tools` whose option values are `["alpha", "beta"]`, each labelled with
    the server's path; after `set_tools(&["alpha", "gamma"])` and a refresh the values are
    `["alpha", "gamma"]`.
-10. `the_rule_form_lists_every_servers_tools_by_slug_then_name`: servers `demo` (`alpha`,
-    `beta`) and `aaa` (`zeta`): the option values are `zeta`, `alpha`, `beta`, labelled
-    `aaa`, `demo`, `demo`.
+10. `the_rule_form_lists_the_chosen_servers_tools_in_catalog_order`: servers `demo` (`beta`,
+    `alpha`, in that catalog order) and `aaa` (`zeta`): with no server named, the option values
+    are `beta`, `alpha`, labelled `demo`; with `?server=` the id of `demo`, the same; with the id
+    of `aaa`, `zeta` labelled `aaa`. Changed with statement 93: the form suggests only the tools
+    of the server chosen in it.
 11. `a_refresh_that_cannot_read_the_secret_is_recorded_as_failed`: the stored secret of
     `demo` is replaced by text that cannot be opened; the refresh answers 303, one
     `admin_change` row has the detail `tool refresh failed`, and no `tools refreshed` row
@@ -2071,7 +2073,9 @@ The owner's rule and redirect forms use `W.upstream("demo", ..)` and `W.user(bob
    `admin` of `select#invite-role` is selected. Red before the change.
 4. `a_refused_rule_sends_back_every_choice`: a tool the server does not list, for bob, answers
    `400`; the subject, effect, scope and server selects each keep the posted option selected,
-   and `input#rule-tool` holds the tool name. Red before the change.
+   and `input#rule-tool` holds the tool name. Red before the change. Statement 93 adds: the
+   hidden `input[name="server_id"]` holds the server chosen, and `datalist#rule-tools` offers that
+   server's tools.
 5. `a_refused_redirect_sends_back_every_part`: plain `http` answers `400`; `input#redirect-scheme`,
    `input#redirect-host` and `input#redirect-path` hold the posted scheme, host and path prefix.
    Red before the change.
@@ -2878,3 +2882,23 @@ Tests in `src/admin/tests.rs`, over real HTTP:
 
 Changed existing test: `admin::tests::the_invitation_email_has_a_row_of_its_own_and_the_role_a_narrower_one`
 now also expects the Servers group after the role row.
+
+## Statement 93: the rule form's server picker (src/admin/tests.rs)
+
+1. `the_rule_form_lists_only_the_tools_of_the_chosen_server`: with `demo` (alpha, beta) and `other`
+   (zeta, alpha), `/admin/rules?server={other}` selects `other` in `select#rule-server` and suggests
+   `zeta` then `alpha`, its catalog order. With no server, `999`, `abc`, `2x` or an empty value, the
+   first server is selected and its tools are listed. A repeated key, `?server={other}&server={demo}`,
+   is answered `200` and the first value wins. With no server at all, nothing is suggested. The
+   section `section#add-rule` is the one add form; `p#rule-tool-hint` reads `Tools of other. To
+   pick a tool of another server, choose the server above first.`; the read-only text is
+   `Server: other (other)`. Red before the change.
+2. `the_invitation_rule_form_lists_only_the_tools_of_the_chosen_server`: the same on a pending
+   invitation's plan page, including the repeated key. Red before the change.
+3. `the_server_picker_is_a_get_form_without_the_csrf_token`: `form#rule-pick-server` is a GET to
+   `/admin/rules#add-rule` holding `select#rule-server[name="server"]` and the `Show its tools` button,
+   with no csrf input, and its hint (`p#rule-server-hint`) says the other choices are not kept. The POST form keeps its csrf, holds the chosen server in a hidden `server_id`,
+   and holds no `select#rule-server`. Red before the change.
+4. `a_rule_posted_from_the_form_uses_the_chosen_server`: the form's hidden `server_id` is posted with
+   a tool of `other`; the answer is `303` and the one stored rule is for `other` and `zeta`. Red
+   before the change.

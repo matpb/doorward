@@ -1,8 +1,9 @@
 //! The tool rules page: the rules, the add form, and the delete of one rule.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::Response;
+use form_urlencoded::parse;
 use maud::{Markup, html};
 use rusqlite::{Connection, TransactionBehavior, params};
 
@@ -162,9 +163,27 @@ struct Refusal<'a> {
     draft: &'a Draft,
 }
 
+/// The first `server` value of a raw query string; None when there is none.
+pub(super) fn server_param(query: Option<&str>) -> Option<String> {
+    parse(query?.as_bytes())
+        .find(|(name, _)| name == "server")
+        .map(|(_, value)| value.into_owned())
+}
+
 /// The page with its rules, the add form and any refusal.
-pub async fn get_rules(viewer: Viewer, State(state): State<AppState>) -> Response {
-    rules_page(&state, &viewer, StatusCode::OK, None).await
+pub async fn get_rules(
+    viewer: Viewer,
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    rules_page(
+        &state,
+        &viewer,
+        StatusCode::OK,
+        server_param(query.as_deref()),
+        None,
+    )
+    .await
 }
 
 /// Adds a rule. A refused draft answers 400 with the rules page, the draft shown again, and stores nothing.
@@ -192,7 +211,14 @@ pub async fn post_add(State(state): State<AppState>, form: VerifiedForm) -> Resp
                 message,
                 draft: &posted,
             };
-            rules_page(&state, &form.viewer, StatusCode::BAD_REQUEST, Some(refusal)).await
+            rules_page(
+                &state,
+                &form.viewer,
+                StatusCode::BAD_REQUEST,
+                None,
+                Some(refusal),
+            )
+            .await
         }
         Err(err) => internal_error("rule add", &err),
     }
@@ -413,15 +439,23 @@ pub(super) fn plan_rules_in(
     rows.collect()
 }
 
-/// Every stored tool with its server's path, by path then name, for the tool name choice.
-pub(super) fn tools_in(conn: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
-    let mut statement = conn.prepare(
-        "SELECT servers.slug, tool_catalog.name FROM tool_catalog \
-         JOIN servers ON servers.id = tool_catalog.server_id \
-         ORDER BY servers.slug, tool_catalog.name",
-    )?;
-    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-    rows.collect()
+/// The server a rule form picks: the one `choice` names when it is listed, else the first listed one.
+pub(super) fn picked_server(servers: &[ServerRef], choice: Option<&str>) -> Option<i64> {
+    choice
+        .and_then(parse_id)
+        .filter(|id| servers.iter().any(|server| server.id == *id))
+        .or_else(|| servers.first().map(|server| server.id))
+}
+
+/// The tool names a rule form suggests: those of the picked server, in catalog order.
+pub(super) fn suggested_tools(
+    conn: &Connection,
+    picked: Option<i64>,
+) -> rusqlite::Result<Vec<String>> {
+    match picked {
+        Some(server) => catalog::names(conn, server),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// Every user as an id and an email, for the subject choice.
@@ -431,32 +465,42 @@ fn users_in(conn: &Connection) -> rusqlite::Result<Vec<(i64, String)>> {
     rows.collect()
 }
 
+/// The rules page. A refused draft picks the server it posted; otherwise `query` names the server.
 async fn rules_page(
     state: &AppState,
     viewer: &Viewer,
     status: StatusCode,
+    query: Option<String>,
     refusal: Option<Refusal<'_>>,
 ) -> Response {
+    let choice = refusal
+        .as_ref()
+        .map(|refusal| refusal.draft.server_id.clone())
+        .or(query);
     let loaded = state
         .db
-        .call(|conn| {
+        .call(move |conn| {
+            let servers = servers::list(conn)?;
+            let picked = picked_server(&servers, choice.as_deref());
+            let tools = suggested_tools(conn, picked)?;
             Ok((
                 rules_in(conn, None)?,
                 users_in(conn)?,
-                servers::list(conn)?,
-                tools_in(conn)?,
+                servers,
+                picked,
+                tools,
             ))
         })
         .await;
     match loaded {
-        Ok((rules, users, server_list, tools)) => {
+        Ok((rules, users, server_list, picked, tools)) => {
             let data = MainData {
                 nav: panel_nav(viewer, "/admin/rules"),
                 ..MainData::default()
             };
             form_page_with(viewer, status, "rules", "Rules", &data, |csrf| {
                 html! {
-                    (rules_body(csrf, &rules, &users, &server_list, &tools, refusal.as_ref()))
+                    (rules_body(csrf, &rules, &users, &server_list, picked, &tools, refusal.as_ref()))
                 }
             })
         }
@@ -469,7 +513,8 @@ fn rules_body(
     rules: &[Stored],
     users: &[(i64, String)],
     servers: &[ServerRef],
-    tools: &[(String, String)],
+    picked: Option<i64>,
+    tools: &[String],
     refusal: Option<&Refusal<'_>>,
 ) -> Markup {
     let refused = refusal.map(|refusal| refusal.message);
@@ -477,7 +522,7 @@ fn rules_body(
     let subject = draft.map_or("", |draft| draft.subject.as_str());
     let effect = draft.map_or("", |draft| draft.effect.as_str());
     let scope = draft.map_or("", |draft| draft.scope.as_str());
-    let server_choice = draft.map_or("", |draft| draft.server_id.as_str());
+    let picked_server = servers.iter().find(|server| Some(server.id) == picked);
     let tool = draft.map(|draft| ui::sent_back(&draft.tool, ui::SENT_BACK_LIMIT));
     let failed = refused.and_then(refused_field);
     let subject_error = field_error(refused, "rule-subject");
@@ -488,7 +533,7 @@ fn rules_body(
             h1 { "Rules" }
             p.lede { "A deny stands unless an allow is at least as specific in scope and subject, and more specific in one." }
             div.head-actions {
-                a.button data-kind="secondary" href="#add" { "Add a rule" }
+                a.button data-kind="secondary" href="#add-rule" { "Add a rule" }
             }
         }
         @if let Some(message) = refused {
@@ -510,14 +555,16 @@ fn rules_body(
                 }
             }
         }
-        section.part id="add" aria-labelledby="add-title" {
+        section.part id="add-rule" aria-labelledby="add-title" {
             div.part-head {
                 h2 id="add-title" { "Add a rule" }
                 p { "Who the rule is about, what it covers, and whether it lets the call through." }
             }
             div.part-body {
+                (server_picker("/admin/rules#add-rule", servers, picked, field_error(refused, "rule-server")))
                 form.flow method="post" action="/admin/rules" {
                     input type="hidden" name="csrf" value=(csrf);
+                    input type="hidden" name="server_id" value=[picked_server.map(|server| server.id.to_string())];
                     div.fields data-cols="2" {
                         (ui::field(
                             "rule-subject",
@@ -537,12 +584,12 @@ fn rules_body(
                     }
                     div.fields data-cols="2" {
                         (scope_field(scope))
-                        (server_field(servers, server_choice, field_error(refused, "rule-server")))
+                        (chosen_server(picked_server))
                     }
                     div.fields {
-                        (tool_field(tool.as_deref(), field_error(refused, "rule-tool")))
+                        (tool_field(tool.as_deref(), field_error(refused, "rule-tool"), picked_server.map(|server| server.name.as_str())))
                     }
-                    (tool_datalist(tools))
+                    (tool_datalist(picked_server, tools))
                     div.form-actions {
                         button type="submit" data-kind="primary" { "Add rule" }
                     }
@@ -587,34 +634,65 @@ pub(super) fn scope_field(scope: &str) -> Markup {
     )
 }
 
-/// The server field of a rule form: every server, with the refusal of the server when it has one.
-pub(super) fn server_field(servers: &[ServerRef], choice: &str, error: Option<&str>) -> Markup {
-    let note = ui::note_under(
-        error,
-        Some("Used when the scope is one server or one tool."),
-    );
+/// The hint under the server picker: picking reloads the page, so the other choices are not kept.
+const PICKER_HINT: &str = "Choose the server first: picking it reloads the page, and the other choices typed in this form are not kept.";
+
+/// The server picker of a rule form: a GET form that reloads the page with the server it names, and
+/// the button that asks for that server's tools. It holds no csrf token, so the URL carries none.
+pub(super) fn server_picker(
+    action: &str,
+    servers: &[ServerRef],
+    picked: Option<i64>,
+    error: Option<&str>,
+) -> Markup {
+    let note = ui::note_under(error, Some(PICKER_HINT));
     let described = note.describer("rule-server");
-    ui::field(
-        "rule-server",
-        "Server",
-        false,
-        html! {
-            select id="rule-server" name="server_id" aria-invalid=[ui::invalid(error)] aria-describedby=[described.as_deref()] {
-                @for server in servers {
-                    option value=(server.id) selected[choice == server.id.to_string()] { (server.name) " (" (server.slug) ")" }
-                }
+    html! {
+        form.flow id="rule-pick-server" method="get" action=(action) {
+            div.fields {
+                (ui::field(
+                    "rule-server",
+                    "Server",
+                    false,
+                    html! {
+                        select id="rule-server" name="server" aria-invalid=[ui::invalid(error)] aria-describedby=[described.as_deref()] {
+                            @for server in servers {
+                                option value=(server.id) selected[picked == Some(server.id)] { (server.name) " (" (server.slug) ")" }
+                            }
+                        }
+                    },
+                    note,
+                ))
             }
-        },
-        note,
-    )
+            div.form-actions {
+                button type="submit" data-kind="secondary" formmethod="get" formaction=(action) formnovalidate name="show" value="tools" { "Show its tools" }
+            }
+        }
+    }
 }
 
-/// The tool name field of a rule form, with the refusal of the tool when it has one.
-pub(super) fn tool_field(tool: Option<&str>, error: Option<&str>) -> Markup {
-    let note = ui::note_under(
-        error,
-        Some("Used when the scope is one tool. It must be in the server's tool list."),
-    );
+/// The server a rule takes, read-only: the rule form posts its id in a hidden field.
+pub(super) fn chosen_server(picked: Option<&ServerRef>) -> Markup {
+    html! {
+        div.field {
+            p {
+                @if let Some(server) = picked {
+                    "Server: " (server.name) " (" (server.slug) ")"
+                } @else {
+                    "Server: none yet."
+                }
+            }
+        }
+    }
+}
+
+/// The tool name field of a rule form, naming the picked server's tools, with the refusal of the tool
+/// when it has one.
+pub(super) fn tool_field(tool: Option<&str>, error: Option<&str>, server: Option<&str>) -> Markup {
+    let hint = server.map(|name| {
+        format!("Tools of {name}. To pick a tool of another server, choose the server above first.")
+    });
+    let note = ui::note_under(error, hint.as_deref());
     let described = note.describer("rule-tool");
     ui::field(
         "rule-tool",
@@ -627,11 +705,12 @@ pub(super) fn tool_field(tool: Option<&str>, error: Option<&str>) -> Markup {
     )
 }
 
-/// The tools of every server, offered as the choices of the tool name field.
-pub(super) fn tool_datalist(tools: &[(String, String)]) -> Markup {
+/// The tools of the picked server, offered as the choices of the tool name field.
+pub(super) fn tool_datalist(server: Option<&ServerRef>, tools: &[String]) -> Markup {
+    let slug = server.map_or("", |server| server.slug.as_str());
     html! {
         datalist id="rule-tools" {
-            @for (slug, tool) in tools {
+            @for tool in tools {
                 option value=(tool) label=(slug);
             }
         }

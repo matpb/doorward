@@ -274,7 +274,9 @@ from their first sign-in, and nothing applies before the account exists. Assign 
 them later from their page or from the server's page. An admin can do this for
 anyone, the owner and other admins included; only the owner changes roles and mail
 settings. With no matching deny rule, every tool of an assigned server is allowed. Rules
-allow or deny all tools, one server, or one exact tool, for one person or for everyone.
+allow or deny all tools, one server, or one exact tool, for one person or for everyone. The tool
+names a rule form suggests are the tools of the server picked above it; press Show its tools
+after choosing another server.
 
 ## Connect a client
 

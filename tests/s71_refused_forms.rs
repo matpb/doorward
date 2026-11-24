@@ -162,6 +162,18 @@ async fn a_refused_rule_sends_back_every_choice() {
         "the server chosen must stay selected"
     );
     assert_eq!(
+        value(&page, r#"input[type="hidden"][name="server_id"]"#).as_deref(),
+        Some(demo.as_str()),
+        "the rule form must post the server chosen"
+    );
+    let names = admin::catalog_tools(&w.owner, &demo).await;
+    assert!(!names.is_empty(), "the upstream's tools must be listed");
+    assert_eq!(
+        page.attrs("datalist#rule-tools option", "value"),
+        names,
+        "the tool suggestions must be the chosen server's tools"
+    );
+    assert_eq!(
         value(&page, "input#rule-tool").as_deref(),
         Some("no_such_tool"),
         "the tool name must come back as typed"

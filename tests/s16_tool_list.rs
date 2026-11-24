@@ -124,26 +124,47 @@ async fn the_rule_form_offers_the_real_tools() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_rule_form_lists_every_servers_tools_by_slug_then_name() {
+async fn the_rule_form_lists_the_chosen_servers_tools_in_catalog_order() {
     let w = World::start().await;
-    w.upstream("demo", two_tools()).await;
-    w.upstream(
-        "aaa",
-        UpstreamOptions {
-            tools: vec!["zeta".into()],
-            ..Default::default()
-        },
-    )
-    .await;
+    let (_demo_up, demo) = w
+        .upstream(
+            "demo",
+            UpstreamOptions {
+                tools: vec!["beta".into(), "alpha".into()],
+                ..Default::default()
+            },
+        )
+        .await;
+    let (_aaa_up, aaa) = w
+        .upstream(
+            "aaa",
+            UpstreamOptions {
+                tools: vec!["zeta".into()],
+                ..Default::default()
+            },
+        )
+        .await;
+    let demo_tools = vec![
+        ("beta".into(), "demo".into()),
+        ("alpha".into(), "demo".into()),
+    ];
     let page = w.owner.get("/admin/rules").await;
     assert_eq!(
         rule_tool_options(&page),
-        vec![
-            ("zeta".into(), "aaa".into()),
-            ("alpha".into(), "demo".into()),
-            ("beta".into(), "demo".into()),
-        ],
-        "the rule form must list every server's tools ordered by server path, then tool name"
+        demo_tools,
+        "with no server named, the first server's tools are listed, in catalog order"
+    );
+    let page = w.owner.get(&format!("/admin/rules?server={demo}")).await;
+    assert_eq!(
+        rule_tool_options(&page),
+        demo_tools,
+        "the server named is listed, in catalog order, and no other server's tools"
+    );
+    let page = w.owner.get(&format!("/admin/rules?server={aaa}")).await;
+    assert_eq!(
+        rule_tool_options(&page),
+        vec![("zeta".into(), "aaa".into())],
+        "the other server's tools are listed when it is named"
     );
 }
 

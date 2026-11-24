@@ -486,6 +486,12 @@ M. Added for custom headers and per-user credentials
     Proof: `admin_cannot_revoke_or_replace_an_admin_invitation`,
     `reinviting_with_another_role_carries_no_rules` and `admin_cannot_plan_an_admin_invitation`
     in `src/admin/tests.rs`.
+93. The rule form suggests only the tools of the server chosen in it, on the Rules page and on a
+    pending invitation's page; the server is chosen with a form that reloads the page, since pages
+    carry no script. Proof: `the_rule_form_lists_only_the_tools_of_the_chosen_server`,
+    `the_invitation_rule_form_lists_only_the_tools_of_the_chosen_server`,
+    `the_server_picker_is_a_get_form_without_the_csrf_token` and
+    `a_rule_posted_from_the_form_uses_the_chosen_server` in `src/admin/tests.rs`.
 
 ## Proof
 

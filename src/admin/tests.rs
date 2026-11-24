@@ -3524,6 +3524,278 @@ async fn a_tool_rule_for_a_tool_that_left_the_list_is_flagged_stale() {
     );
 }
 
+/// The values of the options of `css` that carry the selected attribute.
+fn picked(body: &str, css: &str) -> Vec<String> {
+    elements(body, &format!("{css} option[selected]"))
+        .iter()
+        .map(|option| option.get("value").cloned().unwrap_or_default())
+        .collect()
+}
+
+/// The values of the tool name suggestions on the page, in page order.
+fn suggestions(body: &str) -> Vec<String> {
+    elements(body, "datalist#rule-tools option")
+        .iter()
+        .map(|option| option.get("value").cloned().unwrap_or_default())
+        .collect()
+}
+
+/// What a rule form says about the server `server` (name and slug alike): its add section, the tool
+/// hint and the read-only text of the chosen server in the form that posts to `post_action`.
+fn assert_rule_form_texts(body: &str, post_action: &str, server: &str) {
+    assert_eq!(
+        elements(body, r#"section#add-rule[aria-labelledby="add-title"]"#).len(),
+        1,
+        "the add form is the section with id add-rule"
+    );
+    let hint = format!(
+        "Tools of {server}. To pick a tool of another server, choose the server above first."
+    );
+    assert_eq!(
+        text_of(body, "p#rule-tool-hint").as_deref(),
+        Some(hint.as_str()),
+        "the tool name hint names the chosen server"
+    );
+    let chosen = text_of(
+        body,
+        &format!(r#"form[method="post"][action="{post_action}"] div.field > p:not(.hint)"#),
+    );
+    assert_eq!(
+        chosen.as_deref(),
+        Some(format!("Server: {server} ({server})").as_str()),
+        "the chosen server is read-only text in the rule form"
+    );
+}
+
+/// Two servers with other tools: `demo` offers alpha then beta, `other` zeta then alpha. Returns their ids.
+async fn two_servers(dir: &Path, owner: &mut Browser) -> (String, String) {
+    add(owner, "demo", SERVER_URL, None).await;
+    add(owner, "other", SERVER_URL, None).await;
+    let demo = server_id_of(dir, "demo");
+    let other = server_id_of(dir, "other");
+    seed_catalog(dir, demo, &["alpha", "beta"]);
+    seed_catalog(dir, other, &["zeta", "alpha"]);
+    (demo.to_string(), other.to_string())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_rule_form_lists_only_the_tools_of_the_chosen_server() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let (demo, other) = two_servers(dir.path(), &mut owner).await;
+    let chosen = owner.get(&format!("/admin/rules?server={other}")).await;
+    assert_eq!(
+        picked(&chosen.body, "select#rule-server"),
+        vec![other.clone()],
+        "the server named in the query is selected"
+    );
+    assert_eq!(
+        suggestions(&chosen.body),
+        ["zeta", "alpha"],
+        "only that server's tools, in catalog order"
+    );
+    assert_rule_form_texts(&chosen.body, "/admin/rules", "other");
+    let twice = owner
+        .get(&format!("/admin/rules?server={other}&server={demo}"))
+        .await;
+    assert_eq!(twice.status, 200, "a repeated server key is not refused");
+    assert_eq!(
+        picked(&twice.body, "select#rule-server"),
+        vec![other.clone()],
+        "the first server value wins"
+    );
+    assert_eq!(suggestions(&twice.body), ["zeta", "alpha"]);
+    let default = owner.get("/admin/rules").await;
+    assert_eq!(
+        picked(&default.body, "select#rule-server"),
+        vec![demo.clone()],
+        "with no server named, the first server is selected"
+    );
+    assert_eq!(
+        suggestions(&default.body),
+        ["alpha", "beta"],
+        "with no server named, the first server's tools are listed"
+    );
+    for query in ["999", "abc", "2x", ""] {
+        let page = owner.get(&format!("/admin/rules?server={query}")).await;
+        assert_eq!(
+            picked(&page.body, "select#rule-server"),
+            vec![demo.clone()],
+            "{query:?} is not a server, so the first is selected"
+        );
+        assert_eq!(
+            suggestions(&page.body),
+            ["alpha", "beta"],
+            "{query:?} is not a server, so the first server's tools are listed"
+        );
+    }
+    let bare = tempfile::tempdir().expect("dir");
+    let (_base, mut empty) = owner_gateway(bare.path()).await;
+    let page = empty.get("/admin/rules").await;
+    assert!(
+        suggestions(&page.body).is_empty(),
+        "with no server, no tool is suggested"
+    );
+    assert!(picked(&page.body, "select#rule-server").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_invitation_rule_form_lists_only_the_tools_of_the_chosen_server() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let (demo, other) = two_servers(dir.path(), &mut owner).await;
+    invite_with(&mut owner, CAROL, "user", &[]).await;
+    let path = plan_path(invitation_id_of(dir.path(), CAROL));
+    let chosen = owner.get(&format!("{path}?server={other}")).await;
+    assert_eq!(
+        picked(&chosen.body, "select#rule-server"),
+        vec![other.clone()],
+        "the server named in the query is selected"
+    );
+    assert_eq!(
+        suggestions(&chosen.body),
+        ["zeta", "alpha"],
+        "only that server's tools, in catalog order"
+    );
+    assert_rule_form_texts(&chosen.body, &format!("{path}/rules"), "other");
+    let twice = owner
+        .get(&format!("{path}?server={other}&server={demo}"))
+        .await;
+    assert_eq!(twice.status, 200, "a repeated server key is not refused");
+    assert_eq!(
+        picked(&twice.body, "select#rule-server"),
+        vec![other.clone()],
+        "the first server value wins"
+    );
+    assert_eq!(suggestions(&twice.body), ["zeta", "alpha"]);
+    let default = owner.get(&path).await;
+    assert_eq!(
+        picked(&default.body, "select#rule-server"),
+        vec![demo.clone()],
+        "with no server named, the first server is selected"
+    );
+    assert_eq!(
+        suggestions(&default.body),
+        ["alpha", "beta"],
+        "with no server named, the first server's tools are listed"
+    );
+    for query in ["999", "abc", "2x", ""] {
+        let page = owner.get(&format!("{path}?server={query}")).await;
+        assert_eq!(
+            picked(&page.body, "select#rule-server"),
+            vec![demo.clone()],
+            "{query:?} is not a server, so the first is selected"
+        );
+        assert_eq!(
+            suggestions(&page.body),
+            ["alpha", "beta"],
+            "{query:?} is not a server, so the first server's tools are listed"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_picker_is_a_get_form_without_the_csrf_token() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let (_demo, other) = two_servers(dir.path(), &mut owner).await;
+    let page = owner.get(&format!("/admin/rules?server={other}")).await;
+    let picker = elements(&page.body, "form#rule-pick-server");
+    assert_eq!(picker.len(), 1, "the picker is one form");
+    assert_eq!(
+        picker[0]["method"], "get",
+        "the picker reloads the page by GET"
+    );
+    assert_eq!(picker[0]["action"], "/admin/rules#add-rule");
+    assert_eq!(
+        text_of(&page.body, "form#rule-pick-server p#rule-server-hint").as_deref(),
+        Some(
+            "Choose the server first: picking it reloads the page, and the other choices typed in this form are not kept."
+        ),
+        "the picker's hint says the other choices are not kept"
+    );
+    assert!(
+        elements(&page.body, r#"form#rule-pick-server input[name="csrf"]"#).is_empty(),
+        "the picker's URL must not carry the csrf token"
+    );
+    assert_eq!(
+        elements(
+            &page.body,
+            r#"form#rule-pick-server select#rule-server[name="server"]"#
+        )
+        .len(),
+        1,
+        "the picker's select is named server"
+    );
+    assert_eq!(
+        text_of(
+            &page.body,
+            r#"form#rule-pick-server button[name="show"][value="tools"]"#
+        )
+        .as_deref(),
+        Some("Show its tools"),
+        "the picker holds the Show its tools button"
+    );
+    let post = r#"form[method="post"][action="/admin/rules"]"#;
+    assert_eq!(
+        elements(&page.body, &format!(r#"{post} input[name="csrf"]"#)).len(),
+        1,
+        "the rule form keeps its csrf token"
+    );
+    let hidden = elements(
+        &page.body,
+        &format!(r#"{post} input[type="hidden"][name="server_id"]"#),
+    );
+    assert_eq!(hidden.len(), 1, "the rule form posts the chosen server");
+    assert_eq!(
+        hidden[0]["value"], other,
+        "the hidden field holds the server"
+    );
+    assert!(
+        elements(&page.body, &format!("{post} select#rule-server")).is_empty(),
+        "the rule form holds no server select"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rule_posted_from_the_form_uses_the_chosen_server() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let (_demo, other) = two_servers(dir.path(), &mut owner).await;
+    let page_path = format!("/admin/rules?server={other}");
+    let form = owner.get(&page_path).await;
+    let posted = attr_of(
+        &form.body,
+        r#"form[method="post"] input[name="server_id"]"#,
+        "value",
+    )
+    .expect("the form carries the chosen server");
+    let answer = owner
+        .submit(
+            &page_path,
+            "/admin/rules",
+            &[
+                ("subject", "everyone"),
+                ("effect", "deny"),
+                ("scope", "tool"),
+                ("server_id", posted.as_str()),
+                ("tool", "zeta"),
+            ],
+        )
+        .await;
+    assert_eq!(answer.status, 303, "a tool of the chosen server is saved");
+    let stored: (i64, String) = open_db(dir.path())
+        .query_row("SELECT server_id, tool FROM rules", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("one rule is stored");
+    assert_eq!(
+        stored,
+        (other.parse::<i64>().expect("an id"), "zeta".to_owned()),
+        "the rule is for the server chosen in the form"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn every_refused_rule_answers_400_with_its_message_and_stores_nothing() {
     let dir = tempfile::tempdir().expect("dir");

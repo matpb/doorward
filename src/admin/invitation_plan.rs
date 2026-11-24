@@ -1,6 +1,6 @@
 //! The plan of a pending invitation: the servers and the personal rules its person gets on accept.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use maud::{Markup, html};
@@ -38,8 +38,10 @@ struct Loaded {
     /// The ids of the servers the plan holds.
     assigned: Vec<i64>,
     servers: Vec<ServerRef>,
+    /// The id of the server the rule form picks.
+    picked: Option<i64>,
     rules: Vec<Stored>,
-    tools: Vec<(String, String)>,
+    tools: Vec<String>,
 }
 
 /// A posted rule as text, before it is checked.
@@ -83,11 +85,13 @@ pub async fn get_plan(
     viewer: Viewer,
     State(state): State<AppState>,
     Path(id): Path<String>,
+    RawQuery(query): RawQuery,
 ) -> Response {
     let Some(id) = parse_id(&id) else {
         return not_found();
     };
-    plan_page(&state, &viewer, id, StatusCode::OK, None).await
+    let server = rules::server_param(query.as_deref());
+    plan_page(&state, &viewer, id, StatusCode::OK, None, server).await
 }
 
 /// Replaces the servers of the plan with the posted set. An unknown server is refused with 400.
@@ -125,6 +129,7 @@ pub async fn post_servers(
                 id,
                 StatusCode::BAD_REQUEST,
                 Some(refusal),
+                None,
             )
             .await
         }
@@ -172,6 +177,7 @@ pub async fn post_rule(
                 id,
                 StatusCode::BAD_REQUEST,
                 Some(refusal),
+                None,
             )
             .await
         }
@@ -233,8 +239,14 @@ fn open_in(conn: &Connection, id: i64, now: i64) -> rusqlite::Result<Option<Open
     .optional()
 }
 
-/// What the plan page shows for the open invitation `id`; None when it is not open.
-fn plan_in(conn: &Connection, id: i64, now: i64) -> rusqlite::Result<Option<Loaded>> {
+/// What the plan page shows for the open invitation `id`, its rule form picking the server `choice`
+/// names; None when the invitation is not open.
+fn plan_in(
+    conn: &Connection,
+    id: i64,
+    now: i64,
+    choice: Option<&str>,
+) -> rusqlite::Result<Option<Loaded>> {
     let Some(invitation) = open_in(conn, id, now)? else {
         return Ok(None);
     };
@@ -244,10 +256,13 @@ fn plan_in(conn: &Connection, id: i64, now: i64) -> rusqlite::Result<Option<Load
     let assigned = statement
         .query_map(params![id], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<i64>>>()?;
+    let servers = servers::list(conn)?;
+    let picked = rules::picked_server(&servers, choice);
     Ok(Some(Loaded {
         rules: rules::plan_rules_in(conn, id, &invitation.email, None)?,
-        servers: servers::list(conn)?,
-        tools: rules::tools_in(conn)?,
+        tools: rules::suggested_tools(conn, picked)?,
+        picked,
+        servers,
         assigned,
         invitation,
     }))
@@ -389,17 +404,26 @@ fn delete_rule_in(
     Ok(Removed::Done)
 }
 
-/// The plan page with the open invitation's servers and rules. A refusal shows its notice, and its
-/// posted values in place of the stored ones.
+/// The plan page with the open invitation's servers and rules, a refusal's posted values in place of
+/// the stored ones. A refused rule picks the server it posted; otherwise `query` picks the server.
 async fn plan_page(
     state: &AppState,
     viewer: &Viewer,
     id: i64,
     status: StatusCode,
     refusal: Option<Refusal<'_>>,
+    query: Option<String>,
 ) -> Response {
+    let choice = match refusal.as_ref() {
+        Some(Refusal::Rule { draft, .. }) => Some(draft.server_id.clone()),
+        _ => query,
+    };
     let now = state.clock.now().unix_timestamp();
-    let mut loaded = match state.db.call(move |conn| plan_in(conn, id, now)).await {
+    let mut loaded = match state
+        .db
+        .call(move |conn| plan_in(conn, id, now, choice.as_deref()))
+        .await
+    {
         Ok(Some(loaded)) => loaded,
         Ok(None) => return not_found(),
         Err(err) => return internal_error("invitation plan", &err),
@@ -438,7 +462,10 @@ fn plan_body(csrf: &str, plan: &Loaded, refusal: Option<&Refusal<'_>>) -> Markup
     };
     let effect = draft.map_or("", |draft| draft.effect.as_str());
     let scope = draft.map_or("", |draft| draft.scope.as_str());
-    let server_choice = draft.map_or("", |draft| draft.server_id.as_str());
+    let picked_server = plan
+        .servers
+        .iter()
+        .find(|server| Some(server.id) == plan.picked);
     let tool = draft.map(|draft| ui::sent_back(&draft.tool, ui::SENT_BACK_LIMIT));
     let assigned = plan
         .servers
@@ -515,23 +542,25 @@ fn plan_body(csrf: &str, plan: &Loaded, refusal: Option<&Refusal<'_>>) -> Markup
                 }
             }
         }
-        section.part id="add" aria-labelledby="add-title" {
+        section.part id="add-rule" aria-labelledby="add-title" {
             div.part-head {
                 h2 id="add-title" { "Add a rule" }
                 p { "What the rule covers, and whether it lets the call through." }
             }
             div.part-body {
+                (rules::server_picker(&format!("{path}#add-rule"), &plan.servers, plan.picked, rules::field_error(rule_refused, "rule-server")))
                 form.flow method="post" action=(format!("{path}/rules")) {
                     input type="hidden" name="csrf" value=(csrf);
+                    input type="hidden" name="server_id" value=[picked_server.map(|server| server.id.to_string())];
                     div.fields data-cols="2" {
                         (rules::effect_field(effect, rules::field_error(rule_refused, "rule-effect")))
                         (rules::scope_field(scope))
                     }
                     div.fields data-cols="2" {
-                        (rules::server_field(&plan.servers, server_choice, rules::field_error(rule_refused, "rule-server")))
-                        (rules::tool_field(tool.as_deref(), rules::field_error(rule_refused, "rule-tool")))
+                        (rules::chosen_server(picked_server))
+                        (rules::tool_field(tool.as_deref(), rules::field_error(rule_refused, "rule-tool"), picked_server.map(|server| server.name.as_str())))
                     }
-                    (rules::tool_datalist(&plan.tools))
+                    (rules::tool_datalist(picked_server, &plan.tools))
                     div.form-actions {
                         button type="submit" data-kind="primary" { "Add rule" }
                     }
