@@ -304,7 +304,7 @@ the server and the signed-in person. Approve only a sign-in you started yourself
 </picture>
 
 Each person sees their connected clients on their account page and can disconnect one
-there. Claude Code, Codex and the Cursor command line client were run against 0.1.0.
+there. Claude Code, Codex and the Cursor command line client were run against the gateway.
 
 ## Limits worth knowing
 
