@@ -30,6 +30,8 @@ messages, behaviour in docs/STATEMENTS.md. Add a landmine the second time it bit
 - One test file: `cargo test --locked --test s44_lockout`
 - Run locally: `cargo run -- --config doorward.toml` (start from `doorward.example.toml`). The
   first start prints a setup code on standard error; `/setup` takes it to create the owner.
+- Release, when the owner asks: `scripts/release.sh X.Y.Z --push` bumps the version in
+  `Cargo.toml`, `Cargo.lock`, the README and the project page, commits, tags and pushes.
 - `scripts/prove-*.sh` drive real clients, mail and containers against a built gateway. They
   need Docker and are not part of the check: run the one that covers what you changed.
 

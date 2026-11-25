@@ -1649,3 +1649,175 @@ async fn the_unfinished_hour_is_not_drawn_on_the_line_at_mid_hour() {
         "the line ends at the last complete hour, not at the open one"
     );
 }
+
+/// The narrowest plot a time chart is drawn in, in CSS px: the plot at 390 px, 302 px, rounded down.
+const NARROW_PLOT_PX: f64 = 300.0;
+/// A date label is 12 px monospace, a glyph 0.6 em wide: 8 px a glyph is a conservative width.
+const GLYPH_PX: f64 = 8.0;
+/// The gap kept between two date labels: one glyph.
+const GAP_PX: f64 = 8.0;
+
+/// The date labels under a time chart, in order: each one's x as a fraction of the plot, and its text.
+fn date_labels(page: &Page, title: &str) -> Vec<(f64, String)> {
+    let doc = Html::parse_document(&page.body);
+    let texts = Selector::parse("svg.plot-area g.x text").expect("a selector");
+    section(&doc, title)
+        .select(&texts)
+        .map(|text| {
+            let x: f64 = text
+                .value()
+                .attr("x")
+                .expect("a date label has an x")
+                .trim_end_matches('%')
+                .parse()
+                .expect("a percentage");
+            (x / 100.0, text_of(text))
+        })
+        .collect()
+}
+
+/// Asserts that no two consecutive date labels sit closer than the longer label's characters at
+/// GLYPH_PX each plus GAP_PX, on a plot `plot` CSS px wide.
+fn assert_dates_clear(labels: &[(f64, String)], plot: f64, what: &str) {
+    assert!(
+        labels.len() >= 2,
+        "{what}: at least two dates are labelled, got {labels:?}"
+    );
+    for pair in labels.windows(2) {
+        let (left, right) = (&pair[0], &pair[1]);
+        let apart = (right.0 - left.0) * plot;
+        let chars = left.1.chars().count().max(right.1.chars().count());
+        let needed = chars as f64 * GLYPH_PX + GAP_PX;
+        assert!(
+            apart >= needed,
+            "{what}: {:?} and {:?} are {apart:.1} px apart, need {needed:.1}",
+            left.1,
+            right.1
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_dates_of_a_90_day_half_width_line_never_overlap() {
+    let s = seeded().await;
+    insert(
+        &s.w.gw.db_path(),
+        &[call(
+            now() - 40 * DAY,
+            s.bob,
+            s.demo,
+            "alpha",
+            "claude",
+            Some(5),
+        )],
+    );
+    let board = make_dashboard(
+        &s.w,
+        "Weeks line",
+        &[chart("Line weeks", "calls", "time", "line", "90d")],
+    )
+    .await;
+    let page = overview(&s.w, &format!("?dashboard={board}")).await;
+    let labels = date_labels(&page, "Line weeks");
+    assert_dates_clear(&labels, NARROW_PLOT_PX, "a 90-day half-width line");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_dates_of_a_30_day_half_width_line_never_overlap() {
+    let s = seeded().await;
+    insert(
+        &s.w.gw.db_path(),
+        &[call(
+            now() - 2 * DAY,
+            s.bob,
+            s.demo,
+            "alpha",
+            "claude",
+            Some(5),
+        )],
+    );
+    let board = make_dashboard(
+        &s.w,
+        "Days line",
+        &[chart("Line days", "calls", "time", "line", "30d")],
+    )
+    .await;
+    let page = overview(&s.w, &format!("?dashboard={board}")).await;
+    let labels = date_labels(&page, "Line days");
+    assert_dates_clear(&labels, NARROW_PLOT_PX, "a 30-day half-width line");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_dates_of_a_90_day_full_width_bars_never_overlap() {
+    let s = seeded().await;
+    insert(
+        &s.w.gw.db_path(),
+        &[call(
+            now() - 40 * DAY,
+            s.bob,
+            s.demo,
+            "alpha",
+            "claude",
+            Some(5),
+        )],
+    );
+    let board = make_dashboard(
+        &s.w,
+        "Weeks bars",
+        &[Chart {
+            width: "full",
+            ..chart("Bars weeks", "calls", "time", "bars", "90d")
+        }],
+    )
+    .await;
+    let page = overview(&s.w, &format!("?dashboard={board}")).await;
+    let labels = date_labels(&page, "Bars weeks");
+    assert_dates_clear(&labels, NARROW_PLOT_PX, "a 90-day full-width bars");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_dates_of_every_time_chart_never_overlap() {
+    let s = seeded().await;
+    insert(
+        &s.w.gw.db_path(),
+        &[call(
+            now() - 2 * HOUR,
+            s.bob,
+            s.demo,
+            "alpha",
+            "claude",
+            Some(5),
+        )],
+    );
+    let specs = [
+        ("Line 24h half", "line", "24h", "half"),
+        ("Line 24h full", "line", "24h", "full"),
+        ("Line 7d half", "line", "7d", "half"),
+        ("Line 7d full", "line", "7d", "full"),
+        ("Line 30d half", "line", "30d", "half"),
+        ("Line 30d full", "line", "30d", "full"),
+        ("Line 90d half", "line", "90d", "half"),
+        ("Line 90d full", "line", "90d", "full"),
+        ("Bars 24h half", "bars", "24h", "half"),
+        ("Bars 24h full", "bars", "24h", "full"),
+        ("Bars 7d half", "bars", "7d", "half"),
+        ("Bars 7d full", "bars", "7d", "full"),
+        ("Bars 30d half", "bars", "30d", "half"),
+        ("Bars 30d full", "bars", "30d", "full"),
+        ("Bars 90d half", "bars", "90d", "half"),
+        ("Bars 90d full", "bars", "90d", "full"),
+    ];
+    let charts: Vec<Chart> = specs
+        .iter()
+        .map(|&(title, shape, period, width)| Chart {
+            width,
+            ..chart(title, "calls", "time", shape, period)
+        })
+        .collect();
+    let board = make_dashboard(&s.w, "Every time chart", &charts).await;
+    let page = overview(&s.w, &format!("?dashboard={board}")).await;
+    for (title, _, _, _) in specs {
+        let labels = date_labels(&page, title);
+        assert_dates_clear(&labels, NARROW_PLOT_PX, title);
+    }
+}

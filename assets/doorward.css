@@ -3825,13 +3825,6 @@ a.chip:focus-visible {
   vector-effect: non-scaling-stroke;
 }
 
-/* In a narrow figure every other date of a week gives way. */
-@container (max-width: 440px) {
-  .time .x .minor {
-    display: none;
-  }
-}
-
 /* Under a line a date is centred on its point; at an edge it hangs inwards. */
 .chart[data-shape="line"] .time .x text {
   text-anchor: middle;
@@ -3843,12 +3836,6 @@ a.chip:focus-visible {
 
 .chart[data-shape="line"] .time .x .edge-end text {
   text-anchor: end;
-}
-
-@container (max-width: 400px) {
-  .time .x .near-edge text {
-    display: none;
-  }
 }
 
 /* Ranked bars: the row's closing hairline is thickened in ink as far as its value goes. */

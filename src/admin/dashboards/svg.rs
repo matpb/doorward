@@ -13,9 +13,15 @@ const BASELINE: i64 = 164;
 const DATE_Y: i64 = 182;
 /// The width of the scale column at the right of a time chart, inside its svg.
 const SCALE_COLUMN: i64 = 48;
-/// A line tick this close to an edge of the plot hangs inwards; a tick within NEAR_EDGE of it is near.
+/// A line tick this close to an edge of the plot hangs inwards.
 const EDGE: f64 = 0.04;
-const NEAR_EDGE: f64 = 0.24;
+/// The narrowest plot a time chart is drawn in, in CSS px: the plot at 390 px, rounded down. Text is
+/// never scaled, so a wider plot only has room to spare.
+const NARROW_PLOT: f64 = 300.0;
+/// A date label's glyph in 12 px monospace, 0.6 em wide; 8 px a glyph is conservative. A gap is one.
+const GLYPH: f64 = 8.0;
+/// A date label counts as at least this many glyphs, so `28 Aug` is seven.
+const LABEL_GLYPHS: usize = 7;
 
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -183,15 +189,14 @@ fn mark_title(bucket: &Bucket, hourly: bool, weekly: bool, unit: &str) -> String
     }
 }
 
-/// A date tick: the bucket it stands under, its label, and whether it is minor.
+/// A date tick: the bucket it stands under and its label.
 struct Tick {
     index: usize,
     label: String,
-    minor: bool,
 }
 
-/// The ticks of a time chart: every sixth hour, midnight written as its day; every day of seven,
-/// every second one from the newest minor; Mondays up to 31 days; the first of each month beyond.
+/// The ticks of a time chart: every sixth hour, midnight written as its day; every day of seven and
+/// every week of 90 days; Mondays up to 31 days; the first of each month beyond.
 fn ticks(buckets: &[Bucket], hourly: bool, weekly: bool) -> Vec<Tick> {
     let count = buckets.len();
     let mut out = Vec::new();
@@ -206,47 +211,79 @@ fn ticks(buckets: &[Bucket], hourly: bool, weekly: bool) -> Vec<Tick> {
                 } else {
                     format!("{:02}:00", when.hour)
                 };
-                out.push(Tick {
-                    index,
-                    label,
-                    minor: false,
-                });
+                out.push(Tick { index, label });
             }
-        } else if weekly {
+        } else if weekly || count == 7 {
             out.push(Tick {
                 index,
                 label: when.short(),
-                minor: false,
-            });
-        } else if count == 7 {
-            let minor = (count - 1 - index) % 2 == 1;
-            out.push(Tick {
-                index,
-                label: when.short(),
-                minor,
             });
         } else if count <= 31 {
             if when.monday() {
                 out.push(Tick {
                     index,
                     label: when.short(),
-                    minor: false,
                 });
             }
         } else if when.day == 1 {
             out.push(Tick {
                 index,
                 label: when.short(),
-                minor: false,
             });
         }
     }
     out
 }
 
-/// The class of each line tick: an edge tick hangs inwards, and a tick near one is `near-edge`.
+/// The share of the narrowest plot that two date labels need between their anchors: the longer of
+/// the two, at least LABEL_GLYPHS glyphs, and one gap.
+fn label_share(left: &str, right: &str) -> f64 {
+    let glyphs = left
+        .chars()
+        .count()
+        .max(right.chars().count())
+        .max(LABEL_GLYPHS);
+    (glyphs as f64 * GLYPH + GLYPH) / NARROW_PLOT
+}
+
+/// Which ticks keep their label. The newest complete tick keeps it, then each tick going back that
+/// clears the last label kept; a partial tick after it keeps its label only when it clears it too.
+fn label_ticks(ticks: &[Tick], positions: &[f64], buckets: &[Bucket]) -> Vec<bool> {
+    let mut keep = vec![false; ticks.len()];
+    let newest = ticks
+        .iter()
+        .rposition(|tick| {
+            buckets
+                .get(tick.index)
+                .is_some_and(|bucket| !bucket.partial)
+        })
+        .or(ticks.len().checked_sub(1));
+    let Some(anchor) = newest else {
+        return keep;
+    };
+    keep[anchor] = true;
+    let mut last = anchor;
+    for index in (0..anchor).rev() {
+        let room = label_share(&ticks[index].label, &ticks[last].label);
+        if positions[last] - positions[index] >= room {
+            keep[index] = true;
+            last = index;
+        }
+    }
+    let mut last = anchor;
+    for index in anchor + 1..ticks.len() {
+        let room = label_share(&ticks[last].label, &ticks[index].label);
+        if positions[index] - positions[last] >= room {
+            keep[index] = true;
+            last = index;
+        }
+    }
+    keep
+}
+
+/// The class of each line tick: an edge tick's label hangs inwards from that edge.
 fn tick_classes(positions: &[f64]) -> Vec<&'static str> {
-    let mut classes: Vec<&'static str> = positions
+    positions
         .iter()
         .map(|x| {
             if *x < EDGE {
@@ -257,24 +294,7 @@ fn tick_classes(positions: &[f64]) -> Vec<&'static str> {
                 ""
             }
         })
-        .collect();
-    for index in 0..positions.len() {
-        if classes[index].is_empty() {
-            continue;
-        }
-        for neighbour in [index.checked_sub(1), index.checked_add(1)]
-            .into_iter()
-            .flatten()
-        {
-            let near = positions
-                .get(neighbour)
-                .is_some_and(|x| (x - positions[index]).abs() < NEAR_EDGE);
-            if near && classes[neighbour].is_empty() {
-                classes[neighbour] = "near-edge";
-            }
-        }
-    }
-    classes
+        .collect()
 }
 
 /// The runs of consecutive buckets that have a value, as (index, value) pairs.
@@ -303,17 +323,6 @@ fn line_points(run: &[(usize, i64)], top: i64) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// The class of a date tick's group: its edge or near class, else `minor`, else none.
-fn tick_class(edge: &'static str, minor: bool) -> Option<&'static str> {
-    if !edge.is_empty() {
-        Some(edge)
-    } else if minor {
-        Some("minor")
-    } else {
-        None
-    }
 }
 
 /// The largest value of the buckets, or zero.
@@ -346,6 +355,13 @@ pub fn time_svg(chart: &TimeChart<'_>) -> Markup {
             }
         })
         .collect();
+    let labelled = label_ticks(&tick_list, &positions, buckets);
+    let (tick_list, positions): (Vec<Tick>, Vec<f64>) = tick_list
+        .into_iter()
+        .zip(positions)
+        .zip(labelled)
+        .filter_map(|((tick, x), keep)| keep.then_some((tick, x)))
+        .unzip();
     let edges: Vec<&'static str> = if chart.line {
         tick_classes(&positions)
     } else {
@@ -354,7 +370,7 @@ pub fn time_svg(chart: &TimeChart<'_>) -> Markup {
     let ticks_out: Vec<(&Tick, f64, Option<&'static str>)> = tick_list
         .iter()
         .zip(positions.iter().zip(edges.iter()))
-        .map(|(tick, (x, edge))| (tick, *x, tick_class(edge, tick.minor)))
+        .map(|(tick, (x, edge))| (tick, *x, (!edge.is_empty()).then_some(*edge)))
         .collect();
     let grid_y: Vec<(i64, i64)> = grid
         .iter()

@@ -3078,6 +3078,11 @@ New in the round after c1b6b73 (statements 94, 95, 96, 97 and 98):
 - s97, `the_unfinished_day_is_a_partial_bar_whose_title_says_so_far_at_mid_day`: at 12:00 the one bar of
   the open day is `rect.chart-bar.partial` and its title ends `, so far`; yesterday's does not.
 - s97, `the_unfinished_hour_is_not_drawn_on_the_line_at_mid_hour`: at 00:30 the line has 23 points, not 24.
+- s97, `the_dates_of_a_90_day_half_width_line_never_overlap`, `the_dates_of_a_30_day_half_width_line_never_overlap`,
+  `the_dates_of_a_90_day_full_width_bars_never_overlap` and `the_dates_of_every_time_chart_never_overlap`: the
+  date labels under each time chart (every shape, period and width) are read from the page, and no two
+  consecutive ones are closer than the longer label's characters at 8 px each plus one 8 px gap, on a plot
+  300 px wide (the narrowest plot at 390 px, rounded down).
 - Changed: `daily_buckets_are_n_utc_days_ending_today_with_exact_boundaries` and
   `median_and_p95_are_nearest_rank_per_bucket_and_empty_buckets_are_gaps` expect the open day's title to
   end `, so far`; every other assertion of both is unchanged. The Data table value of the open bucket is

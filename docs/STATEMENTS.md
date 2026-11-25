@@ -525,8 +525,8 @@ M. Added for custom headers and per-user credentials
     `tests/s98_panel_reads.rs` and the unit tests in `src/admin/activity/export.rs`.
 96. Dashboards are stored in the database and shared. Every admin and the owner creates, renames,
     reorders and deletes dashboards and their charts, and each change writes one `admin_change`
-    row. A chart whose server or user is deleted is removed with it, and the database writes one
-    `admin_change` row per chart removed, `deleted chart {title} from dashboard {name}: its server
+    row. A chart whose server or user is deleted is removed with it, and the gateway writes one
+    `admin_change` row per chart removed, naming the admin, `deleted chart {title} from dashboard {name}: its server
     was deleted` or `... its user was deleted`. A plain user gets 403 on every dashboard route,
     POSTs included, and an anonymous visitor is redirected to sign-in. A form post without the csrf
     token is refused and stores nothing. A dashboard name is trimmed and is 1 to 80 characters,
