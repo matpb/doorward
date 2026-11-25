@@ -5,7 +5,7 @@ in with an email and a password, an admin decides who may use which server and w
 and every request is checked before it reaches a server. It ships as one binary with one
 SQLite database.
 
-Status: 1.2.0.
+Status: 1.3.0.
 
 > [!TIP]
 > Putting Doorward in production for a team? [Both Hands](https://both-hands.com/?utm_source=github&utm_medium=readme&utm_campaign=doorward)
