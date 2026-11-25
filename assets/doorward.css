@@ -4807,7 +4807,7 @@ a.chip:focus-visible {
   min-inline-size: 73px;
 }
 
-/* A phone has no column free of Save and the words: the button leads, two lines part it from Save. */
+/* A phone has no column free of Save: the sentence leads and the button ends under it, over the words. */
 @media (max-width: 639.98px) {
   .tools-foot .confirm-body {
     grid-template-columns: minmax(0, 1fr);
@@ -4815,7 +4815,12 @@ a.chip:focus-visible {
   }
 
   .tools-foot .confirm-body > p {
+    grid-area: 1 / 1;
+  }
+
+  .tools-foot .confirm-body > button {
     grid-area: 2 / 1;
+    justify-self: end;
   }
 
   .tools-foot .confirm-body .whole {
