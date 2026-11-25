@@ -1431,14 +1431,14 @@ async fn a_mixed_list_foot_asks_before_all_on_or_all_off() {
         (
             "all-on",
             "All on",
-            "Switches all 3 tools on. The 1 you switched off comes back on.",
-            "The 1 you switched off comes back on.",
+            "Switches all 3 tools on. The 1 saved as off comes back on.",
+            "The 1 saved as off comes back on.",
         ),
         (
             "all-off",
             "All off",
-            "Switches all 3 tools off. The 2 you have on go off.",
-            "The 2 you have on go off.",
+            "Switches all 3 tools off. The 2 saved as on go off.",
+            "The 2 saved as on go off.",
         ),
     ];
     for (question, (value, label, sentence, second)) in questions.into_iter().zip(expected) {
@@ -1522,8 +1522,8 @@ async fn a_mixed_list_of_62_tools_with_39_on_says_the_brief_sentences() {
     assert_eq!(
         question_sentences(&sc.bob.get("/account").await.body),
         vec![
-            "Switches all 62 tools on. The 23 you switched off come back on.",
-            "Switches all 62 tools off. The 39 you have on go off.",
+            "Switches all 62 tools on. The 23 saved as off come back on.",
+            "Switches all 62 tools off. The 39 saved as on go off.",
         ],
         "62 rows with 39 on must read as the design's example"
     );
@@ -1541,8 +1541,8 @@ async fn a_mixed_list_of_62_tools_with_one_off_says_one_switched_off_comes_back(
     assert_eq!(
         question_sentences(&sc.bob.get("/account").await.body),
         vec![
-            "Switches all 62 tools on. The 1 you switched off comes back on.",
-            "Switches all 62 tools off. The 61 you have on go off.",
+            "Switches all 62 tools on. The 1 saved as off comes back on.",
+            "Switches all 62 tools off. The 61 saved as on go off.",
         ],
         "one tool off must read as one switched off that comes back"
     );
@@ -1555,8 +1555,8 @@ async fn a_mixed_list_with_one_choice_says_one_choice() {
     assert_eq!(
         question_sentences(&sc.bob.get("/account").await.body),
         vec![
-            "Switches all 3 tools on. The 2 you switched off come back on.",
-            "Switches all 3 tools off. The 1 you have on goes off.",
+            "Switches all 3 tools on. The 2 saved as off come back on.",
+            "Switches all 3 tools off. The 1 saved as on goes off.",
         ],
         "one tool on must read as one that goes off"
     );

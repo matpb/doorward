@@ -236,18 +236,18 @@ fn saved_text(name: &str, on: usize, total: usize) -> String {
     }
 }
 
-/// The second sentence of a question: the count of the tools its word moves, singular for one.
+/// The second sentence of a question: the saved count of the tools its word moves, singular for one.
 fn choices(on: usize, off: usize, all_off: bool) -> String {
     if all_off {
         if on == 1 {
-            "The 1 you have on goes off.".to_owned()
+            "The 1 saved as on goes off.".to_owned()
         } else {
-            format!("The {on} you have on go off.")
+            format!("The {on} saved as on go off.")
         }
     } else if off == 1 {
-        "The 1 you switched off comes back on.".to_owned()
+        "The 1 saved as off comes back on.".to_owned()
     } else {
-        format!("The {off} you switched off come back on.")
+        format!("The {off} saved as off come back on.")
     }
 }
 
