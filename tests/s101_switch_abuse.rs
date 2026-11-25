@@ -3,7 +3,9 @@ mod common;
 use common::admin;
 use common::client::{Page, TestClient};
 use common::mcp::{McpClient, McpReply};
-use common::switches::{deny_tool, post_switches, stored_rows, switched_off, tool_rows};
+use common::switches::{
+    deny_tool, post_switches, post_switches_with_shown, stored_rows, switched_off, tool_rows,
+};
 use common::upstream::{FakeUpstream, UpstreamOptions};
 use common::values::account_csrf;
 use common::world::World;
@@ -75,9 +77,10 @@ fn assert_refused(page: &Page, what: &str) {
         page.status,
         page.location()
     );
-    assert_ne!(
-        page.location().as_deref(),
-        Some("/account#tools"),
+    assert!(
+        !page
+            .location()
+            .is_some_and(|location| location.starts_with("/account?saved=")),
         "{what} must not be accepted"
     );
 }
@@ -287,9 +290,10 @@ async fn a_form_over_the_size_limit_is_refused_and_stores_nothing() {
         page.status, 403,
         "a form over the size limit must be refused with the status the product gives an over-limit form"
     );
-    assert_ne!(
-        page.location().as_deref(),
-        Some("/account#tools"),
+    assert!(
+        !page
+            .location()
+            .is_some_and(|location| location.starts_with("/account?saved=")),
         "a refused over-limit form must not be accepted"
     );
     assert_eq!(
@@ -616,5 +620,31 @@ async fn a_switch_for_an_unassigned_server_never_makes_it_reachable() {
         sc.other_up.calls_to("echo"),
         0,
         "the unassigned server's upstream must never see the call"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shown_name_that_is_not_an_allowed_catalog_tool_stores_nothing() {
+    let sc = start().await;
+    deny_tool(&sc.w, "everyone", &sc.s_id, "delete_db").await;
+    let page = post_switches_with_shown(
+        &sc.bob,
+        "s",
+        "chosen",
+        &["made-up", "delete_db"],
+        &["made-up", "delete_db", "not-listed", "echo"],
+    )
+    .await;
+    assert_eq!(page.status, 303, "the form must be accepted");
+    assert_eq!(
+        switched_off(&sc.w, &sc.bob_id, &sc.s_id),
+        vec!["echo"],
+        "only the allowed tool that the form showed is stored"
+    );
+    assert!(
+        stored_rows(&sc.w)
+            .iter()
+            .all(|(_, _, tool)| tool == "echo" || !tool.starts_with("made-up")),
+        "a shown name outside the catalog must never be stored"
     );
 }

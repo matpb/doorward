@@ -344,9 +344,12 @@ fn check_problems(root: ElementRef<'_>) -> Vec<String> {
             problems.push(format!("the checkbox {id} has no parent"));
             continue;
         };
-        if parent.value().name() != "div" || !has_class(parent, "check") {
+        // A row of `Your tools` is the one other holder of a checkbox and its label.
+        let in_check = parent.value().name() == "div" && has_class(parent, "check");
+        let in_tool = parent.value().name() == "li" && has_class(parent, "tool");
+        if !in_check && !in_tool {
             problems.push(format!(
-                "the checkbox {id} must sit directly in a div.check"
+                "the checkbox {id} must sit directly in a div.check or a li.tool"
             ));
             continue;
         }

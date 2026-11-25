@@ -421,7 +421,8 @@ async fn run_call(
             return deny_call(state, caller, started, id, name, row, &detail).await;
         }
         Some(policy::Refusal::SwitchedOff) => {
-            return deny_switched(state, caller, started, id, name, row).await;
+            let stateless = message.generation == Generation::Stateless;
+            return deny_switched(state, caller, started, id, name, row, stateless).await;
         }
         None => {}
     }
@@ -844,11 +845,7 @@ async fn withheld_call(
     .await;
     let null = Value::Null;
     let id = message.id.as_ref().unwrap_or(&null);
-    let mut body = json!({"content": [{"type": "text", "text": text}], "isError": true});
-    if message.generation == Generation::Stateless {
-        body["resultType"] = json!("complete");
-    }
-    result(id, body)
+    tool_error(id, &text, message.generation == Generation::Stateless)
 }
 
 /// A refused tools/call: one deny row with its detail, and the one answer every refusal gets. A name
@@ -874,9 +871,11 @@ async fn deny_switched(
     id: &Value,
     name: &str,
     server: Option<(i64, &str, &str)>,
+    stateless: bool,
 ) -> Response {
     record_denial(state, caller, started, server, name, policy::SWITCHED_OFF).await;
-    answer::switched_off_tool(id, name)
+    let text = switched_off_text(&state.config.public_url, name);
+    tool_error(id, &text, stateless)
 }
 
 /// Writes the deny row of a refused tools/call.
@@ -1263,15 +1262,14 @@ fn candidate(
     let mut entries = Vec::new();
     let mut left_out = 0usize;
     for (name, definition) in definitions {
-        match listed(
-            &server.slug,
-            name,
-            definition,
-            &server.access,
-            user,
-            server.server_id,
-            stateless,
-        ) {
+        if server
+            .access
+            .refusal(user, server.server_id, name)
+            .is_some()
+        {
+            continue;
+        }
+        match listed(&server.slug, name, definition, stateless) {
             Some(entry) => entries.push(entry),
             None => left_out += 1,
         }
@@ -1293,22 +1291,11 @@ fn candidate(
     }
 }
 
-/// The entry a stored tool lists as, or None when it is left out: its name, its merged length,
-/// the caller's rules and switches, and no x-mcp-header key on a stateless link.
-fn listed(
-    slug: &str,
-    name: &str,
-    definition: &str,
-    access: &policy::Access,
-    user: i64,
-    server_id: i64,
-    stateless: bool,
-) -> Option<Value> {
+/// The entry a stored tool lists as, or None when it is left out: its name, its merged length, and no
+/// x-mcp-header key on a stateless link. The caller's rules and switches are checked by the caller.
+fn listed(slug: &str, name: &str, definition: &str, stateless: bool) -> Option<Value> {
     let merged = format!("{slug}__{name}");
-    if !valid_name(name)
-        || merged.len() > MERGED_LIMIT
-        || access.refusal(user, server_id, name).is_some()
-    {
+    if !valid_name(name) || merged.len() > MERGED_LIMIT {
         return None;
     }
     let mut tool: Value = serde_json::from_str(definition).ok()?;
@@ -1488,6 +1475,23 @@ pub(super) fn result(id: &Value, result: Value) -> Response {
     respond(
         StatusCode::OK,
         &json!({"jsonrpc": "2.0", "id": id, "result": result}),
+    )
+}
+
+/// The answer of a tools/call the gateway answers itself: a tool error with one text, and resultType
+/// complete under the stateless rules.
+pub(super) fn tool_error(id: &Value, text: &str, stateless: bool) -> Response {
+    let mut body = json!({"content": [{"type": "text", "text": text}], "isError": true});
+    if stateless {
+        body["resultType"] = json!("complete");
+    }
+    result(id, body)
+}
+
+/// The text of a tools/call to a tool the caller switched off, under the name the client sent.
+pub(super) fn switched_off_text(public_url: &str, name: &str) -> String {
+    format!(
+        "Tool {name} is switched off in your Doorward account. Switch it on under Your tools at {public_url}/account, then call it again."
     )
 }
 

@@ -131,18 +131,6 @@ pub fn unknown_tool(id: &Value, name: &str) -> Response {
     )
 }
 
-/// The answer for a `tools/call` of a tool the user switched off; `name` is the name the client sent.
-pub fn switched_off_tool(id: &Value, name: &str) -> Response {
-    error(
-        StatusCode::OK,
-        Some(id),
-        -32602,
-        &format!(
-            "Tool {name} is switched off in your Doorward account. Switch it on under Your tools, then reconnect."
-        ),
-    )
-}
-
 /// The empty list answer to `message`, with the cache fields under the stateless rules.
 pub fn empty_list(message: &Message, key: &str) -> Response {
     let null = Value::Null;

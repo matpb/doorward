@@ -2,9 +2,11 @@ mod common;
 
 use common::admin;
 use common::client::TestClient;
+use common::headers::{declare_header, header_id, set_switches};
 use common::mcp::{McpClient, McpReply};
 use common::switches::{deny_tool, post_switches, stored_definitions, switched_off};
 use common::upstream::{FakeUpstream, UpstreamOptions};
+use common::values::{CANARY, store_value};
 use common::world::World;
 use serde_json::{Value, json};
 
@@ -44,11 +46,50 @@ async fn switch_delete_db_off(sc: &Scene) {
     );
 }
 
-/// The refusal text of a call to a switched-off tool, under the name the client sent.
-fn switched_off_text(name: &str) -> String {
+/// The text of a call to a switched-off tool, under the name the client sent and the gateway's address.
+fn switched_off_text(base: &str, name: &str) -> String {
     format!(
-        "Tool {name} is switched off in your Doorward account. Switch it on under Your tools, then reconnect."
+        "Tool {name} is switched off in your Doorward account. Switch it on under Your tools at {base}/account, then call it again."
     )
+}
+
+/// Asserts that `reply` is the tool error of a switched-off call: a result, not a JSON-RPC error, with
+/// isError and one text, and resultType complete under the stateless rules.
+fn assert_switched_off_answer(reply: &McpReply, text: &str, stateless: bool) {
+    assert_eq!(
+        reply.status, 200,
+        "a switched-off call is answered on HTTP 200"
+    );
+    assert_eq!(
+        reply.error_code(),
+        None,
+        "a switched-off call is a result, not a JSON-RPC error"
+    );
+    let result = reply.result().expect("a switched-off call has a result");
+    assert_eq!(
+        result.get("isError"),
+        Some(&json!(true)),
+        "the answer is a tool error"
+    );
+    assert_eq!(
+        reply.text().as_deref(),
+        Some(text),
+        "the text says the tool is switched off and where to switch it on"
+    );
+    assert_eq!(
+        result.get("resultType"),
+        stateless.then(|| json!("complete")).as_ref(),
+        "the stateless answer is marked complete, the session answer is not"
+    );
+}
+
+/// Declares a required header on server `s` and turns storing on, so bob has no value for it and is withheld.
+async fn withhold_bob(sc: &Scene) {
+    let page = declare_header(&sc.w.owner, &sc.id, "X-Trace-Id", true).await;
+    assert_eq!(page.status, 303, "declaring the header must be accepted");
+    let page = set_switches(&sc.w.owner, &sc.id, false, true).await;
+    assert_eq!(page.status, 303, "saving the switches must be accepted");
+    sc.up.clear();
 }
 
 /// The tool names of a tool list answer, which must be a 200.
@@ -160,62 +201,52 @@ async fn a_call_to_a_switched_off_tool_is_refused_on_the_server_path_without_rea
 {
     let sc = start().await;
     switch_delete_db_off(&sc).await;
-    let client = session(&sc.w, &sc.bob, "s").await;
-    sc.up.clear();
-    let refused = client.call_tool("delete_db", json!({})).await;
-    assert_eq!(
-        refused.status, 200,
-        "a refused call is a JSON-RPC answer on HTTP 200"
-    );
-    assert_eq!(
-        refused.error_code(),
-        Some(-32602),
-        "the refusal must be -32602"
-    );
-    assert_eq!(
-        refused.error_message(),
-        Some(switched_off_text("delete_db")),
-        "the refusal must say the tool is switched off"
-    );
-    assert_eq!(
-        sc.up.calls_to("delete_db"),
-        0,
-        "the upstream must never see a call to a switched-off tool"
-    );
-    let allowed = client.call_tool("echo", json!({"text": "hi"})).await;
-    assert_eq!(
-        allowed.text().as_deref(),
-        Some("called: echo"),
-        "an on tool must still be called"
-    );
+    let tokens = sc.w.token(&sc.bob, "s").await;
+    let text = switched_off_text(sc.w.base(), "delete_db");
+    for stateless in [false, true] {
+        let client = if stateless {
+            sc.w.stateless_mcp("s", &tokens)
+        } else {
+            session(&sc.w, &sc.bob, "s").await
+        };
+        sc.up.clear();
+        let refused = client.call_tool("delete_db", json!({})).await;
+        assert_switched_off_answer(&refused, &text, stateless);
+        assert_eq!(
+            sc.up.calls_to("delete_db"),
+            0,
+            "the upstream must never see a call to a switched-off tool"
+        );
+        let allowed = client.call_tool("echo", json!({"text": "hi"})).await;
+        assert_eq!(
+            allowed.text().as_deref(),
+            Some("called: echo"),
+            "an on tool must still be called"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_call_to_a_switched_off_tool_is_refused_on_the_combined_endpoint_with_the_merged_name() {
     let sc = start().await;
     switch_delete_db_off(&sc).await;
-    let client = session(&sc.w, &sc.bob, "mcp").await;
-    sc.up.clear();
-    let refused = client.call_tool("s__delete_db", json!({})).await;
-    assert_eq!(
-        refused.status, 200,
-        "a refused call is a JSON-RPC answer on HTTP 200"
-    );
-    assert_eq!(
-        refused.error_code(),
-        Some(-32602),
-        "the refusal must be -32602"
-    );
-    assert_eq!(
-        refused.error_message(),
-        Some(switched_off_text("s__delete_db")),
-        "the refusal must name the merged tool as the client sent it"
-    );
-    assert_eq!(
-        sc.up.calls_to("delete_db"),
-        0,
-        "the upstream must never see a call to a switched-off tool"
-    );
+    let tokens = sc.w.token(&sc.bob, "mcp").await;
+    let text = switched_off_text(sc.w.base(), "s__delete_db");
+    for stateless in [false, true] {
+        let client = if stateless {
+            sc.w.stateless_mcp("mcp", &tokens)
+        } else {
+            session(&sc.w, &sc.bob, "mcp").await
+        };
+        sc.up.clear();
+        let refused = client.call_tool("s__delete_db", json!({})).await;
+        assert_switched_off_answer(&refused, &text, stateless);
+        assert_eq!(
+            sc.up.calls_to("delete_db"),
+            0,
+            "the upstream must never see a call to a switched-off tool"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -440,4 +471,103 @@ async fn a_user_with_no_switches_gets_the_upstream_bytes_on_the_server_path() {
         expected.to_string(),
         "with no switch the stateless list on /open must be the upstream's bytes, marked private"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_withheld_caller_is_not_shown_a_switched_off_tool_and_is_told_it_is_switched_off() {
+    let sc = start().await;
+    switch_delete_db_off(&sc).await;
+    deny_tool(&sc.w, "everyone", &sc.id, "search").await;
+    withhold_bob(&sc).await;
+    let tokens = sc.w.token(&sc.bob, "s").await;
+    let text = switched_off_text(sc.w.base(), "delete_db");
+    for stateless in [false, true] {
+        let client = if stateless {
+            sc.w.stateless_mcp("s", &tokens)
+        } else {
+            session(&sc.w, &sc.bob, "s").await
+        };
+        let listed = client.list_tools().await;
+        assert_eq!(
+            names(&listed),
+            vec!["echo"],
+            "a withheld caller's list hides the switched-off tool and the denied one"
+        );
+        let off = client.call_tool("delete_db", json!({})).await;
+        assert_switched_off_answer(&off, &text, stateless);
+        let held = client.call_tool("echo", json!({})).await;
+        assert!(
+            held.text()
+                .unwrap_or_default()
+                .contains("needs your credentials"),
+            "a tool that is on keeps the withheld text, got {:?}",
+            held.text()
+        );
+        let denied = client.call_tool("search", json!({})).await;
+        assert_eq!(
+            denied.error_code(),
+            Some(-32602),
+            "a rule-denied tool stays unknown"
+        );
+        assert_eq!(
+            denied.error_message(),
+            Some("Unknown tool: search".to_string())
+        );
+        assert!(
+            sc.up.requests().is_empty(),
+            "a withheld caller's calls never reach the upstream"
+        );
+    }
+    let combined = session(&sc.w, &sc.bob, "mcp").await;
+    assert!(
+        !combined
+            .list_tools()
+            .await
+            .tool_names()
+            .contains(&"s__delete_db".to_string()),
+        "the combined list of a withheld caller hides the switched-off tool"
+    );
+    let off = combined.call_tool("s__delete_db", json!({})).await;
+    assert_switched_off_answer(&off, &switched_off_text(sc.w.base(), "s__delete_db"), false);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_placeholder_session_of_a_caller_who_now_has_the_value_hides_and_refuses_a_switched_off_tool()
+ {
+    let sc = start().await;
+    switch_delete_db_off(&sc).await;
+    withhold_bob(&sc).await;
+    let tokens = sc.w.token(&sc.bob, "s").await;
+    let waiting = sc.w.session_mcp("s", &tokens);
+    assert_eq!(
+        waiting.initialize().await.status,
+        200,
+        "initialize must answer 200"
+    );
+    assert!(
+        waiting
+            .session_id()
+            .is_some_and(|id| id.starts_with("dw-wait-")),
+        "a withheld caller is given a placeholder session"
+    );
+    let header = header_id(&sc.w.owner, &sc.id, "X-Trace-Id")
+        .await
+        .expect("the header must be declared");
+    let stored = store_value(&sc.bob, "s", &header, CANARY).await;
+    assert_eq!(stored.status, 303, "the value must be stored");
+    sc.up.clear();
+    assert_eq!(
+        names(&waiting.list_tools().await),
+        vec!["echo", "search"],
+        "the placeholder session's list hides the switched-off tool"
+    );
+    let off = waiting.call_tool("delete_db", json!({})).await;
+    assert_switched_off_answer(&off, &switched_off_text(sc.w.base(), "delete_db"), false);
+    assert_eq!(
+        sc.up.calls_to("delete_db"),
+        0,
+        "the upstream must never see a call to a switched-off tool"
+    );
+    let allowed = waiting.call_tool("echo", json!({"text": "hi"})).await;
+    assert_eq!(allowed.text().as_deref(), Some("called: echo"));
 }

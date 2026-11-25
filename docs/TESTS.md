@@ -87,7 +87,9 @@ The other tests of this file check other settings and are not listed here.
    `_`, `/`, `?`, `&`, `=`, before `@` and before a `.` that a letter or digit follows; it
    never breaks after the last character. Maud escapes every piece of the text: the escaping
    tests are unchanged (review fix 4 rewrote the function without `PreEscaped`), and
-   `breakable_escapes_quotes_and_markup_in_every_piece` is new for it.
+   `breakable_escapes_quotes_and_markup_in_every_piece` is new for it. `breakable_tool_*` (the tool-name
+   helper of the switches): a `wbr` before each capital that follows a lower-case letter, nothing else added,
+   and every piece escaped.
 7. Rewritten for the new shell (statement 62): `admin::tests::html_pages_carry_the_browser_headers`
    (the exact policy string now carries `font-src 'self'`);
    `admin::tests::panel_and_mail_refuse_anonymous_and_plain_users` and
@@ -3194,7 +3196,7 @@ before the switch route and the `Your tools` section exist, and fails until they
 8. `a_summary_with_no_allowed_tool_reads_zero_of_zero_at_100_percent`: the summary shows the total while
    tools are allowed; with the server denied it reads `0 B of 0 B (100%)` and lists no row.
 9. `save_stores_exactly_the_checked_tools_and_answers_303_to_the_tools_anchor`: Save with echo checked stores
-   search and delete_db as off, and answers 303 to `/account#tools`.
+   search and delete_db as off, and answers 303 to `/account?saved=s#tools`.
 10. `all_off_switches_every_allowed_tool_off`: All off stores all three tools.
 11. `all_on_clears_the_switches_of_the_allowed_tools`: All on after All off leaves nothing stored.
 12. `the_section_has_save_all_on_and_all_off_buttons_named_set`: three `button[name="set"]` read Save,
@@ -3218,9 +3220,35 @@ before the switch route and the `Your tools` section exist, and fails until they
     and the summary leaves it out of both sizes.
 23. `a_save_with_an_unknown_set_value_answers_400_and_stores_nothing`: a `set` value other than the three
     answers the error page with status 400 and stores nothing.
-24. `a_save_leaves_the_rows_of_tools_no_longer_listed_as_they_are`: after search leaves the catalog, Save and
-    All on leave its stored row as it is.
+24. `a_save_leaves_the_rows_of_tools_no_longer_listed_as_they_are`: after search leaves the catalog, a chosen save
+    and All off leave its stored row as it is; All on removes it with the other rows of the pair.
 25. `the_section_says_a_client_picks_up_a_change_on_reconnect`: the section carries the reconnect sentence.
+26. `the_section_markup_follows_the_design`: the block is heading, sentence, rule and disclosure; each row is box, name,
+    size and bar in that order; the head words read On, Tool and Size; Save is the first submit button of the form.
+27. `a_tool_bar_is_its_bytes_over_the_largest_tool_to_three_decimals`: bars of 1000, 3000 and 60 bytes read `33.333%`,
+    `100.000%` and `2.000%`; 60 of 3000 is exactly 2 per cent and keeps its rect.
+28. `a_tool_under_two_percent_of_the_largest_keeps_its_bar_empty`: at 59 bytes the bar's svg is there with no rect.
+29. `the_server_rule_is_the_bytes_on_over_all_bytes_and_zero_when_none_is_on`: the rule reads `100.000%`, then
+    `24.631%` with echo alone on, then `0%` with all off.
+30. `a_tool_name_breaks_where_the_design_says_and_keeps_its_raw_text`: `getHTTPResponse` breaks once before `HTTP`,
+    `bitbucket_get_pipeline_step_log` breaks at its underscores and a camel case name breaks before each capital;
+    the label's text and `data-tool` and the box's value hold the raw name.
+31. `a_save_leads_to_a_notice_and_opens_only_the_list_of_its_server`: the 303 leads to `/account?saved=s#tools`; the
+    page shows `Tools saved for s.` in block s, and only block s has its list open.
+32. `a_saved_query_that_names_no_assigned_server_shows_nothing`: `saved` naming an unassigned or unknown slug, an
+    empty value, or an unassigned slug before an assigned one shows no notice and opens no list.
+33. `the_saved_notice_escapes_the_server_name`: a server named `<i>Tools</i> & more` shows its notice with the name
+    escaped and no markup.
+34. `a_stale_save_changes_only_the_tools_the_page_showed`: the page shows echo, search and delete_db; a tool then
+    enters the catalog and a client lists it; a chosen save posting the old `shown` names and one unchecked box
+    leaves the new tool unstored, and the client still lists it.
+35. `unlisted_switches_are_kept_to_the_1000_most_recently_set`: 1005 seeded rows of tools the catalog does not list;
+    after a save exactly the 1000 newest remain.
+36. `a_switch_for_a_pair_with_no_assignment_is_refused_by_the_database`: a direct insert into `tool_switches` for a
+    server bob is not assigned to fails on the foreign key.
+37. `a_save_that_changes_nothing_writes_no_row`: a second save of the same state adds no `tool_switches` activity row.
+38. `the_61st_changing_save_in_an_hour_stores_its_switches_and_writes_no_row`: 61 alternating saves that each change
+    a row write 60 activity rows; the 61st stores its switches and writes none.
 
 ## s100_switched_lists.rs (statements 100 and 105)
 
@@ -3236,11 +3264,13 @@ stored definitions. The switched-off text and the byte sizes are computed in the
    `/mcp` lacks `s__delete_db`.
 4. `a_switched_off_tool_is_absent_from_the_combined_list_in_the_stateless_generation`: the same on `/mcp`
    for the stateless generation.
-5. `a_call_to_a_switched_off_tool_is_refused_on_the_server_path_without_reaching_the_upstream`: the call
-   answers 200 with -32602 and `Tool delete_db is switched off in your Doorward account. Switch it on under
-   Your tools, then reconnect.`; the upstream sees no call; an on tool is still called.
-6. `a_call_to_a_switched_off_tool_is_refused_on_the_combined_endpoint_with_the_merged_name`: the same answer on
-   `/mcp` names the tool `s__delete_db`, as the client sent it.
+5. `a_call_to_a_switched_off_tool_is_refused_on_the_server_path_without_reaching_the_upstream`: in both
+   generations the call answers 200 with no JSON-RPC error, a tool error (`isError`) whose one text is `Tool
+   delete_db is switched off in your Doorward account. Switch it on under Your tools at {base}/account, then
+   call it again.`; `resultType` is `complete` only when stateless; the upstream sees no call; an on tool is
+   still called.
+6. `a_call_to_a_switched_off_tool_is_refused_on_the_combined_endpoint_with_the_merged_name`: the same answer in
+   both generations on `/mcp` names the tool `s__delete_db`, as the client sent it.
 7. `a_refused_switched_off_call_writes_a_deny_row_with_the_switched_off_detail`: both refused calls write a
    `tool_call` row, decision `deny`, outcome `refused`, on server `s`, with the detail `switched off`.
 8. `a_rule_denied_tool_that_is_also_switched_off_answers_unknown_with_its_rule_detail`: a denied tool that is
@@ -3254,6 +3284,19 @@ stored definitions. The switched-off text and the byte sizes are computed in the
 12. `a_user_with_no_switches_gets_the_upstream_bytes_on_the_server_path`: with no switch, the `/open` list
     is the upstream's bytes; the stateless one differs only in `cacheScope`, which the gateway sets to
     `private`. Passes today; it holds what statement 105 keeps.
+13. `a_withheld_caller_is_not_shown_a_switched_off_tool_and_is_told_it_is_switched_off`: with a required header
+    unstored, the list on `/s` (both generations) and on `/mcp` lacks the switched-off tool and the rule-denied
+    one; the switched-off call gets the switched-off text, the rule-denied call `Unknown tool: search`, and an
+    on tool keeps the withheld text; the upstream is never contacted.
+14. `a_placeholder_session_of_a_caller_who_now_has_the_value_hides_and_refuses_a_switched_off_tool`: a session
+    opened while the value was missing (`dw-wait-`) lists without the switched-off tool once the value is stored,
+    and its call to that tool gets the switched-off text without reaching the upstream.
+
+## src/proxy/tests_combined.rs (statement 100)
+
+1. `a_tool_a_rule_or_a_switch_refuses_is_not_counted_in_the_left_out_log`: a combined list of a server whose
+   tools are one switched off, one rule-denied and one with an unlistable name logs `left 1 tool(s) out`,
+   so only the tool that cannot be listed is counted.
 
 ## s101_switch_abuse.rs (statement 101)
 
@@ -3294,3 +3337,5 @@ for a server the user is not assigned to, or a sign-in redirect for a signed-out
     tools, and a call to `other__echo` is refused as unknown without reaching the upstream.
 16. `all_off_stores_no_row_for_a_denied_tool_and_does_not_count_it`: with a deny rule on a tool,
     `All off` stores a row for each allowed tool only, and the activity count leaves the denied tool out.
+17. `a_shown_name_that_is_not_an_allowed_catalog_tool_stores_nothing`: a made-up name and a denied name in `shown`
+    store nothing; an allowed name shown and unchecked is stored.

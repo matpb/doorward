@@ -521,6 +521,7 @@ mod tests {
              INSERT INTO rules (id, user_id, effect, server_id, tool, created_at) VALUES \
              (1, NULL, 'deny', NULL, NULL, 0), \
              (4, 7, 'deny', 1, 'echo', 0); \
+             INSERT INTO user_servers (user_id, server_id) VALUES (7, 1), (8, 1), (7, 2); \
              INSERT INTO tool_switches (user_id, server_id, tool, set_at) VALUES \
              (7, 1, 'echo', 0), (7, 1, 'search', 0), (8, 1, 'delete_db', 0), (7, 2, 'other', 0);",
         )

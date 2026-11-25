@@ -85,14 +85,43 @@ pub fn percent(on: usize, all: usize) -> usize {
     }
 }
 
-/// Posts the switch form of `slug` as the browser, with its csrf token, `set` and the `on` names.
+/// Posts the switch form of `slug` as the browser. For `chosen` the `shown` names are every name the
+/// page lists for the server, read from the page first, as a browser sends them.
 pub async fn post_switches(browser: &TestClient, slug: &str, set: &str, on: &[&str]) -> Page {
+    let shown = if set == "chosen" {
+        shown_on_page(browser, slug).await
+    } else {
+        Vec::new()
+    };
+    let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
+    post_switches_with_shown(browser, slug, set, on, &shown).await
+}
+
+/// Posts the switch form of `slug` as the browser, with its csrf token, `set`, the `on` names and exactly
+/// the `shown` names given.
+pub async fn post_switches_with_shown(
+    browser: &TestClient,
+    slug: &str,
+    set: &str,
+    on: &[&str],
+    shown: &[&str],
+) -> Page {
     let csrf = account_csrf(browser).await;
     let mut fields = vec![("csrf", csrf.as_str()), ("set", set)];
+    fields.extend(shown.iter().map(|name| ("shown", *name)));
     fields.extend(on.iter().map(|name| ("on", *name)));
     browser
         .post(&format!("/account/tools/{slug}"), &fields)
         .await
+}
+
+/// The names the account page lists for the server, read from its `shown` fields in row order.
+pub async fn shown_on_page(browser: &TestClient, slug: &str) -> Vec<String> {
+    let page = browser.get("/account").await;
+    page.attrs(
+        &format!(r#"section#tools [data-server="{slug}"] input[name="shown"]"#),
+        "value",
+    )
 }
 
 /// The rows of the server's block in `Your tools`, read from the browser's account page.

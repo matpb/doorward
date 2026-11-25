@@ -585,24 +585,27 @@ N. Added for per-user tool switches
     was never read says so instead of showing an empty list. Proof: `tests/s99_tool_switches.rs`.
 100. A tool the user switched off is absent from that user's tool list on the server's own path and
     on the combined endpoint, in both protocol generations. A call to it is refused without the
-    upstream seeing it, the answer says the tool is switched off in the user's account, and the
-    activity row reads `switched off` as its detail. A switched-off tool takes no room in the
-    combined endpoint's size budget. Proof: `tests/s100_switched_lists.rs`.
+    upstream seeing it, the answer is a tool error the model can read, saying the tool is switched off
+    and where to switch it on, and the activity row reads `switched off` as its detail. A switched-off
+    tool takes no room in the combined endpoint's size budget. Proof: `tests/s100_switched_lists.rs`.
 101. A switch only subtracts. It never makes a tool that a rule denies, or a server the user is not
     assigned to, reachable, and it changes nothing for any other user. Only the signed-in user sets
     their own switches, through a form that carries their session's token and the gateway's own
     origin; an admin sees them and has no way to set them or to force a tool on. Only names from
-    the server's stored list are ever stored, so a form cannot grow the table. Proof:
+    the server's stored list are ever stored, and at most 1,000 switches are kept per server for tools
+    it no longer lists. Proof:
     `tests/s101_switch_abuse.rs`.
 102. A tool that appears in a server's list later is on. A switched-off tool that leaves the list
-    and returns is still off. Proof: `tests/s99_tool_switches.rs`.
-103. Each server in `Your tools` has `All on` and `All off`. The section shows the size of the tools
-    the user leaves on against the size of all the tools they may use, in kilobytes and as a share,
-    and says that a client picks up a change when it reconnects or refreshes its tools. Proof:
+    and returns is still off, for the 1,000 most recently set of such tools; `All on` clears them all.
+    `Save` changes only the tools the page showed. Proof: `tests/s99_tool_switches.rs`.
+103. Each server in `Your tools` has `All on` and `All off` and shows, for that server, the size of the
+    tools the user leaves on against the size of all the tools they may use, in kilobytes and as a
+    share, and says that a client picks up a change when it reconnects or refreshes its tools. Proof:
     `tests/s99_tool_switches.rs`.
 104. The admin's page of a user shows each tool that user switched off as `switched off by the
     user`. A user's switches for a server are deleted when the assignment, the user or the server
-    is removed, so a server assigned again starts with every tool on. Proof:
+    is removed, so a server assigned again starts with every tool on. A save that changes nothing
+    writes no activity row, and at most 60 such rows are written per user per hour. Proof:
     `tests/s99_tool_switches.rs`.
 105. A user who switched nothing off receives the lists and answers they received before switches
     existed: the per-server path still forwards the upstream's bytes when no rule and no switch

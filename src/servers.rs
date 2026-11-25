@@ -617,10 +617,6 @@ pub fn set_assignments(
                 "DELETE FROM user_servers WHERE user_id = ?1 AND server_id = ?2",
                 params![user, server],
             )?;
-            tx.execute(
-                "DELETE FROM tool_switches WHERE user_id = ?1 AND server_id = ?2",
-                params![user, server],
-            )?;
             removed.push((user, server));
         }
     }

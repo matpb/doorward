@@ -2893,3 +2893,41 @@ async fn a_call_to_a_server_missing_its_required_header_is_a_tool_error_not_a_50
     );
     assert!(one.seen().is_empty(), "the call must not reach that server");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_a_rule_or_a_switch_refuses_is_not_counted_in_the_left_out_log() {
+    let fx = fixture().await;
+    let up = stateless_up(vec![tool("keep"), tool("off"), tool("denied"), tool("a b")]).await;
+    let id = server(&fx.state, "logout", &up.url).await;
+    user(&fx.state, 1, vec![id]).await;
+    fx.state
+        .db
+        .call(move |conn| {
+            conn.execute(
+                "INSERT INTO tool_switches (user_id, server_id, tool, set_at) VALUES (1, ?1, 'off', 0)",
+                params![id],
+            )?;
+            conn.execute(
+                "INSERT INTO rules (user_id, effect, server_id, tool, created_at) \
+                 VALUES (NULL, 'deny', ?1, 'denied', 0)",
+                params![id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the switch and the rule");
+    assert_eq!(
+        names(&list(&fx.state, 1).await),
+        vec!["logout__keep"],
+        "only the tool the caller may use is listed"
+    );
+    let logged = NOTES
+        .lock()
+        .expect("notes")
+        .iter()
+        .any(|line| line == "tools/list: logout left 1 tool(s) out");
+    assert!(
+        logged,
+        "the log counts the name that cannot be listed, not the switched off or denied ones"
+    );
+}

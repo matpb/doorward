@@ -173,7 +173,15 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
             Ok(None) => {}
             Ok(Some(denial)) => {
                 let null = Value::Null;
-                return deny(ctx, message.id.as_ref().unwrap_or(&null), name, denial).await;
+                let stateless = message.generation == Generation::Stateless;
+                return deny(
+                    ctx,
+                    message.id.as_ref().unwrap_or(&null),
+                    name,
+                    denial,
+                    stateless,
+                )
+                .await;
             }
             Err(refusal) => return refusal,
         }
@@ -739,14 +747,10 @@ async fn withheld_call(
         },
     };
     if let Some(denial) = denial {
-        return deny(ctx, id, name, denial).await;
+        return deny(ctx, id, name, denial, stateless).await;
     }
     record(ctx, name, "deny", "refused", held.detail).await;
-    let mut body = json!({"content": [{"type": "text", "text": held.text}], "isError": true});
-    if stateless {
-        body["resultType"] = json!("complete");
-    }
-    combined::result(id, body)
+    combined::tool_error(id, &held.text, stateless)
 }
 
 /// True when `name` is in the server's catalog. A miss refreshes it unless a miss refresh of the server
@@ -820,7 +824,7 @@ async fn access_of(ctx: &Ctx<'_>) -> Result<policy::Access, Response> {
     {
         Ok(access) => Ok(access),
         Err(err) => {
-            report::failure("tool rules", &err);
+            report::failure("tool rules and switches", &err);
             Err(bare(StatusCode::INTERNAL_SERVER_ERROR))
         }
     }
@@ -843,11 +847,14 @@ impl Denial {
 }
 
 /// Writes the deny row of a refused call and answers it: the unknown tool, or the switched-off text.
-async fn deny(ctx: &Ctx<'_>, id: &Value, name: &str, denial: Denial) -> Response {
+async fn deny(ctx: &Ctx<'_>, id: &Value, name: &str, denial: Denial, stateless: bool) -> Response {
     record(ctx, name, "deny", "refused", denial.detail()).await;
     match denial {
         Denial::Unknown(_) => answer::unknown_tool(id, name),
-        Denial::SwitchedOff => answer::switched_off_tool(id, name),
+        Denial::SwitchedOff => {
+            let text = combined::switched_off_text(&ctx.state.config.public_url, name);
+            combined::tool_error(id, &text, stateless)
+        }
     }
 }
 

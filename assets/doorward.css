@@ -4412,3 +4412,364 @@ a.chip:focus-visible {
   }
 
 }
+/* ---------- Your tools: the switches of the account page ---------- */
+
+/* Ink is what you send. A server's block is a sentence with the figure and a hairline inked
+   as far as the share still sent; opened, each tool's closing hairline is inked as far as
+   its size reaches, and only while its box is ticked. No new token, no new colour. */
+
+/* A server's block: its name leads it, as in "Your credentials", and the count beside the
+   name is said after it, in the size and weight of text. */
+[data-section="tools"] [data-server] > h3 {
+  font-size: 16px;
+  line-height: 24px;
+}
+
+[data-section="tools"] [data-server] > h3 > .block-name {
+  margin-inline-end: var(--s2);
+  overflow-wrap: anywhere;
+}
+
+[data-section="tools"] [data-server] > h3 > .count {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+/* Beside a list of sixty rows the part's title and its two sentences stay in the window,
+   where the part layout would leave an empty column. Stacked, under 900 px, they scroll. */
+@media (min-width: 900px) {
+  [data-section="tools"] > .part-head {
+    position: sticky;
+    inset-block-start: var(--s5);
+  }
+}
+
+/* The saved notice belongs to the server under it: 48 px from the block above, 16 px to the
+   name it reports on (the shipped 32 px under a notice is taken off here). */
+[data-section="tools"] > .part-body > [data-server] > .notice {
+  margin-block-end: 0;
+}
+
+/* The sentence: "Sending 29.4 KB of 47.8 KB (62%)". The figures are the fact. */
+.sending {
+  color: var(--ink-2);
+}
+
+.sending > [data-sending] {
+  color: var(--ink);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Under it, the rule of the block: a hairline, inked 4 px from the left as far as the share. */
+.flow > .sending + .sending-bar {
+  margin-block-start: var(--s2);
+}
+
+.sending-bar {
+  display: block;
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.sending-bar > rect,
+.tool-bar > rect {
+  fill: var(--ink);
+}
+
+/* The way in to a list: an outlined control, as the one that opens a confirmation. */
+.toolbox > summary {
+  display: inline-flex;
+  align-items: center;
+  column-gap: var(--s3);
+  border-radius: var(--r2);
+}
+
+.toolbox-open {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  min-block-size: var(--control);
+  padding-inline: var(--s4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r2);
+  font: 600 var(--control-text) / 20px var(--sans);
+  transition: background-color var(--t-fast), border-color var(--t-fast);
+}
+
+@media (hover: hover) {
+  .toolbox > summary:hover > .toolbox-open {
+    border-color: var(--ink);
+    background: var(--sunken);
+  }
+}
+
+.toolbox > summary:focus-visible {
+  outline: 0;
+}
+
+.toolbox > summary:focus-visible > .toolbox-open {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.tools-form {
+  margin-block-start: var(--s4);
+  counter-reset: unsaved;
+}
+
+/* Three columns in the head and in every row: the box, the name, the size. The size column
+   is as wide as its widest figure plus, at its start, a 12 px slot for the mark of an unsaved
+   box and 4 px of air. */
+.tool-cols,
+.tool-list {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  column-gap: var(--s3);
+}
+
+/* The head of a table, for a list: the words over the columns and the ink rule under them. */
+.tool-cols {
+  padding-block-end: var(--s2);
+  border-block-end: 1px solid var(--ink);
+  color: var(--ink-3);
+  font: 500 12px/16px var(--sans);
+  white-space: nowrap;
+}
+
+.tool-cols > :last-child {
+  text-align: end;
+}
+
+/* A row is as tall as a control: 36 px, 44 px on touch. Its last 2 px are the bar's. */
+.tool {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  border-block-end: 1px solid var(--line);
+}
+
+@supports not (grid-template-columns: subgrid) {
+  .tool {
+    grid-template-columns: 18px minmax(0, 1fr) 88px;
+    column-gap: var(--s3);
+  }
+}
+
+/* The 24 px target overhangs its 18 px column by 3 px each side, as in a .check. */
+.tool > input {
+  grid-area: 1 / 1;
+  margin: calc((var(--control) - 24px) / 2) -3px 0;
+}
+
+/* A box reached by the keyboard is scrolled clear of the foot stuck over the list's end: the
+   foot's height (a control, 8 + 8, its rule and, on a phone, its 28 px line about unsaved
+   boxes) and 8 px for the ring. */
+.tool > input {
+  scroll-margin-block-end: calc(var(--control) + var(--s7) + var(--s2));
+}
+
+/* The label fills the name column from rule to rule: the whole of it switches the tool. */
+.tool > label {
+  grid-area: 1 / 2;
+  padding-block: calc((var(--control) - 20px) / 2) calc((var(--control) - 20px) / 2 - 2px);
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.tool > label > code {
+  line-height: 20px;
+}
+
+/* The figure of a ranked row: sans, ending on the list's right edge. Tabular figures are
+   declared after the shorthand, which would reset them: every digit is one width, so the
+   figures of sixty rows stand in columns. The summary's figures are the same face. */
+.tool-size {
+  position: relative;
+  grid-area: 1 / 3;
+  padding-block-start: calc((var(--control) - 20px) / 2);
+  padding-inline-start: var(--s4);
+  font: 500 13px/20px var(--sans);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  white-space: nowrap;
+}
+
+/* The bar lies on the row's hairline and covers it as far as it goes. Its track is the box,
+   the name and the 12 px gap after it: it ends where the mark's slot begins, 16 px before
+   the widest figure, so the heaviest tool's bar has an end too and is not read as a table
+   rule. The width is set here and overrides the svg's own 100 %. */
+.tool-bar {
+  grid-area: 2 / 1 / 3 / 3;
+  display: block;
+  inline-size: calc(100% + var(--s3));
+  margin-block-end: -1px;
+  clip-path: inset(0);
+  transition: clip-path var(--t-fast) var(--ease-out);
+}
+
+.tool-bar > rect {
+  transition: fill var(--t-fast);
+}
+
+/* Off: a hollow box, a quieter name and figure, and no ink on the rule: the hairline is only
+   darkened, 1 px, as far as the size the tool would cost. This follows the box itself, so a
+   row looks like what Save will store. */
+.tool > input:not(:checked) + label {
+  color: var(--ink-2);
+}
+
+.tool > input:not(:checked) ~ .tool-size {
+  color: var(--ink-3);
+  font-weight: 400;
+}
+
+.tool > input:not(:checked) ~ .tool-bar {
+  clip-path: inset(1px 0 0);
+}
+
+.tool > input:not(:checked) ~ .tool-bar > rect {
+  fill: var(--line-strong);
+}
+
+@media (hover: hover) {
+  .tool:hover > input::before {
+    border-color: var(--ink);
+  }
+}
+
+/* A box that no longer says what is stored: a disc, as an editor marks a file that is not
+   saved, centred in the 12 px slot left of the figures, in every row at one x. It is drawn
+   from the size cell, whose left edge is the slot's. It is counted for the foot. */
+.tool > input:checked:not([checked]) + label,
+.tool > input[checked]:not(:checked) + label {
+  counter-increment: unsaved;
+}
+
+.tool > input:checked:not([checked]) ~ .tool-size::before,
+.tool > input[checked]:not(:checked) ~ .tool-size::before,
+.tools-unsaved::before {
+  content: "";
+  display: inline-block;
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 1px;
+}
+
+/* The 6 px disc is 3 px into the slot, on the middle of the 20 px line. */
+.tool > input:checked:not([checked]) ~ .tool-size::before,
+.tool > input[checked]:not(:checked) ~ .tool-size::before {
+  position: absolute;
+  inset-inline-start: 3px;
+  inset-block-start: calc((var(--control) - 20px) / 2 + 7px);
+  background: var(--ink);
+}
+
+/* The foot closes the list with an ink rule and holds its three buttons. While the list is
+   taller than the window it stays at the window's bottom, over the rows. */
+.tools-foot {
+  position: sticky;
+  inset-block-end: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--s3);
+  margin-block-start: -1px;
+  padding-block: var(--s2);
+  border-block-start: 1px solid var(--ink);
+  background: var(--paper);
+}
+
+/* All on and All off act at once: quiet, and apart from Save. */
+.tools-foot > .row-actions {
+  margin-inline-start: auto;
+}
+
+/* "Not saved yet: 3". In the markup the line is hidden; only a changed box shows it. */
+.tools-unsaved {
+  color: var(--ink);
+  font: 400 13px/20px var(--sans);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tools-unsaved::before {
+  margin-inline-end: var(--s2);
+}
+
+.tools-unsaved::after {
+  content: " " counter(unsaved);
+}
+
+/* On a phone Save is as wide as the foot leaves it, as every form's button there, and the
+   line about unsaved boxes stands over the three buttons. */
+@media (max-width: 639.98px) {
+  .tools-foot > button[value="chosen"] {
+    flex: 1;
+  }
+
+  .tools-unsaved {
+    order: -1;
+    flex-basis: 100%;
+    padding-block-end: var(--s2);
+  }
+}
+
+@supports selector(:has(*)) {
+  .tools-form:has(.tool > input:checked:not([checked]), .tool > input[checked]:not(:checked)) .tools-unsaved {
+    display: block;
+  }
+
+  /* A list closed over boxes that are not saved says so: the same disc on its control and,
+     12 px to its right, the words of the foot. */
+  .toolbox:not([open]):has(.tool > input:checked:not([checked]), .tool > input[checked]:not(:checked)) > summary::after {
+    content: "Not saved yet";
+    color: var(--ink);
+    font: 400 13px/20px var(--sans);
+    white-space: nowrap;
+  }
+
+  .toolbox:not([open]):has(.tool > input:checked:not([checked]), .tool > input[checked]:not(:checked)) > summary > .toolbox-open::before {
+    content: "";
+    inline-size: 6px;
+    block-size: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  /* With something to save, Save is the filled button. */
+  .tools-form:has(.tool > input:checked:not([checked]), .tool > input[checked]:not(:checked)) button[value="chosen"] {
+    border-color: var(--ink);
+    background: var(--ink);
+    color: var(--paper);
+  }
+
+  @media (hover: hover) {
+    .tools-form:has(.tool > input:checked:not([checked]), .tool > input[checked]:not(:checked)) button[value="chosen"]:hover {
+      background: var(--ink-2);
+    }
+  }
+}
+
+@media (forced-colors: active) {
+  .sending-bar > rect,
+  .tool-bar > rect {
+    forced-color-adjust: none;
+    fill: CanvasText;
+  }
+
+  .tool > input:not(:checked) ~ .tool-bar > rect {
+    fill: GrayText;
+  }
+
+  .tool > input:checked:not([checked]) ~ .tool-size::before,
+  .tool > input[checked]:not(:checked) ~ .tool-size::before,
+  .tools-unsaved::before,
+  .toolbox-open::before {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+}

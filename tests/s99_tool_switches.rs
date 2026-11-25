@@ -3,13 +3,14 @@ mod common;
 use common::admin::{self, ServerSpec};
 use common::client::TestClient;
 use common::switches::{
-    deny_tool, percent, post_switches, size_text, stored_definitions, stored_rows, switched_off,
-    tool_rows,
+    deny_tool, percent, post_switches, post_switches_with_shown, size_text, stored_definitions,
+    stored_rows, switched_off, tool_rows,
 };
 use common::upstream::{FakeUpstream, UpstreamOptions};
 use common::values::{account_csrf, live_db};
 use common::world::World;
 use rusqlite::params;
+use scraper::{ElementRef, Html, Selector};
 
 const BOB: &str = "bob@example.com";
 const CAROL: &str = "carol@example.com";
@@ -41,14 +42,14 @@ async fn start() -> Scene {
     }
 }
 
-/// Saves `set` with `on` for bob on server `s`, and asserts the 303 back to the tools section.
+/// Saves `set` with `on` for bob on server `s`, and asserts the 303 back to the saved server's section.
 async fn save(sc: &Scene, set: &str, on: &[&str]) {
     let page = post_switches(&sc.bob, "s", set, on).await;
     assert_eq!(page.status, 303, "the {set} post must be accepted");
     assert_eq!(
         page.location().as_deref(),
-        Some("/account#tools"),
-        "the {set} post must answer 303 to /account#tools"
+        Some("/account?saved=s#tools"),
+        "the {set} post must answer 303 to /account?saved=s#tools"
     );
 }
 
@@ -655,13 +656,19 @@ async fn a_save_leaves_the_rows_of_tools_no_longer_listed_as_they_are() {
     assert_eq!(
         switched_off(&sc.w, &sc.bob_id, &sc.id),
         vec!["search"],
-        "a save must leave the row of a tool no longer listed as it is"
+        "a chosen save must leave the row of a tool no longer listed as it is"
+    );
+    save(&sc, "all-off", &[]).await;
+    assert_eq!(
+        switched_off(&sc.w, &sc.bob_id, &sc.id),
+        vec!["delete_db", "echo", "search"],
+        "All off must leave the row of a tool no longer listed as it is"
     );
     save(&sc, "all-on", &[]).await;
     assert_eq!(
         switched_off(&sc.w, &sc.bob_id, &sc.id),
-        vec!["search"],
-        "All on must leave the row of a tool no longer listed as it is"
+        Vec::<String>::new(),
+        "All on must remove the rows of tools no longer listed too"
     );
 }
 
@@ -713,5 +720,608 @@ async fn a_refused_password_change_still_shows_your_tools_with_bobs_rows() {
         ),
         vec!["search"],
         "the refused account page must show bob's switches"
+    );
+}
+
+/// The first element `css` names in `doc`; panics when no element matches.
+fn first<'a>(doc: &'a Html, css: &str) -> ElementRef<'a> {
+    doc.select(&Selector::parse(css).expect("selector"))
+        .next()
+        .unwrap_or_else(|| panic!("{css} must be on the page"))
+}
+
+/// Every element `css` names in `doc`, in document order.
+fn every<'a>(doc: &'a Html, css: &str) -> Vec<ElementRef<'a>> {
+    doc.select(&Selector::parse(css).expect("selector"))
+        .collect()
+}
+
+/// An element as its name and its classes, such as `span.tool-size`.
+fn shape(element: ElementRef) -> String {
+    let mut text = element.value().name().to_owned();
+    for class in element.value().classes() {
+        text.push('.');
+        text.push_str(class);
+    }
+    text
+}
+
+/// The shapes of the element children of `element`, in document order.
+fn child_shapes(element: ElementRef) -> Vec<String> {
+    element
+        .children()
+        .filter_map(ElementRef::wrap)
+        .map(shape)
+        .collect()
+}
+
+/// The text of `element`, markup removed.
+fn text_of(element: ElementRef) -> String {
+    element.text().collect()
+}
+
+/// The rect widths inside each bar of server `s`'s rows, in row order; a bar with no rect has none.
+fn bar_rects(body: &str) -> Vec<Vec<String>> {
+    let doc = Html::parse_document(body);
+    every(&doc, r#"section[data-server="s"] svg.tool-bar"#)
+        .into_iter()
+        .map(|bar| {
+            bar.children()
+                .filter_map(ElementRef::wrap)
+                .filter_map(|rect| rect.value().attr("width").map(str::to_owned))
+                .collect()
+        })
+        .collect()
+}
+
+/// The width of the rule under the summary of server `s`.
+fn server_rule(body: &str) -> String {
+    let doc = Html::parse_document(body);
+    first(&doc, r#"section[data-server="s"] > svg.sending-bar > rect"#)
+        .value()
+        .attr("width")
+        .expect("the rule of server s must have a width")
+        .to_owned()
+}
+
+/// Sets the stored sizes of echo, search and delete_db to 1000, 3000 and `delete_db` bytes.
+fn set_sizes(sc: &Scene, delete_db: usize) {
+    set_definition_size(sc, "echo", 1000);
+    set_definition_size(sc, "search", 3000);
+    set_definition_size(sc, "delete_db", delete_db);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_section_markup_follows_the_design() {
+    let sc = start().await;
+    save(&sc, "chosen", &["echo", "delete_db"]).await;
+    let page = sc.bob.get("/account").await;
+    let doc = Html::parse_document(&page.body);
+    assert_eq!(
+        child_shapes(first(&doc, "section#tools")),
+        vec!["div.part-head", "div.part-body"],
+        "the section is a head and a body"
+    );
+    assert_eq!(
+        child_shapes(first(&doc, "section#tools > div.part-head")),
+        vec!["h2", "p", "p.muted"],
+        "the head holds the title, the sentence and the reconnect sentence"
+    );
+    let block = first(
+        &doc,
+        r#"section#tools > div.part-body > section[data-server="s"]"#,
+    );
+    assert_eq!(shape(block), "section.flow.narrow");
+    assert_eq!(
+        child_shapes(block),
+        vec!["h3", "p.sending", "svg.sending-bar", "details.toolbox"],
+        "a block is the heading, the sentence, the rule, then the disclosure"
+    );
+    assert_eq!(
+        child_shapes(first(&doc, r#"section[data-server="s"] > h3"#)),
+        vec!["span.block-name", "span.count"],
+        "the heading holds the name and the count"
+    );
+    assert_eq!(
+        text_of(first(&doc, "section#tools h3 > span.block-name")),
+        "s"
+    );
+    assert_eq!(
+        text_of(first(&doc, "section#tools h3 > span.count")),
+        "2 of 3 on",
+        "the count reads the tools on, of the tools listed"
+    );
+    let sending = first(&doc, r#"section[data-server="s"] > p.sending"#);
+    assert_eq!(child_shapes(sending), vec!["strong"]);
+    assert_eq!(
+        text_of(sending),
+        format!("Sending {}", page.text(SENDING).unwrap_or_default()),
+        "the sentence reads Sending and the summary figures"
+    );
+    assert_eq!(
+        every(
+            &doc,
+            r#"section[data-server="s"] > p.sending + svg.sending-bar > rect"#
+        )
+        .len(),
+        1,
+        "the rule of the block follows its sentence"
+    );
+    let details = first(&doc, r#"section[data-server="s"] > details.toolbox"#);
+    assert!(
+        details.value().attr("open").is_none(),
+        "a list is closed on a page no save has led to"
+    );
+    assert_eq!(child_shapes(details), vec!["summary", "form.tools-form"]);
+    assert_eq!(
+        child_shapes(first(&doc, "details.toolbox > summary"))
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec!["span.toolbox-open"]
+    );
+    assert_eq!(
+        text_of(first(&doc, "details.toolbox > summary > span.toolbox-open")),
+        "Choose tools"
+    );
+    let form = first(&doc, "form.tools-form");
+    assert_eq!(form.value().attr("method"), Some("post"));
+    assert_eq!(form.value().attr("action"), Some("/account/tools/s"));
+    assert_eq!(
+        child_shapes(form),
+        vec![
+            "input",
+            "input",
+            "input",
+            "input",
+            "div.tool-cols",
+            "ul.tool-list",
+            "div.tools-foot"
+        ],
+        "the form is the csrf field, one shown field per row, the head row, the list and the foot"
+    );
+    let heads: Vec<String> = every(&doc, "div.tool-cols > span")
+        .into_iter()
+        .map(text_of)
+        .collect();
+    assert_eq!(heads, vec!["On", "Tool", "Size"]);
+    let list = first(&doc, "ul.tool-list");
+    assert_eq!(list.value().attr("aria-labelledby"), Some("tools-s-title"));
+    assert_eq!(
+        first(&doc, "section[data-server=\"s\"] > h3")
+            .value()
+            .attr("id"),
+        Some("tools-s-title")
+    );
+    let rows = every(&doc, "ul.tool-list > li.tool");
+    let expected = [
+        ("echo", "on", true),
+        ("search", "off", false),
+        ("delete_db", "on", true),
+    ];
+    assert_eq!(rows.len(), expected.len(), "one row per listed tool");
+    for (index, (row, (name, state, checked))) in rows.iter().zip(expected).enumerate() {
+        let (number, id, size_id) = (
+            index + 1,
+            format!("tool-s-{}", index + 1),
+            format!("tool-s-{}-size", index + 1),
+        );
+        assert_eq!(shape(*row), "li.tool");
+        assert_eq!(row.value().attr("data-tool"), Some(name));
+        assert_eq!(row.value().attr("data-state"), Some(state));
+        assert_eq!(
+            child_shapes(*row),
+            vec!["input", "label", "span.tool-size", "svg.tool-bar"],
+            "row {number} holds its box, name, size and bar as siblings in that order"
+        );
+        let parts: Vec<ElementRef> = row.children().filter_map(ElementRef::wrap).collect();
+        let (input, label, size, bar) = (parts[0], parts[1], parts[2], parts[3]);
+        assert_eq!(input.value().attr("type"), Some("checkbox"));
+        assert_eq!(input.value().attr("name"), Some("on"));
+        assert_eq!(input.value().attr("value"), Some(name));
+        assert_eq!(input.value().attr("id"), Some(id.as_str()));
+        assert_eq!(input.value().attr("checked").is_some(), checked);
+        assert_eq!(
+            input.value().attr("aria-describedby"),
+            Some(size_id.as_str())
+        );
+        assert_eq!(label.value().attr("for"), Some(id.as_str()));
+        assert_eq!(size.value().attr("id"), Some(size_id.as_str()));
+        assert!(size.value().attr("data-size").is_some());
+        assert_eq!(bar.value().attr("width"), Some("100%"));
+        assert_eq!(bar.value().attr("height"), Some("2"));
+    }
+    let foot = first(&doc, "div.tools-foot");
+    assert_eq!(
+        child_shapes(foot),
+        vec!["button", "span.tools-unsaved", "div.row-actions"],
+        "the foot is Save, the unsaved line, then the two quiet actions"
+    );
+    assert!(
+        first(&doc, "div.tools-foot > span.tools-unsaved")
+            .value()
+            .attr("hidden")
+            .is_some(),
+        "the unsaved line stays hidden until a box differs"
+    );
+    let submits = every(&doc, r#"form.tools-form button[name="set"]"#);
+    assert_eq!(
+        submits
+            .iter()
+            .map(|b| b.value().attr("value"))
+            .collect::<Vec<_>>(),
+        vec![Some("chosen"), Some("all-on"), Some("all-off")],
+        "Save is the first submit button in the form"
+    );
+    assert_eq!(
+        submits.iter().map(|b| text_of(*b)).collect::<Vec<_>>(),
+        vec!["Save", "All on", "All off"]
+    );
+    assert_eq!(
+        every(&doc, "div.row-actions > button.row-action").len(),
+        2,
+        "All on and All off are the quiet row actions"
+    );
+    assert_eq!(
+        every(&doc, r#"section#tools div.notice"#).len(),
+        0,
+        "a page no save has led to shows no notice"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_bar_is_its_bytes_over_the_largest_tool_to_three_decimals() {
+    let sc = start().await;
+    set_sizes(&sc, 60);
+    let page = sc.bob.get("/account").await;
+    assert_eq!(
+        bar_rects(&page.body),
+        vec![
+            vec!["33.333%".to_owned()],
+            vec!["100.000%".to_owned()],
+            vec!["2.000%".to_owned()],
+        ],
+        "a bar is the tool's bytes over the largest tool's, to three decimals; 60 of 3000 is exactly 2%"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_under_two_percent_of_the_largest_keeps_its_bar_empty() {
+    let sc = start().await;
+    set_sizes(&sc, 59);
+    let page = sc.bob.get("/account").await;
+    assert_eq!(
+        bar_rects(&page.body),
+        vec![
+            vec!["33.333%".to_owned()],
+            vec!["100.000%".to_owned()],
+            Vec::<String>::new(),
+        ],
+        "59 of 3000 is under 2%: its svg stays and no rect is written"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_rule_is_the_bytes_on_over_all_bytes_and_zero_when_none_is_on() {
+    let sc = start().await;
+    set_sizes(&sc, 60);
+    let page = sc.bob.get("/account").await;
+    assert_eq!(
+        server_rule(&page.body),
+        "100.000%",
+        "all on is the whole rule"
+    );
+    save(&sc, "chosen", &["echo"]).await;
+    let page = sc.bob.get("/account").await;
+    assert_eq!(
+        server_rule(&page.body),
+        "24.631%",
+        "1000 of 4060 bytes is 24.631%"
+    );
+    assert_eq!(
+        page.text(SENDING).as_deref(),
+        Some("1000 B of 4.0 KB (25%)"),
+        "the sentence beside the rule gives the same bytes"
+    );
+    save(&sc, "all-off", &[]).await;
+    let page = sc.bob.get("/account").await;
+    assert_eq!(server_rule(&page.body), "0%", "zero stays zero");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_name_breaks_where_the_design_says_and_keeps_its_raw_text() {
+    let sc = start().await;
+    let names = [
+        "getHTTPResponse",
+        "bitbucket_get_pipeline_step_log",
+        "getRepositoryPullRequestCommentThreads",
+    ];
+    let breaks = [
+        "get<wbr>HTTPResponse",
+        "bitbucket_<wbr>get_<wbr>pipeline_<wbr>step_<wbr>log",
+        "get<wbr>Repository<wbr>Pull<wbr>Request<wbr>Comment<wbr>Threads",
+    ];
+    sc.up.set_tools(&names);
+    assert_eq!(
+        admin::refresh_tools(&sc.w.owner, &sc.id).await.status,
+        303,
+        "refreshing the tools must answer 303"
+    );
+    let page = sc.bob.get("/account").await;
+    let doc = Html::parse_document(&page.body);
+    let codes = every(&doc, r#"section[data-server="s"] label > code"#);
+    let boxes = every(&doc, r#"section[data-server="s"] input[name="on"]"#);
+    let rows = every(&doc, r#"section[data-server="s"] li.tool"#);
+    assert_eq!(codes.len(), names.len());
+    for index in 0..names.len() {
+        assert_eq!(
+            codes[index].inner_html(),
+            breaks[index],
+            "the name {} must break at the design's points",
+            names[index]
+        );
+        assert_eq!(
+            text_of(codes[index]),
+            names[index],
+            "the label's text is the raw name"
+        );
+        assert_eq!(rows[index].value().attr("data-tool"), Some(names[index]));
+        assert_eq!(boxes[index].value().attr("value"), Some(names[index]));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_save_leads_to_a_notice_and_opens_only_the_list_of_its_server() {
+    let sc = start().await;
+    let (_a_up, a_id) = sc.w.upstream("a", UpstreamOptions::default()).await;
+    sc.w.grant(BOB, &[sc.id.as_str(), a_id.as_str()]).await;
+    let page = post_switches(&sc.bob, "s", "chosen", &["echo"]).await;
+    assert_eq!(page.status, 303, "the save must be accepted");
+    let location = page.location().expect("the save must name where it leads");
+    assert_eq!(location, "/account?saved=s#tools");
+    let page = sc.bob.get(&location).await;
+    let doc = Html::parse_document(&page.body);
+    assert_eq!(
+        text_of(first(
+            &doc,
+            r#"section#tools [data-server="s"] > div.notice[data-notice="ok"] > p"#
+        )),
+        "Tools saved for s.",
+        "the notice names the saved server"
+    );
+    assert_eq!(
+        every(&doc, "section#tools div.notice").len(),
+        1,
+        "one notice in the section"
+    );
+    assert_eq!(
+        every(&doc, r#"section#tools [data-server="s"] details[open]"#).len(),
+        1,
+        "the saved server's list is open"
+    );
+    assert_eq!(
+        every(&doc, r#"section#tools [data-server="a"] details[open]"#).len(),
+        0,
+        "the other server's list stays closed"
+    );
+    assert_eq!(
+        every(&doc, r#"section#tools [data-server="a"] div.notice"#).len(),
+        0,
+        "the other server gets no notice"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_query_that_names_no_assigned_server_shows_nothing() {
+    let sc = start().await;
+    let (_z_up, _z_id) = sc.w.upstream("z", UpstreamOptions::default()).await;
+    for query in ["z", "nosuch", "", "z&saved=s"] {
+        let page = sc.bob.get(&format!("/account?saved={query}")).await;
+        assert_eq!(
+            page.status, 200,
+            "{query:?} must not change the page's answer"
+        );
+        let doc = Html::parse_document(&page.body);
+        assert_eq!(
+            every(&doc, "section#tools div.notice").len(),
+            0,
+            "the query {query:?} must show no notice"
+        );
+        assert_eq!(
+            every(&doc, "section#tools details[open]").len(),
+            0,
+            "the query {query:?} must open no list"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_saved_notice_escapes_the_server_name() {
+    let sc = start().await;
+    let up = FakeUpstream::start(UpstreamOptions::default()).await;
+    let url = up.url();
+    let id = admin::add_server(
+        &sc.w.owner,
+        &ServerSpec {
+            name: "<i>Tools</i> & more",
+            slug: "markup-name",
+            upstream_url: &url,
+            secret: None,
+            pass_resources: false,
+            pass_prompts: false,
+        },
+    )
+    .await;
+    sc.w.grant(BOB, &[id.as_str()]).await;
+    let page = sc.bob.get("/account?saved=markup-name").await;
+    assert!(
+        !page.body.contains("<i>Tools</i>"),
+        "the server name must not reach the page as markup"
+    );
+    assert!(
+        page.body
+            .contains("Tools saved for &lt;i&gt;Tools&lt;/i&gt; &amp; more."),
+        "the notice must hold the name escaped"
+    );
+    let doc = Html::parse_document(&page.body);
+    assert_eq!(
+        text_of(first(
+            &doc,
+            r#"section#tools [data-server="markup-name"] div.notice > p"#
+        )),
+        "Tools saved for <i>Tools</i> & more."
+    );
+}
+
+/// The names the account page lists for server `s`, in row order, as the form carries them.
+fn shown_names(body: &str) -> Vec<String> {
+    let doc = Html::parse_document(body);
+    every(
+        &doc,
+        r#"section#tools [data-server="s"] input[name="shown"]"#,
+    )
+    .into_iter()
+    .filter_map(|input| input.value().attr("value").map(str::to_owned))
+    .collect()
+}
+
+/// The number of activity rows of kind tool_switches that bob's saves on server `s` wrote.
+async fn switch_rows(sc: &Scene) -> usize {
+    admin::activity_with_details(&sc.w.owner, Some(&sc.bob_id), Some(&sc.id))
+        .await
+        .iter()
+        .filter(|(row, _)| row.kind == "tool_switches")
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stale_save_changes_only_the_tools_the_page_showed() {
+    let sc = start().await;
+    let old = sc.bob.get("/account").await;
+    let shown = shown_names(&old.body);
+    assert_eq!(shown, vec!["echo", "search", "delete_db"]);
+    sc.up.set_tools(&["echo", "search", "delete_db", "fresh"]);
+    let tokens = sc.w.token(&sc.bob, "s").await;
+    let client = sc.w.session_mcp("s", &tokens);
+    assert_eq!(
+        client.initialize().await.status,
+        200,
+        "initialize must answer 200"
+    );
+    assert!(
+        client
+            .list_tools()
+            .await
+            .tool_names()
+            .contains(&"fresh".to_string()),
+        "a client that lists sees the tool that entered the catalog"
+    );
+    let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
+    let page =
+        post_switches_with_shown(&sc.bob, "s", "chosen", &["echo", "delete_db"], &shown).await;
+    assert_eq!(page.status, 303, "the stale save must be accepted");
+    assert_eq!(
+        switched_off(&sc.w, &sc.bob_id, &sc.id),
+        vec!["search"],
+        "fresh was not on the page, so the save must leave it as it is"
+    );
+    assert!(
+        client
+            .list_tools()
+            .await
+            .tool_names()
+            .contains(&"fresh".to_string()),
+        "the tool that the stale save did not show stays listed to the client"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unlisted_switches_are_kept_to_the_1000_most_recently_set() {
+    let sc = start().await;
+    let bob: i64 = sc.bob_id.parse().expect("numeric id");
+    let server: i64 = sc.id.parse().expect("numeric id");
+    let conn = live_db(&sc.w);
+    conn.execute_batch("PRAGMA foreign_keys=ON;")
+        .expect("foreign keys on");
+    for n in 0..1005i64 {
+        conn.execute(
+            "INSERT INTO tool_switches (user_id, server_id, tool, set_at) VALUES (?1, ?2, ?3, ?4)",
+            params![bob, server, format!("gone-{n:04}"), n + 1],
+        )
+        .expect("an unlisted row can be seeded");
+    }
+    save(&sc, "chosen", &["echo"]).await;
+    let mut statement = conn
+        .prepare(
+            "SELECT tool FROM tool_switches WHERE user_id = ?1 AND server_id = ?2 \
+             AND tool LIKE 'gone-%' ORDER BY set_at",
+        )
+        .expect("the query prepares");
+    let kept: Vec<String> = statement
+        .query_map(params![bob, server], |row| row.get(0))
+        .expect("the query runs")
+        .collect::<rusqlite::Result<_>>()
+        .expect("the rows read");
+    let newest: Vec<String> = (5..1005).map(|n| format!("gone-{n:04}")).collect();
+    assert_eq!(
+        kept, newest,
+        "exactly the 1000 most recently set unlisted rows remain"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_switch_for_a_pair_with_no_assignment_is_refused_by_the_database() {
+    let sc = start().await;
+    let (_a_up, a_id) = sc.w.upstream("a", UpstreamOptions::default()).await;
+    let bob: i64 = sc.bob_id.parse().expect("numeric id");
+    let other: i64 = a_id.parse().expect("numeric id");
+    let conn = live_db(&sc.w);
+    conn.execute_batch("PRAGMA foreign_keys=ON;")
+        .expect("foreign keys on");
+    let err = conn
+        .execute(
+            "INSERT INTO tool_switches (user_id, server_id, tool, set_at) VALUES (?1, ?2, 'echo', 1)",
+            params![bob, other],
+        )
+        .expect_err("a switch for a server bob is not assigned to must be refused");
+    assert!(
+        err.to_string().contains("FOREIGN KEY constraint failed"),
+        "the refusal must be the foreign key, got {err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_save_that_changes_nothing_writes_no_row() {
+    let sc = start().await;
+    save(&sc, "chosen", &["echo"]).await;
+    assert_eq!(switch_rows(&sc).await, 1, "the first save changes rows");
+    save(&sc, "chosen", &["echo"]).await;
+    assert_eq!(
+        switch_rows(&sc).await,
+        1,
+        "a save that leaves every row as it is writes no activity row"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_61st_changing_save_in_an_hour_stores_its_switches_and_writes_no_row() {
+    let sc = start().await;
+    for n in 0..61 {
+        let on: &[&str] = if n % 2 == 0 {
+            &["echo"]
+        } else {
+            &["echo", "search", "delete_db"]
+        };
+        let page = post_switches(&sc.bob, "s", "chosen", on).await;
+        assert_eq!(page.status, 303, "save {n} must be accepted");
+    }
+    assert_eq!(
+        switch_rows(&sc).await,
+        60,
+        "the 61st changing save in the hour writes no row"
+    );
+    assert_eq!(
+        switched_off(&sc.w, &sc.bob_id, &sc.id),
+        vec!["delete_db", "search"],
+        "the 61st save still stores its switches"
     );
 }

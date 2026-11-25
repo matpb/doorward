@@ -1,7 +1,8 @@
 CREATE TABLE tool_switches (
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL,
+  server_id INTEGER NOT NULL,
   tool TEXT NOT NULL,
   set_at INTEGER NOT NULL,
-  PRIMARY KEY (user_id, server_id, tool)
+  PRIMARY KEY (user_id, server_id, tool),
+  FOREIGN KEY (user_id, server_id) REFERENCES user_servers(user_id, server_id) ON DELETE CASCADE
 ) STRICT;

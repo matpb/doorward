@@ -101,6 +101,25 @@ pub fn record_refused(conn: &Connection, at: i64, event: &Event<'_>) -> rusqlite
     record(conn, at, event)
 }
 
+/// The most `tool_switches` rows one user may have in any hour; a save over the cap still applies.
+pub const SWITCH_ROWS_PER_HOUR: i64 = 60;
+
+/// Inserts a switch save's row unless its user has SWITCH_ROWS_PER_HOUR such rows in the hour before `at`.
+pub fn record_switches(conn: &Connection, at: i64, event: &Event<'_>) -> rusqlite::Result<()> {
+    let Some(user) = event.user_id else {
+        return record(conn, at, event);
+    };
+    let seen: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM activity WHERE user_id = ?1 AND at > ?2 AND kind = 'tool_switches'",
+        params![user, at.saturating_sub(HOUR)],
+        |row| row.get(0),
+    )?;
+    if seen >= SWITCH_ROWS_PER_HOUR {
+        return Ok(());
+    }
+    record(conn, at, event)
+}
+
 fn insert(conn: &Connection, at: i64, event: &Event<'_>, detail: &str) -> rusqlite::Result<()> {
     let tool: String = event
         .tool

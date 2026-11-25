@@ -45,6 +45,30 @@ pub fn breakable(text: &str) -> Markup {
     }
 }
 
+/// A tool name: `breakable`, and a `wbr` before each ASCII capital that follows an ASCII lower-case letter.
+/// Each piece between those breaks is `breakable`, so every piece is escaped as it is there.
+pub fn breakable_tool(text: &str) -> Markup {
+    let mut pieces: Vec<&str> = Vec::new();
+    let mut start = 0;
+    let mut previous: Option<char> = None;
+    for (index, ch) in text.char_indices() {
+        if ch.is_ascii_uppercase() && previous.is_some_and(|before| before.is_ascii_lowercase()) {
+            pieces.push(&text[start..index]);
+            start = index;
+        }
+        previous = Some(ch);
+    }
+    pieces.push(&text[start..]);
+    html! {
+        @for (position, piece) in pieces.iter().enumerate() {
+            @if position > 0 {
+                wbr;
+            }
+            (breakable(piece))
+        }
+    }
+}
+
 /// A name that may break only after a hyphen: a `wbr` follows each `-` that is not the last character.
 pub fn hyphenated(text: &str) -> Markup {
     let pieces: Vec<&str> = text.split_inclusive('-').collect();
@@ -409,6 +433,34 @@ mod tests {
     #[test]
     fn hyphenated_escapes_its_text() {
         assert_eq!(hyphenated("a<-b").into_string(), "a&lt;-<wbr>b");
+    }
+
+    #[test]
+    fn breakable_tool_breaks_before_a_capital_that_follows_a_lower_case_letter() {
+        assert_eq!(
+            breakable_tool("getHTTPResponse").into_string(),
+            "get<wbr>HTTPResponse"
+        );
+        assert_eq!(
+            breakable_tool("getRepositoryPullRequest").into_string(),
+            "get<wbr>Repository<wbr>Pull<wbr>Request"
+        );
+    }
+
+    #[test]
+    fn breakable_tool_adds_no_break_before_a_capital_after_a_capital_or_a_digit() {
+        assert_eq!(breakable_tool("XMLParser").into_string(), "XMLParser");
+        assert_eq!(breakable_tool("v2Beta").into_string(), "v2Beta");
+    }
+
+    #[test]
+    fn breakable_tool_keeps_the_underscore_breaks_and_escapes_every_piece() {
+        assert_eq!(
+            breakable_tool("bitbucket_get_step_log").into_string(),
+            "bitbucket_<wbr>get_<wbr>step_<wbr>log"
+        );
+        assert_eq!(breakable_tool("a<bC").into_string(), "a&lt;b<wbr>C");
+        assert_eq!(breakable_tool("").into_string(), "");
     }
 
     #[test]
