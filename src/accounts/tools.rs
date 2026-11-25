@@ -205,7 +205,7 @@ fn server_tools(csrf: &str, block: &Block, saved: bool) -> Markup {
                                         details.confirm.row-confirm name=(format!("tools-{}-all", block.slug)) data-confirm {
                                             summary { (label) }
                                             div.confirm-body {
-                                                p { "Switches all " (total) " " (block.name) " tools " (word) ". " span.whole { (choices(on, total - on, all_off)) } }
+                                                p { "Switches all " (total) " tools " (word) ". " span.whole { (choices(on, total - on, all_off)) } }
                                                 button type="submit" name="set" value=(value) data-kind="secondary" { (label) }
                                             }
                                         }
