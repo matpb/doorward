@@ -3,6 +3,7 @@ mod common;
 use std::path::Path;
 use std::time::Instant;
 
+use common::admin;
 use common::client::{Page, TestClient};
 use common::upstream::UpstreamOptions;
 use common::world::World;
@@ -596,9 +597,9 @@ async fn ranked_links_of_every_call_metric_name_their_own_event() {
         ("refused", "event=tool_refused"),
         ("failed", "event=tool_failed"),
         ("all_calls", "event=tool_any"),
-        ("active_users", "event=tool_call"),
-        ("duration_median", "event=tool_call"),
-        ("duration_p95", "event=tool_call"),
+        ("active_users", "event=tool_let_through"),
+        ("duration_median", "event=tool_let_through"),
+        ("duration_p95", "event=tool_let_through"),
     ];
     for (metric, event) in cases {
         let board = make_dashboard(
@@ -1381,4 +1382,146 @@ async fn a_duration_number_carries_its_unit() {
     let board = make_dashboard(&s.w, "Units", &[median]).await;
     let page = overview(&s.w, &format!("?dashboard={board}")).await;
     assert_eq!(number(&page, "Median now"), "5,813 ms");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_link_to_a_deleted_user_or_server_opens_the_rows_it_counts() {
+    let s = seeded().await;
+    insert(s.w.gw.db_path().as_path(), &day_dataset(&s));
+    let bob = s.bob.0.to_string();
+    let other = s.other.0.to_string();
+    assert_eq!(
+        admin::user_action(&s.w.owner, &bob, "delete").await.status,
+        303
+    );
+    assert_eq!(admin::delete_server(&s.w.owner, &other).await.status, 303);
+    let board = make_dashboard(
+        &s.w,
+        "Gone",
+        &[
+            chart("Calls by user", "calls", "user", "ranked", "24h"),
+            chart("Failed by server", "failed", "server", "ranked", "24h"),
+        ],
+    )
+    .await;
+    let page = overview(&s.w, &format!("?dashboard={board}")).await;
+    let users = ranked(&page, "Calls by user");
+    assert!(
+        users.iter().any(|(label, _, href)| label == BOB
+            && href
+                .as_deref()
+                .is_some_and(|href| href.contains("email=bob%40example.com"))),
+        "bob's link names his recorded email"
+    );
+    let servers = ranked(&page, "Failed by server");
+    assert!(
+        servers.iter().any(|(label, _, href)| label == "other"
+            && href
+                .as_deref()
+                .is_some_and(|href| href.contains("slug=other"))),
+        "the deleted server's link names its recorded slug"
+    );
+    for title in ["Calls by user", "Failed by server"] {
+        for (label, value, href) in ranked(&page, title) {
+            let href = href.unwrap_or_else(|| panic!("{title}: {label} is a link"));
+            assert!(
+                !href.contains("q="),
+                "{title}: {label} is not a substring search: {href}"
+            );
+            let shown: i64 = value.replace(',', "").parse().expect("a value");
+            assert_eq!(
+                activity_total(&s.w.owner, &href).await,
+                shown,
+                "{title}: the page for {label} counts the bar"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_link_to_an_email_held_by_two_accounts_opens_the_rows_of_both() {
+    let s = seeded().await;
+    let at = now();
+    insert(
+        s.w.gw.db_path().as_path(),
+        &[call(at - 100, s.bob, s.demo, "alpha", "claude", Some(10))],
+    );
+    let old = s.bob.0.to_string();
+    assert_eq!(
+        admin::user_action(&s.w.owner, &old, "delete").await.status,
+        303
+    );
+    s.w.user(BOB).await;
+    let new: i64 = s.w.user_id(BOB).await.parse().expect("an id");
+    assert_ne!(new, s.bob.0, "the account is a new one");
+    insert(
+        s.w.gw.db_path().as_path(),
+        &[call(
+            at - 200,
+            (new, BOB),
+            s.demo,
+            "alpha",
+            "claude",
+            Some(20),
+        )],
+    );
+    let board = make_dashboard(
+        &s.w,
+        "Twice",
+        &[chart("Calls by user", "calls", "user", "ranked", "24h")],
+    )
+    .await;
+    let page = overview(&s.w, &format!("?dashboard={board}")).await;
+    let rows = ranked(&page, "Calls by user");
+    let (_, value, href) = rows
+        .iter()
+        .find(|(label, _, _)| label == BOB)
+        .expect("bob's row");
+    assert_eq!(
+        value, "2",
+        "both accounts' calls are counted under the email"
+    );
+    let href = href.clone().expect("bob's row is a link");
+    assert_eq!(
+        activity_total(&s.w.owner, &href).await,
+        2,
+        "the link opens the calls of both accounts"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_duration_link_opens_every_let_through_call_including_the_failed_ones() {
+    let s = seeded().await;
+    let at = now();
+    insert(
+        s.w.gw.db_path().as_path(),
+        &[
+            call(at - 100, s.bob, s.demo, "alpha", "claude", Some(10)),
+            failed(at - 200, s.bob, s.demo, "alpha", "claude", Some(20)),
+            refused(at - 300, s.bob, s.demo, "alpha", "claude"),
+        ],
+    );
+    let board = make_dashboard(
+        &s.w,
+        "Durations",
+        &[
+            chart("Median by tool", "duration_median", "tool", "ranked", "24h"),
+            chart("People by tool", "active_users", "tool", "ranked", "24h"),
+        ],
+    )
+    .await;
+    let page = overview(&s.w, &format!("?dashboard={board}")).await;
+    for title in ["Median by tool", "People by tool"] {
+        let (_, _, href) = ranked(&page, title)
+            .into_iter()
+            .find(|(label, _, _)| label == "demo / alpha")
+            .unwrap_or_else(|| panic!("{title} has demo / alpha"));
+        let href = href.expect("a link");
+        assert!(href.contains("event=tool_let_through"), "{href}");
+        assert_eq!(
+            activity_total(&s.w.owner, &href).await,
+            2,
+            "{title} opens the two let-through calls, the failed one included, not the refused one"
+        );
+    }
 }

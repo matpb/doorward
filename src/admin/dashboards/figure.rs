@@ -5,23 +5,35 @@ use form_urlencoded::Serializer;
 use maud::{Markup, html};
 
 use super::model::{ChartSpec, GroupBy, Metric, Period, Shape};
-use super::query::{Bucket, Category, Scope, Series};
+use super::query::{Bucket, Category, Drawn, Scope, Series};
 use super::svg;
 use crate::web::ui::{breakable, email, thousands};
 
 /// The sentence a chart with no activity in its period shows in place of its figure.
 pub const NO_ACTIVITY: &str = "No activity in this period.";
+/// The sentence a chart whose numbers could not be read shows in place of its figure.
+pub const COULD_NOT_DRAW: &str = "This chart could not be drawn.";
 
 /// The chart as one figure: its title and caption, then its marks, or the sentence that there is no
-/// activity in its period.
+/// activity in its period. A chart whose numbers failed shows the error sentence instead.
 pub fn chart_section(
     id: i64,
     spec: &ChartSpec,
     title: &str,
     period: Period,
-    series: &Series,
-    scope: &Scope,
+    drawn: Option<&Drawn>,
 ) -> Markup {
+    let Some(Drawn { series, scope }) = drawn else {
+        return html! {
+            figure.chart id=(format!("chart-{id}")) data-chart=(id) data-shape=(spec.shape.as_str())
+                data-width=(spec.width.as_str()) data-tone=[tone(spec.metric)] data-error="1" {
+                figcaption {
+                    h3 id=(format!("c{id}-title")) { (title) }
+                }
+                p.chart-empty { (COULD_NOT_DRAW) }
+            }
+        };
+    };
     let buckets = match series {
         Series::Buckets(buckets) if !series.is_empty() => Some(buckets.len()),
         _ => None,

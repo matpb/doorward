@@ -85,6 +85,11 @@ These are the limits known at this release.
   of them. Keep a proxy in front of it to limit connections and flood traffic. Each open
   connection can also hold about 0.5 MiB of an answer already handed to it for sending, outside
   the answer memory budget and outside the limit on open requests.
+- The Overview's dashboards read the activity log on a connection of their own, so they do not
+  hold up the proxy or sign-in. Their cost still grows with the tool calls of the period, since
+  each chart reads its period's rows once. A chart that computes a median or a 95th percentile
+  holds 4 bytes per let-through call of its period while it runs, one chart at a time. A
+  figure is kept for the minute it was drawn in, so it can be up to a minute old.
 - A signed-in user who reads answers very slowly keeps them in the memory count for as long as
   each connection makes some progress. One user can fill only their own share; four such users
   can use up the whole budget, and others then get `503` on answers until those connections end.

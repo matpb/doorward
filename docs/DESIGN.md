@@ -130,7 +130,7 @@ Browser pages:
 - Headers on every page: `Content-Security-Policy: default-src 'none'; style-src 'self';
   img-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
   `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`,
-  `Referrer-Policy: same-origin`. The consent page alone adds the redirect origin of the
+  `Referrer-Policy: same-origin`, `Cross-Origin-Opener-Policy: same-origin`. The consent page alone adds the redirect origin of the
   current request to `form-action`.
 - Invitation and reset links render on GET and are consumed on POST, so mail scanners
   cannot use them up.

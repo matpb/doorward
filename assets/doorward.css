@@ -3486,7 +3486,7 @@ select[aria-invalid="true"] {
 }
 
 .chips-clear,
-.results > .export {
+.results .export {
   border-radius: var(--r2);
   color: var(--ink-2);
   font: 500 13px/20px var(--sans);
@@ -3499,22 +3499,33 @@ select[aria-invalid="true"] {
 }
 
 /* The export ends on the table's right edge, as "All activity" does. */
-.results > .export {
+.results .export {
   margin-inline: auto calc(var(--s2) * -1);
   padding: var(--s1) var(--s2);
   white-space: nowrap;
 }
 
+/* The export is a button in a form, drawn as the link it was, in the same place in the row. */
+.results .export-form {
+  display: contents;
+}
+
+.results .export {
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
 @media (hover: hover) {
   .chips-clear:hover,
-  .results > .export:hover {
+  .results .export:hover {
     background: var(--sunken);
     color: var(--ink);
   }
 }
 
 .chips-clear:focus-visible,
-.results > .export:focus-visible {
+.results .export:focus-visible {
   outline-offset: 1px;
   color: var(--ink);
 }
@@ -4296,7 +4307,7 @@ a.chip:focus-visible {
   }
 
   .chips-clear,
-  .results > .export {
+  .results .export {
     padding-block: var(--s3);
   }
 

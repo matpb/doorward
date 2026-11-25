@@ -15,6 +15,7 @@ use time::format_description::well_known::Rfc3339;
 const BOB: &str = "bob@example.com";
 const CAROL: &str = "carol@example.com";
 const NOW: &str = "2030-01-01T00:00:00Z";
+const EXPORT: &str = "/admin/activity.csv";
 const HEADER: &str = "time_utc,event,user,server,tool,client,decision,outcome,detail,duration_ms";
 /// The export's filter for the seeded rows of 5 and 6 January 2030, which the setup rows miss.
 const SEEDED_DAYS: &str = "period=custom&from=2030-01-05&to=2030-01-06";
@@ -107,9 +108,16 @@ fn call(at: i64, who: (i64, &'static str), server: (i64, &'static str), tool: &'
     }
 }
 
-/// The export of a query string, read as the owner.
+/// The export of a query string, posted as the owner with the csrf token of a page of the panel.
 async fn export(w: &World, filter: &str) -> Page {
-    w.owner.get(&format!("/admin/activity.csv?{filter}")).await
+    let owned: Vec<(String, String)> = url::form_urlencoded::parse(filter.as_bytes())
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    let fields: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    w.owner.submit("/admin/dashboards", EXPORT, &fields).await
 }
 
 fn query(pairs: &[(&str, &str)]) -> String {
@@ -135,7 +143,7 @@ async fn export_rows(w: &World) -> Vec<String> {
         .into_iter()
         .filter(|(row, _)| row.kind == "admin_change")
         .map(|(_, detail)| detail)
-        .filter(|detail| detail.starts_with("exported activity"))
+        .filter(|detail| detail.starts_with("export started"))
         .collect()
 }
 
@@ -377,7 +385,7 @@ async fn a_cell_starting_with_a_formula_character_is_prefixed_with_a_quote() {
 async fn anonymous_is_redirected_and_a_plain_user_is_forbidden() {
     let w = world().await;
     let bob = w.user(BOB).await;
-    let anonymous = w.client().get("/admin/activity.csv").await;
+    let anonymous = w.client().post(EXPORT, &[]).await;
     assert_eq!(
         anonymous.status, 303,
         "an anonymous visitor must be redirected"
@@ -387,7 +395,7 @@ async fn anonymous_is_redirected_and_a_plain_user_is_forbidden() {
         Some("/login"),
         "an anonymous visitor must be sent to sign-in"
     );
-    let plain = bob.get("/admin/activity.csv").await;
+    let plain = bob.post(EXPORT, &[("csrf", "x")]).await;
     assert_eq!(plain.status, 403, "a plain user must be refused the export");
     assert_eq!(
         plain.kind().as_deref(),
@@ -437,18 +445,18 @@ async fn the_export_writes_one_admin_change_row_with_the_row_count() {
         "the export must hold the three seeded rows"
     );
     assert!(
-        !page.body.contains("exported activity"),
+        !page.body.contains("export started"),
         "the export row must not be part of the export"
     );
     assert_eq!(
         export_rows(&w).await,
-        vec!["exported activity (3 rows)".to_string()],
+        vec!["export started (3 rows; period 2030-01-05 to 2030-01-06)".to_string()],
         "the export must write one admin_change row with the count of its rows"
     );
     let rows = admin::activity_with_details(&w.owner, None, None).await;
     let (row, _) = rows
         .iter()
-        .find(|(row, detail)| row.kind == "admin_change" && detail.starts_with("exported"))
+        .find(|(row, detail)| row.kind == "admin_change" && detail.starts_with("export started"))
         .expect("the export row must be listed");
     assert_eq!(
         row.user, OWNER_EMAIL,
@@ -506,7 +514,7 @@ async fn an_export_with_no_matching_rows_has_only_the_header() {
     );
     assert_eq!(
         export_rows(&w).await,
-        vec!["exported activity (0 rows)".to_string()],
+        vec!["export started (0 rows; period 2031-01-01 to 2031-01-02)".to_string()],
         "an empty export must still write its admin_change row with 0 rows"
     );
 }

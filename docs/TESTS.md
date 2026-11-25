@@ -2948,7 +2948,7 @@ those rows and the rows the harness writes (owner, invitations) do not disturb a
    (`1,869 ms`) and `the_activity_page_carries_no_script_and_no_style_attribute`.
 13. `the_client_select_lists_distinct_clients_by_name_at_most_fifty`: 55 distinct clients give `Any client` first (selected with no client set), then the first 50 names in order, each once.
 14. `a_client_that_is_not_listed_still_filters_and_shows_as_selected`: `client=vscode` with no such row shows no table row and the empty state, and the select shows vscode selected; a listed client is selected and filters its one row.
-15. `the_export_link_keeps_the_filters_and_shows_only_with_rows`: with one matching row the export link keeps client, q and period and holds no page.
+15. `the_export_link_keeps_the_filters_and_shows_only_with_rows`: with one matching row the export is a `button#export-csv` in a form that posts to `/admin/activity.csv`, keeps client, q and period as hidden fields and holds no page.
 
 ## s95_activity_export.rs (statement 95)
 
@@ -2968,15 +2968,15 @@ the table in the test.
    carriage return in a detail are quoted with doubled quotes, and every line ends in CRLF.
 5. `a_cell_starting_with_a_formula_character_is_prefixed_with_a_quote`: one row for each of `=`,
    `+`, `-`, `@`, tab and CR at the start of a detail; each cell gets a leading `'`.
-6. `anonymous_is_redirected_and_a_plain_user_is_forbidden`: anonymous `303` to `/login`; bob `403`
-   with the forbidden page; neither writes an export row.
+6. `anonymous_is_redirected_and_a_plain_user_is_forbidden`: a POST with no session is `303` to
+   `/login`; bob's POST with a csrf token is `403` with the forbidden page; neither writes an export row.
 7. `the_export_writes_one_admin_change_row_with_the_row_count`: after the export the table holds one
-   `admin_change` row by the owner with the detail `exported activity (N rows)`, N the number of data
-   lines, and the row is not in the file.
+   `admin_change` row by the owner with the detail `export started (N rows; period ...)`, N the number
+   of data lines and the period in force, and the row is not in the file.
 8. `the_export_holds_no_ids_and_no_tokens`: every line has exactly ten cells, and the body holds
    neither bob's access token nor his refresh token.
 9. `an_export_with_no_matching_rows_has_only_the_header`: a filter that names nothing gives the
-   header line alone, and writes `exported activity (0 rows)`.
+   header line alone, and writes `export started (0 rows; ...)`.
 10. `a_repeated_key_on_the_export_takes_its_first_value`: `period=24h&period=all` and `server` repeated
     answer `200` with the rows of the first value.
 
@@ -3067,4 +3067,60 @@ read from the same page.
 24. `the_time_scale_is_drawn_inside_its_own_svg`: every scale figure is `x="100%"` with no `dx`; the plot is a nested `svg.plot-area` of width `calc(100% - 48px)`; every bar stays within 0 to 100%.
 25. `the_caption_names_each_scope_filter_in_force_in_design_order`: `Tool calls let through per day on demo by BOB of alpha, last 30 days.`
 26. `a_duration_number_carries_its_unit`: a median duration of 5,813 reads `5,813 ms`.
-27. Changed: `median_and_p95_are_nearest_rank_per_bucket_and_empty_buckets_are_gaps` and `ranked_categories_are_counted_ordered_and_labelled_exactly` now expect the ` ms` unit; `ranked_links_of_every_call_metric_name_their_own_event` also checks that `active_users`, `duration_median` and `duration_p95` link to `tool_call`.
+27. Changed: `median_and_p95_are_nearest_rank_per_bucket_and_empty_buckets_are_gaps` and `ranked_categories_are_counted_ordered_and_labelled_exactly` now expect the ` ms` unit; `ranked_links_of_every_call_metric_name_their_own_event` checks that `active_users`, `duration_median` and `duration_p95` link to `tool_let_through`.
+28. `a_link_to_a_deleted_user_or_server_opens_the_rows_it_counts`: after bob is deleted and the server `other` is deleted, the ranked links name bob by `email=bob@example.com` and the server by `slug=other`, never by `q`, and each Activity page counts the bar.
+29. `a_link_to_an_email_held_by_two_accounts_opens_the_rows_of_both`: bob is deleted and invited again; the ranked bar counts the calls of both accounts and its link opens both.
+30. `a_duration_link_opens_every_let_through_call_including_the_failed_ones`: the median and people links of tool `alpha` open `event=tool_let_through` with two rows: the let-through call and the failed one, not the refused call.
+
+## s98_panel_reads.rs (statement 98)
+
+Each test builds its own instance with the harness; the owner is the usual actor and bob a plain user.
+Rows are written straight into the table, as the proxy writes them.
+
+1. `a_get_of_the_export_answers_405_and_writes_no_row`: `GET /admin/activity.csv` is `405`, and the
+   number of admin_change rows is unchanged.
+2. `a_post_without_the_csrf_token_is_refused_and_writes_no_row`: a POST with no csrf field is `403`.
+3. `a_post_from_another_origin_is_refused_and_a_post_from_the_gateway_is_not`: the same post with a
+   foreign `Origin` is `403` and writes nothing; from the gateway's own origin it is `200`.
+4. `the_export_post_writes_its_started_row_with_the_count_and_the_filters`: three rows, the post with
+   `period=7d`, `event=tool_call` and the server id writes `export started (3 rows; period 7d, event
+   tool_call, server demo)`, and answers `text/csv; charset=utf-8`.
+5. `anonymous_is_redirected_and_a_plain_user_is_forbidden_on_the_export_post`: anonymous `303` to
+   `/login`; bob's post with a csrf token `403`.
+6. `the_export_button_is_a_post_form_that_carries_the_active_filters`: `form.export-form` posts to
+   `/admin/activity.csv`, `button#export-csv` is a submit button, no `a#export-csv`, and the hidden
+   fields hold the event, the search and the csrf token.
+7. `the_search_text_is_cut_to_200_characters_and_the_form_shows_the_cut`: a 250-character `q` shows
+   200 characters in `input#filter-q`.
+8. `every_html_page_says_it_opens_in_its_own_browsing_context`: `/admin`, `/admin/activity` and
+   `/admin/dashboards` send `Cross-Origin-Opener-Policy: same-origin`.
+9. `the_client_list_holds_only_the_tool_calls_of_the_last_30_days`: a client of a tool call 40 days
+   old and one of a `client_connected` row are not in the select; a tool call a day old is.
+10. `a_chart_that_fails_shows_an_error_and_the_counts_and_latest_activity_still_render`: the catalog
+    table is dropped; the Overview answers `200`, the Unused tools chart reads `This chart could not
+    be drawn.`, the other charts and the counts and latest activity still render.
+11. `a_chart_is_drawn_again_only_after_its_minute_turns_or_its_definition_changes`: a reload within
+    the minute draws the chart from the memo (no error after the catalog is dropped); after the clock
+    moves a minute the dropped table fails it, so the chart shows the error tile.
+12. `a_changed_chart_is_drawn_at_once_within_the_minute`: a renamed chart shows its new title at once,
+    with its count of two calls, while a reload of the old definition in the same minute kept one.
+13. `deleting_a_server_or_a_user_logs_one_row_per_chart_it_removes`: two charts, one on the server and
+    one on bob, give exactly two `deleted chart ... from dashboard Scoped: its server was deleted`
+    and `... its user was deleted` rows when the server and then bob are deleted.
+14. `a_panel_request_answers_under_150_ms_while_the_90_day_overview_is_computing`: 300,000 rows of
+    calls seeded in one transaction; `/admin?period=90d` is started, and 40 ms later `GET /account`
+    (which takes the writer) answers in under 150 ms while the Overview has not finished.
+15. `the_recorded_email_and_slug_filters_show_as_chips_that_remove_them`: `email` and `slug` show as
+    `User (recorded)` and `Server (recorded)` chips; the server chip's Remove link keeps the email.
+
+In-crate tests of statement 98: `every_chart_statement_searches_an_index_without_a_sort_or_temporary_table`
+in `src/admin/dashboards/query.rs` runs `EXPLAIN QUERY PLAN` on every statement a chart runs, for
+every metric, grouping, period and filter set the builder allows, against the migrated schema, and
+rejects `TEMP B-TREE`, `CO-ROUTINE` and a `SCAN activity` without an index;
+`every_page_of_the_export_and_the_activity_page_reads_in_index_order` in `src/admin/activity/export.rs`
+does the same for the export's chunks, bounded and unbounded, under each filter; `the_reader_reads_and_refuses_every_write`
+and `the_memo_answers_its_own_type_and_is_emptied_when_full` in `src/db.rs`; the filter tests
+`a_search_is_cut_to_200_characters...`, `an_email_and_a_slug_match_the_recorded_text_exactly` and
+`the_let_through_event_is_the_class_the_charts_count` in `src/admin/activity/filters.rs`; and
+`a_formula_after_leading_spaces_or_tabs_or_in_full_width_is_guarded` in `src/admin/activity/export.rs`.
+

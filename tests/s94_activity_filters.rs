@@ -1163,35 +1163,37 @@ async fn the_export_link_keeps_the_filters_and_shows_only_with_rows() {
         )],
     );
     let page = list(&w, "client=cursor&q=s-echo&period=7d").await;
-    let href = page
-        .attr("a#export-csv", "href")
-        .expect("the page must link to the export");
     assert_eq!(
-        page.text("a#export-csv").as_deref(),
+        page.count("a#export-csv"),
+        0,
+        "the export is a button, not a link"
+    );
+    assert_eq!(
+        page.text("button#export-csv").as_deref(),
         Some("Export all as CSV"),
-        "the export link reads Export all as CSV"
+        "the export button reads Export all as CSV"
     );
-    let url = Url::parse(&format!("http://127.0.0.1{href}")).expect("the export link is a path");
     assert_eq!(
-        url.path(),
-        "/admin/activity.csv",
-        "the export link goes to the export route"
+        page.attr("form.export-form", "action").as_deref(),
+        Some("/admin/activity.csv"),
+        "the export form posts to the export route"
     );
-    let pairs = pairs_of(&href);
     assert_eq!(
-        values_of(&pairs, "client"),
-        vec!["cursor"],
-        "the export keeps the client"
+        page.attr("form.export-form", "method").as_deref(),
+        Some("post")
     );
-    assert_eq!(values_of(&pairs, "q"), vec!["s-echo"], "the export keeps q");
+    for (key, value) in [("client", "cursor"), ("q", "s-echo"), ("period", "7d")] {
+        assert_eq!(
+            page.attr(&format!("form.export-form input[name={key}]"), "value")
+                .as_deref(),
+            Some(value),
+            "the export keeps {key}"
+        );
+    }
     assert_eq!(
-        values_of(&pairs, "period"),
-        vec!["7d"],
-        "the export keeps the period"
-    );
-    assert!(
-        values_of(&pairs, "page").is_empty(),
-        "the export link holds no page"
+        page.count("form.export-form input[name=page]"),
+        0,
+        "the export holds no page"
     );
 }
 

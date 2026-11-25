@@ -493,52 +493,83 @@ M. Added for custom headers and per-user credentials
     `the_server_picker_is_a_get_form_without_the_csrf_token` and
     `a_rule_posted_from_the_form_uses_the_chosen_server` in `src/admin/tests.rs`.
 94. The activity page filters its rows by `period` (`24h`, `7d`, `30d`, `90d`, `all`, or `custom`
-    with `from` and `to` as UTC days, both included), `event`, `user`, `server`, `tool`, `client`
-    and `q`, all combined with AND, and its paging and its Remove links keep the other filters. A
-    value that names nothing matches no row: an unknown period or event, a custom period whose day
+    with `from` and `to` as UTC days, both included), `event`, `user`, `email`, `server`, `slug`,
+    `tool`, `client` and `q`, all combined with AND, and its paging and its Remove links keep the
+    other filters. `email` and `slug` match the recorded user email and server slug exactly: a
+    ranked dashboard link names them, so its rows stay the same when the user or server is deleted.
+    A value that names nothing matches no row: an unknown period or event, a custom period whose day
     is missing or not a date (the form then shows a field error), a `from` after `to`, a user or
     server that is not an id. `event=tool_any` matches every `tool_call` row, let through, refused or
-    failed. The client filter is a select of `Any client` and the distinct client names in the activity
-    table, by name, at most 50; a client that is not in that list still filters and shows as the
-    selected option. A repeated key takes its first value and is never refused. `q` is a
-    substring of the user, server, tool, client and detail, with ASCII letters matched in either case,
-    and `%`, `_` and `\` in it are literal. Proof: `tests/s94_activity_filters.rs` and the unit tests in
+    failed; `event=tool_let_through` matches the `tool_call` rows that were not refused, whatever
+    their outcome, which are the calls the people and duration figures count. The client filter is a
+    select of `Any client` and the distinct client names of the tool calls of the last 30 days, by
+    name, at most 50; a client that is not in that list still filters and shows as the selected
+    option. A repeated key takes its first value and is never refused. `q` is a substring of the
+    user, server, tool, client and detail, with ASCII letters matched in either case, and `%`, `_`
+    and `\` in it are literal; a search longer than 200 characters is cut to its first 200, and the
+    form shows the cut value. Proof: `tests/s94_activity_filters.rs`, `tests/s98_panel_reads.rs` (the
+    client list, the cut search and the recorded chips) and the unit tests in
     `src/admin/activity/filters.rs`.
-95. `GET /admin/activity.csv` returns every row the filters of statement 94 match, oldest first,
+95. `POST /admin/activity.csv` returns every row the filters of statement 94 match, oldest first,
     as CSV with the columns `time_utc,event,user,server,tool,client,decision,outcome,detail,
-    duration_ms` and CRLF line ends. A cell is quoted as RFC 4180 says, and a cell that starts
-    with `=`, `+`, `-`, `@`, a tab or a CR gets a leading `'`. The rows are read in chunks, and
-    the export writes one `admin_change` row, `exported activity (N rows)`, that is not part of
-    that export. The Export link is shown only when the filters match at least one row. An
-    anonymous visitor is redirected to sign-in and a plain user gets 403. Proof:
-    `tests/s95_activity_export.rs` and the unit tests in `src/admin/activity/export.rs`.
+    duration_ms` and CRLF line ends. The button that posts it is on the Activity page with the
+    filters as hidden fields and the csrf token, and the post is checked for its Origin and csrf
+    like every form. A cell is quoted as RFC 4180 says. A cell whose first character after leading
+    spaces or tabs is `=`, `+`, `-` or `@`, or is the full-width ＝ ＋ － ＠, gets a leading `'`, as
+    does a cell that starts with a tab or a CR. The rows are read in chunks, and before the body
+    streams the export writes one `admin_change` row, `export started (N rows; ...)`, that names
+    the period, event, user, server, tool, client and search in force; that row is not part of the
+    export. The button is shown only when the filters match at least one row. `GET
+    /admin/activity.csv` answers 405 and writes nothing. An anonymous visitor is redirected to
+    sign-in and a plain user gets 403. Proof: `tests/s95_activity_export.rs`,
+    `tests/s98_panel_reads.rs` and the unit tests in `src/admin/activity/export.rs`.
 96. Dashboards are stored in the database and shared. Every admin and the owner creates, renames,
     reorders and deletes dashboards and their charts, and each change writes one `admin_change`
-    row. A plain user gets 403 on every dashboard route, POSTs included, and an anonymous visitor
-    is redirected to sign-in. A form post without the csrf token is refused and stores nothing. A
-    dashboard name is trimmed and is 1 to 80 characters, unique among the dashboards; there are at
-    most 20 dashboards and 24 charts on one. A chart's metric, grouping, shape, period, width,
-    server, user, tool and top count are closed lists or bounded values, and a combination the
-    builder cannot draw is refused with 400, stores nothing and shows the form again with its
-    refusal. The edit page of a dashboard lists its charts as one table under its header, then the
-    chart builder, Name and Delete; the table's Counts cell is the chart's caption, and an edited
-    row reads `Editing` in place of its actions. A new database starts with one dashboard, `Usage`, of ten charts. Proof:
-    `tests/s96_dashboards.rs`.
+    row. A chart whose server or user is deleted is removed with it, and the database writes one
+    `admin_change` row per chart removed, `deleted chart {title} from dashboard {name}: its server
+    was deleted` or `... its user was deleted`. A plain user gets 403 on every dashboard route,
+    POSTs included, and an anonymous visitor is redirected to sign-in. A form post without the csrf
+    token is refused and stores nothing. A dashboard name is trimmed and is 1 to 80 characters,
+    unique among the dashboards; there are at most 20 dashboards and 24 charts on one. A chart's
+    metric, grouping, shape, period, width, server, user, tool and top count are closed lists or
+    bounded values, and a combination the builder cannot draw is refused with 400, stores nothing
+    and shows the form again with its refusal. The edit page of a dashboard lists its charts as one
+    table under its header, then the chart builder, Name and Delete; the table's Counts cell is the
+    chart's caption, and an edited row reads `Editing` in place of its actions. A new database starts
+    with one dashboard, `Usage`, of ten charts. Proof: `tests/s96_dashboards.rs` and
+    `tests/s98_panel_reads.rs` (the removed charts).
 97. The Overview shows the dashboard named by the query key `dashboard`, or the first dashboard
     when the key names none. The key `period` (`24h`, `7d`, `30d` or `90d`) draws every chart of
     that dashboard over that period in place of the chart's own. Each chart counts the rows its
     Activity-page event and filters select, so a figure and the Activity page agree; a chart's Data
-    table holds the numbers its figure draws; a ranked label links to the Activity page filtered to
-    it, with the event of its metric (`tool_any` for all tool calls), so its count equals the bar's
-    value. Active users and the duration metrics link to the `tool_call` rows they count. A ranked
-    row with no key (the empty client) is plain text, not a link. A chart's caption names each
-    filter in force: ` on` its server slug, ` by` its user email, ` of` its tool. Durations are
-    written with ` ms`. A time chart has 24 hourly buckets, or one bucket per UTC day ending today. A duration
-    bucket with no tool call is a gap labelled `No value`, not zero. A ranked list is cut to its
-    top count, with ties ordered by label. The server draws each chart as SVG with no script and no
-    inline style, and every label is escaped. A repeated query key takes its first value. A
-    90-day Overview over 200,000 rows answers in under three seconds in the debug build. Proof:
+    table holds the numbers its figure draws. A ranked label links to the Activity page with the
+    rows behind it. For a count metric the link carries the metric's event (`tool_any` for all tool
+    calls), the chart's own filters, and the recorded user email (`email`), server slug (`slug`) or,
+    for a tool, the tool and its server slug, so the linked page has exactly the bar's count, also
+    after the user or server is deleted or re-created with the same email. Active users and the
+    duration metrics link to the `tool_let_through` rows they are computed from, failed and
+    tool-error calls included. A ranked row with no key (the empty client) is plain text, not a
+    link. A chart's caption names each filter in force: ` on` its server slug, ` by` its user email,
+    ` of` its tool. Durations are written with ` ms`. A time chart has 24 hourly buckets, or one
+    bucket per UTC day ending today. A duration bucket with no tool call is a gap labelled `No value`,
+    not zero. A ranked list is cut to its top count, with ties ordered by label. The server draws
+    each chart as SVG with no script and no inline style, and every label is escaped. A repeated
+    query key takes its first value. A figure is drawn from the activity as of the minute shown in
+    statement 98: the link is read when followed, so the page it opens may hold rows added since.
+    A 90-day Overview over 200,000 rows answers in under three seconds in the debug build. Proof:
     `tests/s97_dashboard_charts.rs` and the unit tests in `src/admin/dashboards/`.
+98. Reading the activity log for the panel never delays the gateway. The panel's reads use their own
+    read-only connection to the database, which the proxy, the bearer check and sign-in never take.
+    Each chart is computed from one scan of its activity rows, folded in memory, with no sort,
+    window or temporary table in SQLite, so a chart needs no scratch space. A chart whose numbers
+    fail shows `This chart could not be drawn.` in its place, is reported on standard error, and the
+    counts and latest activity of the Overview still answer. A chart's figure is kept for the minute
+    it was drawn in, so a reload within that minute reads nothing again, and a changed chart is
+    drawn at once. Proof: `tests/s98_panel_reads.rs`, whose latency test asks for `/admin?period=90d`
+    over 300,000 rows and checks that a panel request answers in under 150 ms while that Overview is
+    still computing; `every_chart_statement_searches_an_index_without_a_sort_or_temporary_table` in
+    `src/admin/dashboards/query.rs`; `every_page_of_the_export_and_the_activity_page_reads_in_index_order`
+    in `src/admin/activity/export.rs`; and `the_reader_reads_and_refuses_every_write` in `src/db.rs`.
 
 ## Proof
 
@@ -620,7 +651,7 @@ into the test harness. In addition:
 - 90: `tests/s90_withheld.rs`, the updated tests of 83 in `tests/s80_custom_headers.rs` and
   `tests/s84_stored_values.rs`, and one run each with Claude Code and Codex.
 - 96: `tests/s96_dashboards.rs`. 97: `tests/s97_dashboard_charts.rs` and the unit tests in
-  `src/admin/dashboards/`.
+  `src/admin/dashboards/`. 98: `tests/s98_panel_reads.rs` and the unit tests named in statement 98.
 - 52 to 58: `tests/s52_interface.rs`, which reads the served pages and the stylesheet, and
   a walk-through of every page in a real browser at 390 px and desktop width in both
   themes, which also measures control heights and sideways scroll; screenshots kept under

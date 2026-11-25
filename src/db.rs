@@ -1,3 +1,5 @@
+use std::any::Any;
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -5,9 +7,12 @@ use std::sync::{Arc, Mutex};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
-const MIGRATIONS: [(i64, &str); 19] = [
+/// The most values the panel's memo holds at once; a full memo is emptied before the next one.
+const MEMO_LIMIT: usize = 256;
+
+const MIGRATIONS: [(i64, &str); 20] = [
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_accounts.sql")),
     (3, include_str!("../migrations/0003_activity.sql")),
@@ -30,6 +35,7 @@ const MIGRATIONS: [(i64, &str); 19] = [
     (17, include_str!("../migrations/0017_value_index.sql")),
     (18, include_str!("../migrations/0018_invitation_plans.sql")),
     (19, include_str!("../migrations/0019_dashboards.sql")),
+    (20, include_str!("../migrations/0020_panel_reads.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -42,18 +48,25 @@ pub enum DbError {
     Task(#[from] tokio::task::JoinError),
 }
 
+/// The writer, used by the proxy, the bearer check and sign-in, and a read-only reader for the panel.
+/// The reader is a second connection to the same WAL file, so a slow page never holds the writer.
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
+    reader: Arc<Mutex<Connection>>,
+    memo: Arc<Mutex<Memo>>,
 }
 
 impl Db {
-    /// Opens or creates the database at `path` and applies pending migrations.
+    /// Opens or creates the database at `path` and applies pending migrations, then opens the reader.
     pub fn open(path: &Path) -> Result<Db, DbError> {
         let mut conn = connect(path)?;
         migrate(&mut conn)?;
+        let reader = connect_reader(path)?;
         Ok(Db {
             conn: Arc::new(Mutex::new(conn)),
+            reader: Arc::new(Mutex::new(reader)),
+            memo: Arc::new(Mutex::new(Memo::default())),
         })
     }
 
@@ -74,6 +87,47 @@ impl Db {
         .await?
     }
 
+    /// Runs `f` with the read-only connection on a blocking thread. Only the panel's reads use it.
+    pub async fn read<T, F>(&self, f: F) -> Result<T, DbError>
+    where
+        F: FnOnce(&Connection) -> Result<T, rusqlite::Error> + Send + 'static,
+        T: Send + 'static,
+    {
+        let conn = Arc::clone(&self.reader);
+        tokio::task::spawn_blocking(move || {
+            let guard = conn
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            f(&guard).map_err(DbError::from)
+        })
+        .await?
+    }
+
+    /// The value cached under `key` when it is a T; None when it is absent or holds another type.
+    pub fn cached<T: Any + Send + Sync>(&self, key: &str) -> Option<Arc<T>> {
+        let memo = self
+            .memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        memo.entries
+            .get(key)
+            .and_then(|value| Arc::clone(value).downcast::<T>().ok())
+    }
+
+    /// Caches `value` under `key` and returns it. A memo that is full is emptied first.
+    pub fn remember<T: Any + Send + Sync>(&self, key: String, value: T) -> Arc<T> {
+        let value = Arc::new(value);
+        let mut memo = self
+            .memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if memo.entries.len() >= MEMO_LIMIT {
+            memo.entries.clear();
+        }
+        memo.entries.insert(key, value.clone());
+        value
+    }
+
     /// Returns the highest applied migration version, or 0 when none.
     pub fn schema_version(&self) -> Result<i64, DbError> {
         let conn = self
@@ -87,6 +141,12 @@ impl Db {
         )?;
         Ok(version)
     }
+}
+
+/// Values the panel computed and keeps for a short time, by key. Each value keeps its own type.
+#[derive(Default)]
+struct Memo {
+    entries: HashMap<String, Arc<dyn Any + Send + Sync>>,
 }
 
 /// The UTF-8 text of one row of the settings table, or None when the key is absent.
@@ -122,6 +182,18 @@ fn connect(path: &Path) -> Result<Connection, DbError> {
                  PRAGMA secure_delete=ON;",
             )
             .map_err(|err| err.to_string())?;
+            Ok(conn)
+        });
+    opened.map_err(|cause| DbError::Open(path.to_path_buf(), cause))
+}
+
+/// A read-only connection with the busy timeout, refusing every write.
+fn connect_reader(path: &Path) -> Result<Connection, DbError> {
+    let opened = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|err| err.to_string())
+        .and_then(|conn| {
+            conn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA query_only=ON;")
+                .map_err(|err| err.to_string())?;
             Ok(conn)
         });
     opened.map_err(|cause| DbError::Open(path.to_path_buf(), cause))
@@ -245,6 +317,61 @@ mod tests {
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'user_header_values_header'"
             ),
             1
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_reader_reads_and_refuses_every_write() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let db = Db::open(&dir.path().join("doorward.db")).expect("database");
+        let applied = db
+            .read(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+            })
+            .await
+            .expect("the reader reads");
+        assert_eq!(
+            applied,
+            MIGRATIONS.len() as i64,
+            "the reader sees the migrations"
+        );
+        let refused = db
+            .read(|conn| conn.execute("DELETE FROM schema_migrations", []))
+            .await
+            .expect_err("the reader refuses a write");
+        assert!(
+            matches!(
+                refused,
+                DbError::Sql(rusqlite::Error::SqliteFailure(ref code, _))
+                    if code.code == rusqlite::ErrorCode::ReadOnly
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn the_memo_answers_its_own_type_and_is_emptied_when_full() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let db = Db::open(&dir.path().join("doorward.db")).expect("database");
+        db.remember("first".to_owned(), 7_i64);
+        assert_eq!(db.cached::<i64>("first").as_deref(), Some(&7));
+        assert!(
+            db.cached::<String>("first").is_none(),
+            "another type is no hit"
+        );
+        for index in 0..MEMO_LIMIT {
+            db.remember(format!("key{index}"), index);
+        }
+        assert!(
+            db.cached::<i64>("first").is_none(),
+            "a full memo is emptied"
+        );
+        assert_eq!(
+            db.cached::<usize>(&format!("key{}", MEMO_LIMIT - 1))
+                .as_deref(),
+            Some(&(MEMO_LIMIT - 1))
         );
     }
 }

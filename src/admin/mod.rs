@@ -38,7 +38,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/", get(panel))
         .nest("/mail", owner_only)
         .route("/activity", get(activity::get_activity))
-        .route("/activity.csv", get(activity::get_export))
+        .route("/activity.csv", post(activity::post_export))
         .route(
             "/dashboards",
             get(dashboards::get_list).post(dashboards::post_create),

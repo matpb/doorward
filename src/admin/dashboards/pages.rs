@@ -2,6 +2,7 @@
 //! change them, and the dashboard section of the Overview.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
@@ -13,6 +14,7 @@ use crate::admin::users::parse_id;
 use crate::app::AppState;
 use crate::db::DbError;
 use crate::proxy::catalog;
+use crate::report;
 use crate::servers::{self, ServerRef};
 use crate::web::{
     MainData, VerifiedForm, Viewer, forbidden, form_page_with, internal_error, not_found, redirect,
@@ -24,7 +26,7 @@ use super::model::{
     CHART_LIMIT, ChartSpec, Checked, DASHBOARD_LIMIT, Draft, GroupBy, Metric, Period, Shape,
     TOP_COUNTS, Width, check_chart, check_name, field_of,
 };
-use super::query::{self, Scope, Series};
+use super::query::{self, Drawn, Scope};
 use super::store::{self, Board, Change, Direction, Stored};
 
 /// The page of one refused form: its lead, its refusal, and the form as it was posted.
@@ -977,44 +979,80 @@ pub async fn overview(state: &AppState, query: Option<&str>) -> Result<Markup, D
     let wanted = first_value(query, "dashboard").and_then(|text| parse_id(&text));
     let period = first_value(query, "period").and_then(|text| Period::parse(&text));
     let now = state.clock.now().unix_timestamp();
-    let view = state
+    let (boards, chosen, stored) = state
         .db
-        .call(move |conn| {
+        .read(move |conn| {
             let boards = store::boards_in(conn)?;
             let chosen = wanted
                 .and_then(|id| boards.iter().position(|board| board.id == id))
                 .or((!boards.is_empty()).then_some(0));
-            let mut charts = Vec::new();
-            if let Some(index) = chosen {
-                for stored in store::charts_in(conn, boards[index].id)? {
-                    let shown = period.unwrap_or(stored.spec.period);
-                    let series = query::series(conn, &stored.spec, shown, now)?;
-                    let scope = query::scope_of(conn, &stored.spec)?;
-                    charts.push(Shown {
-                        stored,
-                        period: shown,
-                        series,
-                        scope,
-                    });
-                }
-            }
-            Ok(Overview {
-                selected: chosen.map(|index| boards[index].id),
-                boards,
-                charts,
-                period,
-            })
+            let stored = match chosen {
+                Some(index) => store::charts_in(conn, boards[index].id)?,
+                None => Vec::new(),
+            };
+            Ok((boards, chosen, stored))
         })
         .await?;
+    let mut charts = Vec::with_capacity(stored.len());
+    for stored in stored {
+        let shown = period.unwrap_or(stored.spec.period);
+        let drawn = draw(state, &stored, shown, now).await;
+        charts.push(Shown {
+            stored,
+            period: shown,
+            drawn,
+        });
+    }
+    let view = Overview {
+        selected: chosen.map(|index| boards[index].id),
+        boards,
+        charts,
+        period,
+    };
     Ok(overview_markup(&view))
 }
 
-/// A chart of the selected dashboard with its period and the numbers it shows.
+/// Rendered series are kept for the minute they were drawn in; a dashboard changed since is a new key.
+const CACHE_SECONDS: i64 = 60;
+
+/// One chart's series and scope: from the memo when this minute drew it already, else from a read of
+/// its own. A chart that fails is reported and drawn as an error, and the others are still drawn.
+async fn draw(state: &AppState, stored: &Stored, period: Period, now: i64) -> Option<Arc<Drawn>> {
+    let key = format!(
+        "chart|{}|{}|{:?}|{}|{}",
+        stored.id,
+        stored.title,
+        stored.spec,
+        period.as_str(),
+        now.div_euclid(CACHE_SECONDS)
+    );
+    if let Some(drawn) = state.db.cached::<Drawn>(&key) {
+        return Some(drawn);
+    }
+    let spec = stored.spec.clone();
+    let read = state
+        .db
+        .read(move |conn| {
+            Ok(Drawn {
+                series: query::series(conn, &spec, period, now)?,
+                scope: query::scope_of(conn, &spec)?,
+            })
+        })
+        .await;
+    match read {
+        Ok(drawn) => Some(state.db.remember(key, drawn)),
+        Err(err) => {
+            report::failure("dashboard chart", &err);
+            None
+        }
+    }
+}
+
+/// A chart of the selected dashboard with its period and the numbers it shows; None when it failed.
 struct Shown {
     stored: Stored,
     period: Period,
-    series: Series,
-    scope: Scope,
+    drawn: Option<Arc<Drawn>>,
 }
 
 /// The Overview's dashboards as the page shows them.
@@ -1094,7 +1132,7 @@ fn overview_markup(view: &Overview) -> Markup {
                 } @else {
                     div.charts {
                         @for shown in &view.charts {
-                            (figure::chart_section(shown.stored.id, &shown.stored.spec, &shown.stored.title, shown.period, &shown.series, &shown.scope))
+                            (figure::chart_section(shown.stored.id, &shown.stored.spec, &shown.stored.title, shown.period, shown.drawn.as_deref()))
                         }
                     }
                 }

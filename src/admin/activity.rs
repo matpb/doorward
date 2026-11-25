@@ -4,7 +4,9 @@
 mod export;
 pub(super) mod filters;
 
-pub(super) use export::get_export;
+pub(super) use export::post_export;
+
+use std::sync::Arc;
 
 use axum::extract::{RawQuery, State};
 use axum::http::StatusCode;
@@ -20,13 +22,16 @@ use time::format_description::well_known::Rfc3339;
 use crate::app::AppState;
 use crate::db::{Db, DbError};
 use crate::web::ui::{self, breakable, email, thousands, time_cell};
-use crate::web::{MainData, Viewer, internal_error, page_with};
+use crate::web::{MainData, Viewer, form_page_with, internal_error};
 
 use super::panel_nav;
 use filters::{Criteria, EVENTS, Filters, PERIODS, criteria, parse_day};
 
 /// Rows on one page of the activity page.
 const PAGE_SIZE: i64 = 50;
+/// The days of tool calls the client list reads: a client older than this is not offered.
+const CLIENT_DAYS: i64 = 30;
+const DAY: i64 = 86_400;
 /// The day, month, year and UTC time of a row, as the page reads them.
 const PLAIN_TIME: &str =
     "[day padding:none] [month repr:short] [year] [hour repr:24]:[minute]:[second] UTC";
@@ -52,7 +57,7 @@ struct Listing {
     total: i64,
     users: Vec<UserOption>,
     servers: Vec<ServerOption>,
-    clients: Vec<String>,
+    clients: Arc<Vec<String>>,
     retention_days: u64,
 }
 
@@ -81,16 +86,20 @@ pub async fn get_activity(
     let now = state.clock.now().unix_timestamp();
     let scope_filters = filters.clone();
     let retention_days = state.config.limits.activity_days;
+    let clients = match client_names(&state.db, now).await {
+        Ok(clients) => clients,
+        Err(err) => return internal_error("activity page", &err),
+    };
     let listing = state
         .db
-        .call(move |conn| {
+        .read(move |conn| {
             let scope = criteria(&scope_filters, now);
             Ok(Listing {
                 rows: rows_in(conn, &scope, PAGE_SIZE, offset)?,
                 total: count_in(conn, &scope)?,
                 users: users_in(conn)?,
                 servers: servers_in(conn)?,
-                clients: clients_in(conn)?,
+                clients,
                 retention_days,
             })
         })
@@ -99,6 +108,17 @@ pub async fn get_activity(
         Ok(listing) => activity_page(&viewer, &filters, number, &listing),
         Err(err) => internal_error("activity page", &err),
     }
+}
+
+/// The client names of the last 30 days' tool calls, kept for the minute they were read in.
+async fn client_names(db: &Db, now: i64) -> Result<Arc<Vec<String>>, DbError> {
+    let key = format!("clients|{}", now.div_euclid(60));
+    if let Some(names) = db.cached::<Vec<String>>(&key) {
+        return Ok(names);
+    }
+    let since = now.saturating_sub(CLIENT_DAYS * DAY);
+    let names = db.read(move |conn| clients_in(conn, since)).await?;
+    Ok(db.remember(key, names))
 }
 
 /// The page a query asks for, from 1. A missing, empty, zero, negative or non-numeric value is page
@@ -137,12 +157,13 @@ fn users_in(conn: &Connection) -> rusqlite::Result<Vec<UserOption>> {
     rows.collect()
 }
 
-/// The distinct client names the activity table holds, by name: at most 50.
-fn clients_in(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+/// The distinct client names of the tool calls since `since`, by name: at most 50.
+fn clients_in(conn: &Connection, since: i64) -> rusqlite::Result<Vec<String>> {
     let mut statement = conn.prepare(
-        "SELECT DISTINCT client FROM activity WHERE client <> '' ORDER BY client LIMIT 50",
+        "SELECT DISTINCT client FROM activity WHERE kind = 'tool_call' AND at >= ?1 AND client <> '' \
+         ORDER BY client LIMIT 50",
     )?;
-    let rows = statement.query_map([], |row| row.get(0))?;
+    let rows = statement.query_map([since], |row| row.get(0))?;
     rows.collect()
 }
 
@@ -166,12 +187,7 @@ fn rows_in(
     limit: i64,
     offset: i64,
 ) -> rusqlite::Result<Vec<Row>> {
-    let sql = format!(
-        "SELECT at, kind, user_email, server_slug, tool, decision, outcome, detail, duration_ms \
-         FROM activity{} ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
-        scope.clause()
-    );
-    let mut statement = conn.prepare_cached(&sql)?;
+    let mut statement = conn.prepare_cached(&rows_statement(scope))?;
     let mut values = scope.values().to_vec();
     values.extend([Value::Integer(limit), Value::Integer(offset)]);
     let rows = statement.query_map(params_from_iter(values), |row| {
@@ -190,6 +206,15 @@ fn rows_in(
         })
     })?;
     rows.collect()
+}
+
+/// The statement of one page of rows: the scope's rows, newest first.
+fn rows_statement(scope: &Criteria) -> String {
+    format!(
+        "SELECT at, kind, user_email, server_slug, tool, decision, outcome, detail, duration_ms \
+         FROM activity{} ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
+        scope.clause()
+    )
 }
 
 /// How many rows match the scope, in all.
@@ -429,6 +454,14 @@ fn chips(filters: &Filters, users: &[UserOption], servers: &[ServerOption]) -> V
             drop: &["user"],
         });
     }
+    if let Some(address) = filters.email.as_deref() {
+        chips.push(Chip {
+            key: "email",
+            label: "User (recorded)",
+            value: email(address),
+            drop: &["email"],
+        });
+    }
     if let Some(server) = filters.server.as_deref() {
         let slug = filters
             .server_id()
@@ -439,6 +472,14 @@ fn chips(filters: &Filters, users: &[UserOption], servers: &[ServerOption]) -> V
             label: "Server",
             value: html! { code { (slug) } },
             drop: &["server"],
+        });
+    }
+    if let Some(slug) = filters.slug.as_deref() {
+        chips.push(Chip {
+            key: "slug",
+            label: "Server (recorded)",
+            value: html! { code { (slug) } },
+            drop: &["slug"],
         });
     }
     if let Some(tool) = filters.tool.as_deref() {
@@ -698,7 +739,7 @@ fn activity_table(rows: &[Row]) -> Markup {
 /// are none.
 pub(super) async fn latest(db: &Db, limit: i64) -> Result<Markup, DbError> {
     let rows = db
-        .call(move |conn| rows_in(conn, &Criteria::default(), limit, 0))
+        .read(move |conn| rows_in(conn, &Criteria::default(), limit, 0))
         .await?;
     Ok(html! {
         @if rows.is_empty() {
@@ -746,17 +787,18 @@ fn activity_page(viewer: &Viewer, filters: &Filters, number: u64, listing: &List
     let offset = offset_of(number);
     let end = offset.saturating_add(i64::try_from(rows.len()).unwrap_or(i64::MAX));
     let older = end < listing.total;
-    let export = target("/admin/activity.csv", &query_without(filters, &[]));
     let data = MainData {
         nav: panel_nav(viewer, "/admin/activity"),
         ..MainData::default()
     };
-    page_with(
+    form_page_with(
+        viewer,
         StatusCode::OK,
         "activity",
         "Activity",
         &data,
-        html! {
+        |csrf| {
+            html! {
             div.page-head {
                 h1 { "Activity" }
             }
@@ -769,7 +811,7 @@ fn activity_page(viewer: &Viewer, filters: &Filters, number: u64, listing: &List
                 }
                 (active_filters(filters, &chips))
                 @if listing.total > 0 {
-                    a #export-csv.export href=(export) data-export { "Export all as CSV" }
+                    (export_form(csrf, filters))
                 }
             }
             @if rows.is_empty() {
@@ -781,8 +823,22 @@ fn activity_page(viewer: &Viewer, filters: &Filters, number: u64, listing: &List
                 (activity_table(rows))
             }
             (pager(filters, number, listing.total, older))
+            }
         },
     )
+}
+
+/// The export button: a form that posts the active filters with the csrf token. It is styled as a link.
+fn export_form(csrf: &str, filters: &Filters) -> Markup {
+    html! {
+        form.export-form method="post" action="/admin/activity.csv" {
+            input type="hidden" name="csrf" value=(csrf);
+            @for (key, value) in filters.pairs() {
+                input type="hidden" name=(key) value=(value);
+            }
+            button #export-csv.export type="submit" data-kind="secondary" data-export { "Export all as CSV" }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -9,12 +9,17 @@ use time::{Date, Month};
 /// The detail of a tool result that reports an error: the text `proxy::stream` records. Its match
 /// with a real call is checked by `every_event_key_selects_its_kinds` in tests/s94_activity_filters.rs.
 pub const TOOL_ERROR: &str = "the tool reported an error";
+/// The rows of the calls let through: every tool call the policy did not deny, whatever its outcome.
+pub const LET_THROUGH: &str = "kind = 'tool_call' AND decision <> 'deny'";
+/// The most characters of the search text; a longer one is cut to this many.
+pub const SEARCH_LIMIT: usize = 200;
 const DAY: i64 = 86_400;
 
 /// The keys of the event filter with their labels, in the order the form lists them.
-pub const EVENTS: [(&str, &str); 11] = [
+pub const EVENTS: [(&str, &str); 12] = [
     ("tool_any", "Any tool call"),
     ("tool_call", "Tool call"),
+    ("tool_let_through", "Tool call let through"),
     ("tool_refused", "Tool call refused"),
     ("tool_failed", "Tool call failed"),
     ("sign_in", "Sign-in"),
@@ -37,7 +42,7 @@ pub const PERIODS: [(&str, &str); 6] = [
 ];
 
 /// The filter values of a query string. An absent or empty value is no filter. `page` numbers the
-/// page and is not a filter.
+/// page and is not a filter. `email` and `slug` match the recorded user email and server slug exactly.
 #[derive(Clone, Default)]
 pub struct Filters {
     pub period: Option<String>,
@@ -45,7 +50,9 @@ pub struct Filters {
     pub to: Option<String>,
     pub event: Option<String>,
     pub user: Option<String>,
+    pub email: Option<String>,
     pub server: Option<String>,
+    pub slug: Option<String>,
     pub tool: Option<String>,
     pub client: Option<String>,
     pub q: Option<String>,
@@ -67,14 +74,19 @@ impl Filters {
                 "to" => &mut filters.to,
                 "event" => &mut filters.event,
                 "user" => &mut filters.user,
+                "email" => &mut filters.email,
                 "server" => &mut filters.server,
+                "slug" => &mut filters.slug,
                 "tool" => &mut filters.tool,
                 "client" => &mut filters.client,
                 "q" => &mut filters.q,
                 "page" => &mut filters.page,
                 _ => continue,
             };
-            if !value.is_empty() {
+            if key == "q" {
+                let cut: String = value.chars().take(SEARCH_LIMIT).collect();
+                *slot = (!cut.is_empty()).then_some(cut);
+            } else if !value.is_empty() {
                 *slot = Some(value.into_owned());
             }
         }
@@ -89,7 +101,9 @@ impl Filters {
             ("to", &self.to),
             ("event", &self.event),
             ("user", &self.user),
+            ("email", &self.email),
             ("server", &self.server),
+            ("slug", &self.slug),
             ("tool", &self.tool),
             ("client", &self.client),
             ("q", &self.q),
@@ -160,8 +174,14 @@ pub fn criteria(filters: &Filters, now: i64) -> Criteria {
     if let Some(user) = filters.user.as_deref() {
         id_condition(&mut scope, "user_id", user);
     }
+    if let Some(email) = filters.email.as_deref() {
+        scope.add("user_email = ?", vec![text(email)]);
+    }
     if let Some(server) = filters.server.as_deref() {
         id_condition(&mut scope, "server_id", server);
+    }
+    if let Some(slug) = filters.slug.as_deref() {
+        scope.add("server_slug = ?", vec![text(slug)]);
     }
     if let Some(tool) = filters.tool.as_deref() {
         scope.add("tool = ?", vec![text(tool)]);
@@ -253,6 +273,7 @@ fn event_condition(scope: &mut Criteria, key: &str) {
             vec![text(TOOL_ERROR)],
         ),
         "tool_any" => ("kind = 'tool_call'", Vec::new()),
+        "tool_let_through" => (LET_THROUGH, Vec::new()),
         "tool_refused" => ("kind = 'tool_call' AND decision = 'deny'", Vec::new()),
         "tool_failed" => (
             "kind = 'tool_call' AND decision <> 'deny' AND (outcome <> 'ok' OR detail = ?)",
@@ -424,6 +445,49 @@ mod tests {
         assert_eq!(
             scope.values(),
             &[Value::Integer(first), Value::Integer(after)]
+        );
+    }
+
+    #[test]
+    fn a_search_is_cut_to_200_characters_and_an_empty_one_is_no_filter() {
+        let long = format!("q={}", "a".repeat(250));
+        assert_eq!(
+            Filters::of(Some(&long)).q.map(|q| q.chars().count()),
+            Some(SEARCH_LIMIT)
+        );
+        let accents = format!("q={}", "é".repeat(201));
+        assert_eq!(
+            Filters::of(Some(&accents)).q.map(|q| q.chars().count()),
+            Some(SEARCH_LIMIT),
+            "the cut counts characters, not bytes"
+        );
+        assert_eq!(Filters::of(Some("q=")).q, None);
+    }
+
+    #[test]
+    fn an_email_and_a_slug_match_the_recorded_text_exactly() {
+        let filters = Filters::of(Some("email=bob%40example.com&slug=demo"));
+        let scope = criteria(&filters, 0);
+        assert_eq!(
+            scope.clause(),
+            " WHERE (user_email = ?) AND (server_slug = ?)"
+        );
+        assert_eq!(scope.values(), &[text("bob@example.com"), text("demo")]);
+        assert_eq!(
+            filters.pairs(),
+            vec![("email", "bob@example.com"), ("slug", "demo")]
+        );
+    }
+
+    #[test]
+    fn the_let_through_event_is_the_class_the_charts_count() {
+        let filters = Filters {
+            event: Some("tool_let_through".into()),
+            ..Filters::default()
+        };
+        assert_eq!(
+            criteria(&filters, 0).clause(),
+            format!(" WHERE ({LET_THROUGH})")
         );
     }
 }

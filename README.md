@@ -39,7 +39,8 @@ Status: 1.1.0.
   `limits.activity_days` (90 by default); the export is how to keep more than that.
 - **Dashboards.** Charts of the activity log, shared by every admin and the owner and shown on
   the Overview. A new instance starts with a `Usage` dashboard of ten charts. Each figure has a
-  Data table with the same numbers, and the charts are drawn by the server with no script.
+  Data table with the same numbers, and the charts are drawn by the server with no script. A
+  figure can be up to a minute old.
 - **Mail.** Raw SMTP, Resend or Mailgun, set from the admin panel.
 - **Both protocol generations.** The session form and the stateless form of MCP over HTTP
   are both served.
