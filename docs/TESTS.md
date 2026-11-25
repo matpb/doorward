@@ -3253,17 +3253,19 @@ before the switch route and the `Your tools` section exist, and fails until they
     counts all three, and counts as off the tool that was off and not shown.
 40. `a_mixed_list_foot_asks_before_all_on_or_all_off`: with echo and delete_db on, the foot of `s` carries
     `data-bulk="ask"`; All on and All off are two closed disclosures named `tools-s-all`, each holding its
-    sentence (`Switches all 3 tools on.` then `The 1 saved as off comes back on.`; `Switches all 3
-    tools off.` then `The 2 saved as on go off.`) and one submit with its value; no form sits in a form, and
-    no bulk submit stands outside a disclosure.
+    sentence (`Saves all 3 tools as on right away. 1 is saved as off. Unsaved changes are dropped.`; `Saves all
+    3 tools as off right away. 2 are saved as on. Unsaved changes are dropped.`), second sentence in `span.whole`
+    (`1 is saved as off.`; `2 are saved as on.`), exactly one `span.when-unsaved` reading `Unsaved changes are
+    dropped.`, and one submit with its value; no form sits in a form, and no bulk submit stands outside a
+    disclosure.
 41. `an_all_on_or_all_off_list_keeps_the_plain_foot`: a list all on and a list all off carry no `data-bulk`,
     no disclosure, and the two plain submits All on and All off.
 42. `a_mixed_list_of_62_tools_with_39_on_says_the_brief_sentences`: 62 tools of server `s` with 39 on read
-    `Switches all 62 tools on. The 23 saved as off come back on.` and `Switches all 62 tools off.
-    The 39 saved as on go off.`.
+    `Saves all 62 tools as on right away. 23 are saved as off. Unsaved changes are dropped.` and `Saves all 62
+    tools as off right away. 39 are saved as on. Unsaved changes are dropped.`.
 43. `a_mixed_list_with_one_choice_says_one_choice`: one tool on of three, on server `s`, reads
-    `Switches all 3 tools on. The 2 saved as off come back on.` and `Switches all 3 tools off. The 1
-    saved as on goes off.`.
+    `Saves all 3 tools as on right away. 2 are saved as off. Unsaved changes are dropped.` and `Saves all 3
+    tools as off right away. 1 is saved as on. Unsaved changes are dropped.`.
 44. `all_off_on_a_mixed_list_still_switches_every_tool_off`: All off from a mixed list stores all three tools
     off; the question is markup only.
 45. `a_save_says_the_state_it_left_a_mix_all_off_or_all_on`: the notice after a chosen save that leaves a mix
@@ -3275,11 +3277,14 @@ before the switch route and the `Your tools` section exist, and fails until they
     `0 B`, `999 B`, `1.0 KB` for 1000, 1014, 1023 and 1024 bytes, `1.8 KB` for 1843 and `1799.8 KB` for
     1843000 bytes.
 48. `a_mixed_list_of_62_tools_with_one_off_says_one_switched_off_comes_back`: 62 tools of server `s` with 61 on read
-    `Switches all 62 tools on. The 1 saved as off comes back on.` and `Switches all 62 tools off. The 61
-    saved as on go off.`.
+    `Saves all 62 tools as on right away. 1 is saved as off. Unsaved changes are dropped.` and `Saves all 62
+    tools as off right away. 61 are saved as on. Unsaved changes are dropped.`.
 49. `the_question_sentence_has_a_whole_line_and_the_question_buttons_one_width`: the stylesheet rule
-    `.tools-foot .confirm-body > p` holds `line-height: 20px;` and `.tools-foot .confirm-body > button` holds
-    `min-inline-size: 73px;`; this reads the rule text, it does not measure a rendered page.
+    `.tools-foot .confirm-body > p` holds `line-height: 20px;`, `.tools-foot .confirm-body > button` holds
+    `min-inline-size: 73px;`, `.tools-foot .when-unsaved` holds `display: none;`, the `:has` rule for unsaved
+    boxes shows `.tools-foot .when-unsaved` as `display: block;`, and the `.tools-foot .confirm-body > p` in the
+    `min-width: 640px` block holds `inline-size: 22.5rem;`; this reads the rule text, it does not measure a
+    rendered page.
 
 ## s100_switched_lists.rs (statements 100 and 105)
 

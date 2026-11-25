@@ -205,7 +205,7 @@ fn server_tools(csrf: &str, block: &Block, saved: bool) -> Markup {
                                         details.confirm.row-confirm name=(format!("tools-{}-all", block.slug)) data-confirm {
                                             summary { (label) }
                                             div.confirm-body {
-                                                p { "Switches all " (total) " tools " (word) ". " span.whole { (choices(on, total - on, all_off)) } }
+                                                p { "Saves all " (total) " tools as " (word) " right away. " span.whole { (choices(on, total - on, all_off)) } " " span.when-unsaved { "Unsaved changes are dropped." } }
                                                 button type="submit" name="set" value=(value) data-kind="secondary" { (label) }
                                             }
                                         }
@@ -240,14 +240,14 @@ fn saved_text(name: &str, on: usize, total: usize) -> String {
 fn choices(on: usize, off: usize, all_off: bool) -> String {
     if all_off {
         if on == 1 {
-            "The 1 saved as on goes off.".to_owned()
+            "1 is saved as on.".to_owned()
         } else {
-            format!("The {on} saved as on go off.")
+            format!("{on} are saved as on.")
         }
     } else if off == 1 {
-        "The 1 saved as off comes back on.".to_owned()
+        "1 is saved as off.".to_owned()
     } else {
-        format!("The {off} saved as off come back on.")
+        format!("{off} are saved as off.")
     }
 }
 

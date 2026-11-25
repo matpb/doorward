@@ -4722,6 +4722,10 @@ a.chip:focus-visible {
     display: block;
   }
 
+  .tools-form:has(.tool > input:checked:not([checked]), .tool > input[checked]:not(:checked)) .tools-foot .when-unsaved {
+    display: block;
+  }
+
   /* A list closed over boxes that are not saved says so: the same disc on its control and,
      12 px to its right, the words of the foot. */
   .toolbox:not([open]):has(.tool > input:checked:not([checked]), .tool > input[checked]:not(:checked)) > summary::after {
@@ -4805,6 +4809,18 @@ a.chip:focus-visible {
 .tools-foot .confirm-body > button {
   grid-area: 1 / 1;
   min-inline-size: 73px;
+}
+
+/* Hidden unless a box differs from its save; the :has rule above the foot's section shows it. */
+.tools-foot .when-unsaved {
+  display: none;
+}
+
+/* From 640 px the sentence has one width, so the button's left edge is the same for both questions. */
+@media (min-width: 640px) {
+  .tools-foot .confirm-body > p {
+    inline-size: 22.5rem;
+  }
 }
 
 /* A phone has no column free of Save: the sentence leads and the button ends under it, over the words. */

@@ -1431,14 +1431,14 @@ async fn a_mixed_list_foot_asks_before_all_on_or_all_off() {
         (
             "all-on",
             "All on",
-            "Switches all 3 tools on. The 1 saved as off comes back on.",
-            "The 1 saved as off comes back on.",
+            "Saves all 3 tools as on right away. 1 is saved as off. Unsaved changes are dropped.",
+            "1 is saved as off.",
         ),
         (
             "all-off",
             "All off",
-            "Switches all 3 tools off. The 2 saved as on go off.",
-            "The 2 saved as on go off.",
+            "Saves all 3 tools as off right away. 2 are saved as on. Unsaved changes are dropped.",
+            "2 are saved as on.",
         ),
     ];
     for (question, (value, label, sentence, second)) in questions.into_iter().zip(expected) {
@@ -1470,6 +1470,13 @@ async fn a_mixed_list_foot_asks_before_all_on_or_all_off() {
             choices.len(),
             1,
             "{label} must set its choices in span.whole"
+        );
+        let unsaved = within(sentences[0], "span.when-unsaved");
+        assert_eq!(unsaved.len(), 1, "{label} must hold one span.when-unsaved");
+        assert_eq!(
+            text_of(unsaved[0]),
+            "Unsaved changes are dropped.",
+            "the span.when-unsaved of {label} must say that unsaved changes are dropped"
         );
         assert_eq!(
             text_of(choices[0]),
@@ -1522,8 +1529,8 @@ async fn a_mixed_list_of_62_tools_with_39_on_says_the_brief_sentences() {
     assert_eq!(
         question_sentences(&sc.bob.get("/account").await.body),
         vec![
-            "Switches all 62 tools on. The 23 saved as off come back on.",
-            "Switches all 62 tools off. The 39 saved as on go off.",
+            "Saves all 62 tools as on right away. 23 are saved as off. Unsaved changes are dropped.",
+            "Saves all 62 tools as off right away. 39 are saved as on. Unsaved changes are dropped.",
         ],
         "62 rows with 39 on must read as the design's example"
     );
@@ -1541,8 +1548,8 @@ async fn a_mixed_list_of_62_tools_with_one_off_says_one_switched_off_comes_back(
     assert_eq!(
         question_sentences(&sc.bob.get("/account").await.body),
         vec![
-            "Switches all 62 tools on. The 1 saved as off comes back on.",
-            "Switches all 62 tools off. The 61 saved as on go off.",
+            "Saves all 62 tools as on right away. 1 is saved as off. Unsaved changes are dropped.",
+            "Saves all 62 tools as off right away. 61 are saved as on. Unsaved changes are dropped.",
         ],
         "one tool off must read as one switched off that comes back"
     );
@@ -1555,8 +1562,8 @@ async fn a_mixed_list_with_one_choice_says_one_choice() {
     assert_eq!(
         question_sentences(&sc.bob.get("/account").await.body),
         vec![
-            "Switches all 3 tools on. The 2 saved as off come back on.",
-            "Switches all 3 tools off. The 1 saved as on goes off.",
+            "Saves all 3 tools as on right away. 2 are saved as off. Unsaved changes are dropped.",
+            "Saves all 3 tools as off right away. 1 is saved as on. Unsaved changes are dropped.",
         ],
         "one tool on must read as one that goes off"
     );
@@ -1635,10 +1642,17 @@ fn size_text_prints_bytes_below_1000_and_one_decimal_kilobytes_from_1000_up() {
     assert_eq!(size_text(1_843_000), "1799.8 KB");
 }
 
-/// The declarations of the first rule in `css` that opens with `selector {`.
+/// The declarations of the first rule in `css` whose selector opens its line, indented or not.
 fn rule_of<'a>(css: &'a str, selector: &str) -> &'a str {
     let start = css
-        .find(&format!("{selector} {{"))
+        .match_indices(&format!("{selector} {{"))
+        .map(|(at, _)| at)
+        .find(|&at| {
+            css[..at]
+                .rsplit('\n')
+                .next()
+                .is_some_and(|line| line.trim().is_empty())
+        })
         .unwrap_or_else(|| panic!("the stylesheet must hold the rule {selector}"));
     let rule = &css[start..];
     let open = rule.find('{').expect("a rule opens its block");
@@ -1656,5 +1670,24 @@ fn the_question_sentence_has_a_whole_line_and_the_question_buttons_one_width() {
     assert!(
         rule_of(css, ".tools-foot .confirm-body > button").contains("min-inline-size: 73px;"),
         "both question buttons must take at least 73 px so that their left edge does not shift"
+    );
+    assert!(
+        rule_of(css, ".tools-foot .when-unsaved").contains("display: none;"),
+        "the unsaved sentence must be hidden unless the form has unsaved boxes"
+    );
+    assert!(
+        rule_of(
+            css,
+            ".tools-form:has(.tool > input:checked:not([checked]), .tool > input[checked]:not(:checked)) .tools-foot .when-unsaved"
+        )
+        .contains("display: block;"),
+        "the unsaved sentence must show while the form has unsaved boxes"
+    );
+    let desktop = css
+        .find("@media (min-width: 640px) {\n  .tools-foot .confirm-body > p {")
+        .expect("the desktop width of the sentence must sit in a 640 px media block");
+    assert!(
+        rule_of(&css[desktop..], ".tools-foot .confirm-body > p").contains("inline-size: 22.5rem;"),
+        "from 640 px the sentence of a question must take 22.5rem"
     );
 }
