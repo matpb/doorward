@@ -751,7 +751,7 @@ async fn daily_buckets_are_n_utc_days_ending_today_with_exact_boundaries() {
             "29 Dec 2029: 0 tool calls",
             "30 Dec 2029: 10 tool calls",
             "31 Dec 2029: 0 tool calls",
-            "1 Jan 2030: 1 tool calls",
+            "1 Jan 2030: 1 tool calls, so far",
         ],
         "every bar's title is its date and exact value"
     );
@@ -819,7 +819,7 @@ async fn median_and_p95_are_nearest_rank_per_bucket_and_empty_buckets_are_gaps()
             "29 Dec 2029: no value",
             "30 Dec 2029: 100 ms",
             "31 Dec 2029: no value",
-            "1 Jan 2030: no value",
+            "1 Jan 2030: no value, so far",
         ],
         "an empty bucket draws no mark"
     );
@@ -1524,4 +1524,128 @@ async fn a_duration_link_opens_every_let_through_call_including_the_failed_ones(
             "{title} opens the two let-through calls, the failed one included, not the refused one"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_90_day_time_chart_has_weekly_buckets_captioned_per_week_and_no_step_outline() {
+    let w = World::start().await;
+    open(&w)
+        .execute(
+            "INSERT INTO activity (at, kind, decision, outcome) VALUES (?1, 'tool_call', 'allow', 'ok')",
+            params![now() - 40 * 86_400],
+        )
+        .expect("a call 40 days back");
+    let board = make_dashboard(
+        &w,
+        "Weeks",
+        &[chart("Calls by week", "calls", "time", "bars", "90d")],
+    )
+    .await;
+    let page = overview(&w, &format!("?dashboard={board}")).await;
+    let labels: Vec<String> = data_rows(&page, "Calls by week")
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "4 Oct 2029",
+            "8 Oct 2029",
+            "15 Oct 2029",
+            "22 Oct 2029",
+            "29 Oct 2029",
+            "5 Nov 2029",
+            "12 Nov 2029",
+            "19 Nov 2029",
+            "26 Nov 2029",
+            "3 Dec 2029",
+            "10 Dec 2029",
+            "17 Dec 2029",
+            "24 Dec 2029",
+            "31 Dec 2029",
+        ],
+        "the first day of the period, then each UTC Monday to the current week"
+    );
+    let doc = Html::parse_document(&page.body);
+    assert!(
+        text_of(section(&doc, "Calls by week")).contains("per week"),
+        "the caption says per week"
+    );
+    assert_eq!(
+        page.count("svg.area"),
+        0,
+        "no step outline is drawn over the bars"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_unfinished_day_is_a_partial_bar_whose_title_says_so_far_at_mid_day() {
+    let w = World::start_with(|config| config.lifetimes.session_hours = 48).await;
+    let board = make_dashboard(
+        &w,
+        "Mid day",
+        &[chart("Calls by day", "calls", "time", "bars", "7d")],
+    )
+    .await;
+    w.gw.clock.advance(time::Duration::hours(12));
+    open(&w)
+        .execute(
+            "INSERT INTO activity (at, kind, decision, outcome) VALUES (?1, 'tool_call', 'allow', 'ok')",
+            params![now() + 12 * 3_600],
+        )
+        .expect("a call at mid-day");
+    let page = overview(&w, &format!("?dashboard={board}")).await;
+    let doc = Html::parse_document(&page.body);
+    let partial = Selector::parse("rect.chart-bar.partial").expect("a selector");
+    assert_eq!(
+        section(&doc, "Calls by day").select(&partial).count(),
+        1,
+        "only today is partial"
+    );
+    let titles = bar_titles(&page, "Calls by day");
+    assert_eq!(titles.len(), 7);
+    assert!(
+        titles[6].ends_with(", so far"),
+        "the title of today says so far: {titles:?}"
+    );
+    assert!(
+        !titles[5].ends_with(", so far"),
+        "yesterday is complete: {titles:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_unfinished_hour_is_not_drawn_on_the_line_at_mid_hour() {
+    let w = World::start().await;
+    open(&w)
+        .execute(
+            "INSERT INTO activity (at, kind, decision, outcome) VALUES (?1, 'tool_call', 'allow', 'ok')",
+            params![now() - 2 * 3_600],
+        )
+        .expect("a call two hours back");
+    let board = make_dashboard(
+        &w,
+        "Mid hour",
+        &[chart("Calls by hour line", "calls", "time", "line", "24h")],
+    )
+    .await;
+    w.gw.clock.advance(time::Duration::minutes(30));
+    let page = overview(&w, &format!("?dashboard={board}")).await;
+    let doc = Html::parse_document(&page.body);
+    let polylines = Selector::parse("svg.line polyline").expect("a selector");
+    let points: Vec<usize> = section(&doc, "Calls by hour line")
+        .select(&polylines)
+        .map(|line| {
+            line.value()
+                .attr("points")
+                .unwrap_or("")
+                .split_whitespace()
+                .count()
+        })
+        .collect();
+    assert_eq!(
+        points,
+        vec![23],
+        "the line ends at the last complete hour, not at the open one"
+    );
 }

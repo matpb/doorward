@@ -144,14 +144,25 @@ pub(crate) async fn assemble(
 }
 
 fn routes(state: AppState) -> Router {
+    // The account pages open in their own browsing context, as the panel does.
+    let account = Router::new()
+        .route("/account", get(account::get_account))
+        .route("/account/password", post(password::post_password))
+        .route("/account/values/{slug}", post(values::post_values))
+        .route(
+            "/account/clients/{public_id}/disconnect",
+            post(oauth::connected::post_client_disconnect),
+        )
+        .route(
+            "/account/disconnect/{token}",
+            get(oauth::connected::get_disconnect_link).post(oauth::connected::post_disconnect_link),
+        )
+        .layer(middleware::from_fn(web::same_origin_opener));
     let pages = Router::new()
         .route("/", get(root))
         .route("/setup", get(setup::get_setup).post(setup::post_setup))
         .route("/login", get(login::get_login).post(login::post_login))
         .route("/logout", post(login::post_logout))
-        .route("/account", get(account::get_account))
-        .route("/account/password", post(password::post_password))
-        .route("/account/values/{slug}", post(values::post_values))
         .route(
             "/invite/{token}",
             get(invite::get_invite).post(invite::post_invite),
@@ -166,15 +177,11 @@ fn routes(state: AppState) -> Router {
             "/oauth/consent",
             get(oauth::consent::get_consent).post(oauth::consent::post_consent),
         )
-        .route(
-            "/account/clients/{public_id}/disconnect",
-            post(oauth::connected::post_client_disconnect),
+        .nest(
+            "/admin",
+            admin::router(state.clone()).layer(middleware::from_fn(web::same_origin_opener)),
         )
-        .route(
-            "/account/disconnect/{token}",
-            get(oauth::connected::get_disconnect_link).post(oauth::connected::post_disconnect_link),
-        )
-        .nest("/admin", admin::router(state.clone()))
+        .merge(account)
         .fallback(|| async { web::not_found() })
         .layer(middleware::from_fn_with_state(
             state.clone(),

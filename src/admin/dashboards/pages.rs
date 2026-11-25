@@ -12,7 +12,7 @@ use maud::{Markup, html};
 use crate::admin::panel_nav;
 use crate::admin::users::parse_id;
 use crate::app::AppState;
-use crate::db::DbError;
+use crate::db::{Db, DbError};
 use crate::proxy::catalog;
 use crate::report;
 use crate::servers::{self, ServerRef};
@@ -1015,6 +1015,18 @@ pub async fn overview(state: &AppState, query: Option<&str>) -> Result<Markup, D
 /// Rendered series are kept for the minute they were drawn in; a dashboard changed since is a new key.
 const CACHE_SECONDS: i64 = 60;
 
+/// One chart's series and scope, read on the reader.
+async fn read_drawn(db: &Db, spec: &ChartSpec, period: Period, now: i64) -> Result<Drawn, DbError> {
+    let spec = spec.clone();
+    db.read(move |conn| {
+        Ok(Drawn {
+            series: query::series(conn, &spec, period, now)?,
+            scope: query::scope_of(conn, &spec)?,
+        })
+    })
+    .await
+}
+
 /// One chart's series and scope: from the memo when this minute drew it already, else from a read of
 /// its own. A chart that fails is reported and drawn as an error, and the others are still drawn.
 async fn draw(state: &AppState, stored: &Stored, period: Period, now: i64) -> Option<Arc<Drawn>> {
@@ -1029,16 +1041,7 @@ async fn draw(state: &AppState, stored: &Stored, period: Period, now: i64) -> Op
     if let Some(drawn) = state.db.cached::<Drawn>(&key) {
         return Some(drawn);
     }
-    let spec = stored.spec.clone();
-    let read = state
-        .db
-        .read(move |conn| {
-            Ok(Drawn {
-                series: query::series(conn, &spec, period, now)?,
-                scope: query::scope_of(conn, &spec)?,
-            })
-        })
-        .await;
+    let read = read_drawn(&state.db, &stored.spec, period, now).await;
     match read {
         Ok(drawn) => Some(state.db.remember(key, drawn)),
         Err(err) => {
@@ -1154,5 +1157,43 @@ fn overview_href(dashboard: Option<i64>, period: Option<Period>) -> String {
         "/admin".to_owned()
     } else {
         format!("/admin?{}", query.join("&"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::admin::dashboards::model::{GroupBy, Metric, Shape, Width};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_overview_series_reads_while_the_writer_is_held() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = Db::open(&dir.path().join("doorward.db")).expect("the migrated database");
+        let spec = ChartSpec {
+            metric: Metric::Calls,
+            group_by: GroupBy::Time,
+            shape: Shape::Bars,
+            period: Period::D7,
+            server_id: None,
+            user_id: None,
+            tool: None,
+            top_n: None,
+            width: Width::Half,
+        };
+        let (release, holder) = crate::db::hold_writer(&db).await;
+        let drawn = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            read_drawn(&db, &spec, Period::D7, 1_893_456_000),
+        )
+        .await;
+        release.send(()).expect("the writer is released");
+        holder
+            .await
+            .expect("the holder ends")
+            .expect("the writer call");
+        let drawn = drawn
+            .expect("the series answers while the writer is held")
+            .expect("the series reads");
+        assert!(matches!(drawn.series, query::Series::Buckets(ref b) if b.len() == 7));
     }
 }

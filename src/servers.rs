@@ -6,7 +6,9 @@ use std::fmt;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use url::Url;
 
+use crate::audit::{self, Event};
 use crate::crypto::{CryptoError, Keys};
+use crate::web::SessionUser;
 
 /// Paths the gateway needs for itself; no server may take one.
 pub const RESERVED: [&str; 18] = [
@@ -543,9 +545,60 @@ pub fn set_secret(
     Ok(())
 }
 
-/// Deletes the row; its assignments go with it.
-pub fn delete(tx: &Transaction<'_>, id: i64) -> rusqlite::Result<()> {
+/// The row a dashboard chart points at, which takes the chart with it when it is deleted.
+#[derive(Clone, Copy)]
+pub enum Owner {
+    Server,
+    User,
+}
+
+/// Deletes the row, and first records one admin_change row per dashboard chart that goes with it.
+/// Its assignments go with it.
+pub fn delete(tx: &Transaction<'_>, id: i64, actor: &SessionUser, at: i64) -> rusqlite::Result<()> {
+    record_removed_charts(tx, actor, at, Owner::Server, id)?;
     tx.execute("DELETE FROM servers WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+/// Writes one admin_change row per dashboard chart that deleting `owner` `id` removes, as the actor
+/// at the application clock. Call it before the delete.
+pub fn record_removed_charts(
+    tx: &Transaction<'_>,
+    actor: &SessionUser,
+    at: i64,
+    owner: Owner,
+    id: i64,
+) -> rusqlite::Result<()> {
+    let (sql, reason) = match owner {
+        Owner::Server => (
+            "SELECT charts.title, dashboards.name FROM charts \
+             JOIN dashboards ON dashboards.id = charts.dashboard_id \
+             WHERE charts.server_id = ?1 ORDER BY charts.id",
+            "its server was deleted",
+        ),
+        Owner::User => (
+            "SELECT charts.title, dashboards.name FROM charts \
+             JOIN dashboards ON dashboards.id = charts.dashboard_id \
+             WHERE charts.user_id = ?1 ORDER BY charts.id",
+            "its user was deleted",
+        ),
+    };
+    let charts: Vec<(String, String)> = {
+        let mut statement = tx.prepare(sql)?;
+        let rows = statement.query_map(params![id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for (title, dashboard) in charts {
+        let detail = format!("deleted chart {title} from dashboard {dashboard}: {reason}");
+        let change = Event {
+            kind: "admin_change",
+            user_id: Some(actor.id),
+            user_email: &actor.email,
+            detail: &detail,
+            ..Default::default()
+        };
+        audit::record(tx, at, &change)?;
+    }
     Ok(())
 }
 

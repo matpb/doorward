@@ -15,11 +15,12 @@ use super::model::{ChartSpec, GroupBy, Metric, Period, TOP_COUNTS};
 const HOUR: i64 = 3_600;
 const DAY: i64 = 86_400;
 
-/// One time bucket: its label as the table writes it, and its value. A duration bucket with no call
-/// has no value.
+/// One time bucket: its label as the table writes it, its value, and whether the clock is still in
+/// it. A duration bucket with no call has no value.
 pub struct Bucket {
     pub label: String,
     pub value: Option<i64>,
+    pub partial: bool,
 }
 
 /// One ranked category: its label, its value, and the Activity filters that show its rows.
@@ -120,16 +121,52 @@ pub fn statements(spec: &ChartSpec, period: Period, now: i64) -> Vec<(String, Ve
     }
 }
 
-/// The first second, width in seconds and count of a time chart: hours for 24 hours, UTC days otherwise.
-pub fn bucket_frame(period: Period, now: i64) -> (i64, i64, i64) {
-    let (width, count) = match period {
-        Period::H24 => (HOUR, 24),
-        Period::D7 => (DAY, 7),
-        Period::D30 => (DAY, 30),
-        Period::D90 => (DAY, 90),
-    };
-    let end = (now.div_euclid(width) + 1) * width;
-    (end - count * width, width, count)
+/// The (start, end) seconds of each bucket of a time chart, oldest first: hours for 24 hours, UTC
+/// days for 7 and 30, and UTC weeks from Monday for 90, the first starting on the period's first day.
+pub fn bucket_bounds(period: Period, now: i64) -> Vec<(i64, i64)> {
+    let today = now.div_euclid(DAY) * DAY;
+    match period {
+        Period::H24 => uniform(now.div_euclid(HOUR) * HOUR, HOUR, 24),
+        Period::D7 => uniform(today, DAY, 7),
+        Period::D30 => uniform(today, DAY, 30),
+        Period::D90 => weekly(today),
+    }
+}
+
+/// Buckets of one width, the last one starting at `current`.
+fn uniform(current: i64, width: i64, count: i64) -> Vec<(i64, i64)> {
+    (0..count)
+        .map(|index| {
+            let start = current - (count - 1 - index) * width;
+            (start, start + width)
+        })
+        .collect()
+}
+
+/// The 90 days ending today, as weeks: the first day, then each Monday up to the current week.
+fn weekly(today: i64) -> Vec<(i64, i64)> {
+    let first = today - 89 * DAY;
+    let current_week = today - monday_offset(today) * DAY;
+    let mut starts = vec![first];
+    let mut monday = first + (7 - monday_offset(first)) * DAY;
+    while monday <= current_week {
+        starts.push(monday);
+        monday += 7 * DAY;
+    }
+    (0..starts.len())
+        .map(|index| {
+            let end = starts
+                .get(index + 1)
+                .copied()
+                .unwrap_or(current_week + 7 * DAY);
+            (starts[index], end)
+        })
+        .collect()
+}
+
+/// Days after the Monday of the week that starts on `day_start`; 1970-01-01 was a Thursday.
+fn monday_offset(day_start: i64) -> i64 {
+    (day_start.div_euclid(DAY) + 3).rem_euclid(7)
 }
 
 /// The conditions of a chart: its metric's event, its filters, and the period when rolling.
@@ -228,11 +265,15 @@ fn each<T>(
 }
 
 fn time_statement(spec: &ChartSpec, period: Period, now: i64) -> (String, Vec<Value>) {
-    let (start, width, count) = bucket_frame(period, now);
+    let bounds = bucket_bounds(period, now);
+    let (start, end) = bounds
+        .first()
+        .zip(bounds.last())
+        .map_or((0, 0), |(first, last)| (first.0, last.1));
     let mut scope = scope(spec, period, now, false);
     scope.add(
         "at >= ? AND at < ?",
-        vec![Value::Integer(start), Value::Integer(start + width * count)],
+        vec![Value::Integer(start), Value::Integer(end)],
     );
     if spec.metric.percentile().is_some() {
         scope.add("duration_ms IS NOT NULL", Vec::new());
@@ -246,9 +287,9 @@ fn time_series(
     period: Period,
     now: i64,
 ) -> rusqlite::Result<Series> {
-    let (start, width, count) = bucket_frame(period, now);
+    let bounds = bucket_bounds(period, now);
     let statement = time_statement(spec, period, now);
-    let mut groups: Vec<Group> = (0..count).map(|_| Group::default()).collect();
+    let mut groups: Vec<Group> = bounds.iter().map(|_| Group::default()).collect();
     each(
         conn,
         &statement,
@@ -260,27 +301,32 @@ fn time_series(
             ))
         },
         |(at, user, duration)| {
-            let slot = (at - start).div_euclid(width);
-            if let Some(group) = usize::try_from(slot).ok().and_then(|i| groups.get_mut(i)) {
+            let slot = bounds
+                .partition_point(|&(start, _)| start <= at)
+                .checked_sub(1);
+            if let Some((group, &(_, end))) =
+                slot.and_then(|i| groups.get_mut(i).zip(bounds.get(i)))
+                && at < end
+            {
                 group.add(spec.metric, user, duration);
             }
         },
     )?;
     let buckets = groups
         .iter_mut()
-        .enumerate()
-        .map(|(index, group)| {
-            let first = start + i64::try_from(index).unwrap_or(0) * width;
+        .zip(&bounds)
+        .map(|(group, &(start, end))| {
             Ok(Bucket {
-                label: bucket_label(period, first)?,
+                label: bucket_label(period, start)?,
                 value: group.value(spec.metric),
+                partial: end > now,
             })
         })
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(Series::Buckets(buckets))
 }
 
-/// The label of a bucket: the hour for a 24-hour chart, the day otherwise, in UTC.
+/// The label of a bucket: the hour for a 24-hour chart, else the day it starts on, in UTC.
 fn bucket_label(period: Period, start: i64) -> rusqlite::Result<String> {
     let when = OffsetDateTime::from_unix_timestamp(start).map_err(invalid_time)?;
     let text = match period {
@@ -602,19 +648,107 @@ mod tests {
     }
 
     #[test]
-    fn the_hour_frame_ends_at_the_current_hour_and_the_day_frame_at_today() {
-        assert_eq!(bucket_frame(Period::H24, NOW), (NOW - 23 * HOUR, HOUR, 24));
+    fn the_hour_and_day_buckets_end_at_the_current_hour_and_today() {
+        let hours = bucket_bounds(Period::H24, NOW);
+        assert_eq!(hours.len(), 24);
+        assert_eq!(hours[0], (NOW - 23 * HOUR, NOW - 22 * HOUR));
+        assert_eq!(hours[23], (NOW, NOW + HOUR));
         assert_eq!(
-            bucket_frame(Period::H24, NOW + 1_234),
-            (NOW - 23 * HOUR, HOUR, 24),
+            bucket_bounds(Period::H24, NOW + 1_234),
+            hours,
             "a time inside the hour names that hour as the last bucket"
         );
-        assert_eq!(bucket_frame(Period::D7, NOW), (NOW - 6 * DAY, DAY, 7));
+        let week = bucket_bounds(Period::D7, NOW);
+        assert_eq!(week.len(), 7);
+        assert_eq!(week[0], (NOW - 6 * DAY, NOW - 5 * DAY));
+        assert_eq!(week[6], (NOW, NOW + DAY));
+        let month = bucket_bounds(Period::D30, NOW);
+        assert_eq!(month.len(), 30);
+        assert_eq!(month[0].0, NOW - 29 * DAY);
+        assert_eq!(month[29], (NOW, NOW + DAY));
+    }
+
+    #[test]
+    fn the_90_day_buckets_are_utc_weeks_from_monday_and_the_first_is_the_first_day() {
+        let starts: Vec<i64> = bucket_bounds(Period::D90, NOW)
+            .iter()
+            .map(|bucket| bucket.0)
+            .collect();
+        let want: Vec<i64> = [89, 85, 78, 71, 64, 57, 50, 43, 36, 29, 22, 15, 8, 1]
+            .iter()
+            .map(|days| NOW - days * DAY)
+            .collect();
+        assert_eq!(starts, want, "2029-10-04, then each Monday to 2029-12-31");
         assert_eq!(
-            bucket_frame(Period::D90, NOW + DAY - 1),
-            (NOW - 89 * DAY, DAY, 90)
+            bucket_bounds(Period::D90, NOW)
+                .last()
+                .map(|bucket| bucket.1),
+            Some(NOW + 6 * DAY),
+            "the current week ends on Monday 2030-01-07"
         );
-        assert_eq!(bucket_frame(Period::D30, NOW), (NOW - 29 * DAY, DAY, 30));
+    }
+
+    #[test]
+    fn a_90_day_period_that_starts_on_a_monday_has_13_weeks() {
+        let today = NOW + 4 * DAY;
+        let starts: Vec<i64> = bucket_bounds(Period::D90, today)
+            .iter()
+            .map(|bucket| bucket.0)
+            .collect();
+        assert_eq!(starts.len(), 13);
+        assert_eq!(starts[0], NOW - 85 * DAY, "2029-10-08 is a Monday");
+        assert_eq!(starts[12], NOW - DAY);
+    }
+
+    #[test]
+    fn only_the_bucket_the_clock_is_in_is_partial_at_mid_day_and_mid_hour() {
+        let conn = memory();
+        let bars = spec(Metric::Calls, GroupBy::Time, Shape::Bars);
+        let flags = |period: Period, now: i64| -> Vec<bool> {
+            match series(&conn, &bars, period, now).expect("the series") {
+                Series::Buckets(buckets) => buckets.iter().map(|bucket| bucket.partial).collect(),
+                _ => panic!("a time chart draws buckets"),
+            }
+        };
+        let mut want = vec![false; 6];
+        want.push(true);
+        assert_eq!(flags(Period::D7, NOW + 12 * HOUR), want, "mid-day");
+        let mut hours = vec![false; 23];
+        hours.push(true);
+        assert_eq!(flags(Period::H24, NOW + 30 * 60), hours, "mid-hour");
+        let mut at_the_hour = vec![false; 23];
+        at_the_hour.push(true);
+        assert_eq!(
+            flags(Period::H24, NOW + HOUR),
+            at_the_hour,
+            "the hour that has just begun is still open"
+        );
+    }
+
+    #[test]
+    fn a_call_on_the_first_day_and_on_a_monday_count_in_their_own_weeks() {
+        let conn = memory();
+        call(&conn, NOW - 89 * DAY + 60, 1);
+        call(&conn, NOW - 85 * DAY - 1, 1);
+        call(&conn, NOW - 85 * DAY + 60, 1);
+        let bars = spec(Metric::Calls, GroupBy::Time, Shape::Bars);
+        let values: Vec<Option<i64>> =
+            match series(&conn, &bars, Period::D90, NOW).expect("the series") {
+                Series::Buckets(buckets) => buckets.iter().map(|bucket| bucket.value).collect(),
+                _ => panic!("a time chart draws buckets"),
+            };
+        assert_eq!(values.len(), 14);
+        assert_eq!(
+            values[0],
+            Some(2),
+            "the first bucket runs from the first day to Sunday 2029-10-07"
+        );
+        assert_eq!(
+            values[1],
+            Some(1),
+            "the Monday 2029-10-08 starts the second"
+        );
+        assert_eq!(values.iter().flatten().sum::<i64>(), 3);
     }
 
     #[test]

@@ -962,6 +962,11 @@ label > code {
   font-weight: 550;
 }
 
+/* The tool name hint reads at most 60 characters a line. */
+#rule-tool-hint {
+  max-inline-size: 60ch;
+}
+
 input:where([type="text"], [type="email"], [type="password"], [type="url"], [type="search"], [type="number"]),
 select {
   inline-size: 100%;
@@ -1656,7 +1661,7 @@ p[data-needs-values] a {
 }
 
 .activity {
-  --c-event: max(230px, calc(100% - 948px));
+  --c-event: max(171px, calc(100% - 948px));
   --c-user: 256px;
   --c-decision: 132px;
   --c-duration: 96px;
@@ -1826,13 +1831,15 @@ p[data-needs-values] a {
   }
 }
 
-/* Server and tool on one line, "demo / slow"; a long tool name wraps after an underscore. */
+/* Server and tool on one line, "demo / slow"; a break comes only after the slash, never inside a tool name. */
 .activity td.where {
   font: 400 13px/20px var(--mono);
 }
 
+/* A server or tool stays on one line; a break comes only after the slash between them. */
 .activity .where code {
   line-height: 1;
+  white-space: nowrap;
 }
 
 /* The slash stays with the server; a tool that does not fit beside it goes to the next
@@ -1846,7 +1853,8 @@ p[data-needs-values] a {
 }
 
 .activity .where code:first-child:not(:only-child)::after {
-  content: " / ";
+  content: "\00a0/ ";
+  white-space: normal;
   color: var(--ink-3);
 }
 
@@ -2735,9 +2743,9 @@ body[data-layout="card"] main > .lede + .actions {
 /* 1280 to 1439 px: the same table with narrower columns. */
 @media (max-width: 1439.98px) {
   .activity {
-    --c-event: 230px;
+    --c-event: 171px;
     --c-user: 240px;
-    --c-decision: 116px;
+    --c-decision: 103px;
     --c-time: 88px;
   }
 }
@@ -3510,10 +3518,15 @@ select[aria-invalid="true"] {
   display: contents;
 }
 
+/* The underline and offset of "Clear filters", a link. */
 .results .export {
   background: none;
   border: 0;
   cursor: pointer;
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--line-strong);
 }
 
 @media (hover: hover) {
@@ -3776,9 +3789,14 @@ a.chip:focus-visible {
   stroke: var(--line-strong);
 }
 
-.time .bar {
+.time .chart-bar {
   fill: var(--mark);
   shape-rendering: crispEdges;
+}
+
+/* The bar of the period still open: drawn fainter, so it is not read as a whole day. */
+.time .chart-bar.partial {
+  opacity: 0.4;
 }
 
 /* The whole column of a bucket answers the pointer, so a 1 px bar still does. */
@@ -3811,27 +3829,6 @@ a.chip:focus-visible {
 @container (max-width: 440px) {
   .time .x .minor {
     display: none;
-  }
-}
-
-/* A second drawing of 90 bars, shown where a bar would be under 5 px: 90 x 5 + 48. */
-.time .area {
-  display: none;
-  overflow: visible;
-  pointer-events: none;
-}
-
-.time .area polygon {
-  fill: var(--mark);
-}
-
-@container (max-width: 497.98px) {
-  .chart[data-buckets="90"] .bar {
-    display: none;
-  }
-
-  .chart[data-buckets="90"] .area {
-    display: block;
   }
 }
 
@@ -3998,6 +3995,10 @@ a.chip:focus-visible {
   white-space: nowrap;
 }
 
+.figures tr.so-far td.num::after {
+  content: " so far";
+}
+
 /* 7 px under the text: 8 minus the rule, so a row is 36 px like a ranked row. */
 .figures td {
   padding: var(--s2) var(--s4) 7px 0;
@@ -4090,9 +4091,9 @@ a.chip:focus-visible {
 .dashboards .c-note { inline-size: 30%; }
 .dashboards .c-act { inline-size: 208px; }
 
-.chartlist .c-title { inline-size: 24%; }
-.chartlist .c-shown { inline-size: 136px; }
-.chartlist .c-act { inline-size: 272px; }
+.chartlist .c-title { inline-size: 21%; }
+.chartlist .c-shown { inline-size: 84px; }
+.chartlist .c-act { inline-size: 252px; }
 
 /* The name is the way in to the edit page: it shows as a link at every width. */
 .dashboards a.name,
@@ -4412,7 +4413,7 @@ a.chip:focus-visible {
     background: CanvasText;
   }
 
-  .time .bar,
+  .time .chart-bar,
   .ranked-bar > rect {
     forced-color-adjust: none;
     fill: CanvasText;
@@ -4423,8 +4424,4 @@ a.chip:focus-visible {
     stroke: CanvasText;
   }
 
-  .time .area polygon {
-    forced-color-adjust: none;
-    fill: CanvasText;
-  }
 }

@@ -6,6 +6,7 @@ pub(super) mod filters;
 
 pub(super) use export::post_export;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use axum::extract::{RawQuery, State};
@@ -21,6 +22,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::app::AppState;
 use crate::db::{Db, DbError};
+use crate::report;
 use crate::web::ui::{self, breakable, email, thousands, time_cell};
 use crate::web::{MainData, Viewer, form_page_with, internal_error};
 
@@ -31,6 +33,7 @@ use filters::{Criteria, EVENTS, Filters, PERIODS, criteria, parse_day};
 const PAGE_SIZE: i64 = 50;
 /// The days of tool calls the client list reads: a client older than this is not offered.
 const CLIENT_DAYS: i64 = 30;
+const CLIENT_LIMIT: usize = 50;
 const DAY: i64 = 86_400;
 /// The day, month, year and UTC time of a row, as the page reads them.
 const PLAIN_TIME: &str =
@@ -84,41 +87,54 @@ pub async fn get_activity(
     let number = page_number(filters.page.as_deref());
     let offset = offset_of(number);
     let now = state.clock.now().unix_timestamp();
-    let scope_filters = filters.clone();
     let retention_days = state.config.limits.activity_days;
-    let clients = match client_names(&state.db, now).await {
-        Ok(clients) => clients,
-        Err(err) => return internal_error("activity page", &err),
-    };
-    let listing = state
-        .db
-        .read(move |conn| {
-            let scope = criteria(&scope_filters, now);
-            Ok(Listing {
-                rows: rows_in(conn, &scope, PAGE_SIZE, offset)?,
-                total: count_in(conn, &scope)?,
-                users: users_in(conn)?,
-                servers: servers_in(conn)?,
-                clients,
-                retention_days,
-            })
-        })
-        .await;
+    let clients = client_names(&state.db, now).await;
+    let listing = read_listing(&state.db, &filters, now, offset, clients, retention_days).await;
     match listing {
         Ok(listing) => activity_page(&viewer, &filters, number, &listing),
         Err(err) => internal_error("activity page", &err),
     }
 }
 
-/// The client names of the last 30 days' tool calls, kept for the minute they were read in.
-async fn client_names(db: &Db, now: i64) -> Result<Arc<Vec<String>>, DbError> {
+/// The rows, count, choices and client names of the page, read on the reader in one call.
+async fn read_listing(
+    db: &Db,
+    filters: &Filters,
+    now: i64,
+    offset: i64,
+    clients: Arc<Vec<String>>,
+    retention_days: u64,
+) -> Result<Listing, DbError> {
+    let scope_filters = filters.clone();
+    db.read(move |conn| {
+        let scope = criteria(&scope_filters, now);
+        Ok(Listing {
+            rows: rows_in(conn, &scope, PAGE_SIZE, offset)?,
+            total: count_in(conn, &scope)?,
+            users: users_in(conn)?,
+            servers: servers_in(conn)?,
+            clients,
+            retention_days,
+        })
+    })
+    .await
+}
+
+/// The client names of the last 30 days' tool calls, kept for the minute they were read in. A read
+/// that fails is reported and leaves the list empty for that request only.
+async fn client_names(db: &Db, now: i64) -> Arc<Vec<String>> {
     let key = format!("clients|{}", now.div_euclid(60));
     if let Some(names) = db.cached::<Vec<String>>(&key) {
-        return Ok(names);
+        return names;
     }
     let since = now.saturating_sub(CLIENT_DAYS * DAY);
-    let names = db.read(move |conn| clients_in(conn, since)).await?;
-    Ok(db.remember(key, names))
+    match db.read(move |conn| clients_in(conn, since)).await {
+        Ok(names) => db.remember(key, names),
+        Err(err) => {
+            report::failure("activity client list", &err);
+            Arc::new(Vec::new())
+        }
+    }
 }
 
 /// The page a query asks for, from 1. A missing, empty, zero, negative or non-numeric value is page
@@ -157,14 +173,23 @@ fn users_in(conn: &Connection) -> rusqlite::Result<Vec<UserOption>> {
     rows.collect()
 }
 
-/// The distinct client names of the tool calls since `since`, by name: at most 50.
+/// The client names of the tool calls since the time it binds, read over the kind index.
+pub(super) const CLIENTS_SQL: &str =
+    "SELECT client FROM activity WHERE kind = 'tool_call' AND at >= ?1 AND client <> ''";
+
+/// The distinct client names of the tool calls since `since`, by name: the first 50. The names are
+/// folded here, and only the 50 smallest are kept, so the set never grows past 51.
 fn clients_in(conn: &Connection, since: i64) -> rusqlite::Result<Vec<String>> {
-    let mut statement = conn.prepare(
-        "SELECT DISTINCT client FROM activity WHERE kind = 'tool_call' AND at >= ?1 AND client <> '' \
-         ORDER BY client LIMIT 50",
-    )?;
-    let rows = statement.query_map([since], |row| row.get(0))?;
-    rows.collect()
+    let mut statement = conn.prepare(CLIENTS_SQL)?;
+    let rows = statement.query_map([since], |row| row.get::<_, String>(0))?;
+    let mut names = BTreeSet::new();
+    for name in rows {
+        names.insert(name?);
+        if names.len() > CLIENT_LIMIT {
+            names.pop_last();
+        }
+    }
+    Ok(names.into_iter().collect())
 }
 
 /// Every server, ordered by slug.
@@ -349,7 +374,7 @@ fn filter_form(
                 option value=(choice) selected[filters.client.as_deref() == Some(choice.as_str())] { (choice) }
             }
             @if let Some(other) = unlisted(filters.client.as_deref(), &client_choices) {
-                option value=(other) selected { (other) " (matches nothing)" }
+                option value=(other) selected { (other) }
             }
         }
     };
@@ -702,7 +727,7 @@ fn table_row(row: &Row) -> Markup {
                     code { (row.server_slug) }
                 }
                 @if !row.tool.is_empty() {
-                    code { (breakable(&row.tool)) }
+                    code { (row.tool) }
                 }
             }
             td.decision { (decision) }
@@ -811,7 +836,7 @@ fn activity_page(viewer: &Viewer, filters: &Filters, number: u64, listing: &List
                 }
                 (active_filters(filters, &chips))
                 @if listing.total > 0 {
-                    (export_form(csrf, filters))
+                    (export_form(csrf, filters, listing.total))
                 }
             }
             @if rows.is_empty() {
@@ -829,14 +854,17 @@ fn activity_page(viewer: &Viewer, filters: &Filters, number: u64, listing: &List
 }
 
 /// The export button: a form that posts the active filters with the csrf token. It is styled as a link.
-fn export_form(csrf: &str, filters: &Filters) -> Markup {
+fn export_form(csrf: &str, filters: &Filters, total: i64) -> Markup {
+    let noun = if total == 1 { "row" } else { "rows" };
     html! {
         form.export-form method="post" action="/admin/activity.csv" {
             input type="hidden" name="csrf" value=(csrf);
             @for (key, value) in filters.pairs() {
                 input type="hidden" name=(key) value=(value);
             }
-            button #export-csv.export type="submit" data-kind="secondary" data-export { "Export all as CSV" }
+            button #export-csv.export type="submit" data-kind="secondary" data-export {
+                "Export " (thousands(total)) " " (noun) " as CSV"
+            }
         }
     }
 }
@@ -846,6 +874,49 @@ mod tests {
     use scraper::Html;
 
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_listing_answers_while_the_writer_is_held() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = Db::open(&dir.path().join("doorward.db")).expect("the migrated database");
+        let (release, holder) = crate::db::hold_writer(&db).await;
+        let listing = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            read_listing(
+                &db,
+                &Filters::of(None),
+                1_893_456_000,
+                0,
+                Arc::new(Vec::new()),
+                30,
+            ),
+        )
+        .await;
+        release.send(()).expect("the writer is released");
+        holder
+            .await
+            .expect("the holder ends")
+            .expect("the writer call");
+        let listing = listing
+            .expect("the listing answers while the writer is held")
+            .expect("the listing reads");
+        assert_eq!(listing.total, 0);
+    }
+
+    #[tokio::test]
+    async fn a_client_list_that_cannot_be_read_is_empty_and_is_not_kept_for_the_minute() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = Db::open(&dir.path().join("doorward.db")).expect("the migrated database");
+        db.call(|conn| conn.execute_batch("DROP TABLE activity"))
+            .await
+            .expect("the table is dropped");
+        let now = 1_893_456_000;
+        assert!(client_names(&db, now).await.is_empty());
+        assert!(
+            db.cached::<Vec<String>>(&format!("clients|{}", now.div_euclid(60)))
+                .is_none()
+        );
+    }
 
     /// The markup of a detail, and the text a reader sees in it.
     fn shown(detail: &str) -> (String, String) {

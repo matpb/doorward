@@ -327,6 +327,7 @@ fn push_cell(out: &mut String, cell: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::admin::activity::CLIENTS_SQL;
     use crate::admin::activity::filters::{Filters, criteria};
     use crate::db::Db;
 
@@ -356,6 +357,9 @@ mod tests {
             "tool=alpha",
             "client=claude",
             "event=tool_call",
+            "event=client",
+            "event=account",
+            "event=other",
             "period=7d",
             "q=alpha",
             "server=1&period=7d&event=tool_any",
@@ -374,6 +378,15 @@ mod tests {
                 );
             }
         }
+        let clients = plan_of(&conn, CLIENTS_SQL, &[Value::Integer(0)]);
+        assert!(
+            clients.iter().all(|step| !step.contains("TEMP B-TREE")),
+            "the client list sorts or dedupes: {clients:?}"
+        );
+        assert!(
+            clients.iter().any(|step| step.contains("activity_kind_at")),
+            "the client list searches the kind index: {clients:?}"
+        );
     }
 
     fn cell(text: &str) -> String {

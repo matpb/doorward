@@ -746,7 +746,7 @@ fn delete_in(
     let Some(server) = servers::load(&tx, id)? else {
         return Ok(Deleted::Missing);
     };
-    servers::delete(&tx, id)?;
+    servers::delete(&tx, id, actor, at)?;
     let detail = format!("deleted server {}", server.slug);
     record(&tx, at, actor, Some(id), &server.slug, &detail)?;
     tx.commit()?;

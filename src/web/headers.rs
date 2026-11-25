@@ -55,7 +55,13 @@ pub async fn security_headers(
     headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(REFERRER_POLICY, HeaderValue::from_static("same-origin"));
-    headers.insert(
+    response
+}
+
+/// Sets `cross-origin-opener-policy: same-origin`, for the panel and account pages only.
+pub async fn same_origin_opener(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
         HeaderName::from_static("cross-origin-opener-policy"),
         HeaderValue::from_static("same-origin"),
     );

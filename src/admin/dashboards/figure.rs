@@ -74,8 +74,9 @@ fn body(id: i64, spec: &ChartSpec, title: &str, period: Period, series: &Series)
             shape => {
                 let hourly = period == Period::H24;
                 let line = shape == Shape::Line;
+                let weekly = period == Period::D90;
                 html! {
-                    (svg::time_svg(&svg::TimeChart { id, buckets, hourly, unit, line }))
+                    (svg::time_svg(&svg::TimeChart { id, buckets, hourly, weekly, unit, line }))
                     (data_details(title, bucket_head(period), &bucket_rows(buckets, spec.metric)))
                 }
             }
@@ -92,6 +93,7 @@ fn body(id: i64, spec: &ChartSpec, title: &str, period: Period, series: &Series)
 pub fn caption(spec: &ChartSpec, period: Period, scope: &Scope) -> Markup {
     let split = match spec.group_by {
         GroupBy::Time if period == Period::H24 => " per hour",
+        GroupBy::Time if period == Period::D90 => " per week",
         GroupBy::Time => " per day",
         GroupBy::Nothing => "",
         GroupBy::User => " by user",
@@ -151,10 +153,10 @@ fn unit_words(metric: Metric, plural: bool) -> &'static str {
 }
 
 fn bucket_head(period: Period) -> &'static str {
-    if period == Period::H24 {
-        "Hour (UTC)"
-    } else {
-        "Day (UTC)"
+    match period {
+        Period::H24 => "Hour (UTC)",
+        Period::D90 => "Week from (UTC)",
+        _ => "Day (UTC)",
     }
 }
 
@@ -163,15 +165,15 @@ fn bucket_table(period: Period, buckets: &[Bucket], metric: Metric) -> Markup {
     data_table(bucket_head(period), &bucket_rows(buckets, metric))
 }
 
-/// The label and value of each bucket; a duration bucket with no call says so.
-fn bucket_rows(buckets: &[Bucket], metric: Metric) -> Vec<(String, String)> {
+/// The label, value and so-far flag of each bucket; a duration bucket with no call says so.
+fn bucket_rows(buckets: &[Bucket], metric: Metric) -> Vec<(String, String, bool)> {
     buckets
         .iter()
         .map(|bucket| {
             let value = bucket
                 .value
                 .map_or_else(|| "No value".to_owned(), |value| shown(metric, value));
-            (svg::label_words(&bucket.label), value)
+            (svg::label_words(&bucket.label), value, bucket.partial)
         })
         .collect()
 }
@@ -265,10 +267,10 @@ fn group_head(group: GroupBy) -> &'static str {
     }
 }
 
-fn category_rows(categories: &[Category], metric: Metric) -> Vec<(String, String)> {
+fn category_rows(categories: &[Category], metric: Metric) -> Vec<(String, String, bool)> {
     categories
         .iter()
-        .map(|category| (category.label.clone(), shown(metric, category.value)))
+        .map(|category| (category.label.clone(), shown(metric, category.value), false))
         .collect()
 }
 
@@ -323,7 +325,7 @@ fn unused_table(tools: &[(String, String)]) -> Markup {
 }
 
 /// The numbers of a chart in a closed disclosure under it.
-fn data_details(title: &str, head: &str, rows: &[(String, String)]) -> Markup {
+fn data_details(title: &str, head: &str, rows: &[(String, String, bool)]) -> Markup {
     html! {
         details.data {
             summary {
@@ -336,7 +338,7 @@ fn data_details(title: &str, head: &str, rows: &[(String, String)]) -> Markup {
     }
 }
 
-fn data_table(head: &str, rows: &[(String, String)]) -> Markup {
+fn data_table(head: &str, rows: &[(String, String, bool)]) -> Markup {
     html! {
         table.figures {
             thead {
@@ -346,8 +348,8 @@ fn data_table(head: &str, rows: &[(String, String)]) -> Markup {
                 }
             }
             tbody {
-                @for (label, value) in rows {
-                    tr {
+                @for (label, value, so_far) in rows {
+                    tr class=[so_far.then_some("so-far")] {
                         td { (label) }
                         td.num { (value) }
                     }

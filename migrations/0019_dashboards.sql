@@ -48,4 +48,4 @@ INSERT INTO charts (dashboard_id, position, title, metric, group_by, shape, peri
   (1, 7, 'Unused tools', 'unused_tools', 'none', 'table', '30d', NULL, 'half'),
   (1, 8, 'Slowest tools p95', 'duration_p95', 'tool', 'ranked', '30d', 10, 'half'),
   (1, 9, 'Calls by client', 'calls', 'client', 'ranked', '30d', 10, 'half'),
-  (1, 10, 'Failed calls by server', 'failed', 'server', 'ranked', '30d', 10, 'half');
+  (1, 10, 'Failed calls by server', 'failed', 'server', 'ranked', '30d', 10, 'full');

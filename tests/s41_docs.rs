@@ -294,3 +294,26 @@ fn the_readme_and_security_name_the_limits_of_stored_credentials() {
         }
     }
 }
+
+/// The lines of the `doorward` service of a Compose file: its key, then every line indented past it.
+fn gateway_service(text: &str) -> String {
+    let lines = text
+        .lines()
+        .skip_while(|line| *line != "  doorward:")
+        .skip(1)
+        .take_while(|line| line.starts_with("   "));
+    lines.collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn the_gateway_sends_sqlite_its_temporary_files_to_the_data_volume() {
+    for file in ["compose.yaml", "compose.caddy.yaml"] {
+        let service = gateway_service(&repo_file(file));
+        assert!(
+            service
+                .lines()
+                .any(|line| line.trim().split(" #").next() == Some("SQLITE_TMPDIR: /data")),
+            "{file} must set SQLITE_TMPDIR to /data in the gateway service: {service}"
+        );
+    }
+}

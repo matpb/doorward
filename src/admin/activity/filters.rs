@@ -265,7 +265,8 @@ fn id_condition(scope: &mut Criteria, column: &str, text: &str) {
 }
 
 /// The rows of one event, by kind and, for tool calls, by decision, outcome and tool-error marker.
-/// A key that names no event is no row.
+/// A key that names no event is no row. `+kind` keeps an IN list off the kind index, which would
+/// need a sort; the time order serves the export's keyset.
 fn event_condition(scope: &mut Criteria, key: &str) {
     let (sql, values) = match key {
         "tool_call" => (
@@ -282,13 +283,13 @@ fn event_condition(scope: &mut Criteria, key: &str) {
         "sign_in" => ("kind = 'login'", Vec::new()),
         "sign_in_refused" => ("kind = 'login_failed'", Vec::new()),
         "client" => (
-            "kind IN ('client_connected', 'client_disconnected')",
+            "+kind IN ('client_connected', 'client_disconnected')",
             Vec::new(),
         ),
         "admin_change" => ("kind = 'admin_change'", Vec::new()),
         "invitation" => ("kind = 'invitation'", Vec::new()),
         "account" => (
-            "kind IN ('owner_created', 'reset', 'password_change')",
+            "+kind IN ('owner_created', 'reset', 'password_change')",
             Vec::new(),
         ),
         "other" => (

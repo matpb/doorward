@@ -13,8 +13,6 @@ const BASELINE: i64 = 164;
 const DATE_Y: i64 = 182;
 /// The width of the scale column at the right of a time chart, inside its svg.
 const SCALE_COLUMN: i64 = 48;
-/// From this many buckets the bars are drawn a second time as one step outline.
-const STEP_FROM: usize = 32;
 /// A line tick this close to an edge of the plot hangs inwards; a tick within NEAR_EDGE of it is near.
 const EDGE: f64 = 0.04;
 const NEAR_EDGE: f64 = 0.24;
@@ -29,6 +27,7 @@ pub struct TimeChart<'a> {
     pub id: i64,
     pub buckets: &'a [Bucket],
     pub hourly: bool,
+    pub weekly: bool,
     pub unit: &'a str,
     pub line: bool,
 }
@@ -161,7 +160,7 @@ pub fn label_words(label: &str) -> String {
 }
 
 /// The title of a bucket's mark: its day or its hour, and its value in words.
-fn mark_title(bucket: &Bucket, hourly: bool, unit: &str) -> String {
+fn mark_title(bucket: &Bucket, hourly: bool, weekly: bool, unit: &str) -> String {
     let when_text = match When::of(&bucket.label) {
         Some(when) if hourly => format!(
             "{} {:02}:00 to {:02}:00 UTC",
@@ -169,12 +168,18 @@ fn mark_title(bucket: &Bucket, hourly: bool, unit: &str) -> String {
             when.hour,
             (when.hour + 1) % 24
         ),
+        Some(when) if weekly => format!("Week from {}", when.full()),
         Some(when) => when.full(),
         None => bucket.label.clone(),
     };
-    match bucket.value {
+    let text = match bucket.value {
         Some(value) => format!("{when_text}: {} {unit}", thousands(value)),
         None => format!("{when_text}: no value"),
+    };
+    if bucket.partial {
+        format!("{text}, so far")
+    } else {
+        text
     }
 }
 
@@ -187,7 +192,7 @@ struct Tick {
 
 /// The ticks of a time chart: every sixth hour, midnight written as its day; every day of seven,
 /// every second one from the newest minor; Mondays up to 31 days; the first of each month beyond.
-fn ticks(buckets: &[Bucket], hourly: bool) -> Vec<Tick> {
+fn ticks(buckets: &[Bucket], hourly: bool, weekly: bool) -> Vec<Tick> {
     let count = buckets.len();
     let mut out = Vec::new();
     for (index, bucket) in buckets.iter().enumerate() {
@@ -207,6 +212,12 @@ fn ticks(buckets: &[Bucket], hourly: bool) -> Vec<Tick> {
                     minor: false,
                 });
             }
+        } else if weekly {
+            out.push(Tick {
+                index,
+                label: when.short(),
+                minor: false,
+            });
         } else if count == 7 {
             let minor = (count - 1 - index) % 2 == 1;
             out.push(Tick {
@@ -271,7 +282,7 @@ fn runs(buckets: &[Bucket]) -> Vec<Vec<(usize, i64)>> {
     let mut runs: Vec<Vec<(usize, i64)>> = Vec::new();
     let mut current: Vec<(usize, i64)> = Vec::new();
     for (index, bucket) in buckets.iter().enumerate() {
-        match bucket.value {
+        match bucket.value.filter(|_| !bucket.partial) {
             Some(value) => current.push((index, value)),
             None if !current.is_empty() => runs.push(std::mem::take(&mut current)),
             None => {}
@@ -281,24 +292,6 @@ fn runs(buckets: &[Bucket]) -> Vec<Vec<(usize, i64)>> {
         runs.push(current);
     }
     runs
-}
-
-/// The outline of the step area in the nested svg's own units: a bucket's whole bar height, from
-/// the baseline up across its slot and back down at its right edge.
-fn step_points(buckets: &[Bucket], top: i64) -> String {
-    let count = buckets.len();
-    let mut points = vec![format!("0,{PLOT_HEIGHT}")];
-    for (index, bucket) in buckets.iter().enumerate() {
-        let bar = bucket
-            .value
-            .filter(|value| *value > 0)
-            .map_or(0, |value| height(value, top).max(1));
-        let y = PLOT_HEIGHT - bar;
-        points.push(format!("{index},{y}"));
-        points.push(format!("{},{y}", index + 1));
-    }
-    points.push(format!("{count},{PLOT_HEIGHT}"));
-    points.join(" ")
 }
 
 /// The line's points in the nested svg's units: each bucket's centre at its value.
@@ -342,7 +335,7 @@ pub fn time_svg(chart: &TimeChart<'_>) -> Markup {
     let inset = inset(count);
     let bar_x = |index: usize| (index as f64 + inset) / count as f64;
     let line_x = |index: usize| (index as f64 + 0.5) / count as f64;
-    let tick_list = ticks(buckets, chart.hourly);
+    let tick_list = ticks(buckets, chart.hourly, chart.weekly);
     let positions: Vec<f64> = tick_list
         .iter()
         .map(|tick| {
@@ -367,7 +360,6 @@ pub fn time_svg(chart: &TimeChart<'_>) -> Markup {
         .iter()
         .map(|value| (*value, BASELINE - height(*value, top)))
         .collect();
-    let step_outline = !chart.line && count >= STEP_FROM;
     let caption = format!("c{}-caption", chart.id);
     let title = format!("c{}-title", chart.id);
     html! {
@@ -387,19 +379,14 @@ pub fn time_svg(chart: &TimeChart<'_>) -> Markup {
                 g.marks {
                     @for (index, bucket) in buckets.iter().enumerate() {
                         g {
-                            title { (mark_title(bucket, chart.hourly, chart.unit)) }
+                            title { (mark_title(bucket, chart.hourly, chart.weekly, chart.unit)) }
                             rect.hit x=(percent(index as f64 / count as f64)) width=(percent(1.0 / count as f64)) y=(PLOT_TOP) height=(PLOT_HEIGHT) {}
                             @if !chart.line {
                                 @if let Some(value) = bucket.value.filter(|value| *value > 0) {
-                                    rect.bar x=(percent(bar_x(index))) width=(percent((1.0 - 2.0 * inset) / count as f64)) y=(BASELINE - height(value, top).max(1)) height=(height(value, top).max(1)) {}
+                                    rect class=(if bucket.partial { "chart-bar partial" } else { "chart-bar" }) x=(percent(bar_x(index))) width=(percent((1.0 - 2.0 * inset) / count as f64)) y=(BASELINE - height(value, top).max(1)) height=(height(value, top).max(1)) {}
                                 }
                             }
                         }
-                    }
-                }
-                @if step_outline {
-                    svg.area x="0" y=(PLOT_TOP) width="100%" height=(PLOT_HEIGHT) viewBox=(format!("0 0 {count} {PLOT_HEIGHT}")) preserveAspectRatio="none" aria-hidden="true" {
-                        polygon points=(step_points(buckets, top)) {}
                     }
                 }
                 @if chart.line {
@@ -441,6 +428,7 @@ mod tests {
         Bucket {
             label: label.to_owned(),
             value,
+            partial: false,
         }
     }
 
@@ -469,16 +457,50 @@ mod tests {
     #[test]
     fn a_mark_names_its_day_and_its_value_or_says_there_is_none() {
         assert_eq!(
-            mark_title(&bucket("2026-11-18", Some(4_826)), false, "tool calls"),
+            mark_title(
+                &bucket("2026-11-18", Some(4_826)),
+                false,
+                false,
+                "tool calls"
+            ),
             "18 Nov 2026: 4,826 tool calls"
         );
         assert_eq!(
-            mark_title(&bucket("2026-11-24 13:00", Some(512)), true, "tool calls"),
+            mark_title(
+                &bucket("2026-11-24 13:00", Some(512)),
+                true,
+                false,
+                "tool calls"
+            ),
             "24 Nov 2026 13:00 to 14:00 UTC: 512 tool calls"
         );
         assert_eq!(
-            mark_title(&bucket("2026-11-18", None), false, "ms"),
+            mark_title(&bucket("2026-11-18", None), false, false, "ms"),
             "18 Nov 2026: no value"
+        );
+    }
+
+    #[test]
+    fn a_week_mark_names_the_day_it_starts_and_an_open_period_says_so_far() {
+        assert_eq!(
+            mark_title(&bucket("2026-11-16", Some(9)), false, true, "calls"),
+            "Week from 16 Nov 2026: 9 calls"
+        );
+        let open = Bucket {
+            partial: true,
+            ..bucket("2026-11-24", Some(3))
+        };
+        assert_eq!(
+            mark_title(&open, false, false, "calls"),
+            "24 Nov 2026: 3 calls, so far"
+        );
+        let open_empty = Bucket {
+            partial: true,
+            ..bucket("2026-11-24", None)
+        };
+        assert_eq!(
+            mark_title(&open_empty, false, false, "ms"),
+            "24 Nov 2026: no value, so far"
         );
     }
 
@@ -497,5 +519,15 @@ mod tests {
             bucket("c", Some(2)),
         ];
         assert_eq!(runs(&buckets), vec![vec![(0, 1)], vec![(2, 2)]]);
+    }
+
+    #[test]
+    fn the_line_stops_at_the_last_complete_bucket() {
+        let open = Bucket {
+            partial: true,
+            ..bucket("today", Some(9))
+        };
+        let buckets = [bucket("yesterday", Some(4)), open];
+        assert_eq!(runs(&buckets), vec![vec![(0, 4)]]);
     }
 }

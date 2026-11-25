@@ -151,7 +151,7 @@ Each key in the Compose files, and what it is for:
 | `stop_grace_period: 15s` | Time for requests to finish before a forced stop. |
 | `logging` with `max-size` and `max-file` | Caps the disk space the container logs use. |
 | `restart: unless-stopped` | Starts the container again after a crash or a reboot, but not after a manual stop. |
-| `tmpfs: /tmp` | Scratch space for SQLite, in memory and small; it is empty after each restart. The panel's charts and exports need none of it. |
+| `tmpfs: /tmp` | Scratch space for the gateway, in memory and small; it is empty after each restart. SQLite's temporary files go to the data volume instead (`SQLITE_TMPDIR=/data`), so a large chart or export never has to fit here. |
 | `internal: true` on `proxy` | The proxy network has no route out, so only Caddy and the gateway are on it. |
 | `ipv4_address` and `ipam` subnets | Fixed addresses, so the gateway trusts exactly one proxy address. |
 | `ports: 127.0.0.1:8717:8717` | The gateway port is published on loopback only. |

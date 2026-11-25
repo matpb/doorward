@@ -1170,8 +1170,8 @@ async fn the_export_link_keeps_the_filters_and_shows_only_with_rows() {
     );
     assert_eq!(
         page.text("button#export-csv").as_deref(),
-        Some("Export all as CSV"),
-        "the export button reads Export all as CSV"
+        Some("Export 1 row as CSV"),
+        "the export button names the one row the filters hold"
     );
     assert_eq!(
         page.attr("form.export-form", "action").as_deref(),

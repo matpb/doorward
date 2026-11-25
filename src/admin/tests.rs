@@ -3548,9 +3548,7 @@ fn assert_rule_form_texts(body: &str, post_action: &str, server: &str) {
         1,
         "the add form is the section with id add-rule"
     );
-    let hint = format!(
-        "Tools of {server}. To pick a tool of another server, choose the server above first. Used only when the scope is One tool."
-    );
+    let hint = format!("Tools of {server}. Used only when the scope is One tool.");
     assert_eq!(
         text_of(body, "p#rule-tool-hint").as_deref(),
         Some(hint.as_str()),

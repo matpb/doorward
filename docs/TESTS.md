@@ -3072,6 +3072,30 @@ read from the same page.
 29. `a_link_to_an_email_held_by_two_accounts_opens_the_rows_of_both`: bob is deleted and invited again; the ranked bar counts the calls of both accounts and its link opens both.
 30. `a_duration_link_opens_every_let_through_call_including_the_failed_ones`: the median and people links of tool `alpha` open `event=tool_let_through` with two rows: the let-through call and the failed one, not the refused call.
 
+New in the round after c1b6b73 (statements 94, 95, 96, 97 and 98):
+- s97, `a_90_day_time_chart_has_weekly_buckets_captioned_per_week_and_no_step_outline`: the 90-day chart
+  lists 14 weeks from `4 Oct 2029` to `31 Dec 2029`, its caption says `per week`, and no `svg.area` is drawn.
+- s97, `the_unfinished_day_is_a_partial_bar_whose_title_says_so_far_at_mid_day`: at 12:00 the one bar of
+  the open day is `rect.chart-bar.partial` and its title ends `, so far`; yesterday's does not.
+- s97, `the_unfinished_hour_is_not_drawn_on_the_line_at_mid_hour`: at 00:30 the line has 23 points, not 24.
+- Changed: `daily_buckets_are_n_utc_days_ending_today_with_exact_boundaries` and
+  `median_and_p95_are_nearest_rank_per_bucket_and_empty_buckets_are_gaps` expect the open day's title to
+  end `, so far`; every other assertion of both is unchanged. The Data table value of the open bucket is
+  unchanged (`2`) and it carries the row class `so-far`, which the stylesheet shows as ` so far`.
+- s95, `an_unfiltered_export_holds_every_row_and_its_started_row_counts_them_and_is_not_in_the_body`: the
+  export with no filter holds every row, and its started row counts them (`export started (N rows)`).
+- s95, `the_export_button_says_how_many_rows_it_exports_with_thousands_grouped`: `Export 1,239 rows as CSV`.
+- s94, `the_export_link_keeps_the_filters_and_shows_only_with_rows`: the button reads `Export 1 row as CSV`
+  (its expectation changed from `Export all as CSV`).
+- s96, the seeded Usage dashboard: `Failed calls by server` is full width (its expectation changed from half).
+- s41, `the_gateway_sends_sqlite_its_temporary_files_to_the_data_volume`: both compose files set
+  `SQLITE_TMPDIR: /data` in the `doorward` service.
+- Unit, `src/admin/dashboards/query.rs`: the bucket bounds of each period, the 90-day weeks (14 and 13
+  buckets), the partial flag at mid-day and mid-hour, and the first-day and Monday folds.
+- Unit, `src/admin/dashboards/svg.rs`: the line stops at the last complete bucket; a week mark and an
+  open period's mark say `so far`.
+- Unit, `src/admin/tests.rs`: the tool name hint is `Tools of {server}. Used only when the scope is One tool.`
+
 ## s98_panel_reads.rs (statement 98)
 
 Each test builds its own instance with the harness; the owner is the usual actor and bob a plain user.
@@ -3092,10 +3116,15 @@ Rows are written straight into the table, as the proxy writes them.
    fields hold the event, the search and the csrf token.
 7. `the_search_text_is_cut_to_200_characters_and_the_form_shows_the_cut`: a 250-character `q` shows
    200 characters in `input#filter-q`.
-8. `every_html_page_says_it_opens_in_its_own_browsing_context`: `/admin`, `/admin/activity` and
-   `/admin/dashboards` send `Cross-Origin-Opener-Policy: same-origin`.
+8. `the_panel_and_account_pages_open_in_their_own_browsing_context_and_the_sign_in_pages_do_not`:
+   `/admin`, `/admin/activity`, `/admin/dashboards` and `/account` send
+   `Cross-Origin-Opener-Policy: same-origin`; `/login`, `/oauth/authorize` and `/oauth/consent` do not.
 9. `the_client_list_holds_only_the_tool_calls_of_the_last_30_days`: a client of a tool call 40 days
    old and one of a `client_connected` row are not in the select; a tool call a day old is.
+9a. `the_client_list_is_the_first_fifty_client_names_of_the_last_30_days_in_name_order`: 60 names,
+   each called twice, list `client-00` to `client-49`.
+9b. `a_filtered_client_outside_the_list_is_one_selected_option_with_its_own_name`: `client=stale` (40
+   days old) is one selected option reading `stale`, with no `(matches nothing)`.
 10. `a_chart_that_fails_shows_an_error_and_the_counts_and_latest_activity_still_render`: the catalog
     table is dropped; the Overview answers `200`, the Unused tools chart reads `This chart could not
     be drawn.`, the other charts and the counts and latest activity still render.
@@ -3106,19 +3135,34 @@ Rows are written straight into the table, as the proxy writes them.
     with its count of two calls, while a reload of the old definition in the same minute kept one.
 13. `deleting_a_server_or_a_user_logs_one_row_per_chart_it_removes`: two charts, one on the server and
     one on bob, give exactly two `deleted chart ... from dashboard Scoped: its server was deleted`
-    and `... its user was deleted` rows when the server and then bob are deleted.
+    and `... its user was deleted` rows when the server and then bob are deleted; each row names the
+    owner as its actor and carries the application clock (`2030-01-01T00:00:00Z`), not the wall clock.
 14. `a_panel_request_answers_under_150_ms_while_the_90_day_overview_is_computing`: 300,000 rows of
     calls seeded in one transaction; `/admin?period=90d` is started, and 40 ms later `GET /account`
     (which takes the writer) answers in under 150 ms while the Overview has not finished.
 15. `the_recorded_email_and_slug_filters_show_as_chips_that_remove_them`: `email` and `slug` show as
     `User (recorded)` and `Server (recorded)` chips; the server chip's Remove link keeps the email.
+16. `the_panel_reads_answer_while_another_connection_holds_a_write_transaction`: with a write transaction
+    open on the file, `/admin/activity` and `/admin` answer within two seconds. WAL readers do not wait
+    for a writer, so this shows the reads hold no write lock; the writer-mutex guards are in-crate.
+17. `a_tool_name_in_the_activity_table_is_one_piece_with_no_break_inside_it`: `alpha_long_tool_name` is
+    one `<code>` with no `<wbr>` in it.
 
-In-crate tests of statement 98: `every_chart_statement_searches_an_index_without_a_sort_or_temporary_table`
+In-crate tests of statement 98: `the_listing_answers_while_the_writer_is_held` in `src/admin/activity.rs`
+and `the_overview_series_reads_while_the_writer_is_held` in `src/admin/dashboards/pages.rs` hold the
+writer's connection (`db::hold_writer`) for two seconds and fail if the Activity list or a chart series
+waits for it; `the_reader_sets_query_only_and_its_read_only_flag_refuses_writes_once_query_only_is_off`,
+`query_only_alone_refuses_every_write_until_it_is_turned_off`, `a_journal_mode_other_than_wal_refuses_to_open`,
+`the_writer_limits_its_journal_to_64_mb` and `no_trigger_is_left_by_the_migrations` in `src/db.rs`;
+`the_activity_table_keeps_the_server_and_time_index_and_not_the_server_alone` in `src/db.rs`;
+`a_client_list_that_cannot_be_read_is_empty_and_is_not_kept_for_the_minute` in `src/admin/activity.rs`;
+`every_chart_statement_searches_an_index_without_a_sort_or_temporary_table`
 in `src/admin/dashboards/query.rs` runs `EXPLAIN QUERY PLAN` on every statement a chart runs, for
 every metric, grouping, period and filter set the builder allows, against the migrated schema, and
 rejects `TEMP B-TREE`, `CO-ROUTINE` and a `SCAN activity` without an index;
 `every_page_of_the_export_and_the_activity_page_reads_in_index_order` in `src/admin/activity/export.rs`
-does the same for the export's chunks, bounded and unbounded, under each filter; `the_reader_reads_and_refuses_every_write`
+does the same for the export's chunks, bounded and unbounded, under each filter, and for the client list;
+`the_reader_reads_and_refuses_every_write`
 and `the_memo_answers_its_own_type_and_is_emptied_when_full` in `src/db.rs`; the filter tests
 `a_search_is_cut_to_200_characters...`, `an_email_and_a_slug_match_the_recorded_text_exactly` and
 `the_let_through_event_is_the_class_the_charts_count` in `src/admin/activity/filters.rs`; and

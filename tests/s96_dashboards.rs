@@ -104,7 +104,7 @@ const USAGE: [(&str, &str, &str, &str, &str, &str, &str); 10] = [
         "ranked",
         "30d",
         "10",
-        "half",
+        "full",
     ),
 ];
 

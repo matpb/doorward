@@ -392,6 +392,7 @@ fn change_in(
         Action::Delete => {
             session::revoke_all(&tx, id)?;
             revoke_invitations(&tx, id)?;
+            servers::record_removed_charts(&tx, actor, now, servers::Owner::User, id)?;
             tx.execute("DELETE FROM users WHERE id = ?1", params![id])?;
             format!("deleted {}", target.email)
         }

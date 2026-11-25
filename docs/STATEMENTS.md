@@ -550,8 +550,10 @@ M. Added for custom headers and per-user credentials
     duration metrics link to the `tool_let_through` rows they are computed from, failed and
     tool-error calls included. A ranked row with no key (the empty client) is plain text, not a
     link. A chart's caption names each filter in force: ` on` its server slug, ` by` its user email,
-    ` of` its tool. Durations are written with ` ms`. A time chart has 24 hourly buckets, or one
-    bucket per UTC day ending today. A duration bucket with no tool call is a gap labelled `No value`,
+    ` of` its tool. Durations are written with ` ms`. A time chart has 24 hourly buckets, one bucket
+    per UTC day ending today for 7 and 30 days, or 13 or 14 UTC weeks from Monday for 90 days, the first
+    starting on the period's first day. The bucket the clock is still in is drawn as partial: a line
+    stops before it, its bar is fainter, and it reads `so far`. A duration bucket with no tool call is a gap labelled `No value`,
     not zero. A ranked list is cut to its top count, with ties ordered by label. The server draws
     each chart as SVG with no script and no inline style, and every label is escaped. A repeated
     query key takes its first value. A figure is drawn from the activity as of the minute shown in
@@ -569,7 +571,11 @@ M. Added for custom headers and per-user credentials
     over 300,000 rows and checks that a panel request answers in under 150 ms while that Overview is
     still computing; `every_chart_statement_searches_an_index_without_a_sort_or_temporary_table` in
     `src/admin/dashboards/query.rs`; `every_page_of_the_export_and_the_activity_page_reads_in_index_order`
-    in `src/admin/activity/export.rs`; and `the_reader_reads_and_refuses_every_write` in `src/db.rs`.
+    in `src/admin/activity/export.rs`; `the_reader_sets_query_only_and_its_read_only_flag_refuses_writes_once_query_only_is_off`
+    in `src/db.rs`, which also refuses a journal that is not WAL and caps the writer's journal at 64 MB;
+    `the_listing_answers_while_the_writer_is_held` in `src/admin/activity.rs` and
+    `the_overview_series_reads_while_the_writer_is_held` in `src/admin/dashboards/pages.rs`, which hold the
+    writer's connection and fail if a panel read waits for it.
 
 ## Proof
 

@@ -177,14 +177,31 @@ fn connect(path: &Path) -> Result<Connection, DbError> {
         .map_err(|err| err.to_string())
         .and_then(|()| Connection::open(path).map_err(|err| err.to_string()))
         .and_then(|conn| {
+            // The journal is capped at 64 MB, so an idle writer hands its space back.
             conn.execute_batch(
-                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; \
-                 PRAGMA secure_delete=ON;",
+                "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON; \
+                 PRAGMA journal_size_limit=67108864;",
             )
             .map_err(|err| err.to_string())?;
-            Ok(conn)
+            let mode: String = conn
+                .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+                .map_err(|err| err.to_string())?;
+            Ok((conn, mode))
         });
-    opened.map_err(|cause| DbError::Open(path.to_path_buf(), cause))
+    let (conn, mode) = opened.map_err(|cause| DbError::Open(path.to_path_buf(), cause))?;
+    ensure_wal(path, &mode)?;
+    Ok(conn)
+}
+
+/// Refuses a database that did not switch to WAL: the panel's reads need the WAL file.
+fn ensure_wal(path: &Path, mode: &str) -> Result<(), DbError> {
+    if mode == "wal" {
+        return Ok(());
+    }
+    Err(DbError::Open(
+        path.to_path_buf(),
+        format!("journal_mode is {mode}, not wal"),
+    ))
 }
 
 /// A read-only connection with the busy timeout, refusing every write.
@@ -197,6 +214,30 @@ fn connect_reader(path: &Path) -> Result<Connection, DbError> {
             Ok(conn)
         });
     opened.map_err(|cause| DbError::Open(path.to_path_buf(), cause))
+}
+
+/// Holds the writer's connection on a blocking thread until the sender is sent to; returns once taken.
+/// A read that waits for the writer cannot answer until then.
+#[cfg(test)]
+pub(crate) async fn hold_writer(
+    db: &Db,
+) -> (
+    std::sync::mpsc::Sender<()>,
+    tokio::task::JoinHandle<Result<(), DbError>>,
+) {
+    let (taken_tx, taken_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let db = db.clone();
+    let holder = tokio::spawn(async move {
+        db.call(move |_conn| {
+            let _ = taken_tx.send(());
+            let _ = release_rx.recv();
+            Ok(())
+        })
+        .await
+    });
+    taken_rx.await.expect("the writer is taken");
+    (release_tx, holder)
 }
 
 /// Creates the file with mode 0600 if missing; an existing file keeps its mode.
@@ -349,6 +390,110 @@ mod tests {
             ),
             "{refused:?}"
         );
+    }
+
+    #[test]
+    fn the_reader_sets_query_only_and_its_read_only_flag_refuses_writes_once_query_only_is_off() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let path = dir.path().join("doorward.db");
+        Db::open(&path).expect("the migrated database");
+        let reader = connect_reader(&path).expect("the reader");
+        let setting: i64 = reader
+            .query_row("PRAGMA query_only", [], |row| row.get(0))
+            .expect("the setting");
+        assert_eq!(setting, 1, "the reader has query_only on");
+        reader
+            .execute_batch("PRAGMA query_only=OFF")
+            .expect("query_only is off");
+        let err = reader
+            .execute("DELETE FROM schema_migrations WHERE version = -1", [])
+            .expect_err("the read-only flag alone refuses the write");
+        assert_eq!(err.sqlite_error_code(), Some(rusqlite::ErrorCode::ReadOnly));
+    }
+
+    #[test]
+    fn query_only_alone_refuses_every_write_until_it_is_turned_off() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let path = dir.path().join("doorward.db");
+        Db::open(&path).expect("the migrated database");
+        let conn = Connection::open(&path).expect("a read-write connection");
+        conn.execute_batch("PRAGMA query_only=ON")
+            .expect("query_only is on");
+        let setting: i64 = conn
+            .query_row("PRAGMA query_only", [], |row| row.get(0))
+            .expect("the setting");
+        assert_eq!(setting, 1);
+        let err = conn
+            .execute("DELETE FROM schema_migrations WHERE version = -1", [])
+            .expect_err("query_only refuses the write");
+        assert_eq!(err.sqlite_error_code(), Some(rusqlite::ErrorCode::ReadOnly));
+        conn.execute_batch("PRAGMA query_only=OFF")
+            .expect("query_only is off");
+        let removed = conn
+            .execute("DELETE FROM schema_migrations WHERE version = -1", [])
+            .expect("with query_only off the write runs");
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn a_journal_mode_other_than_wal_refuses_to_open() {
+        let err = ensure_wal(Path::new("/var/doorward/doorward.db"), "delete")
+            .expect_err("delete is not wal");
+        assert_eq!(
+            err.to_string(),
+            "cannot open the database /var/doorward/doorward.db: journal_mode is delete, not wal"
+        );
+        ensure_wal(Path::new("/var/doorward/doorward.db"), "wal").expect("wal opens");
+    }
+
+    #[tokio::test]
+    async fn the_writer_limits_its_journal_to_64_mb() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = Db::open(&dir.path().join("doorward.db")).expect("the migrated database");
+        let limit: i64 = db
+            .call(|conn| conn.query_row("PRAGMA journal_size_limit", [], |row| row.get(0)))
+            .await
+            .expect("the limit");
+        assert_eq!(limit, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn no_trigger_is_left_by_the_migrations() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let path = dir.path().join("doorward.db");
+        Db::open(&path).expect("the migrated database");
+        let conn = Connection::open(&path).expect("a connection");
+        let triggers: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the count");
+        assert_eq!(triggers, 0, "the chart removals are logged by the handlers");
+    }
+
+    #[test]
+    fn the_activity_table_keeps_the_server_and_time_index_and_not_the_server_alone() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let path = dir.path().join("doorward.db");
+        Db::open(&path).expect("the migrated database");
+        let conn = Connection::open(&path).expect("a connection");
+        let mut statement = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'activity'",
+            )
+            .expect("the query");
+        let names: Vec<String> = statement
+            .query_map([], |row| row.get(0))
+            .expect("the names")
+            .collect::<rusqlite::Result<_>>()
+            .expect("each name");
+        assert!(
+            names.contains(&"activity_server_at".to_owned()),
+            "{names:?}"
+        );
+        assert!(!names.contains(&"activity_server".to_owned()), "{names:?}");
     }
 
     #[test]

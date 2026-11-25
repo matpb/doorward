@@ -557,3 +557,58 @@ async fn a_repeated_key_on_the_export_takes_its_first_value() {
         "the second period must not be used"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unfiltered_export_holds_every_row_and_its_started_row_counts_them_and_is_not_in_the_body()
+ {
+    let w = world().await;
+    let bob = add_user(&w, BOB).await;
+    let (_alpha_up, alpha) = w.upstream("alpha", UpstreamOptions::default()).await;
+    let alpha_id = id(alpha);
+    let db = w.gw.db_path();
+    let first = stamp("2030-01-05T10:00:00Z");
+    let rows: Vec<Row> = (0..7)
+        .map(|index| call(first + index, (bob, BOB), (alpha_id, "alpha"), "s-plain"))
+        .collect();
+    insert(&db, &rows);
+    let before: i64 = Connection::open(&db)
+        .expect("the database")
+        .query_row("SELECT COUNT(*) FROM activity", [], |row| row.get(0))
+        .expect("the count");
+    let page = export(&w, "").await;
+    assert_eq!(page.status, 200, "the export must answer 200");
+    let body = data_lines(&page.body);
+    assert_eq!(
+        body.lines().count() as i64,
+        before,
+        "the export must hold every row that existed before it started"
+    );
+    assert!(
+        !page.body.contains("export started"),
+        "the export row must not be part of the export"
+    );
+    assert_eq!(
+        export_rows(&w).await,
+        vec![format!("export started ({before} rows)")],
+        "the started row must count the rows the body holds"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_export_button_says_how_many_rows_it_exports_with_thousands_grouped() {
+    let w = world().await;
+    let bob = add_user(&w, BOB).await;
+    let (_alpha_up, alpha) = w.upstream("alpha", UpstreamOptions::default()).await;
+    let alpha_id = id(alpha);
+    let first = stamp("2030-01-05T00:00:00Z");
+    let rows: Vec<Row> = (0..1_239)
+        .map(|index| call(first + index, (bob, BOB), (alpha_id, "alpha"), "s-count"))
+        .collect();
+    insert(&w.gw.db_path(), &rows);
+    let page = w.owner.get(&format!("/admin/activity?{SEEDED_DAYS}")).await;
+    assert_eq!(
+        page.text("button#export-csv").as_deref(),
+        Some("Export 1,239 rows as CSV"),
+        "the button names the rows it exports"
+    );
+}

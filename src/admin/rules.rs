@@ -702,9 +702,7 @@ pub(super) fn chosen_server(picked: Option<&ServerRef>) -> Markup {
 /// when it has one.
 pub(super) fn tool_field(tool: Option<&str>, error: Option<&str>, server: Option<&str>) -> Markup {
     let hint = Some(match server {
-        Some(name) => format!(
-            "Tools of {name}. To pick a tool of another server, choose the server above first. Used only when the scope is One tool."
-        ),
+        Some(name) => format!("Tools of {name}. Used only when the scope is One tool."),
         None => "Used only when the scope is One tool.".to_owned(),
     });
     let note = ui::note_under(error, hint.as_deref());

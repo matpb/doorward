@@ -50,6 +50,7 @@ services:
       DOORWARD_LISTEN: 0.0.0.0:8717
       # The only proxy the gateway believes: the Caddy address above.
       DOORWARD_TRUSTED_PROXIES: 10.213.87.2
+      SQLITE_TMPDIR: /data # SQLite's temporary files go to the volume; /tmp is a small tmpfs.
     volumes:
       - doorward-data:/data
     networks:

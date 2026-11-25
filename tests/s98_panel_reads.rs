@@ -247,15 +247,34 @@ async fn the_search_text_is_cut_to_200_characters_and_the_form_shows_the_cut() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn every_html_page_says_it_opens_in_its_own_browsing_context() {
+async fn the_panel_and_account_pages_open_in_their_own_browsing_context_and_the_sign_in_pages_do_not()
+ {
     let (w, _) = world_with_calls(1).await;
-    for path in ["/admin", "/admin/activity", "/admin/dashboards"] {
+    for path in ["/admin", "/admin/activity", "/admin/dashboards", "/account"] {
         let page = w.owner.get(path).await;
         assert_eq!(page.status, 200, "{path} answers");
         assert_eq!(
             page.header("cross-origin-opener-policy").as_deref(),
             Some("same-origin"),
             "{path} sends the opener policy"
+        );
+    }
+    let anonymous = w.client();
+    for path in [
+        "/login",
+        "/oauth/authorize?response_type=code",
+        "/oauth/consent?req=missing",
+    ] {
+        let page = anonymous.get(path).await;
+        assert!(
+            page.header("content-type")
+                .is_some_and(|kind| kind.starts_with("text/html")),
+            "{path} is an HTML page"
+        );
+        assert_eq!(
+            page.header("cross-origin-opener-policy"),
+            None,
+            "{path} must not send the opener policy"
         );
     }
 }
@@ -278,6 +297,58 @@ async fn the_client_list_holds_only_the_tool_calls_of_the_last_30_days() {
     assert!(names.contains(&"recent".to_owned()), "{names:?}");
     assert!(!names.contains(&"stale".to_owned()), "{names:?}");
     assert!(!names.contains(&"connected".to_owned()), "{names:?}");
+}
+
+/// The values of the client options of the activity page, in page order, without the "Any client" choice.
+async fn client_options(w: &World, path: &str) -> Vec<(String, String, bool)> {
+    let page = w.owner.get(path).await;
+    let options = Selector::parse("select[name=client] option").expect("a selector");
+    let doc = Html::parse_document(&page.body);
+    doc.select(&options)
+        .filter(|option| option.value().attr("value") != Some(""))
+        .map(|option| {
+            (
+                option.value().attr("value").unwrap_or("").to_owned(),
+                option.text().collect::<String>().trim().to_owned(),
+                option.value().attr("selected").is_some(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_client_list_is_the_first_fifty_client_names_of_the_last_30_days_in_name_order() {
+    let w = World::start().await;
+    w.user(BOB).await;
+    let db = w.gw.db_path();
+    for number in (0..60).rev() {
+        let name = format!("client-{number:02}");
+        insert_call(&db, now() - DAY, &name, "tool_call");
+        insert_call(&db, now() - 2 * DAY, &name, "tool_call");
+    }
+    let names: Vec<String> = client_options(&w, "/admin/activity")
+        .await
+        .into_iter()
+        .map(|(value, _, _)| value)
+        .collect();
+    let want: Vec<String> = (0..50)
+        .map(|number| format!("client-{number:02}"))
+        .collect();
+    assert_eq!(names, want);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_filtered_client_outside_the_list_is_one_selected_option_with_its_own_name() {
+    let w = World::start().await;
+    w.user(BOB).await;
+    let db = w.gw.db_path();
+    insert_call(&db, now() - 40 * DAY, "stale", "tool_call");
+    let options = client_options(&w, "/admin/activity?client=stale").await;
+    assert_eq!(
+        options,
+        vec![("stale".to_owned(), "stale".to_owned(), true)],
+        "the filter shows its own name, selected, and no note that it matches nothing"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -480,6 +551,27 @@ async fn deleting_a_server_or_a_user_logs_one_row_per_chart_it_removes() {
         .filter(|detail| detail.starts_with("deleted chart"))
         .count();
     assert_eq!(removed, 2, "one row per removed chart: {new_rows:?}");
+    let conn = open(&w);
+    let mut statement = conn
+        .prepare(
+            "SELECT user_email, at FROM activity WHERE kind = 'admin_change' \
+             AND detail LIKE 'deleted chart %' ORDER BY id",
+        )
+        .expect("the query");
+    let by: Vec<(String, i64)> = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("the rows")
+        .collect::<rusqlite::Result<_>>()
+        .expect("each row");
+    assert_eq!(by.len(), 2, "{by:?}");
+    for (email, at) in by {
+        assert_eq!(
+            email,
+            common::world::OWNER_EMAIL,
+            "the admin who deleted is the actor"
+        );
+        assert_eq!(at, now(), "the row carries the application clock");
+    }
 }
 
 /// Seeds calls, then asks the Overview for its period while a bearer-free panel request takes the writer.
@@ -531,4 +623,62 @@ async fn the_recorded_email_and_slug_filters_show_as_chips_that_remove_them() {
         .expect("the server chip removes itself");
     assert!(removed.contains("email=user1"), "{removed}");
     assert!(!removed.contains("slug="), "{removed}");
+}
+
+/// The Activity page and the Overview answer, within two seconds each, while another connection
+/// holds an open write transaction: WAL readers do not wait for a writer.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_panel_reads_answer_while_another_connection_holds_a_write_transaction() {
+    let (w, _) = world_with_calls(5).await;
+    let blocker = open(&w);
+    blocker
+        .busy_timeout(Duration::from_millis(50))
+        .expect("the timeout");
+    blocker
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("the write lock is taken");
+    let activity = tokio::time::timeout(Duration::from_secs(2), w.owner.get("/admin/activity"))
+        .await
+        .expect("the Activity page answers while the writer is held");
+    assert_eq!(activity.status, 200, "the Activity page answers");
+    assert!(
+        activity.count("table.activity tbody tr") > 0,
+        "the Activity page lists the seeded calls"
+    );
+    let overview = tokio::time::timeout(Duration::from_secs(2), w.owner.get("/admin"))
+        .await
+        .expect("the Overview answers while the writer is held");
+    assert_eq!(overview.status, 200, "the Overview answers");
+    assert!(
+        overview.count("figure.chart") > 0 && overview.count("figure[data-error='1']") == 0,
+        "the Overview draws its charts while the writer is held"
+    );
+    blocker
+        .execute_batch("ROLLBACK")
+        .expect("the lock is released");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_name_in_the_activity_table_is_one_piece_with_no_break_inside_it() {
+    let (w, _) = world_with_calls(0).await;
+    let server = admin::server_id(&w.owner, "demo")
+        .await
+        .expect("the demo server");
+    open(&w)
+        .execute(
+            "INSERT INTO activity (at, kind, server_id, server_slug, tool, decision, outcome) \
+             VALUES (?1, 'tool_call', ?2, 'demo', 'alpha_long_tool_name', 'allow', 'ok')",
+            params![now(), server],
+        )
+        .expect("a call");
+    let page = w.owner.get("/admin/activity").await;
+    let doc = Html::parse_document(&page.body);
+    let cell = Selector::parse("td.where").expect("a selector");
+    let cells: Vec<String> = doc.select(&cell).map(|cell| cell.inner_html()).collect();
+    assert!(
+        cells
+            .iter()
+            .any(|html| html.contains("<code>alpha_long_tool_name</code>")),
+        "the tool is one piece of text: {cells:?}"
+    );
 }
