@@ -1431,15 +1431,17 @@ async fn a_mixed_list_foot_asks_before_all_on_or_all_off() {
         (
             "all-on",
             "All on",
-            "Switches all 3 tools on. Your 2 choices are replaced.",
+            "Switches all 3 s tools on. The 1 you switched off comes back on.",
+            "The 1 you switched off comes back on.",
         ),
         (
             "all-off",
             "All off",
-            "Switches all 3 tools off. Your 2 choices are replaced.",
+            "Switches all 3 s tools off. The 2 you have on go off.",
+            "The 2 you have on go off.",
         ),
     ];
-    for (question, (value, label, sentence)) in questions.into_iter().zip(expected) {
+    for (question, (value, label, sentence, second)) in questions.into_iter().zip(expected) {
         assert_eq!(
             question.value().attr("name"),
             Some("tools-s-all"),
@@ -1471,8 +1473,8 @@ async fn a_mixed_list_foot_asks_before_all_on_or_all_off() {
         );
         assert_eq!(
             text_of(choices[0]),
-            "Your 2 choices are replaced.",
-            "the span.whole of {label} must hold the choices sentence"
+            second,
+            "the span.whole of {label} must hold its second sentence"
         );
         let submits = within(question, r#"button[name="set"]"#);
         assert_eq!(submits.len(), 1, "{label} must hold one submit named set");
@@ -1520,10 +1522,29 @@ async fn a_mixed_list_of_62_tools_with_39_on_says_the_brief_sentences() {
     assert_eq!(
         question_sentences(&sc.bob.get("/account").await.body),
         vec![
-            "Switches all 62 tools on. Your 39 choices are replaced.",
-            "Switches all 62 tools off. Your 39 choices are replaced.",
+            "Switches all 62 s tools on. The 23 you switched off come back on.",
+            "Switches all 62 s tools off. The 39 you have on go off.",
         ],
         "62 rows with 39 on must read as the design's example"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mixed_list_of_62_tools_with_one_off_says_one_switched_off_comes_back() {
+    let sc = start().await;
+    let names: Vec<String> = (0..62).map(|n| format!("tool_{n:02}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    sc.up.set_tools(&names);
+    let page = admin::refresh_tools(&sc.w.owner, &sc.id).await;
+    assert_eq!(page.status, 303, "refreshing the tools must answer 303");
+    save(&sc, "chosen", &names[..61]).await;
+    assert_eq!(
+        question_sentences(&sc.bob.get("/account").await.body),
+        vec![
+            "Switches all 62 s tools on. The 1 you switched off comes back on.",
+            "Switches all 62 s tools off. The 61 you have on go off.",
+        ],
+        "one tool off must read as one switched off that comes back"
     );
 }
 
@@ -1534,10 +1555,10 @@ async fn a_mixed_list_with_one_choice_says_one_choice() {
     assert_eq!(
         question_sentences(&sc.bob.get("/account").await.body),
         vec![
-            "Switches all 3 tools on. Your 1 choice is replaced.",
-            "Switches all 3 tools off. Your 1 choice is replaced.",
+            "Switches all 3 s tools on. The 2 you switched off come back on.",
+            "Switches all 3 s tools off. The 1 you have on goes off.",
         ],
-        "one stored choice is replaced as one choice"
+        "one tool on must read as one that goes off"
     );
 }
 
@@ -1612,4 +1633,28 @@ fn size_text_prints_bytes_below_1000_and_one_decimal_kilobytes_from_1000_up() {
     assert_eq!(size_text(1024), "1.0 KB");
     assert_eq!(size_text(1843), "1.8 KB");
     assert_eq!(size_text(1_843_000), "1799.8 KB");
+}
+
+/// The declarations of the first rule in `css` that opens with `selector {`.
+fn rule_of<'a>(css: &'a str, selector: &str) -> &'a str {
+    let start = css
+        .find(&format!("{selector} {{"))
+        .unwrap_or_else(|| panic!("the stylesheet must hold the rule {selector}"));
+    let rule = &css[start..];
+    let open = rule.find('{').expect("a rule opens its block");
+    let close = rule.find('}').expect("a rule closes its block");
+    &rule[open + 1..close]
+}
+
+#[test]
+fn the_question_sentence_has_a_whole_line_and_the_question_buttons_one_width() {
+    let css = include_str!("../assets/doorward.css");
+    assert!(
+        rule_of(css, ".tools-foot .confirm-body > p").contains("line-height: 20px;"),
+        "the sentence of a question must take a 20 px line"
+    );
+    assert!(
+        rule_of(css, ".tools-foot .confirm-body > button").contains("min-inline-size: 73px;"),
+        "both question buttons must take at least 73 px so that their left edge does not shift"
+    );
 }

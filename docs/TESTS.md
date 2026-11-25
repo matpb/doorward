@@ -3253,14 +3253,17 @@ before the switch route and the `Your tools` section exist, and fails until they
     counts all three, and counts as off the tool that was off and not shown.
 40. `a_mixed_list_foot_asks_before_all_on_or_all_off`: with echo and delete_db on, the foot of `s` carries
     `data-bulk="ask"`; All on and All off are two closed disclosures named `tools-s-all`, each holding its
-    sentence (`Switches all 3 tools on.` or `off.`, then `Your 2 choices are replaced.`) and one submit with
-    its value; no form sits in a form, and no bulk submit stands outside a disclosure.
+    sentence (`Switches all 3 s tools on.` then `The 1 you switched off comes back on.`; `Switches all 3 s
+    tools off.` then `The 2 you have on go off.`) and one submit with its value; no form sits in a form, and
+    no bulk submit stands outside a disclosure.
 41. `an_all_on_or_all_off_list_keeps_the_plain_foot`: a list all on and a list all off carry no `data-bulk`,
     no disclosure, and the two plain submits All on and All off.
-42. `a_mixed_list_of_62_tools_with_39_on_says_the_brief_sentences`: 62 tools with 39 on read
-    `Switches all 62 tools off. Your 39 choices are replaced.` and the same with `on`.
-43. `a_mixed_list_with_one_choice_says_one_choice`: one tool on of three reads `Your 1 choice is replaced.`
-    in both sentences.
+42. `a_mixed_list_of_62_tools_with_39_on_says_the_brief_sentences`: 62 tools of server `s` with 39 on read
+    `Switches all 62 s tools on. The 23 you switched off come back on.` and `Switches all 62 s tools off.
+    The 39 you have on go off.`.
+43. `a_mixed_list_with_one_choice_says_one_choice`: one tool on of three, on server `s`, reads
+    `Switches all 3 s tools on. The 2 you switched off come back on.` and `Switches all 3 s tools off. The 1
+    you have on goes off.`.
 44. `all_off_on_a_mixed_list_still_switches_every_tool_off`: All off from a mixed list stores all three tools
     off; the question is markup only.
 45. `a_save_says_the_state_it_left_a_mix_all_off_or_all_on`: the notice after a chosen save that leaves a mix
@@ -3271,6 +3274,12 @@ before the switch route and the `Your tools` section exist, and fails until they
 47. `size_text_prints_bytes_below_1000_and_one_decimal_kilobytes_from_1000_up`: the page's size function gives
     `0 B`, `999 B`, `1.0 KB` for 1000, 1014, 1023 and 1024 bytes, `1.8 KB` for 1843 and `1799.8 KB` for
     1843000 bytes.
+48. `a_mixed_list_of_62_tools_with_one_off_says_one_switched_off_comes_back`: 62 tools of server `s` with 61 on read
+    `Switches all 62 s tools on. The 1 you switched off comes back on.` and `Switches all 62 s tools off. The 61
+    you have on go off.`.
+49. `the_question_sentence_has_a_whole_line_and_the_question_buttons_one_width`: the stylesheet rule
+    `.tools-foot .confirm-body > p` holds `line-height: 20px;` and `.tools-foot .confirm-body > button` holds
+    `min-inline-size: 73px;`; this reads the rule text, it does not measure a rendered page.
 
 ## s100_switched_lists.rs (statements 100 and 105)
 

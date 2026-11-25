@@ -4797,11 +4797,14 @@ a.chip:focus-visible {
 
 .tools-foot .confirm-body > p {
   grid-area: 1 / 2;
+  line-height: 20px;
 }
 
 /* The panel's own button at its own size: away from Save's column and from both words. */
+/* 73 px is the width of All off: both questions' buttons are at least that wide, so their left edges agree. */
 .tools-foot .confirm-body > button {
   grid-area: 1 / 1;
+  min-inline-size: 73px;
 }
 
 /* A phone has no column free of Save and the words: the button leads, two lines part it from Save. */

@@ -201,11 +201,11 @@ fn server_tools(csrf: &str, block: &Block, saved: bool) -> Markup {
                             span.tools-unsaved hidden[true] { "Not saved yet:" }
                             div.row-actions {
                                 @if mixed {
-                                    @for (value, label, word) in [("all-on", "All on", "on"), ("all-off", "All off", "off")] {
+                                    @for (value, label, word, all_off) in [("all-on", "All on", "on", false), ("all-off", "All off", "off", true)] {
                                         details.confirm.row-confirm name=(format!("tools-{}-all", block.slug)) data-confirm {
                                             summary { (label) }
                                             div.confirm-body {
-                                                p { "Switches all " (total) " tools " (word) ". " span.whole { (choices(on)) } }
+                                                p { "Switches all " (total) " " (block.name) " tools " (word) ". " span.whole { (choices(on, total - on, all_off)) } }
                                                 button type="submit" name="set" value=(value) data-kind="secondary" { (label) }
                                             }
                                         }
@@ -236,12 +236,18 @@ fn saved_text(name: &str, on: usize, total: usize) -> String {
     }
 }
 
-/// The second sentence of a question: how many stored choices its word replaces.
-fn choices(on: usize) -> String {
-    if on == 1 {
-        "Your 1 choice is replaced.".to_owned()
+/// The second sentence of a question: the count of the tools its word moves, singular for one.
+fn choices(on: usize, off: usize, all_off: bool) -> String {
+    if all_off {
+        if on == 1 {
+            "The 1 you have on goes off.".to_owned()
+        } else {
+            format!("The {on} you have on go off.")
+        }
+    } else if off == 1 {
+        "The 1 you switched off comes back on.".to_owned()
     } else {
-        format!("Your {on} choices are replaced.")
+        format!("The {off} you switched off come back on.")
     }
 }
 
