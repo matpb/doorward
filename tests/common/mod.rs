@@ -7,6 +7,7 @@ pub mod client;
 pub mod headers;
 pub mod mail;
 pub mod mcp;
+pub mod switches;
 pub mod upstream;
 pub mod values;
 pub mod world;

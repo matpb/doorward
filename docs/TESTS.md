@@ -3173,3 +3173,122 @@ and `the_memo_answers_its_own_type_and_is_emptied_when_full` in `src/db.rs`; the
 `the_let_through_event_is_the_class_the_charts_count` in `src/admin/activity/filters.rs`; and
 `a_formula_after_leading_spaces_or_tabs_or_in_full_width_is_guarded` in `src/admin/activity/export.rs`.
 
+## s99_tool_switches.rs (statements 99, 102, 103 and 104)
+
+Each test starts its own instance; bob is a plain user on server `s` (echo, search, delete_db) unless
+the test says otherwise. Sizes are read back from the stored definitions. Every test here is written
+before the switch route and the `Your tools` section exist, and fails until they do.
+
+1. `the_account_page_has_a_your_tools_section_with_a_heading`: `section#tools[data-section="tools"]` is
+   on `/account` and headed `Your tools`.
+2. `each_assigned_server_gets_one_block_in_slug_order`: bob holds `a` and `s`; the blocks are `a` then `s`.
+3. `a_block_holds_one_form_that_posts_to_its_server`: one post form to `/account/tools/s` with the csrf field.
+4. `each_allowed_tool_row_holds_its_state_checkbox_and_size_in_catalog_order`: the three rows follow the
+   catalog, read `on`, are checked, and show the size of each stored definition.
+5. `a_switched_off_tool_row_is_off_and_unchecked`: after saving echo and delete_db on, only search reads
+   `off` and is unchecked.
+6. `sizes_are_bytes_below_a_kilobyte_and_one_decimal_kilobytes_from_1024_bytes_up`: stored definitions of
+   1023, 1024 and 1843 bytes show `1023 B`, `1.0 KB` and `1.8 KB`.
+7. `the_summary_gives_the_sent_size_against_all_and_a_share`: with all on the summary reads `X of X (100%)`;
+   with search off it reads the size left on, the total and the rounded share.
+8. `a_summary_with_no_allowed_tool_reads_zero_of_zero_at_100_percent`: the summary shows the total while
+   tools are allowed; with the server denied it reads `0 B of 0 B (100%)` and lists no row.
+9. `save_stores_exactly_the_checked_tools_and_answers_303_to_the_tools_anchor`: Save with echo checked stores
+   search and delete_db as off, and answers 303 to `/account#tools`.
+10. `all_off_switches_every_allowed_tool_off`: All off stores all three tools.
+11. `all_on_clears_the_switches_of_the_allowed_tools`: All on after All off leaves nothing stored.
+12. `the_section_has_save_all_on_and_all_off_buttons_named_set`: three `button[name="set"]` read Save,
+    All on and All off.
+13. `each_save_writes_one_tool_switches_row_with_the_off_count`: each save writes one `tool_switches` row
+    on server `s`, with detail `2 of 3 off`, then `0 of 3 off`.
+14. `a_new_tool_on_the_upstream_starts_on`: a tool that appears after a refresh is on; search stays off and
+    is not stored for the new tool.
+15. `a_switched_off_tool_that_leaves_the_list_and_returns_is_still_off`: search leaves the page while its
+    row stays stored, and returns off.
+16. `the_admin_user_page_marks_each_switched_off_tool_as_switched_off_by_the_user`: the owner's user page
+    gives search `data-verdict="switched-off"` with the text `switched off by the user`; echo is not.
+17. `unassigning_removes_the_switches_and_assigning_again_turns_every_tool_on`: unassigning bob removes
+    his rows, and assigning him again shows every tool on.
+18. `deleting_the_server_removes_its_switches`: deleting server `s` removes its rows.
+19. `deleting_the_user_removes_its_switches`: deleting bob removes his rows.
+20. `a_server_whose_list_was_never_read_says_so_and_has_no_form`: a server added and never refreshed shows
+    `No tools listed yet. Connect a client to this server once.` and no form; server `s` keeps its form.
+21. `a_user_with_no_assigned_server_sees_no_your_tools_section`: carol, with no server, sees no section; bob sees one.
+22. `a_tool_the_rules_deny_is_not_shown_and_not_counted`: after a deny rule on delete_db it is no longer a row,
+    and the summary leaves it out of both sizes.
+23. `a_save_with_an_unknown_set_value_answers_400_and_stores_nothing`: a `set` value other than the three
+    answers the error page with status 400 and stores nothing.
+24. `a_save_leaves_the_rows_of_tools_no_longer_listed_as_they_are`: after search leaves the catalog, Save and
+    All on leave its stored row as it is.
+25. `the_section_says_a_client_picks_up_a_change_on_reconnect`: the section carries the reconnect sentence.
+
+## s100_switched_lists.rs (statements 100 and 105)
+
+Bob is a plain user on server `s` (echo, search, delete_db); `/mcp` is the combined endpoint. The
+budget tests use two servers whose lists differ in size, with `limits.tools_list_bytes` set from the
+stored definitions. The switched-off text and the byte sizes are computed in the test.
+
+1. `a_switched_off_tool_is_absent_from_the_server_path_list_in_the_session_generation`: after delete_db is
+   switched off, the session list on `/s` lacks it.
+2. `a_switched_off_tool_is_absent_from_the_server_path_list_in_the_stateless_generation`: the same on `/s`
+   for the stateless generation.
+3. `a_switched_off_tool_is_absent_from_the_combined_list_in_the_session_generation`: the session list on
+   `/mcp` lacks `s__delete_db`.
+4. `a_switched_off_tool_is_absent_from_the_combined_list_in_the_stateless_generation`: the same on `/mcp`
+   for the stateless generation.
+5. `a_call_to_a_switched_off_tool_is_refused_on_the_server_path_without_reaching_the_upstream`: the call
+   answers 200 with -32602 and `Tool delete_db is switched off in your Doorward account. Switch it on under
+   Your tools, then reconnect.`; the upstream sees no call; an on tool is still called.
+6. `a_call_to_a_switched_off_tool_is_refused_on_the_combined_endpoint_with_the_merged_name`: the same answer on
+   `/mcp` names the tool `s__delete_db`, as the client sent it.
+7. `a_refused_switched_off_call_writes_a_deny_row_with_the_switched_off_detail`: both refused calls write a
+   `tool_call` row, decision `deny`, outcome `refused`, on server `s`, with the detail `switched off`.
+8. `a_rule_denied_tool_that_is_also_switched_off_answers_unknown_with_its_rule_detail`: a denied tool that is
+   also switched off answers `Unknown tool:` on both endpoints, and its row says `rule N`.
+9. `switching_a_tool_back_on_restores_its_list_entry_and_its_call`: All on restores delete_db in the combined
+   list, and a call through `/s` reaches the upstream.
+10. `a_switched_off_tool_takes_no_room_in_the_combined_size_budget_in_the_session_generation`: with the budget
+    one byte short of both servers, the larger server is left out; switching one of its tools off lets it in.
+11. `a_switched_off_tool_takes_no_room_in_the_combined_size_budget_in_the_stateless_generation`: the same
+    budget case for the stateless generation.
+12. `a_user_with_no_switches_gets_the_upstream_bytes_on_the_server_path`: with no switch, the `/open` list
+    is the upstream's bytes; the stateless one differs only in `cacheScope`, which the gateway sets to
+    `private`. Passes today; it holds what statement 105 keeps.
+
+## s101_switch_abuse.rs (statement 101)
+
+Abuse cases of the spec. Each refusal test first shows that the honest request writes its row, so a
+"no row" assertion cannot pass only because the route is missing. Refusals are a 403 forbidden, a 404
+for a server the user is not assigned to, or a sign-in redirect for a signed-out post.
+
+1. `a_post_without_the_csrf_token_is_refused_and_stores_nothing`: a post with no csrf field is 403 forbidden
+   and stores nothing.
+2. `a_post_with_another_sessions_csrf_token_is_refused_and_stores_nothing`: carol's csrf token on bob's post
+   is 403 forbidden and stores nothing.
+3. `a_post_from_a_foreign_origin_is_refused_and_stores_nothing`: a foreign Origin is 403 forbidden and
+   stores nothing.
+4. `a_post_for_an_unassigned_or_unknown_server_gets_the_same_not_found_answer_and_stores_nothing`: an
+   unassigned server and an unknown slug both answer 404 with the same page, and store nothing.
+5. `a_signed_out_post_is_refused_and_stores_nothing`: a post with no session is refused and stores nothing.
+6. `five_thousand_made_up_names_store_no_row_while_the_real_ones_do`: a 5,000-name form with echo stores the
+   real names only; the made-up names alone switch every tool off and store no made-up row; the detail
+   counts the three allowed tools.
+7. `one_users_switches_change_nothing_for_another_user_on_the_same_server`: bob's switch leaves carol's list,
+   her call and her page unchanged.
+8. `switching_a_denied_tool_on_leaves_it_denied_in_the_list_and_the_call`: posting delete_db in `on` for a
+   denied tool stores no row and it stays absent and refused.
+9. `a_tool_name_with_markup_and_quotes_is_escaped_and_round_trips`: a catalog name with `<script>` and quotes
+   is escaped on the page, reads back from `data-tool`, and switches off and on.
+10. `a_bearer_token_is_not_accepted_on_the_switch_post`: a bearer token with bob's csrf token is refused and
+    stores nothing.
+11. `no_admin_form_names_the_switches`: the owner's user, server and user-list pages hold no form that posts
+    the switches and no `on` field.
+12. `an_admin_post_to_the_user_form_changes_only_the_admins_own_switches`: an admin's All off changes the
+    admin's rows and leaves bob's.
+13. `after_unassign_and_assign_again_every_tool_is_on`: after unassign and assign again, nothing is stored and
+    every tool is listed.
+14. `after_the_user_and_the_server_are_deleted_no_rows_remain_for_them`: deleting bob removes his rows and leaves
+    carol's; deleting server `s` removes the rest.
+15. `a_switch_for_an_unassigned_server_never_makes_it_reachable`: bob's combined list holds only his own server's
+    tools, and a call to `other__echo` is refused as unknown without reaching the upstream.
+

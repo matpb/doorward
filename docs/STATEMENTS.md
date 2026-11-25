@@ -577,6 +577,37 @@ M. Added for custom headers and per-user credentials
     `the_overview_series_reads_while_the_writer_is_held` in `src/admin/dashboards/pages.rs`, which hold the
     writer's connection and fail if a panel read waits for it.
 
+N. Added for per-user tool switches
+
+99. The account page has a `Your tools` section. For each server the user is assigned to, it lists
+    every tool of that server's stored list that the rules allow the user, with a switch and the
+    size of the tool's definition. A tool a rule denies the user is not shown. A server whose list
+    was never read says so instead of showing an empty list. Proof: `tests/s99_tool_switches.rs`.
+100. A tool the user switched off is absent from that user's tool list on the server's own path and
+    on the combined endpoint, in both protocol generations. A call to it is refused without the
+    upstream seeing it, the answer says the tool is switched off in the user's account, and the
+    activity row reads `switched off` as its detail. A switched-off tool takes no room in the
+    combined endpoint's size budget. Proof: `tests/s100_switched_lists.rs`.
+101. A switch only subtracts. It never makes a tool that a rule denies, or a server the user is not
+    assigned to, reachable, and it changes nothing for any other user. Only the signed-in user sets
+    their own switches, through a form that carries their session's token and the gateway's own
+    origin; an admin sees them and has no way to set them or to force a tool on. Only names from
+    the server's stored list are ever stored, so a form cannot grow the table. Proof:
+    `tests/s101_switch_abuse.rs`.
+102. A tool that appears in a server's list later is on. A switched-off tool that leaves the list
+    and returns is still off. Proof: `tests/s99_tool_switches.rs`.
+103. Each server in `Your tools` has `All on` and `All off`. The section shows the size of the tools
+    the user leaves on against the size of all the tools they may use, in kilobytes and as a share,
+    and says that a client picks up a change when it reconnects or refreshes its tools. Proof:
+    `tests/s99_tool_switches.rs`.
+104. The admin's page of a user shows each tool that user switched off as `switched off by the
+    user`. A user's switches for a server are deleted when the assignment, the user or the server
+    is removed, so a server assigned again starts with every tool on. Proof:
+    `tests/s99_tool_switches.rs`.
+105. A user who switched nothing off receives the lists and answers they received before switches
+    existed: the per-server path still forwards the upstream's bytes when no rule and no switch
+    removes a tool. Proof: `tests/s100_switched_lists.rs`, and every test of statement 32 unchanged.
+
 ## Proof
 
 Each statement is proven by an automated test that `./check.sh` runs, named after its number
@@ -687,6 +718,6 @@ into the test harness. In addition:
 ## Out of scope
 
 Sign-in through an external identity provider, a second factor, tokens for callers with no
-browser, a tool list per user (the cached list of a server is shared by its users), hosting
+browser, a stored tool list per user (the stored list of a server is shared by its users, and statements 99 to 105 filter it per user), telling a connected client that its tool list changed, a search tool that stands in for the full tool list, hosting
 or launching MCP servers, upstreams that are local commands, more than one gateway instance on a database, databases other than
 SQLite, languages other than English.
