@@ -475,6 +475,41 @@ async fn unassigning_removes_the_switches_and_assigning_again_turns_every_tool_o
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn saving_the_same_assignments_again_keeps_the_switches_of_the_kept_server() {
+    let sc = start().await;
+    save(&sc, "chosen", &["echo", "delete_db"]).await;
+    assert_eq!(
+        switched_off(&sc.w, &sc.bob_id, &sc.id),
+        vec!["search"],
+        "search must be switched off before the assignments are saved"
+    );
+    let page = admin::assign(&sc.w.owner, &sc.bob_id, &[sc.id.as_str()]).await;
+    assert_eq!(
+        page.status, 303,
+        "saving the same assignments must answer 303"
+    );
+    assert_eq!(
+        switched_off(&sc.w, &sc.bob_id, &sc.id),
+        vec!["search"],
+        "saving the same set of servers must keep the switch of search"
+    );
+    let (_a_up, a_id) = sc.w.upstream("a", UpstreamOptions::default()).await;
+    let page = admin::assign(&sc.w.owner, &sc.bob_id, &[sc.id.as_str(), a_id.as_str()]).await;
+    assert_eq!(page.status, 303, "adding a server must answer 303");
+    assert_eq!(
+        switched_off(&sc.w, &sc.bob_id, &sc.id),
+        vec!["search"],
+        "adding another server must keep the switch of search"
+    );
+    let rows = tool_rows(&sc.bob, "s").await;
+    let search = rows
+        .iter()
+        .find(|row| row.name == "search")
+        .expect("search must be listed");
+    assert_eq!(search.state, "off", "search must still be off for bob");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn deleting_the_server_removes_its_switches() {
     let sc = start().await;
     save(&sc, "chosen", &["echo"]).await;
@@ -1515,6 +1550,44 @@ async fn an_all_on_or_all_off_list_keeps_the_plain_foot() {
     assert_plain_foot(&sc.bob.get("/account").await.body, "all on");
     save(&sc, "all-off", &[]).await;
     assert_plain_foot(&sc.bob.get("/account").await.body, "all off");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mixed_list_puts_save_first_so_that_enter_saves() {
+    let sc = start().await;
+    save(&sc, "chosen", &["echo", "delete_db"]).await;
+    let page = sc.bob.get("/account").await;
+    let doc = Html::parse_document(&page.body);
+    let buttons = every(&doc, "form.tools-form button");
+    assert_eq!(
+        buttons
+            .iter()
+            .map(|b| b.value().attr("value"))
+            .collect::<Vec<_>>(),
+        vec![Some("chosen"), Some("all-on"), Some("all-off")],
+        "on a mixed list Save must be the first button of the form, ahead of both bulk buttons"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_tool_is_left_out_of_the_questions_and_the_notice() {
+    let sc = start().await;
+    deny_tool(&sc.w, "everyone", &sc.id, "delete_db").await;
+    save(&sc, "chosen", &["echo"]).await;
+    assert_eq!(
+        question_sentences(&sc.bob.get("/account").await.body),
+        vec![
+            "Saves all 2 tools as on right away. 1 is saved as off. Unsaved changes are dropped.",
+            "Saves all 2 tools as off right away. 1 is saved as on. Unsaved changes are dropped.",
+        ],
+        "the questions must count the two tools the user may use, not the denied one"
+    );
+    save(&sc, "all-on", &[]).await;
+    assert_eq!(
+        notice_of_s(&sc).await.as_deref(),
+        Some("All 2 s tools are on."),
+        "the notice must count the two tools shown, not the denied one"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

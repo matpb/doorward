@@ -3285,6 +3285,14 @@ before the switch route and the `Your tools` section exist, and fails until they
     boxes shows `.tools-foot .when-unsaved` as `display: block;`, and the `.tools-foot .confirm-body > p` in the
     `min-width: 640px` block holds `inline-size: 22.5rem;`; this reads the rule text, it does not measure a
     rendered page.
+50. `a_mixed_list_puts_save_first_so_that_enter_saves`: on a mixed list the buttons of the tools form read Save,
+    All on and All off in that order, so Enter in a box fires Save and never a bulk replace.
+51. `a_denied_tool_is_left_out_of_the_questions_and_the_notice`: with delete_db denied for everyone, one of the two
+    tools shown on, the questions read `Saves all 2 tools as on right away.` and `Saves all 2 tools as off right
+    away.`; after All on the notice of server `s` reads `All 2 s tools are on.`.
+52. `saving_the_same_assignments_again_keeps_the_switches_of_the_kept_server`: bob's switch of search, saved on
+    server `s`, is still stored after an admin saves bob's assignments with `s` alone, and again with `s` and a
+    second server `a`; search stays off on his page.
 
 ## s100_switched_lists.rs (statements 100 and 105)
 
