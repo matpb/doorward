@@ -3243,7 +3243,7 @@ select[aria-invalid="true"] {
     display: block;
   }
 
-  .pick:has(select option:checked:not([selected])) .pick-hint {
+  .pick:has(select option:checked:not([selected])) .field > .hint {
     display: none;
   }
 

@@ -3703,6 +3703,48 @@ async fn the_invitation_rule_form_lists_only_the_tools_of_the_chosen_server() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn each_rule_for_a_changed_server_select_matches_an_element_of_the_rules_page() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (_base, mut owner) = owner_gateway(dir.path()).await;
+    let (_demo, other) = two_servers(dir.path(), &mut owner).await;
+    let page = owner.get(&format!("/admin/rules?server={other}")).await;
+    let changed = ".pick:has(select option:checked:not([selected])) ";
+    let sheet = include_str!("../../assets/doorward.css");
+    let mut tails = Vec::new();
+    for line in sheet.lines() {
+        let Some(tail) = line
+            .trim()
+            .strip_prefix(changed)
+            .and_then(|rest| rest.strip_suffix(" {"))
+        else {
+            continue;
+        };
+        if tail.starts_with('+') {
+            continue;
+        }
+        let tail = tail.trim_end_matches(":hover");
+        assert!(
+            !elements(&page.body, &format!("form.pick {tail}")).is_empty(),
+            "the stylesheet styles `{tail}` after the server changes, and the rules page has no such element"
+        );
+        tails.push(tail);
+    }
+    assert!(
+        tails.contains(&".pick-pending"),
+        "the pending note is shown by such a rule: {tails:?}"
+    );
+    assert!(
+        tails.contains(&".field > .hint"),
+        "the server hint is hidden by such a rule: {tails:?}"
+    );
+    assert_eq!(
+        elements(&page.body, "form.pick .field > p.hint").len(),
+        1,
+        "the server field has the one hint the pending note takes the place of"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_server_in_force_is_selected_and_its_pending_note_names_it() {
     let dir = tempfile::tempdir().expect("dir");
     let (_base, mut owner) = owner_gateway(dir.path()).await;
