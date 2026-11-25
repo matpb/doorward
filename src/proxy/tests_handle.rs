@@ -3326,6 +3326,53 @@ async fn a_rule_that_cannot_be_read_is_an_internal_error_and_never_an_allow() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_switch_that_cannot_be_read_answers_like_a_failed_rule_read_and_never_allows() {
+    let demo = demo().await;
+    demo.gw.seed(demo.server, &["echo"]);
+    demo.gw
+        .conn()
+        .execute_batch("DROP TABLE tool_switches")
+        .expect("the switch table is dropped");
+    let rules = demo_with(|_| {}, (false, false)).await;
+    rules.gw.seed(rules.server, &["echo"]);
+    rules
+        .gw
+        .conn()
+        .execute_batch("DROP TABLE rules")
+        .expect("the rules table is dropped");
+    let reply = session_post(&demo, None, call_body(2, "echo")).await;
+    let failed = session_post(&rules, None, call_body(2, "echo")).await;
+    assert_eq!(reply.status, 500, "the call is an internal error");
+    assert_eq!(
+        (reply.status, &reply.body),
+        (failed.status, &failed.body),
+        "a failed switch read answers the call as a failed rule read does"
+    );
+    assert_eq!(
+        demo.fake.calls("tools/call"),
+        0,
+        "the upstream never sees the call"
+    );
+    let reply = session_post(&demo, None, session_body(3, "tools/list", json!({}))).await;
+    let failed = session_post(&rules, None, session_body(3, "tools/list", json!({}))).await;
+    assert_eq!(reply.status, 500, "the list is an internal error");
+    assert_eq!(
+        (reply.status, &reply.body),
+        (failed.status, &failed.body),
+        "a failed switch read answers the list as a failed rule read does"
+    );
+    assert!(
+        !reply.body.contains("echo"),
+        "no tool may be listed when the switches cannot be read"
+    );
+    assert_eq!(
+        demo.fake.calls("tools/list"),
+        rules.fake.calls("tools/list"),
+        "the upstream sees the list exactly as it does when the rules cannot be read"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_entry_without_a_string_name_is_removed_from_every_page_under_no_rules() {
     let demo = demo().await;
     let page = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"description":"no name"},{"name":"echo"},{"name":7}]}}"#;

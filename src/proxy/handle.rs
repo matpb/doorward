@@ -171,10 +171,9 @@ pub(super) async fn post(ctx: &Ctx<'_>, headers: &HeaderMap, body: Body) -> Resp
     if let Some(name) = call.as_deref() {
         match refusal_of(ctx, &target, name, &user_headers).await {
             Ok(None) => {}
-            Ok(Some(detail)) => {
-                record(ctx, name, "deny", "refused", &detail).await;
+            Ok(Some(denial)) => {
                 let null = Value::Null;
-                return answer::unknown_tool(message.id.as_ref().unwrap_or(&null), name);
+                return deny(ctx, message.id.as_ref().unwrap_or(&null), name, denial).await;
             }
             Err(refusal) => return refusal,
         }
@@ -726,23 +725,21 @@ async fn withheld_call(
     let Some(name) = call else {
         return answer::error(StatusCode::BAD_REQUEST, Some(id), -32600, INVALID);
     };
-    let rules = match rules_of(ctx).await {
-        Ok(rules) => rules,
+    let access = match access_of(ctx).await {
+        Ok(access) => access,
         Err(refusal) => return refusal,
     };
-    let verdict = policy::decide(&rules, ctx.caller.user_id, ctx.server_id, name);
-    let unknown = if !verdict.allowed {
-        Some(format!("rule {}", verdict.rule.unwrap_or_default()))
-    } else {
-        match stored(ctx, name).await {
+    let denial = match access.refusal(ctx.caller.user_id, ctx.server_id, name) {
+        Some(policy::Refusal::Rule(rule)) => Some(Denial::Unknown(format!("rule {rule}"))),
+        Some(policy::Refusal::SwitchedOff) => Some(Denial::SwitchedOff),
+        None => match stored(ctx, name).await {
             Ok(true) => None,
-            Ok(false) => Some(NOT_LISTED.to_owned()),
+            Ok(false) => Some(Denial::Unknown(NOT_LISTED.to_owned())),
             Err(refusal) => return refusal,
-        }
+        },
     };
-    if let Some(detail) = unknown {
-        record(ctx, name, "deny", "refused", &detail).await;
-        return answer::unknown_tool(id, name);
+    if let Some(denial) = denial {
+        return deny(ctx, id, name, denial).await;
     }
     record(ctx, name, "deny", "refused", held.detail).await;
     let mut body = json!({"content": [{"type": "text", "text": held.text}], "isError": true});
@@ -811,17 +808,17 @@ async fn stored(ctx: &Ctx<'_>, name: &str) -> Result<bool, Response> {
     }
 }
 
-/// The stored rules that can match the caller on this server. A rule that cannot be read is an internal error.
-async fn rules_of(ctx: &Ctx<'_>) -> Result<Vec<policy::Rule>, Response> {
+/// The rules and switches that can match the caller on this server. A read that fails is an internal error.
+async fn access_of(ctx: &Ctx<'_>) -> Result<policy::Access, Response> {
     let user = ctx.caller.user_id;
     let server = ctx.server_id;
     match ctx
         .state
         .db
-        .call(move |conn| policy::load(conn, user, server))
+        .call(move |conn| policy::access(conn, user, server))
         .await
     {
-        Ok(rules) => Ok(rules),
+        Ok(access) => Ok(access),
         Err(err) => {
             report::failure("tool rules", &err);
             Err(bare(StatusCode::INTERNAL_SERVER_ERROR))
@@ -829,29 +826,57 @@ async fn rules_of(ctx: &Ctx<'_>) -> Result<Vec<policy::Rule>, Response> {
     }
 }
 
-/// Why a tools/call is refused, as its row says it; None when it may go on.
-/// Rules are read before the catalog, so a refused call never refreshes it.
+/// Why a tools/call is refused: an unknown name, with its detail, or a tool the user switched off.
+enum Denial {
+    Unknown(String),
+    SwitchedOff,
+}
+
+impl Denial {
+    /// The detail of the deny row.
+    fn detail(&self) -> &str {
+        match self {
+            Denial::Unknown(detail) => detail.as_str(),
+            Denial::SwitchedOff => policy::SWITCHED_OFF,
+        }
+    }
+}
+
+/// Writes the deny row of a refused call and answers it: the unknown tool, or the switched-off text.
+async fn deny(ctx: &Ctx<'_>, id: &Value, name: &str, denial: Denial) -> Response {
+    record(ctx, name, "deny", "refused", denial.detail()).await;
+    match denial {
+        Denial::Unknown(_) => answer::unknown_tool(id, name),
+        Denial::SwitchedOff => answer::switched_off_tool(id, name),
+    }
+}
+
+/// Why a tools/call is refused; None when it may go on.
+/// Rules and switches are read before the catalog, so a refused call never refreshes it.
 async fn refusal_of(
     ctx: &Ctx<'_>,
     target: &Target,
     name: &str,
     user_headers: &[(HeaderName, HeaderValue)],
-) -> Result<Option<String>, Response> {
-    let rules = rules_of(ctx).await?;
-    let verdict = policy::decide(&rules, ctx.caller.user_id, ctx.server_id, name);
-    if !verdict.allowed {
-        return Ok(Some(format!("rule {}", verdict.rule.unwrap_or_default())));
+) -> Result<Option<Denial>, Response> {
+    let access = access_of(ctx).await?;
+    match access.refusal(ctx.caller.user_id, ctx.server_id, name) {
+        Some(policy::Refusal::Rule(rule)) => {
+            return Ok(Some(Denial::Unknown(format!("rule {rule}"))));
+        }
+        Some(policy::Refusal::SwitchedOff) => return Ok(Some(Denial::SwitchedOff)),
+        None => {}
     }
     if listed(ctx, target, name, user_headers).await? {
         Ok(None)
     } else {
-        Ok(Some(NOT_LISTED.to_owned()))
+        Ok(Some(Denial::Unknown(NOT_LISTED.to_owned())))
     }
 }
 
-/// Removes from a tools/list result every tool the caller may not use, and every entry without a name; true when one was removed.
+/// Removes from a tools/list result every tool the caller may not use or has switched off, and every entry without a name; true when one was removed.
 async fn hide_refused(ctx: &Ctx<'_>, value: &mut Value) -> Result<bool, Response> {
-    let rules = rules_of(ctx).await?;
+    let access = access_of(ctx).await?;
     let (user, server) = (ctx.caller.user_id, ctx.server_id);
     let Some(tools) = value
         .pointer_mut("/result/tools")
@@ -863,7 +888,7 @@ async fn hide_refused(ctx: &Ctx<'_>, value: &mut Value) -> Result<bool, Response
     tools.retain(|tool| {
         tool.get("name")
             .and_then(Value::as_str)
-            .is_some_and(|name| policy::decide(&rules, user, server, name).allowed)
+            .is_some_and(|name| access.refusal(user, server, name).is_none())
     });
     Ok(tools.len() != before)
 }

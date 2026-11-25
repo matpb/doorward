@@ -293,12 +293,12 @@ fn status_pill(disabled: bool) -> Markup {
     }
 }
 
-/// The verdict of a tool as a pill: Allow in ok, Deny in bad.
+/// The verdict of a tool as a pill: Allow in ok, Deny in bad, and the user's own switch in muted.
 fn verdict_pill(verdict: &str) -> Markup {
-    if verdict == "allow" {
-        ui::pill("ok", "Allow")
-    } else {
-        ui::pill("bad", "Deny")
+    match verdict {
+        "allow" => ui::pill("ok", "Allow"),
+        "switched-off" => ui::pill("muted", "switched off by the user"),
+        _ => ui::pill("bad", "Deny"),
     }
 }
 
@@ -499,13 +499,20 @@ fn effective_in(
 ) -> rusqlite::Result<Vec<Effective>> {
     let mut tools = Vec::new();
     for choice in choices.iter().filter(|choice| choice.assigned) {
-        let rules = policy::load(conn, user_id, choice.id)?;
+        let access = policy::access(conn, user_id, choice.id)?;
         for name in catalog::names(conn, choice.id)? {
-            let verdict = policy::decide(&rules, user_id, choice.id, &name);
+            let verdict = policy::decide(&access.rules, user_id, choice.id, &name);
+            let state = if !verdict.allowed {
+                "deny"
+            } else if access.off.contains(&name) {
+                "switched-off"
+            } else {
+                "allow"
+            };
             tools.push(Effective {
                 server: choice.slug.clone(),
                 tool: name,
-                verdict: if verdict.allowed { "allow" } else { "deny" },
+                verdict: state,
                 rule: verdict.rule.map(|id| id.to_string()).unwrap_or_default(),
             });
         }

@@ -267,7 +267,15 @@ async fn refused(state: &AppState, viewer: &Viewer, slug: &str, message: &'stati
         slug: slug.to_owned(),
         message,
     });
-    account_page_with(viewer, StatusCode::BAD_REQUEST, None, &clients, &part)
+    account_page_with(
+        state,
+        viewer,
+        StatusCode::BAD_REQUEST,
+        None,
+        &clients,
+        &part,
+    )
+    .await
 }
 
 /// What a post decided.

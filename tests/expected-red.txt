@@ -1,4 +1,1 @@
 # Test files written before their code. Each must compile and fail; remove a name when its code lands.
-s99_tool_switches
-s100_switched_lists
-s101_switch_abuse

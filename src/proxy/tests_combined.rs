@@ -1750,6 +1750,77 @@ async fn a_rules_table_that_cannot_be_read_is_500_and_the_upstream_is_untouched(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_switch_table_that_cannot_be_read_answers_like_a_failed_rule_read_and_never_allows() {
+    let fx = fixture().await;
+    let up = stateless_with(vec![tool("echo")], echo_text).await;
+    point(&fx, &up.url).await;
+    user(&fx.state, 1, vec![fx.server_id]).await;
+    fx.state
+        .db
+        .call(|conn| conn.execute_batch("DROP TABLE tool_switches"))
+        .await
+        .expect("the switch table is dropped");
+    let rules = fixture().await;
+    let rules_up = stateless_with(vec![tool("echo")], echo_text).await;
+    point(&rules, &rules_up.url).await;
+    user(&rules.state, 1, vec![rules.server_id]).await;
+    rules
+        .state
+        .db
+        .call(|conn| conn.execute_batch("DROP TABLE rules"))
+        .await
+        .expect("the rules table is dropped");
+    let listed = list(&fx.state, 1).await;
+    let failed = list(&rules.state, 1).await;
+    assert_eq!(
+        listed.status, 500,
+        "a switch read that fails is an internal error"
+    );
+    assert_eq!(
+        (listed.status, &listed.text),
+        (failed.status, &failed.text),
+        "a failed switch read answers the list as a failed rule read does"
+    );
+    assert!(
+        !listed.text.contains("echo"),
+        "no tool may be listed when the switches cannot be read"
+    );
+    let before = up.seen().len();
+    let caller = combined_caller(&fx.state, 1).await;
+    let reply = send_text(
+        &fx.state,
+        caller,
+        "POST",
+        &[],
+        Some(call_body(11, "demo__echo")),
+    )
+    .await;
+    let caller = combined_caller(&rules.state, 1).await;
+    let failed = send_text(
+        &rules.state,
+        caller,
+        "POST",
+        &[],
+        Some(call_body(11, "demo__echo")),
+    )
+    .await;
+    assert_eq!(
+        reply.status, 500,
+        "a switch read that fails is an internal error"
+    );
+    assert_eq!(
+        reply.status, failed.status,
+        "a failed switch read answers the call as a failed rule read does"
+    );
+    assert_eq!(
+        up.seen().len(),
+        before,
+        "the upstream must not see the call"
+    );
+    assert!(call_rows(&fx.state).await.is_empty(), "no row is written");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_successful_call_writes_one_allow_row_under_the_real_server() {
     let fx = fixture().await;
     let up = stateless_with(vec![tool("echo")], echo_text).await;

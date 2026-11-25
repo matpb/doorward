@@ -615,6 +615,7 @@ pub(super) fn label_of(
         "password_change" => ("Password changed", None),
         "redirect_blocked" => ("Redirect blocked", Some("bad")),
         "tool_appeared" => ("New tool listed", None),
+        "tool_switches" => ("Tool switches", None),
         "unlock" => ("Gateway unlocked", None),
         "value_set" => ("Credential stored", None),
         "value_removed" => ("Credential removed", None),

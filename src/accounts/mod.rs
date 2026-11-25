@@ -11,6 +11,7 @@ pub mod reset;
 pub mod session;
 pub mod setup;
 pub mod throttle;
+pub mod tools;
 pub mod values;
 
 #[cfg(test)]

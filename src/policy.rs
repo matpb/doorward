@@ -1,6 +1,7 @@
 //! Per-tool access rules: the decision for one call, and the stored rules that can match it.
 
 use std::cmp::Reverse;
+use std::collections::HashSet;
 
 use rusqlite::{Connection, params};
 
@@ -115,6 +116,45 @@ pub fn load(conn: &Connection, user: i64, server: i64) -> rusqlite::Result<Vec<R
         })
     })?;
     rows.collect()
+}
+
+/// Why a tool is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    Rule(i64),
+    SwitchedOff,
+}
+
+/// The rules and the switched-off names of one user on one server.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Access {
+    pub rules: Vec<Rule>,
+    pub off: HashSet<String>,
+}
+
+/// The activity detail of a call refused because the user switched the tool off.
+pub const SWITCHED_OFF: &str = "switched off";
+
+/// The rules that can match `user` on `server`, and the names the user switched off there.
+pub fn access(conn: &Connection, user: i64, server: i64) -> rusqlite::Result<Access> {
+    let rules = load(conn, user, server)?;
+    let mut statement =
+        conn.prepare("SELECT tool FROM tool_switches WHERE user_id = ?1 AND server_id = ?2")?;
+    let off = statement
+        .query_map(params![user, server], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<HashSet<String>>>()?;
+    Ok(Access { rules, off })
+}
+
+impl Access {
+    /// Rules first: a denied tool answers Rule even when it is also switched off.
+    pub fn refusal(&self, user: i64, server: i64, tool: &str) -> Option<Refusal> {
+        let verdict = decide(&self.rules, user, server, tool);
+        if !verdict.allowed {
+            return Some(Refusal::Rule(verdict.rule.unwrap_or_default()));
+        }
+        self.off.contains(tool).then_some(Refusal::SwitchedOff)
+    }
 }
 
 #[cfg(test)]
@@ -382,6 +422,133 @@ mod tests {
             on_two.iter().map(|rule| rule.id).collect::<Vec<_>>(),
             vec![1, 3, 6, 7],
             "the rules for server two are loaded, the rules for server one are not"
+        );
+    }
+
+    #[test]
+    fn a_rule_refusal_wins_over_a_switch() {
+        let access = Access {
+            rules: vec![rule(1, Effect::Deny, Reach::Tool, false)],
+            off: HashSet::from([TOOL.to_owned()]),
+        };
+        assert_eq!(
+            access.refusal(ME, SERVER, TOOL),
+            Some(Refusal::Rule(1)),
+            "a tool that a rule denies and the user switched off is refused by the rule"
+        );
+    }
+
+    #[test]
+    fn a_switch_refuses_a_tool_the_rules_allow() {
+        let no_rule = Access {
+            rules: Vec::new(),
+            off: HashSet::from([TOOL.to_owned()]),
+        };
+        assert_eq!(
+            no_rule.refusal(ME, SERVER, TOOL),
+            Some(Refusal::SwitchedOff),
+            "a switched-off tool with no rule is refused as switched off"
+        );
+        let allowed = Access {
+            rules: vec![rule(2, Effect::Allow, Reach::Tool, true)],
+            off: HashSet::from([TOOL.to_owned()]),
+        };
+        assert_eq!(
+            allowed.refusal(ME, SERVER, TOOL),
+            Some(Refusal::SwitchedOff),
+            "an allow does not undo a switch"
+        );
+    }
+
+    #[test]
+    fn a_switch_leaves_every_other_tool_alone() {
+        let access = Access {
+            rules: Vec::new(),
+            off: HashSet::from([TOOL.to_owned()]),
+        };
+        assert_eq!(
+            access.refusal(ME, SERVER, "search"),
+            None,
+            "a tool that is not switched off is allowed"
+        );
+    }
+
+    #[test]
+    fn with_no_switch_the_refusal_is_the_decision_of_the_rules() {
+        for deny_reach in REACHES {
+            for deny_for_me in SUBJECTS {
+                for allow_reach in REACHES {
+                    for allow_for_me in SUBJECTS {
+                        let rules = [
+                            rule(1, Effect::Deny, deny_reach, deny_for_me),
+                            rule(2, Effect::Allow, allow_reach, allow_for_me),
+                        ];
+                        let access = Access {
+                            rules: rules.to_vec(),
+                            off: HashSet::new(),
+                        };
+                        let verdict = decide(&rules, ME, SERVER, TOOL);
+                        let expected = if verdict.allowed {
+                            None
+                        } else {
+                            Some(Refusal::Rule(
+                                verdict.rule.expect("a refusal names its rule"),
+                            ))
+                        };
+                        assert_eq!(
+                            access.refusal(ME, SERVER, TOOL),
+                            expected,
+                            "with no switch, deny {deny_reach:?} for me {deny_for_me} against allow {allow_reach:?} for me {allow_for_me}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn access_loads_the_rules_of_load_and_the_names_switched_off_for_that_user_and_server() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("doorward.db");
+        crate::db::Db::open(&path).expect("database");
+        let conn = Connection::open(&path).expect("connection");
+        conn.execute_batch(
+            "INSERT INTO users (id, email, password_hash, role, created_at) VALUES \
+             (7, 'me@example.com', 'hash', 'user', 0), (8, 'other@example.com', 'hash', 'user', 0); \
+             INSERT INTO servers (id, name, slug, upstream_url, created_at) VALUES \
+             (1, 'one', 'one', 'http://127.0.0.1:9/mcp', 0), \
+             (2, 'two', 'two', 'http://127.0.0.1:9/mcp', 0); \
+             INSERT INTO rules (id, user_id, effect, server_id, tool, created_at) VALUES \
+             (1, NULL, 'deny', NULL, NULL, 0), \
+             (4, 7, 'deny', 1, 'echo', 0); \
+             INSERT INTO tool_switches (user_id, server_id, tool, set_at) VALUES \
+             (7, 1, 'echo', 0), (7, 1, 'search', 0), (8, 1, 'delete_db', 0), (7, 2, 'other', 0);",
+        )
+        .expect("rules and switches");
+        let on_one = access(&conn, ME, SERVER).expect("access on server one");
+        assert_eq!(
+            on_one.rules,
+            load(&conn, ME, SERVER).expect("rules on server one"),
+            "the rules are the rules load reads"
+        );
+        assert_eq!(
+            on_one.off,
+            HashSet::from(["echo".to_owned(), "search".to_owned()]),
+            "only the names this user switched off on this server are loaded"
+        );
+        assert_eq!(
+            access(&conn, ME, OTHER_SERVER)
+                .expect("access on server two")
+                .off,
+            HashSet::from(["other".to_owned()]),
+            "the switches of server two are loaded for server two"
+        );
+        assert_eq!(
+            access(&conn, OTHER, SERVER)
+                .expect("access of the other user")
+                .off,
+            HashSet::from(["delete_db".to_owned()]),
+            "another user's switches are loaded for that user"
         );
     }
 

@@ -7,7 +7,7 @@ use common::switches::{
     tool_rows,
 };
 use common::upstream::{FakeUpstream, UpstreamOptions};
-use common::values::live_db;
+use common::values::{account_csrf, live_db};
 use common::world::World;
 use rusqlite::params;
 
@@ -346,7 +346,7 @@ async fn each_save_writes_one_tool_switches_row_with_the_off_count() {
         .collect();
     assert_eq!(
         details,
-        vec!["2 of 3 off", "0 of 3 off"],
+        vec!["0 of 3 off", "2 of 3 off"],
         "each save writes its own row with the count it left off"
     );
 }
@@ -673,5 +673,45 @@ async fn the_section_says_a_client_picks_up_a_change_on_reconnect() {
         page.text("section#tools")
             .is_some_and(|text| text.contains(RECONNECT)),
         "the section must say {RECONNECT:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_password_change_still_shows_your_tools_with_bobs_rows() {
+    let sc = start().await;
+    save(&sc, "chosen", &["echo", "delete_db"]).await;
+    let csrf = account_csrf(&sc.bob).await;
+    let page = sc
+        .bob
+        .post(
+            "/account/password",
+            &[
+                ("csrf", csrf.as_str()),
+                ("current_password", "not-the-current-password"),
+                ("new_password", "a-new-password-123"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        page.status, 400,
+        "a wrong current password must be refused with 400"
+    );
+    assert_eq!(
+        page.count(r#"section#tools[data-section="tools"]"#),
+        1,
+        "the refused account page must hold the Your tools section"
+    );
+    assert_eq!(
+        page.attrs(r#"section#tools [data-tool]"#, "data-tool"),
+        vec!["echo", "search", "delete_db"],
+        "the refused account page must list bob's tools in catalog order"
+    );
+    assert_eq!(
+        page.attrs(
+            r#"section#tools [data-tool][data-state="off"]"#,
+            "data-tool"
+        ),
+        vec!["search"],
+        "the refused account page must show bob's switches"
     );
 }

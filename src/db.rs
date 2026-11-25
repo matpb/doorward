@@ -12,7 +12,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 /// The most values the panel's memo holds at once; a full memo is emptied before the next one.
 const MEMO_LIMIT: usize = 256;
 
-const MIGRATIONS: [(i64, &str); 20] = [
+const MIGRATIONS: [(i64, &str); 21] = [
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_accounts.sql")),
     (3, include_str!("../migrations/0003_activity.sql")),
@@ -36,6 +36,7 @@ const MIGRATIONS: [(i64, &str); 20] = [
     (18, include_str!("../migrations/0018_invitation_plans.sql")),
     (19, include_str!("../migrations/0019_dashboards.sql")),
     (20, include_str!("../migrations/0020_panel_reads.sql")),
+    (21, include_str!("../migrations/0021_tool_switches.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]

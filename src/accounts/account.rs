@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use maud::{Markup, html};
 
+use super::tools::{self, Block};
 use super::values::{self, Part, ServerView, ValueState};
 use crate::app::AppState;
 use crate::oauth::connected::{self, Connected};
@@ -25,15 +26,16 @@ pub async fn get_account(
     match values::part_for(&state, &viewer).await {
         Ok(mut part) => {
             part.saved = values::saved_slug(&part, raw.as_deref());
-            account_page_with(&viewer, StatusCode::OK, None, &clients, &part)
+            account_page_with(&state, &viewer, StatusCode::OK, None, &clients, &part).await
         }
         Err(err) => internal_error("stored values", &err),
     }
 }
 
-/// The account page with the connected `clients`, the credentials `part`, and an error line when
-/// `error` is given. Anonymous viewers go to sign-in.
-pub fn account_page_with(
+/// The account page with the connected `clients`, the credentials `part`, the viewer's `Your tools`
+/// blocks, and an error line when `error` is given. Anonymous viewers go to sign-in.
+pub async fn account_page_with(
+    state: &AppState,
     viewer: &Viewer,
     status: StatusCode,
     error: Option<&str>,
@@ -42,6 +44,10 @@ pub fn account_page_with(
 ) -> Response {
     let Some(user) = viewer.user.as_ref() else {
         return redirect("/login");
+    };
+    let blocks = match tools::blocks_for(state, viewer).await {
+        Ok(blocks) => blocks,
+        Err(err) => return internal_error("tool switches", &err),
     };
     let nav = if viewer.is_admin() {
         Nav::Panel {
@@ -56,13 +62,13 @@ pub fn account_page_with(
         ..MainData::default()
     };
     form_page_with(viewer, status, "account", "Your account", &data, |csrf| {
-        account_body_with(csrf, &user.email, error, clients, part)
+        account_body_with(csrf, &user.email, error, clients, part, &blocks)
     })
 }
 
 #[cfg(test)]
 fn account_body(csrf: &str, email: &str, error: Option<&str>, clients: &[Connected]) -> Markup {
-    account_body_with(csrf, email, error, clients, &Part::default())
+    account_body_with(csrf, email, error, clients, &Part::default(), &[])
 }
 
 fn account_body_with(
@@ -71,6 +77,7 @@ fn account_body_with(
     error: Option<&str>,
     clients: &[Connected],
     part: &Part,
+    blocks: &[Block],
 ) -> Markup {
     let new_note = Note::Hint("12 to 256 characters.");
     let new_described = new_note.describer("new_password");
@@ -126,6 +133,9 @@ fn account_body_with(
         }
         @if !part.servers.is_empty() || !part.retired.is_empty() {
             (credentials_part(csrf, email, part))
+        }
+        @if !blocks.is_empty() {
+            (tools::section(csrf, blocks))
         }
         section.part aria-labelledby="password-title" {
             div.part-head {
@@ -545,7 +555,7 @@ mod tests {
             }],
             ..Part::default()
         };
-        let markup = account_body_with("token", "bob@example.com", None, &[], &part);
+        let markup = account_body_with("token", "bob@example.com", None, &[], &part, &[]);
         let doc = Html::parse_fragment(&markup.into_string());
         assert_eq!(count(&doc, r#"input[name^="value_"]"#), 2);
         assert_eq!(
@@ -613,7 +623,7 @@ mod tests {
             retired: vec![("old".to_owned(), "Old Server".to_owned())],
             ..Part::default()
         };
-        let markup = account_body_with("token", "bob@example.com", None, &[], &part);
+        let markup = account_body_with("token", "bob@example.com", None, &[], &part, &[]);
         let doc = Html::parse_fragment(&markup.into_string());
         assert_eq!(
             count(
@@ -676,7 +686,7 @@ mod tests {
             saved: Some("demo".to_owned()),
             ..Part::default()
         };
-        let markup = account_body_with("token", "bob@example.com", None, &[], &part);
+        let markup = account_body_with("token", "bob@example.com", None, &[], &part, &[]);
         let doc = Html::parse_fragment(&markup.into_string());
         assert_eq!(
             count(&doc, r#"div.notice[data-notice="ok"]"#),
@@ -710,7 +720,7 @@ mod tests {
             saved: Some("demo".to_owned()),
             ..Part::default()
         };
-        let markup = account_body_with("token", "bob@example.com", None, &[], &part);
+        let markup = account_body_with("token", "bob@example.com", None, &[], &part, &[]);
         let doc = Html::parse_fragment(&markup.into_string());
         assert_eq!(
             text(
@@ -738,7 +748,7 @@ mod tests {
             ],
             ..Part::default()
         };
-        let markup = account_body_with("token", "bob@example.com", None, &[], &part);
+        let markup = account_body_with("token", "bob@example.com", None, &[], &part, &[]);
         let doc = Html::parse_fragment(&markup.into_string());
         assert_eq!(
             count(

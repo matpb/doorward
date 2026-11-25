@@ -415,10 +415,15 @@ async fn run_call(
     if !found.assigned {
         return deny_call(state, caller, started, id, name, row, NOT_ASSIGNED).await;
     }
-    let verdict = policy::decide(&found.server.rules, user, server_id, tool);
-    if !verdict.allowed {
-        let detail = format!("rule {}", verdict.rule.unwrap_or_default());
-        return deny_call(state, caller, started, id, name, row, &detail).await;
+    match found.server.access.refusal(user, server_id, tool) {
+        Some(policy::Refusal::Rule(rule)) => {
+            let detail = format!("rule {rule}");
+            return deny_call(state, caller, started, id, name, row, &detail).await;
+        }
+        Some(policy::Refusal::SwitchedOff) => {
+            return deny_switched(state, caller, started, id, name, row).await;
+        }
+        None => {}
     }
     let (user_headers, bound) = match resolved.get(&server_id) {
         Some(Reached {
@@ -607,13 +612,13 @@ fn lookup(conn: &Connection, user: i64, slug: &str, tool: &str) -> rusqlite::Res
         params![user, server_id],
         |row| row.get::<_, bool>(0),
     )?;
-    let rules = policy::load(conn, user, server_id)?;
+    let access = policy::access(conn, user, server_id)?;
     let definition = definition_of(conn, server_id, tool)?;
     Ok(Some(Found {
         server: Assigned {
             server_id,
             slug: slug.to_owned(),
-            rules,
+            access,
         },
         assigned,
         definition,
@@ -859,6 +864,19 @@ async fn deny_call(
 ) -> Response {
     record_denial(state, caller, started, server, name, detail).await;
     answer::unknown_tool(id, name)
+}
+
+/// A refused tools/call of a switched-off tool: one deny row with the switched-off detail, and its answer.
+async fn deny_switched(
+    state: &AppState,
+    caller: &Caller,
+    started: std::time::Instant,
+    id: &Value,
+    name: &str,
+    server: Option<(i64, &str, &str)>,
+) -> Response {
+    record_denial(state, caller, started, server, name, policy::SWITCHED_OFF).await;
+    answer::switched_off_tool(id, name)
 }
 
 /// Writes the deny row of a refused tools/call.
@@ -1179,11 +1197,11 @@ async fn collect(
     Ok((tools, holds))
 }
 
-/// A server the caller is assigned to now, with the caller's rules on it.
+/// A server the caller is assigned to now, with the caller's rules and switches on it.
 struct Assigned {
     server_id: i64,
     slug: String,
-    rules: Vec<policy::Rule>,
+    access: policy::Access,
 }
 
 /// One server's tools as the upstream answered them, whether its link is stateless, and the reservation
@@ -1201,7 +1219,7 @@ struct Candidate {
     bytes: u64,
 }
 
-/// The servers the user is assigned to now, by slug, with the user's rules on each.
+/// The servers the user is assigned to now, by slug, with the user's rules and switches on each.
 fn assigned(conn: &Connection, user: i64) -> rusqlite::Result<Vec<Assigned>> {
     let mut statement = conn.prepare(
         "SELECT s.id, s.slug FROM user_servers us JOIN servers s ON s.id = us.server_id \
@@ -1215,7 +1233,7 @@ fn assigned(conn: &Connection, user: i64) -> rusqlite::Result<Vec<Assigned>> {
             Ok(Assigned {
                 server_id,
                 slug,
-                rules: policy::load(conn, user, server_id)?,
+                access: policy::access(conn, user, server_id)?,
             })
         })
         .collect()
@@ -1249,7 +1267,7 @@ fn candidate(
             &server.slug,
             name,
             definition,
-            &server.rules,
+            &server.access,
             user,
             server.server_id,
             stateless,
@@ -1276,12 +1294,12 @@ fn candidate(
 }
 
 /// The entry a stored tool lists as, or None when it is left out: its name, its merged length,
-/// the caller's rules, and no x-mcp-header key on a stateless link.
+/// the caller's rules and switches, and no x-mcp-header key on a stateless link.
 fn listed(
     slug: &str,
     name: &str,
     definition: &str,
-    rules: &[policy::Rule],
+    access: &policy::Access,
     user: i64,
     server_id: i64,
     stateless: bool,
@@ -1289,7 +1307,7 @@ fn listed(
     let merged = format!("{slug}__{name}");
     if !valid_name(name)
         || merged.len() > MERGED_LIMIT
-        || !policy::decide(rules, user, server_id, name).allowed
+        || access.refusal(user, server_id, name).is_some()
     {
         return None;
     }

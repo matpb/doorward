@@ -3200,7 +3200,7 @@ before the switch route and the `Your tools` section exist, and fails until they
 12. `the_section_has_save_all_on_and_all_off_buttons_named_set`: three `button[name="set"]` read Save,
     All on and All off.
 13. `each_save_writes_one_tool_switches_row_with_the_off_count`: each save writes one `tool_switches` row
-    on server `s`, with detail `2 of 3 off`, then `0 of 3 off`.
+    on server `s`, with detail `2 of 3 off`; the activity page lists the later `0 of 3 off` first.
 14. `a_new_tool_on_the_upstream_starts_on`: a tool that appears after a refresh is on; search stays off and
     is not stored for the new tool.
 15. `a_switched_off_tool_that_leaves_the_list_and_returns_is_still_off`: search leaves the page while its
@@ -3270,9 +3270,10 @@ for a server the user is not assigned to, or a sign-in redirect for a signed-out
 4. `a_post_for_an_unassigned_or_unknown_server_gets_the_same_not_found_answer_and_stores_nothing`: an
    unassigned server and an unknown slug both answer 404 with the same page, and store nothing.
 5. `a_signed_out_post_is_refused_and_stores_nothing`: a post with no session is refused and stores nothing.
-6. `five_thousand_made_up_names_store_no_row_while_the_real_ones_do`: a 5,000-name form with echo stores the
+6. `thousands_of_made_up_names_store_no_row_while_the_real_ones_do`: a 3,500-name form with echo stores the
    real names only; the made-up names alone switch every tool off and store no made-up row; the detail
-   counts the three allowed tools.
+   counts the three allowed tools. `a_form_over_the_size_limit_is_refused_and_stores_nothing`: after echo is
+   switched off, a 5,000-name form is refused with the 403 of any over-limit form and stores nothing.
 7. `one_users_switches_change_nothing_for_another_user_on_the_same_server`: bob's switch leaves carol's list,
    her call and her page unchanged.
 8. `switching_a_denied_tool_on_leaves_it_denied_in_the_list_and_the_call`: posting delete_db in `on` for a
@@ -3291,4 +3292,5 @@ for a server the user is not assigned to, or a sign-in redirect for a signed-out
     carol's; deleting server `s` removes the rest.
 15. `a_switch_for_an_unassigned_server_never_makes_it_reachable`: bob's combined list holds only his own server's
     tools, and a call to `other__echo` is refused as unknown without reaching the upstream.
-
+16. `all_off_stores_no_row_for_a_denied_tool_and_does_not_count_it`: with a deny rule on a tool,
+    `All off` stores a row for each allowed tool only, and the activity count leaves the denied tool out.

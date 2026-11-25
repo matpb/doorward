@@ -13,7 +13,7 @@ const BOB: &str = "bob@example.com";
 const CAROL: &str = "carol@example.com";
 const ADMIN: &str = "admin@example.com";
 const EVIL: &str = "https://evil.example.com";
-const MADE_UP: usize = 5000;
+const MADE_UP: usize = 3500;
 
 /// Server `s` (echo, search, delete_db) assigned to bob and carol, and server `other` (echo) to carol.
 struct Scene {
@@ -235,7 +235,7 @@ async fn a_signed_out_post_is_refused_and_stores_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn five_thousand_made_up_names_store_no_row_while_the_real_ones_do() {
+async fn thousands_of_made_up_names_store_no_row_while_the_real_ones_do() {
     let sc = start().await;
     let made_up: Vec<String> = (0..MADE_UP).map(|n| format!("made-up-{n:04}")).collect();
     let names: Vec<&str> = made_up.iter().map(String::as_str).collect();
@@ -272,6 +272,30 @@ async fn five_thousand_made_up_names_store_no_row_while_the_real_ones_do() {
         rows.iter()
             .any(|(row, detail)| row.kind == "tool_switches" && detail == "3 of 3 off"),
         "the count must hold the three allowed tools only, rows were {rows:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_form_over_the_size_limit_is_refused_and_stores_nothing() {
+    let sc = start().await;
+    bob_switches_echo_off(&sc).await;
+    let stored = stored_rows(&sc.w);
+    let made_up: Vec<String> = (0..5000).map(|n| format!("made-up-{n:04}")).collect();
+    let names: Vec<&str> = made_up.iter().map(String::as_str).collect();
+    let page = post_switches(&sc.bob, "s", "chosen", &names).await;
+    assert_eq!(
+        page.status, 403,
+        "a form over the size limit must be refused with the status the product gives an over-limit form"
+    );
+    assert_ne!(
+        page.location().as_deref(),
+        Some("/account#tools"),
+        "a refused over-limit form must not be accepted"
+    );
+    assert_eq!(
+        stored_rows(&sc.w),
+        stored,
+        "a refused over-limit form must store nothing"
     );
 }
 
@@ -358,6 +382,25 @@ async fn switching_a_denied_tool_on_leaves_it_denied_in_the_list_and_the_call() 
         sc.s_up.calls_to("delete_db"),
         0,
         "the upstream must never see the call"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn all_off_stores_no_row_for_a_denied_tool_and_does_not_count_it() {
+    let sc = start().await;
+    deny_tool(&sc.w, "everyone", &sc.s_id, "delete_db").await;
+    let page = post_switches(&sc.bob, "s", "all-off", &[]).await;
+    assert_eq!(page.status, 303, "All off must be accepted");
+    assert_eq!(
+        switched_off(&sc.w, &sc.bob_id, &sc.s_id),
+        vec!["echo", "search"],
+        "All off must store the allowed tools and never the denied one"
+    );
+    let rows = admin::activity_with_details(&sc.w.owner, Some(&sc.bob_id), Some(&sc.s_id)).await;
+    assert!(
+        rows.iter()
+            .any(|(row, detail)| row.kind == "tool_switches" && detail == "2 of 2 off"),
+        "the count must leave the denied tool out, rows were {rows:?}"
     );
 }
 

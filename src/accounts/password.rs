@@ -64,7 +64,7 @@ async fn refused(state: &AppState, viewer: &Viewer, status: StatusCode, message:
         Err(err) => return internal_error("connected clients", &err),
     };
     match values::part_for(state, viewer).await {
-        Ok(part) => account_page_with(viewer, status, Some(message), &clients, &part),
+        Ok(part) => account_page_with(state, viewer, status, Some(message), &clients, &part).await,
         Err(err) => internal_error("stored values", &err),
     }
 }

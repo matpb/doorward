@@ -17,7 +17,7 @@ use tokio::sync::Semaphore;
 
 use crate::accounts::input::{normalize_email, to_i64};
 use crate::accounts::{
-    self, account, housekeeping, invite, login, password, reset, setup, throttle, values,
+    self, account, housekeeping, invite, login, password, reset, setup, throttle, tools, values,
 };
 use crate::admin;
 use crate::audit::{self, Event};
@@ -149,6 +149,7 @@ fn routes(state: AppState) -> Router {
         .route("/account", get(account::get_account))
         .route("/account/password", post(password::post_password))
         .route("/account/values/{slug}", post(values::post_values))
+        .route("/account/tools/{slug}", post(tools::post_tools))
         .route(
             "/account/clients/{public_id}/disconnect",
             post(oauth::connected::post_client_disconnect),
