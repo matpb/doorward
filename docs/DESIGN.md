@@ -18,10 +18,10 @@ holds an upstream secret, parses a request body for a decision, or issues a cred
 | `config` | TOML file: `public_url` (origin only), listen address, database path, key file, trusted proxies, lifetimes, limits |
 | `db` | SQLite (WAL, `foreign_keys=ON`, writes in `BEGIN IMMEDIATE`), embedded migrations run at start |
 | `crypto` (core) | token generation, SHA-256 token hashing, secret encryption (XChaCha20-Poly1305 with key id and associated data), Argon2id behind a semaphore, off the async executor |
-| `accounts` (core) | users, roles, setup code, invitations, password reset, browser sessions, CSRF, login throttling, the account page |
+| `accounts` (core) | users, roles, setup code, invitations, password reset, browser sessions, CSRF, login throttling, the account page and its tool switches (`accounts::tools`) |
 | `oauth` (core) | metadata, authorize, consent, token endpoint, client registration (CIMD and DCR), redirect policy |
 | `oauth::guard` (core) | bearer check for MCP paths |
-| `policy` (core) | tool rule evaluation |
+| `policy` (core) | tool rule evaluation, then the caller's tool switches: rules first, and a switch only subtracts |
 | `mcp` (core) | strict JSON-RPC parsing, message shapes, method allowlists per generation, SSE reading |
 | `proxy::upstream` (core) | the only holder of upstream secrets; request and response header allowlists; the HTTP client |
 | `proxy::catalog` (core) | each server's cached tool list |
@@ -140,6 +140,7 @@ Browser pages:
   failure is reserved before the password is checked, so parallel guesses cannot outrun the
   limit. Password hashing holds its permit until the hashing thread ends, and at most 64
   checks wait at once. A local command unlocks the owner.
+- Tool switches (`accounts::tools`). The `Your tools` section posts to `/account/tools/{slug}` with the session's form token and the gateway's own origin. `Save` changes only the tools the page showed (the hidden `shown` fields). `All on` clears every switch of the server, and `All off` switches off every tool the rules let the user use. A save that changes nothing writes no activity row. One that changes something writes a `tool_switches` row, and at most 60 such rows are written per user in any hour; a save over that cap still applies.
 - Mail settings belong to the owner alone, and a stored mail secret is dropped when the
   server it would be sent to changes.
 
@@ -162,7 +163,7 @@ it and allows it.
    400, -32020. Decisions are always made from the body.
 5. `tools/call` is forwarded only if `params.name` is byte-equal to a name in this server's
    cached tool list (refreshed once on a miss) and policy allows it. Otherwise -32602
-   `Unknown tool: {name}`, no upstream contact, logged as denied. Denied and nonexistent look alike.
+   `Unknown tool: {name}`, no upstream contact, logged as denied. Denied and nonexistent look alike, with one exception: a tool the caller switched off (statement 100) is decided after the rules and before the catalog, so it never refreshes the catalog. It gets no upstream contact, is logged as denied with the detail `switched off`, and is answered as a tool error the model can read: a JSON-RPC result with `isError` true and the text `Tool {name} is switched off in your Doorward account. Switch it on under Your tools at {public_url}/account, then call it again.`, where `{name}` is `params.name` as sent. On the stateless generation the result also carries `resultType` `complete`.
 6. Resources and prompts (S36): forwarded only when the server's `pass_resources` or
    `pass_prompts` switch is on; otherwise the gateway answers with empty lists.
 7. Forward the original bytes. `upstream` applies the request header allowlist, drops
@@ -172,7 +173,7 @@ it and allows it.
    through an allowlist; `Set-Cookie` and `WWW-Authenticate` never pass; `nosniff` and
    `Content-Security-Policy: sandbox` are added. Upstream statuses 200, 202, 400, 404 and 405
    are accepted; any other status, 401 and 403 among them, becomes 502.
-9. `tools/list` responses are buffered (capped), filtered by policy, and refresh the
+9. `tools/list` responses are buffered (capped), filtered by policy, then by the caller's tool switches, and refresh the
    catalog. JSON answers are buffered and re-checked; event streams stream through as they arrive, and
    the stream is observed for the
    activity log. The catalog is one per server, shared by everyone who uses it, and the
@@ -202,7 +203,7 @@ that upstream supports, probing once and caching the answer, with one upstream s
 `tools/list` merges the permitted tools of every assigned server as `{slug}__{tool}` in a
 stable order. Slugs contain no underscore, so the first `__` is the boundary; calls are
 still resolved by exact lookup in the merged map. Names over the client-safe length are
-omitted and logged. A failing upstream is left out and logged; the others still answer.
+omitted and logged. A tool the caller switched off is absent from the merged list, takes no room in the size budget and is not reported as left out; a call to it gets the switched-off answer of step 5 on both generations. A failing upstream is left out and logged; the others still answer.
 Requests initiated by an upstream are not relayed, and an `input_required` result becomes
 a tool error. A call is retried only after an explicit session 404.
 
@@ -215,14 +216,14 @@ matching allow is at least as specific as it on both scope and subject, and stri
 specific on one. An allow on an unassigned server grants nothing. The panel shows each
 user's effective tool list with the deciding rule, flags rules whose target no longer
 exists, and logs tools that newly appear on a server. Rules are read on every request, so a
-change applies to tokens already issued. A rule that cannot be read refuses the request.
+change applies to tokens already issued. A rule that cannot be read refuses the request. The caller's tool switches are read on every request, with the rules, in the same call (`policy::access`); a switch table that cannot be read refuses the request as an internal error (500). The rules decide first and then the switches: a switch only subtracts, so it never makes a tool that a rule denies reachable, or a server the user is not assigned to, and it changes nothing for another user. The panel's effective list shows a switched-off tool as `switched off by the user`, and no admin can set a switch.
 
 ## Storage
 
 Tables: `users`, `invitations`, `password_resets`, `sessions`, `login_failures`, `servers`,
 `server_headers`, `user_servers`, `rules`, `redirect_allow`, `oauth_clients`, `dcr_attempts`, `known_clients`,
 `auth_requests`, `auth_codes`, `token_families`, `access_tokens`, `refresh_tokens`,
-`disconnect_links`, `upstream_sessions`, `tool_catalog`, `settings`, `activity`, `user_header_values`. Activity rows
+`disconnect_links`, `upstream_sessions`, `tool_catalog`, `settings`, `activity`, `user_header_values`, `tool_switches`. Activity rows
 snapshot email, slug, tool and client and do not cascade. Ciphertexts carry a key id and are
 bound to their table, column and row. The database and key files are created with owner-only
 permissions.
@@ -244,6 +245,8 @@ runs); a first key's salt is derived from the server key and the user id so that
 sign-ins that race make one key. Every wrap change shares the transaction of the row change it
 follows; `session::revoke_all` and the sweep null the wraps of codes and tokens.
 
+Tool switches (migration 21). `tool_switches(user_id, server_id, tool, set_at)` holds one row per tool a user switched off, with the primary key `(user_id, server_id, tool)`. Its composite foreign key `(user_id, server_id)` references `user_servers` with `ON DELETE CASCADE`, so unassigning a server, deleting the user and deleting the server each delete that user's switches for it, and a server assigned again starts with every tool on. A save keeps at most 1,000 switches per user and server for tools the catalog no longer lists, the most recently set. `user_servers` must never be written with `REPLACE`: SQLite deletes the replaced row, and the cascade would drop the switches.
+
 Where a value is used. `POST /account/values/{slug}` (`accounts::values`) seals each value under the
 data key that the browser session's wrap opens, and writes the row, the activity row, the
 `values_version` bump and (for every change of the values) the deletion of the user's
@@ -252,7 +255,7 @@ from the access token's wrap and each of the user's rows for that server under t
 the request goes to, in the request's own database call; the values reach `custom_headers::resolve`
 as sensitive header values and are dropped with the request. A held value whose key does not open, or that
 does not open at all, is withheld: nothing is sent upstream and `proxy::handle` answers for the server
-itself (statement 90), never with 401 or 403. The session id it hands out is `dw-wait-` and 32 hex digits, recorded nowhere: the bearer token already identifies the caller. A withheld caller's stateless `server/discover` is answered `-32601` at 200, so a client that probes with it (Claude Code) falls back to `initialize` and gets that session; `/mcp` still answers discover itself. Once the caller is no longer withheld, the gateway keeps serving that session itself for the one server through the combined endpoint's single-server entries (`list_one`, `call_one`), because a client such as Claude Code does not start a new session on a 404. That is the one exception to the 404 for an unissued id besides a withheld caller's unrecorded id, which the gateway answers itself. The placeholder session serves tools only (no resources or prompts even with the switches on, no GET stream, notifications `202` and dropped), applies the same `decide` gate as a recorded session (a `params.task` call is `-32601`), re-checks access after a tool list fetch as after a call, and names the server's slug in its errors. A rule-denied or unlisted tool on `/{slug}` keeps its `-32602` answer, while on `/mcp` an unlisted tool of a withheld server gets the tool error. Combined requests carry the address with
+itself (statement 90), never with 401 or 403. The session id it hands out is `dw-wait-` and 32 hex digits, recorded nowhere: the bearer token already identifies the caller. A withheld caller's stateless `server/discover` is answered `-32601` at 200, so a client that probes with it (Claude Code) falls back to `initialize` and gets that session; `/mcp` still answers discover itself. Once the caller is no longer withheld, the gateway keeps serving that session itself for the one server through the combined endpoint's single-server entries (`list_one`, `call_one`), because a client such as Claude Code does not start a new session on a 404. That is the one exception to the 404 for an unissued id besides a withheld caller's unrecorded id, which the gateway answers itself. The placeholder session serves tools only (no resources or prompts even with the switches on, no GET stream, notifications `202` and dropped), applies the same `decide` gate as a recorded session (a `params.task` call is `-32601`), re-checks access after a tool list fetch as after a call, and names the server's slug in its errors. A rule-denied or unlisted tool on `/{slug}` keeps its `-32602` answer, while on `/mcp` an unlisted tool of a withheld server gets the tool error. On a call the order is rule, switch, catalog, then the held text: a switched-off tool gets the switched-off tool error on either path, and the list a withheld caller is given is filtered by the rules and the switches. Combined requests carry the address with
 their resolved headers and refuse a server whose target address differs. `keys::release` deletes a
 server's values (one user's, one header's, or all) with the version bump and session deletion; the
 panel calls it on an upstream address change and on an unassignment (each writes a `values_dropped`

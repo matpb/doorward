@@ -30,6 +30,9 @@ Status: 1.2.0.
 - **Access rules.** Servers are assigned to people. Allow and deny rules cover all tools,
   one server, or one exact tool. A denied tool is left out of the tool list and refused
   when called.
+- **Tool switches.** Each person can switch off the tools they do not use, on their account
+  page. A switched-off tool leaves their client's tool list, takes no room in the model's
+  context window, and a call to it is refused.
 - **Per-person credentials.** Where a server needs something from each person, such as an
   API token, an admin declares the header names. The gateway passes on the value the client
   sends, or sends the one that person stored, encrypted, on their account page.
@@ -282,7 +285,8 @@ anyone, the owner and other admins included; only the owner changes roles and ma
 settings. With no matching deny rule, every tool of an assigned server is allowed. Rules
 allow or deny all tools, one server, or one exact tool, for one person or for everyone. The tool
 names a rule form suggests are the tools of the server picked above it; press Show its tools
-after choosing another server.
+after choosing another server. A client picks up a change to a rule when it reconnects or
+refreshes its tools; a call that a rule denies is refused at once.
 
 ## Connect a client
 
@@ -314,7 +318,9 @@ the server and the signed-in person. Approve only a sign-in you started yourself
 </picture>
 
 Each person sees their connected clients on their account page and can disconnect one
-there. Claude Code, Codex and the Cursor command line client were run against the gateway.
+there. The same page holds their tool switches under Your tools; a client picks up a change
+when it reconnects or refreshes its tools. Claude Code, Codex and the Cursor command line
+client were run against the gateway.
 
 ## Limits worth knowing
 

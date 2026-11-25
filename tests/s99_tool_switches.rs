@@ -1235,6 +1235,30 @@ async fn a_stale_save_changes_only_the_tools_the_page_showed() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_off_count_of_a_save_covers_the_tools_the_page_did_not_show() {
+    let sc = start().await;
+    save(&sc, "chosen", &["echo", "search"]).await;
+    let page = post_switches_with_shown(&sc.bob, "s", "chosen", &[], &["echo"]).await;
+    assert_eq!(page.status, 303, "the partial save must be accepted");
+    assert_eq!(
+        switched_off(&sc.w, &sc.bob_id, &sc.id),
+        vec!["delete_db", "echo"],
+        "echo goes off, and the tools that were not shown stay as they were"
+    );
+    let rows = admin::activity_with_details(&sc.w.owner, Some(&sc.bob_id), Some(&sc.id)).await;
+    let details: Vec<&str> = rows
+        .iter()
+        .filter(|(row, _)| row.kind == "tool_switches")
+        .map(|(_, detail)| detail.as_str())
+        .collect();
+    assert_eq!(
+        details,
+        vec!["2 of 3 off", "1 of 3 off"],
+        "the newest row counts every allowed tool, shown or not"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unlisted_switches_are_kept_to_the_1000_most_recently_set() {
     let sc = start().await;
     let bob: i64 = sc.bob_id.parse().expect("numeric id");

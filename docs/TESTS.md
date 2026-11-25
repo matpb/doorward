@@ -3249,6 +3249,8 @@ before the switch route and the `Your tools` section exist, and fails until they
 37. `a_save_that_changes_nothing_writes_no_row`: a second save of the same state adds no `tool_switches` activity row.
 38. `the_61st_changing_save_in_an_hour_stores_its_switches_and_writes_no_row`: 61 alternating saves that each change
     a row write 60 activity rows; the 61st stores its switches and writes none.
+39. `the_off_count_of_a_save_covers_the_tools_the_page_did_not_show`: a save that shows one tool of three
+    counts all three, and counts as off the tool that was off and not shown.
 
 ## s100_switched_lists.rs (statements 100 and 105)
 
