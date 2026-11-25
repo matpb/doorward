@@ -60,9 +60,9 @@ fn sizes(conn: &Connection, server: i64) -> rusqlite::Result<Vec<(String, usize)
         .collect()
 }
 
-/// A size as the page shows it: `{n} B` under 1024 bytes, else one-decimal KB with 1 KB = 1024 B.
+/// A size as the page shows it: `{n} B` under 1000 bytes, else one-decimal KB with 1 KB = 1024 B.
 pub fn size_text(bytes: usize) -> String {
-    if bytes < 1024 {
+    if bytes < 1000 {
         format!("{bytes} B")
     } else {
         format!("{:.1} KB", bytes as f64 / 1024.0)
@@ -153,16 +153,18 @@ pub fn section(csrf: &str, blocks: &[Block], saved: Option<&str>) -> Markup {
 }
 
 /// One server's block: the heading with its count, the sentence and rule, then the list in a disclosure.
-/// A server with no stored list shows its note instead.
+/// A server with no stored list shows its note instead. A mixed list's foot asks before All on or All off.
 fn server_tools(csrf: &str, block: &Block, saved: bool) -> Markup {
     let title = format!("tools-{}-title", block.slug);
     let (sent, all) = (block.sent(), block.all());
+    let total = block.rows.len();
     let on = block.rows.iter().filter(|row| row.on).count();
+    let mixed = on > 0 && on < total;
     let largest = block.rows.iter().map(|row| row.bytes).max().unwrap_or(0);
     html! {
         section.flow.narrow data-server=(block.slug) aria-labelledby=(title) {
             @if saved {
-                (ui::notice("ok", html! { p { "Tools saved for " (block.name) "." } }))
+                (ui::notice("ok", html! { p { (saved_text(&block.name, on, total)) } }))
             }
             h3 id=(title) {
                 span.block-name { (block.name) }
@@ -194,12 +196,24 @@ fn server_tools(csrf: &str, block: &Block, saved: bool) -> Markup {
                                 (tool_row(&block.slug, index + 1, row, largest))
                             }
                         }
-                        div.tools-foot {
+                        div.tools-foot data-bulk=[mixed.then_some("ask")] {
                             button type="submit" name="set" value="chosen" data-kind="secondary" { "Save" }
                             span.tools-unsaved hidden[true] { "Not saved yet:" }
                             div.row-actions {
-                                button.row-action type="submit" name="set" value="all-on" data-kind="secondary" { "All on" }
-                                button.row-action type="submit" name="set" value="all-off" data-kind="secondary" { "All off" }
+                                @if mixed {
+                                    @for (value, label, word) in [("all-on", "All on", "on"), ("all-off", "All off", "off")] {
+                                        details.confirm.row-confirm name=(format!("tools-{}-all", block.slug)) data-confirm {
+                                            summary { (label) }
+                                            div.confirm-body {
+                                                p { "Switches all " (total) " tools " (word) ". " span.whole { (choices(on)) } }
+                                                button type="submit" name="set" value=(value) data-kind="secondary" { (label) }
+                                            }
+                                        }
+                                    }
+                                } @else {
+                                    button.row-action type="submit" name="set" value="all-on" data-kind="secondary" { "All on" }
+                                    button.row-action type="submit" name="set" value="all-off" data-kind="secondary" { "All off" }
+                                }
                             }
                         }
                     }
@@ -208,6 +222,26 @@ fn server_tools(csrf: &str, block: &Block, saved: bool) -> Markup {
                 p.muted { "No tools listed yet. Connect a client to this server once." }
             }
         }
+    }
+}
+
+/// The notice after a save: all off or all on when the state it left says so, else the plain line.
+fn saved_text(name: &str, on: usize, total: usize) -> String {
+    if total > 0 && on == 0 {
+        format!("All {total} {name} tools are off.")
+    } else if total > 0 && on == total {
+        format!("All {total} {name} tools are on.")
+    } else {
+        format!("Tools saved for {name}.")
+    }
+}
+
+/// The second sentence of a question: how many stored choices its word replaces.
+fn choices(on: usize) -> String {
+    if on == 1 {
+        "Your 1 choice is replaced.".to_owned()
+    } else {
+        format!("Your {on} choices are replaced.")
     }
 }
 

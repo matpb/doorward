@@ -598,7 +598,8 @@ N. Added for per-user tool switches
 102. A tool that appears in a server's list later is on. A switched-off tool that leaves the list
     and returns is still off, for the 1,000 most recently set of such tools; `All on` clears them all.
     `Save` changes only the tools the page showed. Proof: `tests/s99_tool_switches.rs`.
-103. Each server in `Your tools` has `All on` and `All off` and shows, for that server, the size of the
+103. Each server in `Your tools` has `All on` and `All off`, which ask before they replace a selection
+    that is partly on, and shows, for that server, the size of the
     tools the user leaves on against the size of all the tools they may use, in kilobytes and as a
     share, and says that a client picks up a change when it reconnects or refreshes its tools. Proof:
     `tests/s99_tool_switches.rs`.

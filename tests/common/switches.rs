@@ -67,9 +67,9 @@ pub fn stored_definitions(w: &World, server_id: &str) -> Vec<(String, String)> {
         .expect("tool_catalog rows must be readable")
 }
 
-/// A size as the page shows it: `{n} B` below 1024 bytes, else one-decimal KB with 1 KB = 1024 B.
+/// A size as the page shows it: `{n} B` below 1000 bytes, else one-decimal KB with 1 KB = 1024 B.
 pub fn size_text(bytes: usize) -> String {
-    if bytes < 1024 {
+    if bytes < 1000 {
         format!("{bytes} B")
     } else {
         format!("{:.1} KB", bytes as f64 / 1024.0)

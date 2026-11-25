@@ -3189,8 +3189,8 @@ before the switch route and the `Your tools` section exist, and fails until they
    catalog, read `on`, are checked, and show the size of each stored definition.
 5. `a_switched_off_tool_row_is_off_and_unchecked`: after saving echo and delete_db on, only search reads
    `off` and is unchecked.
-6. `sizes_are_bytes_below_a_kilobyte_and_one_decimal_kilobytes_from_1024_bytes_up`: stored definitions of
-   1023, 1024 and 1843 bytes show `1023 B`, `1.0 KB` and `1.8 KB`.
+6. `sizes_are_bytes_below_1000_and_one_decimal_kilobytes_from_1000_bytes_up`: stored definitions of
+   999, 1000 and 1843 bytes show `999 B`, `1.0 KB` and `1.8 KB`.
 7. `the_summary_gives_the_sent_size_against_all_and_a_share`: with all on the summary reads `X of X (100%)`;
    with search off it reads the size left on, the total and the rounded share.
 8. `a_summary_with_no_allowed_tool_reads_zero_of_zero_at_100_percent`: the summary shows the total while
@@ -3251,6 +3251,26 @@ before the switch route and the `Your tools` section exist, and fails until they
     a row write 60 activity rows; the 61st stores its switches and writes none.
 39. `the_off_count_of_a_save_covers_the_tools_the_page_did_not_show`: a save that shows one tool of three
     counts all three, and counts as off the tool that was off and not shown.
+40. `a_mixed_list_foot_asks_before_all_on_or_all_off`: with echo and delete_db on, the foot of `s` carries
+    `data-bulk="ask"`; All on and All off are two closed disclosures named `tools-s-all`, each holding its
+    sentence (`Switches all 3 tools on.` or `off.`, then `Your 2 choices are replaced.`) and one submit with
+    its value; no form sits in a form, and no bulk submit stands outside a disclosure.
+41. `an_all_on_or_all_off_list_keeps_the_plain_foot`: a list all on and a list all off carry no `data-bulk`,
+    no disclosure, and the two plain submits All on and All off.
+42. `a_mixed_list_of_62_tools_with_39_on_says_the_brief_sentences`: 62 tools with 39 on read
+    `Switches all 62 tools off. Your 39 choices are replaced.` and the same with `on`.
+43. `a_mixed_list_with_one_choice_says_one_choice`: one tool on of three reads `Your 1 choice is replaced.`
+    in both sentences.
+44. `all_off_on_a_mixed_list_still_switches_every_tool_off`: All off from a mixed list stores all three tools
+    off; the question is markup only.
+45. `a_save_says_the_state_it_left_a_mix_all_off_or_all_on`: the notice after a chosen save that leaves a mix
+    reads `Tools saved for s.`; after All off `All 3 s tools are off.`; after All on `All 3 s tools are on.`;
+    a chosen save that leaves every tool on reads `All 3 s tools are on.`.
+46. `a_server_of_one_tool_keeps_the_plural_in_its_notice`: server `demo`, with one tool, reads
+    `All 1 demo tools are off.` after All off.
+47. `size_text_prints_bytes_below_1000_and_one_decimal_kilobytes_from_1000_up`: the page's size function gives
+    `0 B`, `999 B`, `1.0 KB` for 1000, 1014, 1023 and 1024 bytes, `1.8 KB` for 1843 and `1799.8 KB` for
+    1843000 bytes.
 
 ## s100_switched_lists.rs (statements 100 and 105)
 

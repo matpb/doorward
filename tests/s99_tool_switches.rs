@@ -165,10 +165,10 @@ async fn a_switched_off_tool_row_is_off_and_unchecked() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sizes_are_bytes_below_a_kilobyte_and_one_decimal_kilobytes_from_1024_bytes_up() {
+async fn sizes_are_bytes_below_1000_and_one_decimal_kilobytes_from_1000_bytes_up() {
     let sc = start().await;
-    set_definition_size(&sc, "echo", 1023);
-    set_definition_size(&sc, "search", 1024);
+    set_definition_size(&sc, "echo", 999);
+    set_definition_size(&sc, "search", 1000);
     set_definition_size(&sc, "delete_db", 1843);
     let sizes: Vec<String> = tool_rows(&sc.bob, "s")
         .await
@@ -177,8 +177,8 @@ async fn sizes_are_bytes_below_a_kilobyte_and_one_decimal_kilobytes_from_1024_by
         .collect();
     assert_eq!(
         sizes,
-        vec!["1023 B", "1.0 KB", "1.8 KB"],
-        "1023 bytes is bytes, 1024 is 1.0 KB, 1843 is 1.8 KB"
+        vec!["999 B", "1.0 KB", "1.8 KB"],
+        "999 bytes is bytes, 1000 is 1.0 KB, 1843 is 1.8 KB"
     );
 }
 
@@ -957,9 +957,9 @@ async fn the_section_markup_follows_the_design() {
         vec!["Save", "All on", "All off"]
     );
     assert_eq!(
-        every(&doc, "div.row-actions > button.row-action").len(),
+        every(&doc, "div.row-actions > details.row-confirm").len(),
         2,
-        "All on and All off are the quiet row actions"
+        "on a mixed list All on and All off are the two questions of the foot"
     );
     assert_eq!(
         every(&doc, r#"section#tools div.notice"#).len(),
@@ -1019,7 +1019,7 @@ async fn the_server_rule_is_the_bytes_on_over_all_bytes_and_zero_when_none_is_on
     );
     assert_eq!(
         page.text(SENDING).as_deref(),
-        Some("1000 B of 4.0 KB (25%)"),
+        Some("1.0 KB of 4.0 KB (25%)"),
         "the sentence beside the rule gives the same bytes"
     );
     save(&sc, "all-off", &[]).await;
@@ -1348,4 +1348,268 @@ async fn the_61st_changing_save_in_an_hour_stores_its_switches_and_writes_no_row
         vec!["delete_db", "search"],
         "the 61st save still stores its switches"
     );
+}
+
+/// The elements under `element` that `css` names, in document order.
+fn within<'a>(element: ElementRef<'a>, css: &str) -> Vec<ElementRef<'a>> {
+    element
+        .select(&Selector::parse(css).expect("selector"))
+        .collect()
+}
+
+/// The sentence of each question in the foot of server `s`, in the order the foot holds them.
+fn question_sentences(body: &str) -> Vec<String> {
+    let doc = Html::parse_document(body);
+    every(
+        &doc,
+        r#"section#tools [data-server="s"] div.tools-foot > div.row-actions > details p"#,
+    )
+    .into_iter()
+    .map(text_of)
+    .collect()
+}
+
+/// The text of the notice that a save of server `s` leads to.
+async fn notice_of_s(sc: &Scene) -> Option<String> {
+    sc.bob
+        .get("/account?saved=s")
+        .await
+        .text(r#"section#tools [data-server="s"] > div.notice[data-notice="ok"] > p"#)
+}
+
+/// Asserts that the foot of server `s` in `body` is the plain one: no `data-bulk`, two submits and no question.
+fn assert_plain_foot(body: &str, state: &str) {
+    let doc = Html::parse_document(body);
+    let foot = first(&doc, r#"section#tools [data-server="s"] div.tools-foot"#);
+    assert_eq!(
+        foot.value().attr("data-bulk"),
+        None,
+        "{state}: the foot must not carry data-bulk"
+    );
+    let actions = within(foot, "div.row-actions > button.row-action");
+    assert_eq!(
+        actions
+            .iter()
+            .map(|button| button.value().attr("value"))
+            .collect::<Vec<_>>(),
+        vec![Some("all-on"), Some("all-off")],
+        "{state}: the foot holds All on and All off as two plain submits"
+    );
+    assert_eq!(
+        actions
+            .iter()
+            .map(|button| text_of(*button))
+            .collect::<Vec<_>>(),
+        vec!["All on", "All off"],
+        "{state}: the two plain submits read All on and All off"
+    );
+    assert!(
+        within(foot, "details").is_empty(),
+        "{state}: the foot holds no question"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mixed_list_foot_asks_before_all_on_or_all_off() {
+    let sc = start().await;
+    save(&sc, "chosen", &["echo", "delete_db"]).await;
+    let page = sc.bob.get("/account").await;
+    let doc = Html::parse_document(&page.body);
+    let foot = first(&doc, r#"section#tools [data-server="s"] div.tools-foot"#);
+    assert_eq!(
+        foot.value().attr("data-bulk"),
+        Some("ask"),
+        "a list with some tools on and some off must mark its foot data-bulk ask"
+    );
+    let questions = within(foot, "div.row-actions > details");
+    assert_eq!(
+        questions.len(),
+        2,
+        "All on and All off must each be a disclosure in the row actions"
+    );
+    let expected = [
+        (
+            "all-on",
+            "All on",
+            "Switches all 3 tools on. Your 2 choices are replaced.",
+        ),
+        (
+            "all-off",
+            "All off",
+            "Switches all 3 tools off. Your 2 choices are replaced.",
+        ),
+    ];
+    for (question, (value, label, sentence)) in questions.into_iter().zip(expected) {
+        assert_eq!(
+            question.value().attr("name"),
+            Some("tools-s-all"),
+            "{label} must share the group name of its server"
+        );
+        assert!(
+            question.value().attr("open").is_none(),
+            "{label} must be closed on arrival"
+        );
+        let summaries = within(question, "summary");
+        assert_eq!(summaries.len(), 1, "{label} must have one summary");
+        assert_eq!(
+            text_of(summaries[0]),
+            label,
+            "the summary must read {label}"
+        );
+        let sentences = within(question, "p");
+        assert_eq!(sentences.len(), 1, "{label} must say one sentence");
+        assert_eq!(
+            text_of(sentences[0]),
+            sentence,
+            "the sentence of {label} must give the tool count and the choices replaced"
+        );
+        let choices = within(sentences[0], "span.whole");
+        assert_eq!(
+            choices.len(),
+            1,
+            "{label} must set its choices in span.whole"
+        );
+        assert_eq!(
+            text_of(choices[0]),
+            "Your 2 choices are replaced.",
+            "the span.whole of {label} must hold the choices sentence"
+        );
+        let submits = within(question, r#"button[name="set"]"#);
+        assert_eq!(submits.len(), 1, "{label} must hold one submit named set");
+        assert_eq!(
+            submits[0].value().attr("value"),
+            Some(value),
+            "the submit of {label} must carry its value"
+        );
+        assert_eq!(
+            text_of(submits[0]),
+            label,
+            "the submit of {label} must read {label}"
+        );
+    }
+    assert_eq!(
+        page.count(r#"section#tools [data-server="s"] div.row-actions > details.row-confirm button[name="set"]"#),
+        2,
+        "both bulk submits must sit inside a question"
+    );
+    assert_eq!(
+        page.count(r#"section#tools [data-server="s"] button[name="set"][value^="all-"]"#),
+        2,
+        "no bulk submit may sit outside a question"
+    );
+    assert_eq!(page.count("form form"), 0, "no form may sit inside a form");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_all_on_or_all_off_list_keeps_the_plain_foot() {
+    let sc = start().await;
+    assert_plain_foot(&sc.bob.get("/account").await.body, "all on");
+    save(&sc, "all-off", &[]).await;
+    assert_plain_foot(&sc.bob.get("/account").await.body, "all off");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mixed_list_of_62_tools_with_39_on_says_the_brief_sentences() {
+    let sc = start().await;
+    let names: Vec<String> = (0..62).map(|n| format!("tool_{n:02}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    sc.up.set_tools(&names);
+    let page = admin::refresh_tools(&sc.w.owner, &sc.id).await;
+    assert_eq!(page.status, 303, "refreshing the tools must answer 303");
+    save(&sc, "chosen", &names[..39]).await;
+    assert_eq!(
+        question_sentences(&sc.bob.get("/account").await.body),
+        vec![
+            "Switches all 62 tools on. Your 39 choices are replaced.",
+            "Switches all 62 tools off. Your 39 choices are replaced.",
+        ],
+        "62 rows with 39 on must read as the design's example"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mixed_list_with_one_choice_says_one_choice() {
+    let sc = start().await;
+    save(&sc, "chosen", &["echo"]).await;
+    assert_eq!(
+        question_sentences(&sc.bob.get("/account").await.body),
+        vec![
+            "Switches all 3 tools on. Your 1 choice is replaced.",
+            "Switches all 3 tools off. Your 1 choice is replaced.",
+        ],
+        "one stored choice is replaced as one choice"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn all_off_on_a_mixed_list_still_switches_every_tool_off() {
+    let sc = start().await;
+    save(&sc, "chosen", &["echo"]).await;
+    save(&sc, "all-off", &[]).await;
+    assert_eq!(
+        switched_off(&sc.w, &sc.bob_id, &sc.id),
+        vec!["delete_db", "echo", "search"],
+        "All off from a mixed list must still switch every allowed tool off"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_save_says_the_state_it_left_a_mix_all_off_or_all_on() {
+    let sc = start().await;
+    save(&sc, "chosen", &["echo"]).await;
+    assert_eq!(
+        notice_of_s(&sc).await.as_deref(),
+        Some("Tools saved for s."),
+        "a save that leaves a mix says Tools saved for s"
+    );
+    save(&sc, "all-off", &[]).await;
+    assert_eq!(
+        notice_of_s(&sc).await.as_deref(),
+        Some("All 3 s tools are off."),
+        "All off says all tools are off"
+    );
+    save(&sc, "all-on", &[]).await;
+    assert_eq!(
+        notice_of_s(&sc).await.as_deref(),
+        Some("All 3 s tools are on."),
+        "All on says all tools are on"
+    );
+    save(&sc, "chosen", &["echo", "search", "delete_db"]).await;
+    assert_eq!(
+        notice_of_s(&sc).await.as_deref(),
+        Some("All 3 s tools are on."),
+        "a chosen save that leaves every tool on says all tools are on"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_of_one_tool_keeps_the_plural_in_its_notice() {
+    let sc = start().await;
+    let (demo_up, demo) = sc.w.upstream("demo", UpstreamOptions::default()).await;
+    demo_up.set_tools(&["only"]);
+    let page = admin::refresh_tools(&sc.w.owner, &demo).await;
+    assert_eq!(page.status, 303, "refreshing the tools must answer 303");
+    sc.w.grant(BOB, &[sc.id.as_str(), demo.as_str()]).await;
+    let page = post_switches(&sc.bob, "demo", "all-off", &[]).await;
+    assert_eq!(page.status, 303, "All off on demo must be accepted");
+    let page = sc.bob.get("/account?saved=demo").await;
+    assert_eq!(
+        page.text(r#"section#tools [data-server="demo"] > div.notice[data-notice="ok"] > p"#)
+            .as_deref(),
+        Some("All 1 demo tools are off."),
+        "a server of one tool reads All 1 demo tools are off, with no grammar case"
+    );
+}
+
+#[test]
+fn size_text_prints_bytes_below_1000_and_one_decimal_kilobytes_from_1000_up() {
+    use doorward::accounts::tools::size_text;
+    assert_eq!(size_text(0), "0 B");
+    assert_eq!(size_text(999), "999 B");
+    assert_eq!(size_text(1000), "1.0 KB");
+    assert_eq!(size_text(1014), "1.0 KB");
+    assert_eq!(size_text(1023), "1.0 KB");
+    assert_eq!(size_text(1024), "1.0 KB");
+    assert_eq!(size_text(1843), "1.8 KB");
+    assert_eq!(size_text(1_843_000), "1799.8 KB");
 }

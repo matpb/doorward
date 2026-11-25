@@ -4667,8 +4667,8 @@ a.chip:focus-visible {
   background: var(--ink);
 }
 
-/* The foot closes the list with an ink rule and holds its three buttons. While the list is
-   taller than the window it stays at the window's bottom, over the rows. */
+/* The foot closes the list with a hairline and holds its buttons. While the list is taller than
+   the window it stays at the window's bottom, over the rows. */
 .tools-foot {
   position: sticky;
   inset-block-end: 0;
@@ -4677,9 +4677,8 @@ a.chip:focus-visible {
   flex-wrap: wrap;
   align-items: center;
   column-gap: var(--s3);
-  margin-block-start: -1px;
   padding-block: var(--s2);
-  border-block-start: 1px solid var(--ink);
+  border-block-start: 1px solid var(--line);
   background: var(--paper);
 }
 
@@ -4771,5 +4770,152 @@ a.chip:focus-visible {
   .toolbox-open::before {
     forced-color-adjust: none;
     background: CanvasText;
+  }
+}
+
+/* ---------- Your tools: the foot of a mixed list ---------- */
+
+/* The last row gives up its hairline to the foot's, and keeps its bar inside itself. */
+.tool:last-child {
+  border-block-end: 0;
+}
+
+.tool:last-child > .tool-bar {
+  margin-block-end: 0;
+}
+
+/* A question is one line, button first; 4 px under it keep the focus ring unclipped. */
+.tools-foot .confirm-body {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  justify-items: start;
+  gap: 0 var(--s3);
+  padding: var(--s2) 0 var(--s1);
+  text-align: start;
+}
+
+.tools-foot .confirm-body > p {
+  grid-area: 1 / 2;
+}
+
+/* Stretched, so both questions' buttons are one width and their sentences share an edge. */
+.tools-foot .confirm-body > button {
+  grid-area: 1 / 1;
+  justify-self: stretch;
+  block-size: var(--control-sm);
+  padding-inline: var(--s3);
+  font-size: 13px;
+}
+
+/* Undoes the float that table rows take under 900 px, so the word ends on the foot's edge. */
+.tools-foot .row-confirm > summary {
+  float: none;
+  margin-inline-end: calc((var(--s2) + 1px) * -1);
+}
+
+/* The two words are items of the foot itself. */
+.tools-foot[data-bulk="ask"] > .row-actions {
+  display: contents;
+}
+
+/* Without subgrid or ::details-content an opened question takes its own line. */
+.tools-foot :where(.row-confirm) {
+  display: block;
+  margin-inline-start: var(--s1);
+}
+
+.tools-foot :where(.row-confirm:first-child, .row-confirm[open] + .row-confirm) {
+  margin-inline-start: auto;
+}
+
+.tools-foot :where(.row-confirm[open]) {
+  order: 1;
+  flex-basis: 100%;
+  margin-inline-start: 0;
+}
+
+/* The grid of a mixed foot: the unsaved line (phone), the buttons, then one row per question. */
+@supports (grid-template-columns: subgrid) and selector(::details-content) {
+  .tools-foot[data-bulk="ask"] {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-rows: repeat(4, auto);
+  }
+
+  .tools-foot[data-bulk="ask"] > button[value="chosen"] {
+    grid-area: 2 / 1;
+    justify-self: start;
+  }
+
+  .tools-foot[data-bulk="ask"] > .tools-unsaved {
+    grid-area: 2 / 2;
+    justify-self: start;
+  }
+
+  /* Both disclosures span the whole grid, so they take no pointer; their word and body do. */
+  .tools-foot[data-bulk="ask"] .row-confirm {
+    grid-area: 1 / 1 / -1 / -1;
+    display: grid;
+    grid-template: subgrid / subgrid;
+    align-items: center;
+    margin: 0;
+    pointer-events: none;
+  }
+
+  .tools-foot[data-bulk="ask"] .row-confirm > summary,
+  .tools-foot[data-bulk="ask"] .confirm-body {
+    pointer-events: auto;
+  }
+
+  .tools-foot[data-bulk="ask"] .row-confirm > summary {
+    grid-area: 2 / 3;
+  }
+
+  /* 12 px of gap and these 4: the 16 px that part two row actions. */
+  .tools-foot[data-bulk="ask"] .row-confirm + .row-confirm > summary {
+    grid-area: 2 / 4;
+    margin-inline-start: var(--s1);
+  }
+
+  .tools-foot[data-bulk="ask"] .row-confirm::details-content {
+    grid-area: 3 / 1 / 4 / -1;
+    display: grid;
+    grid-template-columns: subgrid;
+  }
+
+  .tools-foot[data-bulk="ask"] .row-confirm + .row-confirm::details-content {
+    grid-row: 4 / 5;
+  }
+
+  .tools-foot[data-bulk="ask"] .confirm-body {
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+  }
+
+  .tools-foot[data-bulk="ask"] .confirm-body > p {
+    grid-column: 2 / -1;
+  }
+
+  /* On a phone Save takes the width the two words leave, as in the shipped foot. */
+  @media (max-width: 639.98px) {
+    .tools-foot[data-bulk="ask"] > button[value="chosen"] {
+      grid-column: 1 / 3;
+      justify-self: stretch;
+    }
+
+    .tools-foot[data-bulk="ask"] > .tools-unsaved {
+      grid-area: 1 / 1 / 2 / -1;
+    }
+  }
+}
+
+/* A box reached by the keyboard also clears an opened question: its row and 24 px. */
+@supports selector(:has(*)) {
+  .tools-form:has(.row-confirm[open]) .tool > input {
+    scroll-margin-block-end: calc(var(--control) + var(--s7) + var(--s2) + var(--control-sm) + var(--s5));
+  }
+
+  .tools-form:has(.row-confirm[open] + .row-confirm[open]) .tool > input {
+    scroll-margin-block-end: calc(var(--control) + var(--s7) + var(--s2) + (var(--control-sm) + var(--s5)) * 2);
   }
 }
